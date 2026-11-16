@@ -532,28 +532,68 @@ func TestRunNeutralisesClientConfig(t *testing.T) {
 }
 
 func TestInspectParsesNetworkNone(t *testing.T) {
-	// Trimmed from `container inspect` on Docker and on Podman.
-	outputs := map[string]string{
-		"docker": `[{"Id":"7a00de1e","Name":"/cavu-agent-r1","State":{"Status":"exited","Running":false,"OOMKilled":true,"ExitCode":137},` +
-			`"HostConfig":{"NetworkMode":"none","Memory":67108864},"Config":{"Labels":{"cavu.run":"r1"}}}]`,
-		"podman": `[{"Id":"0c7a21cb","Name":"cavu-agent-r1","State":{"OciVersion":"1.2.1","Status":"exited","Running":false,"OOMKilled":true,"ExitCode":137},` +
-			`"HostConfig":{"NetworkMode":"none"},"Config":{"Labels":{"cavu.run":"r1"}}}]`,
-	}
-
-	for name, out := range outputs {
-		t.Run(name, func(t *testing.T) {
-			r, f := fakeRuntime(t, name)
-			f.set(t, "stdout", []byte(out))
-
-			info, err := r.Inspect(t.Context(), "cavu-agent-r1")
-			require.NoError(t, err)
-			assert.Equal(t, Info{
-				Running:   false,
+	// Trimmed from `container inspect` of the same spec on each runtime: a
+	// named volume, a bind, a --mount tmpfs and a --tmpfs. Docker lists a
+	// --tmpfs only under HostConfig.Tmpfs, Podman lists both tmpfs kinds there.
+	cases := map[string]struct {
+		out  string
+		want Info
+	}{
+		"docker": {
+			out: `[{"Id":"89d16867","Name":"/cavu-agent-r1","State":{"Status":"exited","Running":false,"OOMKilled":true,"ExitCode":137},` +
+				`"HostConfig":{"NetworkMode":"none","Memory":67108864,"Tmpfs":{"/run/cavu":""}},` +
+				`"Config":{"Labels":{"cavu.run":"r1"},"Env":["FROMFILE=1","HTTP_PROXY=from-file","HTTPS_PROXY=","HTTP_PROXY=","PATH=/usr/bin:/bin"]},` +
+				`"Mounts":[{"Type":"volume","Name":"cavu-workspace-r1","Source":"/var/lib/docker/volumes/cavu-workspace-r1/_data","Destination":"/workspace","Driver":"local","Mode":"z","RW":true,"Propagation":""},` +
+				`{"Type":"bind","Source":"/srv/host","Destination":"/host","Mode":"","RW":false,"Propagation":"rprivate"},` +
+				`{"Type":"tmpfs","Source":"","Destination":"/scratch","Mode":"","RW":true,"Propagation":""}]}]`,
+			want: Info{
 				OOMKilled: true,
 				Network:   "none",
 				ExitCode:  137,
 				Labels:    map[string]string{"cavu.run": "r1"},
-			}, info)
+				EnvNames:  []string{"FROMFILE", "HTTPS_PROXY", "HTTP_PROXY", "PATH"},
+				Mounts: []MountInfo{
+					{Type: "bind", Source: "/srv/host", Target: "/host"},
+					{Type: "tmpfs", Target: "/run/cavu"},
+					{Type: "tmpfs", Target: "/scratch"},
+					{Type: "volume", Source: "cavu-workspace-r1", Target: "/workspace"},
+				},
+			},
+		},
+		"podman": {
+			out: `[{"Id":"89ebe475","Name":"cavu-agent-r1","State":{"OciVersion":"1.2.1","Status":"running","Running":true,"OOMKilled":false,"ExitCode":0},` +
+				`"HostConfig":{"NetworkMode":"none","Tmpfs":{"/run/cavu":"rprivate,nosuid,nodev,tmpcopyup","/scratch":"rprivate,nosuid,nodev,tmpcopyup"}},` +
+				`"Config":{"Labels":{"cavu.run":"r1"},"Env":["PATH=/usr/bin:/bin","container=podman","FROMFILE=1","HOME=/","HOSTNAME=89ebe4753d56"]},` +
+				`"Mounts":[{"Type":"volume","Name":"cavu-workspace-r1","Source":"/home/u/.local/share/containers/storage/volumes/cavu-workspace-r1/_data","Destination":"/workspace","Driver":"local","Mode":"","Options":["nosuid","nodev","rbind"],"RW":true,"Propagation":"rprivate"},` +
+				`{"Type":"bind","Source":"/srv/host","Destination":"/host","Driver":"","Mode":"","Options":["nosuid","nodev","rbind"],"RW":false,"Propagation":"rprivate"}]}]`,
+			want: Info{
+				Running:  true,
+				Network:  "none",
+				Labels:   map[string]string{"cavu.run": "r1"},
+				EnvNames: []string{"FROMFILE", "HOME", "HOSTNAME", "PATH", "container"},
+				Mounts: []MountInfo{
+					{Type: "bind", Source: "/srv/host", Target: "/host"},
+					{Type: "tmpfs", Target: "/run/cavu"},
+					{Type: "tmpfs", Target: "/scratch"},
+					{Type: "volume", Source: "cavu-workspace-r1", Target: "/workspace"},
+				},
+			},
+		},
+		"a tmpfs listed twice": {
+			out: `[{"State":{},"HostConfig":{"NetworkMode":"none","Tmpfs":{"/run/cavu":""}},"Config":{},` +
+				`"Mounts":[{"Type":"tmpfs","Source":"","Destination":"/run/cavu"}]}]`,
+			want: Info{Network: "none", Mounts: []MountInfo{{Type: "tmpfs", Target: "/run/cavu"}}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, f := fakeRuntime(t, "docker")
+			f.set(t, "stdout", []byte(tc.out))
+
+			info, err := r.Inspect(t.Context(), "cavu-agent-r1")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, info)
 			assert.Contains(t, f.only(t).argv, "cavu-agent-r1")
 		})
 	}

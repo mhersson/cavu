@@ -122,7 +122,13 @@ type Info struct {
 	Network            string
 	ExitCode           int
 	Labels             map[string]string
+	EnvNames           []string    // names of the container-level variables, never values
+	Mounts             []MountInfo // every mount the runtime reports, whatever added it
 }
+
+// MountInfo is one mount of a container. Source is the volume name for a
+// volume, the host path for a bind and empty for a tmpfs.
+type MountInfo struct{ Type, Source, Target string }
 
 // clientError is a client call that exited non-zero. It carries the client's
 // stderr tail, which never holds an environment value.
@@ -533,8 +539,15 @@ func (r Runtime) Inspect(ctx context.Context, name string) (Info, error) {
 			Running, OOMKilled bool
 			ExitCode           int
 		}
-		HostConfig struct{ NetworkMode string }
-		Config     struct{ Labels map[string]string }
+		HostConfig struct {
+			NetworkMode string
+			Tmpfs       map[string]string
+		}
+		Config struct {
+			Labels map[string]string
+			Env    []string
+		}
+		Mounts []inspectMount
 	}
 
 	if err := json.Unmarshal(out, &got); err != nil {
@@ -553,7 +566,58 @@ func (r Runtime) Inspect(ctx context.Context, name string) (Info, error) {
 		Network:   c.HostConfig.NetworkMode,
 		ExitCode:  c.State.ExitCode,
 		Labels:    c.Config.Labels,
+		EnvNames:  envNames(c.Config.Env),
+		Mounts:    mountInfos(c.Mounts, c.HostConfig.Tmpfs),
 	}, nil
+}
+
+type inspectMount struct{ Type, Name, Source, Destination string }
+
+// envNames keeps each name once; Docker lists a name twice when a later flag
+// overrides the env file.
+func envNames(env []string) []string {
+	var names []string
+
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		names = append(names, name)
+	}
+
+	slices.Sort(names)
+
+	return slices.Compact(names)
+}
+
+// mountInfos merges the tmpfs mounts both runtimes list only under
+// HostConfig.Tmpfs, once per target.
+func mountInfos(reported []inspectMount, tmpfs map[string]string) []MountInfo {
+	var out []MountInfo
+
+	seen := map[string]bool{}
+
+	for _, m := range reported {
+		info := MountInfo{Type: m.Type, Source: m.Source, Target: m.Destination}
+
+		switch m.Type {
+		case "volume":
+			info.Source = m.Name
+		case "tmpfs":
+			info.Source = ""
+		}
+
+		out = append(out, info)
+		seen[m.Destination] = true
+	}
+
+	for target := range tmpfs {
+		if !seen[target] {
+			out = append(out, MountInfo{Type: "tmpfs", Target: target})
+		}
+	}
+
+	slices.SortFunc(out, func(a, b MountInfo) int { return strings.Compare(a.Target, b.Target) })
+
+	return out
 }
 
 // List names the containers, running or not, and the volumes that carry
