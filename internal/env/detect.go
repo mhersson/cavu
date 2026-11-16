@@ -214,7 +214,7 @@ func (r *reader) ownVersions(files map[string][]byte) (map[string]string, error)
 	}
 
 	if b, ok := files[".nvmrc"]; ok {
-		if v := firstLine(string(b), false); v != "" {
+		if v := firstLine(string(b)); v != "" {
 			v = strings.TrimPrefix(v, "v")
 			if v == "lts/*" {
 				v = "lts"
@@ -242,7 +242,7 @@ func (r *reader) ownVersions(files map[string][]byte) (map[string]string, error)
 	}
 
 	if b, ok := files[".python-version"]; ok {
-		if v := firstLine(string(b), true); v != "" {
+		if v := firstLine(string(b)); v != "" {
 			if err := r.take(out, ".python-version", "python", v); err != nil {
 				return nil, err
 			}
@@ -269,12 +269,14 @@ func (r *reader) ownVersions(files map[string][]byte) (map[string]string, error)
 	return out, nil
 }
 
-// firstLine returns the first non-blank line, trimmed; with skipComments it
-// also passes over lines starting with #.
-func firstLine(s string, skipComments bool) string {
+// firstLine returns the first line that is not blank or a # comment, trimmed,
+// with any trailing # comment cut.
+func firstLine(s string) string {
 	for line := range strings.SplitSeq(s, "\n") {
+		line, _, _ = strings.Cut(line, "#")
+
 		line = strings.TrimSpace(line)
-		if line == "" || (skipComments && strings.HasPrefix(line, "#")) {
+		if line == "" {
 			continue
 		}
 

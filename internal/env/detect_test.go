@@ -50,6 +50,11 @@ func TestDetect(t *testing.T) {
 			wantTools: []Tool{{"node", "22.3.0"}},
 		},
 		{
+			name:      "nvmrc comments",
+			files:     map[string]string{".nvmrc": "# pinned\n\nv22.3.0 # lts\n"},
+			wantTools: []Tool{{"node", "22.3.0"}},
+		},
+		{
 			name:      "nvmrc lts alias",
 			files:     map[string]string{".nvmrc": "lts/*\n"},
 			wantTools: []Tool{{"node", "lts"}},
