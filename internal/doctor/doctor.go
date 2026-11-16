@@ -4,7 +4,6 @@ package doctor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -15,24 +14,21 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
-	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/prompts"
-	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/redact"
+	"github.com/mhersson/cavu/internal/runner"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 )
 
-// schema is the structured result the endpoint check asks for.
-const schema = `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`
-
 const (
 	buildFix = "cavu image build"
-	home     = "/home/agent"
 	// commandTimeout bounds a command in the scratch container, the probe included.
 	commandTimeout  = time.Minute
 	endpointTimeout = 5 * time.Minute
+	// endpointTurns caps the check's session, which needs two.
+	endpointTurns = 4
 )
 
 // Check is one line of the report; a Warning still passes.
@@ -93,11 +89,12 @@ type doctor struct {
 	image   string
 	labels  sandbox.ImageLabels
 	found   bool
-	box     box    // the doctor's own sandbox, under project 0
-	scratch target // its scratch container, when the image is there
-	err     error  // of reading the image or starting the box
+	box     box              // the doctor's own sandbox, under project 0
+	scratch target           // its scratch container, when the image is there
+	err     error            // of reading the image or starting the box
+	config  engine.RunConfig // the settings and the credential, read as a run reads them
 	agent   proc.Target
-	standIn string
+	spec    driver.Spec // a session in the agent phase, but its prompt and id
 	checks  []Check
 	failed  map[string]bool // failed or skipped
 }
@@ -133,7 +130,8 @@ func Run(ctx context.Context, d Deps) []Check {
 
 	r.step(ctx, "forge", r.forge, "image", "settings")
 
-	mask := redact.New(d.Credential, d.ForgeToken, r.standIn)
+	// In key mode the session's token is a stand-in only this mask knows.
+	mask := redact.New(d.Credential, d.ForgeToken, r.spec.Auth.Token)
 	for i := range r.checks {
 		r.checks[i].Detail, r.checks[i].Fix = mask(r.checks[i].Detail), mask(r.checks[i].Fix)
 	}
@@ -265,22 +263,25 @@ func (r *doctor) claudeCode(ctx context.Context) Check {
 	return Check{OK: true, Detail: v}
 }
 
-// settings names every key a run requires that the operator has not set;
-// instance_id is generated at first use.
+// settings reads the settings as a run reads them, and wants the credential.
 func (r *doctor) settings() Check {
-	keys := []string{"endpoint_mode", "model_work", "commit_name", "commit_email"}
-	if r.Settings["endpoint_mode"] == "key" {
-		keys = append(keys, "endpoint_url", "endpoint_auth_header")
+	var err error
+
+	r.config, err = engine.ReadSettings(r.Settings)
+	r.config.Endpoint.Credential = r.Credential
+
+	var problems []string
+	if err != nil {
+		problems = append(problems, err.Error())
 	}
 
-	missing := slices.DeleteFunc(keys, func(k string) bool { return r.Settings[k] != "" })
 	if r.Credential == "" {
-		missing = append(missing, "endpoint_credential")
+		problems = append(problems, "the secret endpoint_credential is not set")
 	}
 
-	if len(missing) > 0 {
+	if len(problems) > 0 {
 		return Check{
-			Name: "settings", Detail: "not set: " + strings.Join(missing, ", "),
+			Name: "settings", Detail: strings.Join(problems, "; "),
 			Fix: "cavu settings set KEY VALUE, and cavu secret set endpoint_credential for the credential",
 		}
 	}
@@ -288,21 +289,15 @@ func (r *doctor) settings() Check {
 	return Check{Name: "settings", OK: true}
 }
 
-// sandbox brings up the agent phase with the allowlist a run's agent phase
-// has, and in key mode the model route with a stand-in token.
+// sandbox brings up the agent phase a run brings up.
 func (r *doctor) sandbox(ctx context.Context) Check {
-	mode := r.Settings["endpoint_mode"]
-	req := sidecar.ProxyRequest{AllowHosts: r.Driver.Hosts(mode)}
+	req, spec, err := runner.AgentPhase(r.config, r.Driver)
+	r.spec = spec
 
-	if mode == "key" {
-		r.standIn = proxy.NewStandIn()
-		req.Model = &proxy.ModelRoute{
-			BaseURL: r.Settings["endpoint_url"], Credential: r.Credential,
-			AuthHeader: r.Settings["endpoint_auth_header"], StandIn: r.standIn,
-		}
+	if err == nil {
+		err = r.box.EnsureVolumes(ctx)
 	}
 
-	err := r.box.EnsureVolumes(ctx)
 	if err == nil {
 		r.agent, err = r.box.Up(ctx, sandbox.PhaseAgent, req, nil)
 	}
@@ -325,17 +320,8 @@ func (r *doctor) endpoint(ctx context.Context) Check {
 		return failed(err, "")
 	}
 
-	auth := driver.Auth{Mode: r.Settings["endpoint_mode"], Token: r.Credential}
-	if auth.Mode == "key" {
-		auth.Token, auth.BaseURL = r.standIn, sandbox.BridgeURL
-	}
-
-	s := driver.Spec{
-		Auth: auth, Model: r.Settings["model_work"], MaxTurns: 4, SessionID: engine.NewSessionID(),
-		Prompt: prompt, OutputSchema: json.RawMessage(schema),
-		Dir: "/workspace", Home: home, ConfigDir: home + "/.claude-cavu",
-		Env: append(env.AgentEnv(nil, home), "HTTPS_PROXY="+sandbox.BridgeURL, "HTTP_PROXY="+sandbox.BridgeURL),
-	}
+	s := r.spec
+	s.Prompt, s.SessionID, s.MaxTurns = prompt, engine.NewSessionID(), endpointTurns
 
 	turn := func(s driver.Spec) (driver.Result, string) {
 		streamed := false

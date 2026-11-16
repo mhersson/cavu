@@ -15,7 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mhersson/cavu/internal/driver"
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/proc"
+	"github.com/mhersson/cavu/internal/runner"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/testkit/sandboxtest"
@@ -139,7 +141,7 @@ func green(t *testing.T, mode string) (Deps, *fakeHost, *fakeDriver) {
 
 	bundle, _, _ := sandboxtest.CA(t)
 	h := &fakeHost{labels: sandbox.ImageLabels{CavuVersion: version, AgentVersion: pinned, CABundle: sum(bundle)}, found: true}
-	done := driver.Result{Reason: driver.ReasonDone, Structured: json.RawMessage(`{"ok":true}`)}
+	done := driver.Result{Reason: driver.ReasonDone, Structured: json.RawMessage(`{"status":"done"}`)}
 	cached := done
 	cached.Usage = []driver.Usage{{Model: "model-a", CacheRead: 4096}}
 	drv := &fakeDriver{version: pinned, results: []driver.Result{done, cached}}
@@ -148,8 +150,9 @@ func green(t *testing.T, mode string) (Deps, *fakeHost, *fakeDriver) {
 		Version:      version,
 		AgentVersion: pinned,
 		Settings: map[string]string{
-			"endpoint_mode": mode, "endpoint_url": "https://gateway.example",
-			"endpoint_auth_header": "bearer", "model_work": "model-a", "commit_name": "CAVU", "commit_email": "cavu@example.com",
+			"instance_id": "0123456789abcdef", "endpoint_mode": mode, "endpoint_url": "https://gateway.example",
+			"endpoint_auth_header": "bearer", "model_work": "model-a", "effort_work": "low",
+			"commit_name": "CAVU", "commit_email": "cavu@example.com",
 		},
 		Credential: credential,
 		CABundle:   bundle,
@@ -190,26 +193,26 @@ func TestDoctorAllGreen(t *testing.T) {
 			assert.Equal(t, []int64{0, 4}, h.opened, "the doctor's own sandbox, then the project's for the fetch")
 			assert.Equal(t, 4, h.destroys, "each sandbox starts and ends with a Destroy")
 
+			// The sandbox and the session are a run's, but the session's prompt, id and turns.
+			c, err := engine.ReadSettings(d.Settings)
+			require.NoError(t, err)
+
+			c.Endpoint.Credential = credential
+
+			req, spec, err := runner.AgentPhase(c, drv)
+			require.NoError(t, err)
 			require.Len(t, h.ups, 1)
-			up := h.ups[0]
-			assert.Equal(t, drv.Hosts(mode), up.AllowHosts)
-
 			require.Len(t, drv.specs, 2)
-			first, second := drv.specs[0], drv.specs[1]
-			assert.Contains(t, first.Env, "HTTPS_PROXY="+sandbox.BridgeURL)
 
+			up, first, second := h.ups[0], drv.specs[0], drv.specs[1]
 			if mode == "key" {
-				require.NotNil(t, up.Model)
-				assert.Equal(t, credential, up.Model.Credential)
-				assert.Equal(t, up.Model.StandIn, first.Auth.Token, "the agent holds the stand-in")
-				assert.Equal(t, sandbox.BridgeURL, first.Auth.BaseURL)
-			} else {
-				assert.Nil(t, up.Model)
-				assert.Equal(t, credential, first.Auth.Token)
+				req.Model.StandIn, spec.Auth.Token = up.Model.StandIn, up.Model.StandIn
 			}
 
-			assert.Equal(t, mode, first.Auth.Mode)
-			assert.NotEmpty(t, first.OutputSchema)
+			spec.Prompt, spec.SessionID, spec.MaxTurns = first.Prompt, first.SessionID, first.MaxTurns
+
+			assert.Equal(t, req, up)
+			assert.Equal(t, spec, first)
 			assert.Equal(t, first.SessionID, second.Resume, "the second turn resumes the session")
 			assert.Empty(t, second.SessionID)
 
@@ -299,7 +302,7 @@ func TestDoctorImageFaults(t *testing.T) {
 }
 
 func TestDoctorMissingSettingNamesKey(t *testing.T) {
-	for _, key := range []string{"model_work", "endpoint_url", "commit_email", "endpoint_credential"} {
+	for _, key := range []string{"instance_id", "model_work", "endpoint_url", "endpoint_auth_header", "commit_email", "endpoint_credential"} {
 		t.Run(key, func(t *testing.T) {
 			d, h, drv := green(t, "key")
 			delete(d.Settings, key)
@@ -323,6 +326,15 @@ func TestDoctorMissingSettingNamesKey(t *testing.T) {
 			assert.Equal(t, 1, ExitCode(checks))
 		})
 	}
+
+	t.Run("a value a run cannot read", func(t *testing.T) {
+		d, _, _ := green(t, "key")
+		d.Settings["work_max_turns"] = "many"
+
+		settings := byName(t, Run(t.Context(), d))["settings"]
+		assert.False(t, settings.OK)
+		assert.Contains(t, settings.Detail, "work_max_turns")
+	})
 
 	t.Run("subscription mode needs no endpoint url", func(t *testing.T) {
 		d, _, _ := green(t, "subscription")

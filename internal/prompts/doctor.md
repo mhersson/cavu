@@ -1,1 +1,1 @@
-This is a health check. Run the shell command `echo cavu` once, then give the structured result with ok set to true.
+This is a health check. Run the shell command `echo cavu` once, then end with the structured result with status `done`.
