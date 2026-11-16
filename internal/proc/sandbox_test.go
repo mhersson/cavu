@@ -1,7 +1,6 @@
 package proc
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -22,7 +21,7 @@ func TestSandboxOnlyRefusesOutsideASandbox(t *testing.T) {
 
 	var ee *exec.ExitError
 
-	require.True(t, errors.As(err, &ee), "want an exit error, got %v", err)
+	require.ErrorAs(t, err, &ee)
 	assert.Equal(t, NotInSandbox, ee.ExitCode())
 	assert.NotContains(t, string(out), "payload-ran")
 }
