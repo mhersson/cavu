@@ -62,6 +62,10 @@ func validate(s driver.Spec) error {
 	switch {
 	case s.Auth.Mode != modeSubscription && s.Auth.Mode != modeKey:
 		return fmt.Errorf("claudecode: auth mode %q is not %s or %s", s.Auth.Mode, modeSubscription, modeKey)
+	case s.Auth.Token == "":
+		return fmt.Errorf("claudecode: %s mode without a token", s.Auth.Mode)
+	case s.Auth.Mode == modeKey && s.Auth.BaseURL == "":
+		return errors.New("claudecode: key mode without a base URL")
 	case s.Model == "":
 		return errors.New("claudecode: no model")
 	case s.MaxTurns < 1:
