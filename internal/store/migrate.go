@@ -13,17 +13,25 @@ type Migration struct {
 	SQL     string
 }
 
-// migrate applies the migrations not yet in the schema_migrations ledger,
-// each with its ledger row in one transaction so a failure leaves nothing behind.
+// migrate applies the migrations not yet in the schema_migrations ledger, all
+// with their ledger rows in one transaction so a failure leaves nothing behind.
+// The transaction is immediate (see dsn), so a concurrent opener waits for it,
+// then finds every version recorded and applies nothing.
 func migrate(ctx context.Context, db *sql.DB, ms []Migration) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: migrations: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at INTEGER NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("store: schema_migrations table: %w", err)
 	}
 
-	applied, err := appliedVersions(ctx, db)
+	applied, err := appliedVersions(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -33,16 +41,20 @@ func migrate(ctx context.Context, db *sql.DB, ms []Migration) error {
 			continue
 		}
 
-		if err := applyMigration(ctx, db, m); err != nil {
+		if err := applyMigration(ctx, tx, m); err != nil {
 			return fmt.Errorf("store: migration v%d: %w", m.Version, err)
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: migrations commit: %w", err)
 	}
 
 	return nil
 }
 
-func appliedVersions(ctx context.Context, db *sql.DB) (map[int]bool, error) {
-	rows, err := db.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+func appliedVersions(ctx context.Context, tx *sql.Tx) (map[int]bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT version FROM schema_migrations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: schema_migrations query: %w", err)
 	}
@@ -66,13 +78,7 @@ func appliedVersions(ctx context.Context, db *sql.DB) (map[int]bool, error) {
 	return applied, nil
 }
 
-func applyMigration(ctx context.Context, db *sql.DB, m Migration) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
+func applyMigration(ctx context.Context, tx *sql.Tx, m Migration) error {
 	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 		return err
 	}
@@ -84,5 +90,5 @@ func applyMigration(ctx context.Context, db *sql.DB, m Migration) error {
 		return fmt.Errorf("record: %w", err)
 	}
 
-	return tx.Commit()
+	return nil
 }
