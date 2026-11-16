@@ -23,10 +23,12 @@ import (
 // lines given for its exact argv in "outs", then "stdout") and stderr, and
 // exits with the canned code (the one given for its exact argv in "exits",
 // else the one in "exit"). "early.<last argument>" is printed for that call
-// before stdin is read, "sleep" holds a call whose last argument it names
-// for 30 seconds before any later output, "out.<last argument>" is printed
-// for that call only, and "linger" keeps stdout open for 30 seconds after
-// the output. It finds its own tools when a test narrows PATH to fakes only.
+// before stdin is read, "ends.<last argument>" ends that call without reading
+// stdin once the file "end" exists, printing it and "stderr" first, "sleep"
+// holds a call whose last argument it names for 30 seconds before any later
+// output, "out.<last argument>" is printed for that call only, and "linger"
+// keeps stdout open for 30 seconds after the output. It finds its own tools
+// when a test narrows PATH to fakes only.
 const fakeScript = `#!/bin/sh
 PATH=/usr/bin:/bin:$PATH
 d='@DIR@'
@@ -42,6 +44,13 @@ printf '%s' "$HOME" > "$n/home"
 if { true <&3; } 2>/dev/null; then cat <&3 > "$n/fd3"; fi
 for last; do :; done
 [ -f "$d/early.$last" ] && cat "$d/early.$last"
+if [ -f "$d/ends.$last" ]; then
+	w=0
+	while [ ! -f "$d/end" ] && [ "$w" -lt 3000 ]; do sleep 0.01; w=$((w + 1)); done
+	cat "$d/ends.$last"
+	[ -f "$d/stderr" ] && cat "$d/stderr" >&2
+	exit 0
+fi
 cat > "$n/stdin"
 : > "$n/eof"
 [ -f "$d/sleep" ] && [ "$(cat "$d/sleep")" = "$last" ] && sleep 30

@@ -853,6 +853,99 @@ func TestUpForwardsSidecarLines(t *testing.T) {
 	assert.Equal(t, want, got.all())
 }
 
+func errorLines(lines []sidecar.Line) []sidecar.Line {
+	return slices.DeleteFunc(lines, func(l sidecar.Line) bool { return l.Type != "error" })
+}
+
+func TestUpReportsASidecarThatEnds(t *testing.T) {
+	const cause = "cause-4711"
+
+	for _, tc := range []struct {
+		name    string
+		out     string // the sidecar's last output
+		stderr  string
+		inspect string // what the runtime reports for the sidecar container
+		want    string // what the error line carries
+	}{
+		{name: "its output ends", stderr: "panic: " + cause, want: cause},
+		{name: "its own error line", out: `{"Type":"error","Error":"proxy: ` + cause + `"}`, want: cause},
+		{name: "killed for memory", inspect: `[{"State":{"OOMKilled":true,"ExitCode":137}}]`, want: ErrOutOfMemory.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, f := ensured(t)
+			f.set(t, "ends.sidecar", []byte(tc.out+"\n"))
+			f.set(t, "stderr", []byte(tc.stderr+"\n"))
+			f.set(t, "out."+s.name("sidecar"), []byte(tc.inspect))
+
+			var got lineLog
+
+			_, err := s.Up(t.Context(), PhaseAgent, sidecar.ProxyRequest{}, got.add)
+			require.NoError(t, err)
+			assert.Empty(t, got.all())
+
+			f.set(t, "end", nil)
+			require.Eventually(t, func() bool { return len(got.all()) > 0 }, 10*time.Second, 10*time.Millisecond)
+
+			// Down waits for the reader, so a second line would show by now.
+			require.NoError(t, s.Down(t.Context()))
+
+			lines := got.all()
+			require.Len(t, lines, 1)
+			assert.Equal(t, "error", lines[0].Type)
+			assert.Contains(t, lines[0].Error, tc.want)
+		})
+	}
+}
+
+func TestSidecarTheSandboxStopsIsNotReported(t *testing.T) {
+	for name, stop := range map[string]func(t *testing.T, s *Sandbox){
+		"down": func(t *testing.T, s *Sandbox) {
+			t.Helper()
+			require.NoError(t, s.Down(t.Context()))
+		},
+		"destroy": func(t *testing.T, s *Sandbox) {
+			t.Helper()
+			require.NoError(t, s.Destroy(t.Context(), true))
+		},
+		"restart, then down": func(t *testing.T, s *Sandbox) {
+			t.Helper()
+
+			_, err := s.Restart(t.Context())
+			require.NoError(t, err)
+			require.NoError(t, s.Down(t.Context()))
+		},
+		"an up that replaces it": func(t *testing.T, s *Sandbox) {
+			t.Helper()
+
+			_, err := s.Up(t.Context(), PhaseAgent, sidecar.ProxyRequest{AllowHosts: []string{"other.example"}}, nil)
+			require.NoError(t, err)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := ensured(t)
+
+			var got lineLog
+
+			_, err := s.Up(t.Context(), PhaseAgent, sidecar.ProxyRequest{}, got.add)
+			require.NoError(t, err)
+
+			stop(t, s)
+			assert.Empty(t, errorLines(got.all()))
+		})
+	}
+
+	t.Run("before ready", func(t *testing.T) {
+		s, f := ensured(t)
+		f.set(t, "early.sidecar", []byte(`{"Type":"error","Error":"proxy: listen on the socket: address in use"}`+"\n"))
+
+		var got lineLog
+
+		_, err := s.Up(t.Context(), PhaseAgent, sidecar.ProxyRequest{}, got.add)
+		require.ErrorIs(t, err, ErrSidecarDown)
+		assert.Empty(t, got.all(), "Up's error is the report")
+	})
+}
+
 func TestRestartKeepsSidecarAndVolumes(t *testing.T) {
 	s, f := ensured(t)
 

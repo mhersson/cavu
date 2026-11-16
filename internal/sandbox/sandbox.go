@@ -42,6 +42,7 @@ const (
 	probeTimeout     = 10 * time.Second
 	probeInterval    = 200 * time.Millisecond
 	probeCallTimeout = 15 * time.Second
+	inspectTimeout   = 15 * time.Second
 	// cloneTimeout keeps a hung fetch from hanging the run.
 	cloneTimeout = 10 * time.Minute
 	// sidecarStopGrace outlasts the sidecar's own drain of in-flight responses.
@@ -384,7 +385,10 @@ read:
 // reaches the proxy through its bridge. It fails closed: after any error
 // neither container is left, and a failed check is ErrNotIsolated or
 // ErrSidecarDown. lines receives the sidecar's denied, usage and model_error
-// lines on a goroutine of its own; one that blocks holds back the proxy.
+// lines on a goroutine of its own; one that blocks holds back the proxy. When
+// the sidecar ends after it got ready and the sandbox did not stop it, lines
+// receives one error line with the reason: the phase container has lost its
+// egress.
 func (s *Sandbox) Up(ctx context.Context, phase Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (Container, error) {
 	if phase != PhaseSetup && phase != PhaseAgent {
 		return Container{}, fmt.Errorf("sandbox: phase %q: want setup or agent", phase)
@@ -518,7 +522,7 @@ func (s *Sandbox) ensureSidecar(ctx context.Context, p sidecar.ProxyRequest, lin
 		return fmt.Errorf("%w: %w", ErrSidecarDown, err)
 	}
 
-	s.side = readSidecar(pr, p, lines)
+	s.side = readSidecar(s.o.Runtime, spec, pr, p, lines)
 
 	// Stdin stays open, because its end ends the proxy. A request that never
 	// arrives shows as a sidecar that does not get ready.
@@ -684,7 +688,7 @@ func (s *Sandbox) probe(ctx context.Context, name string) error {
 		case ctx.Err() != nil:
 			return fmt.Errorf("sandbox: %w", ctx.Err())
 		case !s.side.alive():
-			return fmt.Errorf("%w: %s", ErrSidecarDown, s.side.reason)
+			return fmt.Errorf("%w: %w", ErrSidecarDown, s.side.cause)
 		case time.Now().After(deadline):
 			return fmt.Errorf("%w: the proxy did not refuse a probe through the bridge within %s", ErrSidecarDown, s.timeouts.probe)
 		}
@@ -699,22 +703,25 @@ func (s *Sandbox) probe(ctx context.Context, name string) error {
 // sidecarProc is the attached client of a proxy sidecar and the reader of
 // its lines.
 type sidecarProc struct {
-	p       proc.Process
-	req     sidecar.ProxyRequest
-	started time.Time
-	lines   atomic.Pointer[func(sidecar.Line)]
+	p        proc.Process
+	rt       Runtime
+	spec     ContainerSpec
+	req      sidecar.ProxyRequest
+	started  time.Time
+	lines    atomic.Pointer[func(sidecar.Line)]
+	stopping atomic.Bool // set before the sandbox ends it, so its end is no news
 
 	readyOnce sync.Once
 	ready     chan struct{} // closed at the ready line
 	downOnce  sync.Once
 	down      chan struct{} // closed at an error line or the end of output
-	reason    string        // why it is down; set before down is closed
+	cause     error         // why it is down; set before down is closed
 	ended     chan struct{} // closed at the end of output
 }
 
-func readSidecar(p proc.Process, req sidecar.ProxyRequest, lines func(sidecar.Line)) *sidecarProc {
+func readSidecar(rt Runtime, spec ContainerSpec, p proc.Process, req sidecar.ProxyRequest, lines func(sidecar.Line)) *sidecarProc {
 	sc := &sidecarProc{
-		p: p, req: req, started: time.Now(),
+		p: p, rt: rt, spec: spec, req: req, started: time.Now(),
 		ready: make(chan struct{}), down: make(chan struct{}), ended: make(chan struct{}),
 	}
 	sc.lines.Store(&lines)
@@ -737,26 +744,50 @@ func (sc *sidecarProc) read() {
 		case "ready":
 			sc.readyOnce.Do(func() { close(sc.ready) })
 		case "error":
-			sc.fail("its error: " + l.Error)
+			sc.fail(errors.New("its error: " + l.Error))
 		case "denied", "usage", "model_error":
 			if l.Type == "denied" && l.Host == probeHost {
 				continue
 			}
 
-			if f := *sc.lines.Load(); f != nil {
-				f(l)
-			}
+			sc.deliver(l)
 		}
 	}
 
-	sc.fail("it exited: " + lastLine(sc.p.StderrTail()))
+	sc.fail(sc.endCause())
 }
 
-func (sc *sidecarProc) fail(reason string) {
+// endCause is why the output ended. The runtime is asked only about an end
+// the sandbox did not cause, since a stopped container may be gone already.
+func (sc *sidecarProc) endCause() error {
+	if sc.alive() && !sc.stopping.Load() {
+		ctx, cancel := context.WithTimeout(context.Background(), inspectTimeout)
+		defer cancel()
+
+		if info, err := sc.rt.Inspect(ctx, sc.spec.Name); err == nil && info.OOMKilled {
+			return fmt.Errorf("%w: the sidecar hit its %d MB limit", ErrOutOfMemory, sc.spec.MemoryMB)
+		}
+	}
+
+	return errors.New("it exited: " + lastLine(sc.p.StderrTail()))
+}
+
+func (sc *sidecarProc) fail(cause error) {
 	sc.downOnce.Do(func() {
-		sc.reason = reason
+		sc.cause = cause
 		close(sc.down)
+
+		// Before ready, Up's error reports it.
+		if sc.isReady() && !sc.stopping.Load() {
+			sc.deliver(sidecar.Line{Type: "error", Error: fmt.Errorf("%w: %w", ErrSidecarDown, cause).Error()})
+		}
 	})
+}
+
+func (sc *sidecarProc) deliver(l sidecar.Line) {
+	if f := *sc.lines.Load(); f != nil {
+		f(l)
+	}
 }
 
 func (sc *sidecarProc) alive() bool {
@@ -768,10 +799,19 @@ func (sc *sidecarProc) alive() bool {
 	}
 }
 
+func (sc *sidecarProc) isReady() bool {
+	select {
+	case <-sc.ready:
+		return true
+	default:
+		return false
+	}
+}
+
 // waitReady counts within from the sidecar's start.
 func (sc *sidecarProc) waitReady(ctx context.Context, within time.Duration) error {
 	if !sc.alive() {
-		return fmt.Errorf("%w: %s", ErrSidecarDown, sc.reason)
+		return fmt.Errorf("%w: %w", ErrSidecarDown, sc.cause)
 	}
 
 	// First, because for a sidecar older than within the timer below has
@@ -789,7 +829,7 @@ func (sc *sidecarProc) waitReady(ctx context.Context, within time.Duration) erro
 	case <-sc.ready:
 		return nil
 	case <-sc.down:
-		return fmt.Errorf("%w: %s", ErrSidecarDown, sc.reason)
+		return fmt.Errorf("%w: %w", ErrSidecarDown, sc.cause)
 	case <-timer.C:
 		return fmt.Errorf("%w: no ready line within %s", ErrSidecarDown, within)
 	case <-ctx.Done():
@@ -800,6 +840,7 @@ func (sc *sidecarProc) waitReady(ctx context.Context, within time.Duration) erro
 // stop closes stdin, which ends the proxy once in-flight responses are done,
 // and stops the client if it outlives the grace.
 func (sc *sidecarProc) stop() {
+	sc.stopping.Store(true)
 	_ = sc.p.Stdin().Close()
 
 	timer := time.NewTimer(sidecarStopGrace)
