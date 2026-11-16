@@ -16,7 +16,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/BurntSushi/toml"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Tool is one mise tool and the version to install.
@@ -245,7 +245,7 @@ func (r *reader) ownVersions(files map[string][]byte) (map[string]string, error)
 				RequiresPython string `toml:"requires-python"`
 			} `toml:"project"`
 		}
-		if _, err := toml.Decode(string(b), &doc); err != nil {
+		if err := toml.Unmarshal(b, &doc); err != nil {
 			return nil, fmt.Errorf("pyproject.toml: %w", err)
 		}
 
@@ -268,7 +268,7 @@ func (r *reader) ownVersions(files map[string][]byte) (map[string]string, error)
 				Channel string `toml:"channel"`
 			} `toml:"toolchain"`
 		}
-		if _, err := toml.Decode(string(b), &doc); err != nil {
+		if err := toml.Unmarshal(b, &doc); err != nil {
 			return nil, fmt.Errorf("rust-toolchain.toml: %w", err)
 		}
 
@@ -405,7 +405,7 @@ func (r *reader) parseMise(b []byte) (map[string]string, error) {
 	var doc struct {
 		Tools map[string]any `toml:"tools"`
 	}
-	if _, err := toml.Decode(string(b), &doc); err != nil {
+	if err := toml.Unmarshal(b, &doc); err != nil {
 		return nil, fmt.Errorf("mise.toml: %w", err)
 	}
 

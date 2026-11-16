@@ -1,9 +1,7 @@
 package env
 
 import (
-	"bytes"
-
-	"github.com/BurntSushi/toml"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // MiseConfig renders the mise configuration CAVU writes. It holds only a
@@ -15,9 +13,8 @@ func MiseConfig(tools []Tool) []byte {
 		table[t.Name] = t.Version
 	}
 
-	var buf bytes.Buffer
-	// Encoding a map of strings cannot fail.
-	_ = toml.NewEncoder(&buf).Encode(map[string]map[string]string{"tools": table})
+	// Marshalling a map of strings cannot fail: invalid UTF-8 is escaped.
+	b, _ := toml.Marshal(map[string]map[string]string{"tools": table})
 
-	return buf.Bytes()
+	return b
 }

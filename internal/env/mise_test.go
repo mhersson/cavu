@@ -3,7 +3,7 @@ package env
 import (
 	"testing"
 
-	"github.com/BurntSushi/toml"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,6 +17,7 @@ func TestMiseConfigHasOnlyTools(t *testing.T) {
 	}{
 		{"plain", []Tool{{"node", "lts"}, {"go", "1.27.4"}}},
 		{"empty", nil},
+		{"name needing a quoted key", []Tool{{"npm:prettier", "3.3.3"}, {"asdf:https://example.test/plugin", "1"}}},
 		{"hostile name", []Tool{{"go\"]\n[env]\nX = \"y", "1"}}},
 		{"hostile version", []Tool{{"go", "1\n[env]\nX = \"y\"\n[tasks]"}}},
 	}
@@ -26,8 +27,7 @@ func TestMiseConfigHasOnlyTools(t *testing.T) {
 
 			var got map[string]any
 
-			_, err := toml.Decode(string(MiseConfig(tt.tools)), &got)
-			require.NoError(t, err)
+			require.NoError(t, toml.Unmarshal(MiseConfig(tt.tools), &got))
 
 			for k := range got {
 				assert.Equal(t, "tools", k)
