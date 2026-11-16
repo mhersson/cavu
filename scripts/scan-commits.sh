@@ -1,11 +1,7 @@
 #!/bin/sh
-# Fails on what must never reach git in the commits between a base and a head:
-# task or milestone numbers in the messages and in added Go comments, Claude
-# session links and attribution lines (Co-authored-by trailers, "Generated
-# with") in the messages, em-dashes in the messages or in added Go and
-# Markdown lines, and blobs over 500 KB.
-# Usage: scan-commits.sh [base [head]]; base defaults to origin/main, head to
-# HEAD. Word boundaries are spelled out: \b is a GNU extension to POSIX ERE.
+# Fails on what must never reach git between a base and a head (see the make
+# help). Usage: scan-commits.sh [base [head]]; base defaults to origin/main,
+# head to HEAD. Word boundaries are spelled out: \b is a GNU extension to POSIX ERE.
 set -u
 export LC_ALL=C
 
@@ -16,7 +12,7 @@ b='(^|[^A-Za-z0-9])'
 loose="${b}(task|milestone) [0-9]"
 # Session links never reach git, whatever a contributor's tools add.
 session='claude-session|claude\.ai/code/session_'
-# Nor do attribution lines.
+# Nor do attribution lines; the optional prefix allows a leading emoji.
 attribution='^co-authored-by:|^[^A-Za-z0-9]*generated with'
 dash=$(printf '\342\200\224')
 

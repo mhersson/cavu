@@ -13,8 +13,7 @@ import (
 	"syscall"
 )
 
-// command is one verb of the cavu command. Each verb registers itself in the
-// commands map from an init function in its own file.
+// command is one verb; each verb registers itself from an init function.
 type command struct {
 	summary  string
 	internal bool
@@ -44,8 +43,7 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-// run dispatches args to a verb under a context that ends on interrupt or
-// termination, and returns the exit code.
+// run dispatches args to a verb and returns the exit code.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

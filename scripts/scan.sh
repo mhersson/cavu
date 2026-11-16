@@ -1,8 +1,9 @@
 #!/bin/sh
 # Fails on an em-dash in a tracked or untracked, unignored Go, Markdown, YAML,
-# TOML, shell or Dockerfile file. The file list goes through a temp file so a
-# failing git fails the scan, and the canary proves grep can match before an
-# empty result is trusted. LC_ALL=C byte patterns because macOS grep has no -P.
+# TOML, shell or Dockerfile file.
+# The list goes through a temp file so a failing git fails the scan; the canary
+# proves grep can match before an empty result is trusted; byte patterns under
+# LC_ALL=C because macOS grep has no -P.
 set -u
 export LC_ALL=C
 

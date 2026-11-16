@@ -34,10 +34,15 @@ CAVU is a self-hosted tool that runs a coding agent fully unattended: a task goe
 
 - Conventional commits with a scope: `type(scope): summary`, with bullet lists in bodies.
 - No attribution lines, no session links, no task ids in commits or branch names.
-- Documentation states only what is true of the code in the same commit.
 - No em-dashes anywhere.
 - Tests exercise behaviour and never assert on prose.
 - One branch per plan, each task its own commit. Never push or merge.
+
+## Documentation
+
+- Documentation must always be true: every statement matches the code at HEAD, and a change that makes a doc line false updates it in the same commit.
+- Document the current state - what exists now and why, not how it got here.
+- Comments explain only non-obvious decisions, constraints, safety invariants, or workarounds. Do not narrate what code does or record change history; git holds history. Keep comments to one or two tight lines unless a longer explanation is genuinely necessary. Rewrite or delete if you find comments that don't follow this rule.
 
 ## Commands
 
