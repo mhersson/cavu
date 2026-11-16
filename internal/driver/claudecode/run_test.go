@@ -404,6 +404,49 @@ func TestRunMasksToken(t *testing.T) {
 	assert.NotContains(t, res.Detail, testToken)
 }
 
+// requireNoFragment fails when s holds any run of n characters of secret.
+func requireNoFragment(t *testing.T, s, secret string, n int) {
+	t.Helper()
+
+	for i := 0; i+n <= len(secret); i++ {
+		require.NotContains(t, s, secret[i:i+n])
+	}
+}
+
+// A stderr tail cut at a byte count can open with the end of the token,
+// which masking alone cannot recognise.
+func TestRunDropsCutToken(t *testing.T) {
+	f := newFakeRun(t, fakeclaude.Scenario{
+		ExitAtStart: true, ExitCode: 1, Stderr: testToken[6:] + " trailing\nnext " + testToken + "\n",
+	})
+
+	res, err := f.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, driver.ReasonCrashed, res.Reason)
+	requireNoFragment(t, res.Detail, testToken, 8)
+	assert.Contains(t, res.Detail, "trailing")
+	assert.Contains(t, res.Detail, "next")
+}
+
+func TestStderrDetail(t *testing.T) {
+	tests := []struct {
+		name, tail, want string
+	}{
+		{"cut token end", testToken[3:] + " rest\n", "rest"},
+		{"whole token stays for the mask", testToken + " rest", testToken + " rest"},
+		{"no token", "plain failure\n", "plain failure"},
+		{"invalid utf-8", "\xa9broken \xff tail", "broken  tail"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, stderrDetail(tt.tail, testToken))
+		})
+	}
+
+	assert.Equal(t, "rest", stderrDetail(" rest ", ""), "an empty secret strips nothing")
+}
+
 func TestCancelBeforeStart(t *testing.T) {
 	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
 

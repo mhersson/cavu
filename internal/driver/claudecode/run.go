@@ -40,7 +40,7 @@ func (c claudeCode) Run(ctx context.Context, t proc.Target, s driver.Spec, sink 
 		return driver.Result{}, fmt.Errorf("claudecode: start: %w", err)
 	}
 
-	r := &session{p: p, m: m, mode: s.Auth.Mode, resume: s.Resume != "", grace: c.grace}
+	r := &session{p: p, m: m, secret: s.Auth.Token, mode: s.Auth.Mode, resume: s.Resume != "", grace: c.grace}
 
 	return r.supervise(ctx, c.gateTimeout, inv.prompt), nil
 }
@@ -54,6 +54,7 @@ func interruption(ctx context.Context) string {
 type session struct {
 	p      proc.Process
 	m      *mapper
+	secret string
 	mode   string
 	resume bool
 	grace  time.Duration
@@ -128,9 +129,9 @@ func (r *session) ended(ctx context.Context) driver.Result {
 	code := r.end(ctx, r.m.sawResult)
 	tail := r.p.StderrTail()
 
-	detail := tail
+	detail := stderrDetail(tail, r.secret)
 	if r.waitErr != nil {
-		detail = strings.TrimSpace(tail + "\n" + r.waitErr.Error())
+		detail = strings.TrimSpace(detail + "\n" + r.waitErr.Error())
 	}
 
 	res := r.m.finish(code, detail)
@@ -147,7 +148,7 @@ func (r *session) ended(ctx context.Context) driver.Result {
 func (r *session) abort(reason, why string) driver.Result {
 	code := r.end(context.Background(), false)
 
-	tail := strings.TrimSpace(r.p.StderrTail())
+	tail := stderrDetail(r.p.StderrTail(), r.secret)
 	res := r.m.finish(code, tail)
 
 	if tail != "" {
@@ -231,4 +232,19 @@ func initResponse(line []byte, id string) (json.RawMessage, bool) {
 	}
 
 	return l.Response.Response.Account, true
+}
+
+// stderrDetail drops a leading proper suffix of secret, which a tail cut at a
+// byte count can open with and the mask cannot see. Whether the tail was cut
+// is unknown, so an uncut one that opens that way loses those bytes too.
+func stderrDetail(tail, secret string) string {
+	for n := len(secret) - 1; n > 0; n-- {
+		if strings.HasPrefix(tail, secret[len(secret)-n:]) {
+			tail = tail[n:]
+
+			break
+		}
+	}
+
+	return strings.TrimSpace(strings.ToValidUTF8(tail, ""))
 }
