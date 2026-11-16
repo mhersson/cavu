@@ -81,7 +81,7 @@ func scanProject(sc scanner) (Project, error) {
 	return p, nil
 }
 
-// projectArgs returns the writable columns in schema order, after name.
+// projectArgs returns the column values in the order of the insert statement.
 func projectArgs(p Project) ([]any, error) {
 	var enc [5]string
 
@@ -156,9 +156,8 @@ func (s *Store) UpdateProject(ctx context.Context, p Project) error {
 	return rowsAffectedOrNotFound(res)
 }
 
-// Project returns the project with id, or ErrNotFound.
-func (s *Store) Project(ctx context.Context, id int64) (Project, error) {
-	p, err := scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE id = ?`, id))
+func (s *Store) projectWhere(ctx context.Context, where string, arg any) (Project, error) {
+	p, err := scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE `+where+` = ?`, arg))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -166,14 +165,14 @@ func (s *Store) Project(ctx context.Context, id int64) (Project, error) {
 	return p, err
 }
 
+// Project returns the project with id, or ErrNotFound.
+func (s *Store) Project(ctx context.Context, id int64) (Project, error) {
+	return s.projectWhere(ctx, "id", id)
+}
+
 // ProjectByName returns the project called name, or ErrNotFound.
 func (s *Store) ProjectByName(ctx context.Context, name string) (Project, error) {
-	p, err := scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE name = ?`, name))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Project{}, ErrNotFound
-	}
-
-	return p, err
+	return s.projectWhere(ctx, "name", name)
 }
 
 // Projects returns every project ordered by name.

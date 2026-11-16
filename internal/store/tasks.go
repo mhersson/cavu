@@ -70,7 +70,7 @@ func (s *Store) CreateTask(ctx context.Context, t Task) (Task, error) {
 	return t, nil
 }
 
-// UpdateTask rewrites the task with t.ID, or returns ErrNotFound.
+// UpdateTask rewrites every column but CreatedAt of the task with t.ID, or returns ErrNotFound.
 func (s *Store) UpdateTask(ctx context.Context, t Task) error {
 	overrides, err := json.Marshal(t.Overrides)
 	if err != nil {
@@ -78,10 +78,9 @@ func (s *Store) UpdateTask(ctx context.Context, t Task) error {
 	}
 
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET project_id = ?, title = ?, body = ?,
-		requester = ?, base_commit = ?, reference = ?, replay_id = ?, overrides = ?,
-		created_at = ? WHERE id = ?`,
+		requester = ?, base_commit = ?, reference = ?, replay_id = ?, overrides = ? WHERE id = ?`,
 		t.ProjectID, t.Title, t.Body, t.Requester, t.BaseCommit, t.Reference, t.ReplayID,
-		string(overrides), toMillis(t.CreatedAt), t.ID)
+		string(overrides), t.ID)
 	if err != nil {
 		return fmt.Errorf("update task: %w", err)
 	}

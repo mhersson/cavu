@@ -45,3 +45,24 @@ func TestOpenRun(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 }
+
+func TestUpdateRunKeepsStartedAt(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+	task := seedTask(t, s)
+
+	run, err := s.CreateRun(ctx, Run{TaskID: task.ID, Reason: "initial"})
+	require.NoError(t, err)
+
+	run.StartedAt = time.Time{}
+	run.Outcome = "done"
+	require.NoError(t, s.UpdateRun(ctx, run))
+
+	got, ok, err := s.OpenRun(ctx, task.ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "done", got.Outcome)
+	require.WithinDuration(t, time.Now(), got.StartedAt, time.Minute)
+}

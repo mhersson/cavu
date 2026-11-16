@@ -69,11 +69,11 @@ func (s *Store) CreateRun(ctx context.Context, r Run) (Run, error) {
 	return r, nil
 }
 
-// UpdateRun rewrites the run with r.ID, or returns ErrNotFound.
+// UpdateRun rewrites every column but StartedAt of the run with r.ID, or returns ErrNotFound.
 func (s *Store) UpdateRun(ctx context.Context, r Run) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE runs SET task_id = ?, reason = ?, session_id = ?,
-		outcome = ?, started_at = ?, ended_at = ? WHERE id = ?`,
-		r.TaskID, r.Reason, r.SessionID, r.Outcome, toMillis(r.StartedAt), endedArg(r.EndedAt), r.ID)
+		outcome = ?, ended_at = ? WHERE id = ?`,
+		r.TaskID, r.Reason, r.SessionID, r.Outcome, endedArg(r.EndedAt), r.ID)
 	if err != nil {
 		return fmt.Errorf("update run: %w", err)
 	}

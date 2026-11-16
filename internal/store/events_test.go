@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,9 +153,10 @@ func TestEventsPaging(t *testing.T) {
 	require.Equal(t, task.ID, all[1].TaskID)
 
 	tests := []struct {
-		name         string
-		after, limit int64
-		want         []string
+		name  string
+		after int64
+		limit int
+		want  []string
 	}{
 		{"limit", 0, 2, []string{"a", "b"}},
 		{"after", all[0].ID, 0, []string{"b", "c"}},
@@ -163,7 +166,7 @@ func TestEventsPaging(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := s.Events(ctx, task.ID, tc.after, int(tc.limit))
+			got, err := s.Events(ctx, task.ID, tc.after, tc.limit)
 			require.NoError(t, err)
 
 			var types []string
@@ -196,4 +199,56 @@ func TestUsageTotals(t *testing.T) {
 		{Source: "agent", Model: "b", Input: 7, CostEstimateUSD: 1},
 		{Source: "proxy", Model: "a", Input: 15, Output: 5, CacheRead: 3, CacheWrite: 4, CostEstimateUSD: 0.75},
 	}, got)
+}
+
+func TestAppendRaceAcrossHandles(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cavu.db")
+	ctx := context.Background()
+
+	a, err := Open(ctx, path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = a.Close() })
+
+	b, err := Open(ctx, path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = b.Close() })
+
+	task := seedTask(t, a)
+	base := appendN(t, a, task.ID, 3)
+
+	const writers = 8
+
+	errs := make([]error, writers)
+
+	var wg sync.WaitGroup
+
+	for i := range writers {
+		wg.Go(func() {
+			s := a
+			if i%2 == 1 {
+				s = b
+			}
+
+			_, errs[i] = s.Append(ctx, task.ID, base, []Event{{Type: "race", Actor: "user", Payload: []byte(`{}`)}}, nil)
+		})
+	}
+
+	wg.Wait()
+
+	wins := 0
+
+	for _, err := range errs {
+		if err == nil {
+			wins++
+		} else {
+			require.ErrorIs(t, err, ErrConflict)
+		}
+	}
+
+	require.Equal(t, 1, wins)
+	require.Equal(t, int(base)+1, countRows(t, a, "events"))
 }

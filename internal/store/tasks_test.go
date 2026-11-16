@@ -83,3 +83,20 @@ func TestTasksReplayFilter(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdateTaskKeepsCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+	task := seedTask(t, s)
+
+	task.CreatedAt = time.Time{}
+	task.Title = "changed"
+	require.NoError(t, s.UpdateTask(ctx, task))
+
+	got, err := s.Task(ctx, task.ID)
+	require.NoError(t, err)
+	require.Equal(t, "changed", got.Title)
+	require.WithinDuration(t, time.Now(), got.CreatedAt, time.Minute)
+}
