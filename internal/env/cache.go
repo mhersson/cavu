@@ -73,14 +73,26 @@ func render(m map[string]string) []string {
 	return out
 }
 
-// AgentEnv returns the agent phase's environment. Shared from the read-only
-// project cache: Go's module downloads (through the file proxy in GOPROXY), the
-// mise toolchains (MISE_DATA_DIR and the shims) and the Rust toolchain and
-// crates (RUSTUP_HOME, Cargo's binaries through AgentLinks and its downloads
-// through AgentSeeds). Not shared: the npm, pip and uv caches, which start
-// empty under home, so those packages come from the registries in AgentHosts.
+// AgentEnv returns the agent phase's environment. The mise toolchains come
+// read-only from the project cache through MISE_DATA_DIR and the shims, and
 // mise installs nothing there: its data is read-only and the toolchain hosts
-// are out of reach.
+// are out of reach. What the setup phase fetched reaches it per ecosystem:
+//
+//   - Go: the module downloads, through the file proxy first in GOPROXY.
+//   - Node: the packages the setup command installed in the workspace's
+//     node_modules.
+//   - Python: the packages the setup command installed, read-only in the
+//     cache's interpreter. Every task of the project shares them and they
+//     pile up across prepares, so a requirement the project drops stays
+//     importable. A project that wants its own makes a virtual environment
+//     in the workspace in its setup command, in a directory its .gitignore
+//     covers so no commit takes it.
+//   - Rust: the toolchain through RUSTUP_HOME, Cargo's binaries through
+//     AgentLinks and its downloads through AgentSeeds.
+//
+// Each ecosystem's caches are under home, and a package the agent adds comes
+// from the registries in AgentHosts; pip installs it into the user site,
+// whose scripts come last on PATH.
 func AgentEnv(ecosystems []string, home string) []string {
 	m := common()
 	cacheVars(m, ecosystems, agentRoot(home))
@@ -101,7 +113,8 @@ func AgentEnv(ecosystems []string, home string) []string {
 // AgentLinks are the symbolic links, path to target, that the agent phase
 // needs in home each time it comes up. mise looks for Rust's binaries under
 // CARGO_HOME and hands every command that CARGO_HOME, so the agent's writable
-// Cargo home links its bin to the binaries the setup phase installed.
+// Cargo home links its bin to the binaries the setup phase installed, which
+// are read-only: the agent's cargo install cannot write there.
 func AgentLinks(ecosystems []string, home string) map[string]string {
 	if !slices.Contains(ecosystems, "rust") {
 		return nil
