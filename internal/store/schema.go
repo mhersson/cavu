@@ -87,4 +87,29 @@ CREATE TABLE secrets (
 	sealed BLOB NOT NULL
 );
 `},
+	{Version: 2, SQL: `
+CREATE TABLE replays (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	name       TEXT NOT NULL,
+	config     TEXT NOT NULL,
+	image      TEXT NOT NULL,
+	started_at INTEGER NOT NULL,
+	ended_at   INTEGER
+);
+
+CREATE TABLE replay_items (
+	replay_id         INTEGER NOT NULL REFERENCES replays(id),
+	source_task_id    INTEGER NOT NULL REFERENCES tasks(id),
+	task_id           INTEGER NOT NULL REFERENCES tasks(id),
+	verify            TEXT NOT NULL,
+	stop              TEXT NOT NULL,
+	asked             INTEGER NOT NULL,
+	turns             INTEGER NOT NULL,
+	tokens            INTEGER NOT NULL,
+	cost_estimate_usd REAL NOT NULL,
+	duration_ms       INTEGER NOT NULL,
+	diff_path         TEXT NOT NULL,
+	PRIMARY KEY (replay_id, source_task_id)
+);
+`},
 }
