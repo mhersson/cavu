@@ -597,7 +597,7 @@ func TestCloneFailures(t *testing.T) {
 
 			_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: "https://git.example/repo.git"})
 			require.Error(t, err)
-			assert.NotErrorIs(t, err, ErrOutOfMemory)
+			require.NotErrorIs(t, err, ErrOutOfMemory)
 
 			calls := f.calls(t)
 			idx := runsOf(calls, s.name("clone"))
