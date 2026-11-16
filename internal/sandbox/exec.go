@@ -71,6 +71,10 @@ func (c Container) start(ctx context.Context, cmd proc.Command, merge bool) (*ex
 		return nil, errors.New("a container command takes no feed")
 	}
 
+	if cmd.Stderr != nil {
+		return nil, errors.New("a container command takes no stderr writer")
+	}
+
 	if cmd.Dir != "" && !path.IsAbs(cmd.Dir) {
 		return nil, fmt.Errorf("command dir %q: want an absolute path", cmd.Dir)
 	}

@@ -1,4 +1,4 @@
-.PHONY: help build build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check
+.PHONY: help build build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-conformance
 
 help:
 	@echo "Targets:"
@@ -15,6 +15,9 @@ help:
 	@echo "  scan         fail on em-dashes in Go, Markdown, YAML, TOML, shell and Dockerfile files"
 	@echo "  scan-commits fail on session links, attribution, task or milestone numbers, em-dashes and big blobs in SCAN_BASE..SCAN_HEAD (origin/main..HEAD)"
 	@echo "  size         count the non-test Go lines against the budget"
+	@echo "  image        build the sandbox image cavu-sandbox:<version> on the detected runtime"
+	@echo "  test-integration  run the tests that need a container runtime"
+	@echo "  test-conformance  run the tests that need the image and the real claude binary"
 	@echo "  check        build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan"
 
 build:
@@ -58,5 +61,17 @@ scan-commits:
 
 size:
 	@sh scripts/size.sh
+
+# The image needs a Linux cavu for the runtime's architecture, also on macOS.
+image: build
+	CGO_ENABLED=0 GOOS=linux GOARCH=$$(go env GOARCH) go build -trimpath -ldflags='-s -w' -o bin/cavu-linux ./cmd/cavu
+	bin/cavu image build --cavu-binary bin/cavu-linux
+
+# Above the 20 minutes a cold image build may take.
+test-integration:
+	go test -tags integration -count=1 -timeout 30m ./...
+
+test-conformance:
+	go test -tags conformance -count=1 ./internal/driver/claudecode/
 
 check: build build-darwin fmt-check vet lint test-race tidy-check scan

@@ -24,6 +24,10 @@ type Command struct {
 	Feed  []byte            // served to the child on file descriptor 3; Local only, a Container refuses it
 	// Stdout, when set, receives stdout whole and Lines closes at once.
 	Stdout io.Writer
+	// Stderr, when set, also receives stderr as it arrives; StderrTail is kept
+	// either way. Local only, a Container refuses it. A failing writer loses
+	// the copy, never the tail.
+	Stderr io.Writer
 }
 
 // Process is a started command.

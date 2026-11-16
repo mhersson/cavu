@@ -542,3 +542,30 @@ func TestLocalContextBoundsOnlyTheStart(t *testing.T) {
 	require.NoError(t, p.Stdin().Close())
 	require.NoError(t, waitWithin(t, p, 5*time.Second).err)
 }
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestStderrWriterAndTail(t *testing.T) {
+	for name, w := range map[string]io.Writer{"works": &bytes.Buffer{}, "fails": failingWriter{}} {
+		t.Run(name, func(t *testing.T) {
+			p, err := Local{}.Start(t.Context(), Command{
+				Argv:   []string{"sh", "-c", "echo one >&2; echo two >&2"},
+				Env:    os.Environ(),
+				Stderr: w,
+			})
+			require.NoError(t, err)
+			require.NoError(t, p.Stdin().Close())
+
+			code, err := p.Wait()
+			require.NoError(t, err)
+			assert.Equal(t, 0, code)
+			assert.Equal(t, "one\ntwo\n", p.StderrTail())
+
+			if b, ok := w.(*bytes.Buffer); ok {
+				assert.Equal(t, "one\ntwo\n", b.String())
+			}
+		})
+	}
+}

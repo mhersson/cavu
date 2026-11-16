@@ -1,6 +1,8 @@
-// Package sandbox drives the container runtime client, Docker or Podman: it
-// starts, inspects and removes containers and volumes, runs commands in them,
-// and moves files in and out as streams on an exec, never through a host path.
+// Package sandbox is where a run's containers live: it drives the container
+// runtime client, Docker or Podman, and assembles from it the two-container
+// sandbox, an agent container with no network beside a proxy sidecar, that
+// fails closed. Files move in and out as streams on an exec, never through a
+// host path.
 package sandbox
 
 import (
@@ -100,19 +102,44 @@ func Detect(ctx context.Context, preferred string) (Runtime, error) {
 			return r, nil
 		}
 
+		// The podman-docker shim prints a notice on stderr with every call,
+		// which would land in every captured output.
+		if filepath.Base(bin) != "podman" {
+			if podman, ok := realPodman(ctx); ok {
+				r.Bin = podman
+			}
+		}
+
 		out, err := r.output(ctx, "info", "--format={{.Host.ServiceIsRemote}}")
 		if err == nil {
 			r.Remote, err = strconv.ParseBool(strings.TrimSpace(string(out)))
 		}
 
 		if err != nil {
-			return Runtime{}, fmt.Errorf("podman found at %s but did not answer: %w", bin, err)
+			return Runtime{}, fmt.Errorf("podman found at %s but did not answer: %w", r.Bin, err)
 		}
 
 		return r, nil
 	}
 
 	return Runtime{}, fmt.Errorf("no container runtime: %s not found on PATH", strings.Join(names, " or "))
+}
+
+// realPodman finds a podman on PATH that says it is Podman.
+func realPodman(ctx context.Context) (string, bool) {
+	bin, err := exec.LookPath("podman")
+	if err != nil {
+		return "", false
+	}
+
+	version, err := Runtime{Bin: bin}.output(ctx, "--version")
+	if err != nil {
+		return "", false
+	}
+
+	kind, err := kindOf(bin, version)
+
+	return bin, err == nil && kind == "podman"
 }
 
 // kindOf reads the first line `--version` printed on stdout.
@@ -155,6 +182,7 @@ type ContainerSpec struct {
 	Mounts      []Mount  // named volumes only
 	Tmpfs       []string // absolute paths, mounted with the runtime's default options
 	Network     string   // "none" or "bridge"
+	HostGateway bool     // host.docker.internal resolves to the host; bridge only
 	Hardened    bool     // cap-drop ALL, no-new-privileges, init, pids 2048, uid 1000, memory limit
 	MemoryMB    int
 	Stdin       bool // keep stdin open and attached (sidecar)
@@ -201,6 +229,7 @@ type call struct {
 	feed   []byte
 	stdin  []byte
 	stdout io.Writer
+	stderr io.Writer // also receives stderr as it arrives
 }
 
 // run runs the client to its end; when ctx is done first it stops the client
@@ -216,6 +245,7 @@ func (r Runtime) run(ctx context.Context, c call) error {
 		Env:    os.Environ(),
 		Feed:   c.feed,
 		Stdout: stdout,
+		Stderr: c.stderr,
 	})
 	if err != nil {
 		return err
@@ -370,6 +400,10 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 		return nil, nil, fmt.Errorf("network %q: want none or bridge", s.Network)
 	}
 
+	if s.HostGateway && s.Network != "bridge" {
+		return nil, nil, fmt.Errorf("host gateway on network %q: want bridge", s.Network)
+	}
+
 	if s.MemoryMB < 0 || s.Hardened && s.MemoryMB == 0 {
 		return nil, nil, fmt.Errorf("memory %d MB: a hardened container needs a positive limit", s.MemoryMB)
 	}
@@ -424,6 +458,10 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 
 	args = append(args, labels...)
 
+	if s.HostGateway {
+		args = append(args, "--add-host=host.docker.internal:host-gateway")
+	}
+
 	for _, m := range s.Mounts {
 		if err := checkMount(m); err != nil {
 			return nil, nil, err
@@ -438,8 +476,8 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 	}
 
 	for _, t := range s.Tmpfs {
-		// Options after a colon could drop the runtime's noexec, nosuid and
-		// nodev defaults.
+		// Options after a colon could drop the runtime's nosuid and nodev
+		// defaults, and Docker's noexec.
 		if !path.IsAbs(t) || strings.ContainsAny(t, ":,\n\r") {
 			return nil, nil, fmt.Errorf("tmpfs %q: want an absolute path without options", t)
 		}
@@ -592,6 +630,51 @@ func (r Runtime) VolumeRemove(ctx context.Context, names ...string) error {
 	}
 
 	return nil
+}
+
+// VolumeLabels reads a volume's labels; an absent volume is an error.
+func (r Runtime) VolumeLabels(ctx context.Context, name string) (map[string]string, error) {
+	if err := checkVolume(name); err != nil {
+		return nil, err
+	}
+
+	out, err := r.output(ctx, "volume", "inspect", "--format={{json .Labels}}", name)
+	if err != nil {
+		return nil, fmt.Errorf("inspect volume %s: %w", name, err)
+	}
+
+	var labels map[string]string
+	if err := json.Unmarshal(bytes.TrimSpace(out), &labels); err != nil {
+		return nil, fmt.Errorf("inspect volume %s: %w", name, err)
+	}
+
+	return labels, nil
+}
+
+// MemoryMB is the memory the runtime reports for the machine its containers
+// run on, which on a VM-backed runtime is the VM.
+func (r Runtime) MemoryMB(ctx context.Context) (int, error) {
+	podman, err := r.podman()
+	if err != nil {
+		return 0, err
+	}
+
+	format := "--format={{.MemTotal}}"
+	if podman {
+		format = "--format={{.Host.MemTotal}}"
+	}
+
+	out, err := r.output(ctx, "info", format)
+	if err != nil {
+		return 0, fmt.Errorf("runtime memory: %w", err)
+	}
+
+	total, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil || total < 1<<20 {
+		return 0, errors.New("runtime memory: the runtime reported no size in bytes")
+	}
+
+	return int(total >> 20), nil
 }
 
 // Inspect reports a container's state.
