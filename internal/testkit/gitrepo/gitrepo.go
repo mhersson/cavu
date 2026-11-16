@@ -16,9 +16,21 @@ import (
 	"testing"
 )
 
-// Main isolates git from the machine's configuration for a test binary and
-// runs its tests. Call it from TestMain.
+// Main isolates a test binary's git from the machine's configuration and from
+// any repository a hook or `rebase --exec` names, then runs its tests. Call it
+// from TestMain.
 func Main(m *testing.M) {
+	names, err := inheritedRepoVars()
+	if err != nil {
+		panic(err)
+	}
+
+	for _, name := range names {
+		if err := os.Unsetenv(name); err != nil {
+			panic(err)
+		}
+	}
+
 	dir, err := os.MkdirTemp("", "cavu-git-")
 	if err != nil {
 		panic(err)
@@ -46,6 +58,19 @@ func Main(m *testing.M) {
 // something else. The test cannot run in parallel.
 func Isolate(t *testing.T) {
 	t.Helper()
+
+	names, err := inheritedRepoVars()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range names {
+		t.Setenv(name, "") // restores the inherited value after the test
+
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	env, err := isolation(t.TempDir())
 	if err != nil {
@@ -97,9 +122,33 @@ var repoVars = sync.OnceValues(func() (map[string]bool, error) {
 	return vars, nil
 })
 
-// cleanEnv returns inherited without git's repository-local variables: under a
-// hook or `rebase --exec` they name the operator's repository. It never returns
-// nil, because a nil Cmd.Env passes on the whole inherited environment.
+// repoVar reports whether name is one of git's repository-local variables or a
+// GIT_CONFIG_KEY_<n> or GIT_CONFIG_VALUE_<n>. Under a hook, `rebase --exec` or
+// `bisect run` they name the operator's repository.
+func repoVar(vars map[string]bool, name string) bool {
+	return vars[name] || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
+}
+
+// inheritedRepoVars names the repository variables set in this process.
+func inheritedRepoVars() ([]string, error) {
+	vars, err := repoVars()
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); repoVar(vars, name) {
+			names = append(names, name)
+		}
+	}
+
+	return names, nil
+}
+
+// cleanEnv returns inherited without git's repository variables. It never
+// returns nil, because a nil Cmd.Env passes on the whole inherited environment.
 func cleanEnv(t *testing.T, inherited []string) []string {
 	t.Helper()
 
@@ -111,12 +160,9 @@ func cleanEnv(t *testing.T, inherited []string) []string {
 	env := make([]string, 0, len(inherited))
 
 	for _, kv := range inherited {
-		name, _, _ := strings.Cut(kv, "=")
-		if vars[name] || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
-			continue
+		if name, _, _ := strings.Cut(kv, "="); !repoVar(vars, name) {
+			env = append(env, kv)
 		}
-
-		env = append(env, kv)
 	}
 
 	return env

@@ -11,6 +11,22 @@ import (
 	"github.com/mhersson/cavu/internal/testkit/gitrepo"
 )
 
+// Isolate hides git's repository variables from its test and hands them back
+// after it.
+func TestIsolateHidesRepoVariables(t *testing.T) {
+	gitDir := filepath.Join(t.TempDir(), "elsewhere.git")
+	t.Setenv("GIT_DIR", gitDir)
+
+	t.Run("isolated", func(t *testing.T) {
+		gitrepo.Isolate(t)
+
+		_, set := os.LookupEnv("GIT_DIR")
+		assert.False(t, set)
+	})
+
+	assert.Equal(t, gitDir, os.Getenv("GIT_DIR"))
+}
+
 // Under a git hook or `rebase --exec`, git's repository variables name another
 // repository; New and Commit still act only on their own directory.
 func TestIgnoresInheritedRepoVariables(t *testing.T) {
