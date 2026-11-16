@@ -3,6 +3,7 @@ package claudecode
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"path"
 	"slices"
 	"strconv"
@@ -32,11 +34,20 @@ const testBase = "0123456789abcdef0123456789abcdef01234567"
 // symlink's content is its target.
 type fakeTree map[string]fakeEntry
 
-type fakeEntry struct{ mode, content string }
+// fakeEntry is one path of a fakeTree; listed, when set, is the size the
+// listing gives instead of the content's length.
+type fakeEntry struct{ mode, content, listed string }
 
-func regular(content string) fakeEntry    { return fakeEntry{"100644", content} }
-func executable(content string) fakeEntry { return fakeEntry{"100755", content} }
-func symlink(target string) fakeEntry     { return fakeEntry{"120000", target} }
+func regular(content string) fakeEntry    { return fakeEntry{mode: "100644", content: content} }
+func executable(content string) fakeEntry { return fakeEntry{mode: "100755", content: content} }
+func symlink(target string) fakeEntry     { return fakeEntry{mode: "120000", content: target} }
+
+// listedAs is e with the listing giving it size.
+func listedAs(e fakeEntry, size string) fakeEntry {
+	e.listed = size
+
+	return e
+}
 
 // submodule is a gitlink: no blob, so the listing gives it no size.
 var submodule = fakeEntry{mode: "160000"}
@@ -61,7 +72,7 @@ func (tr fakeTree) listing() []byte {
 	for _, p := range slices.Sorted(maps.Keys(tr)) {
 		e := tr[p]
 
-		typ, size := "blob", strconv.Itoa(len(e.content))
+		typ, size := "blob", cmp.Or(e.listed, strconv.Itoa(len(e.content)))
 		if e.mode == submodule.mode {
 			typ, size = "commit", "-"
 		}
@@ -570,6 +581,79 @@ func TestStageBoundCountsLinks(t *testing.T) {
 	}
 
 	assert.Contains(t, slices.Collect(maps.Keys(tree)), requireBound(t, boundRun(t, tree, 32<<10)))
+}
+
+// A file the staging takes is refused before any blob is read when the
+// listing gives it no size, or one the bound cannot hold however large.
+func TestStageRefusesListedSizes(t *testing.T) {
+	const skill = ".claude/skills/one/SKILL.md"
+
+	for _, tc := range []struct {
+		name, at, listed string
+		entry            fakeEntry
+		bound            bool // a boundError, else a sizeError
+	}{
+		{"a skill near MaxInt", skill, strconv.Itoa(math.MaxInt - 1000), regular("x"), true},
+		{"a skill just over the bound", skill, strconv.Itoa(stageLimit + 1), regular("x"), true},
+		{"a skill sized -1", skill, "-1", regular("x"), false},
+		{"a skill sized -", skill, "-", regular("x"), false},
+		{"a skill sized BAD", skill, "BAD", regular("x"), false},
+		{"a skill sized past MaxInt", skill, "99999999999999999999", regular("x"), false},
+		{"a memory file sized -1", "CLAUDE.md", "-1", regular("x"), false},
+		{"a rule sized -", ".claude/rules/r.md", "-", regular("x"), false},
+		{"a memory link sized -1", "CLAUDE.md", "-1", symlink("AGENTS.md"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := boundRun(t, fakeTree{"AGENTS.md": regular("agents\n"), tc.at: listedAs(tc.entry, tc.listed)}, stageLimit)
+
+			_, err := f.run(t.Context())
+
+			if tc.bound {
+				var be *boundError
+				require.ErrorAs(t, err, &be)
+				assert.Equal(t, tc.at, be.path)
+			} else {
+				var se *sizeError
+				require.ErrorAs(t, err, &se)
+				assert.Equal(t, tc.at, se.path)
+			}
+
+			requireNoRead(t, f)
+		})
+	}
+}
+
+// Sizes whose sum would wrap the count are refused before it would pass
+// the limit, even under a limit near MaxInt.
+func TestStageBoundNeverWraps(t *testing.T) {
+	tree := fakeTree{}
+	for i := range 16 {
+		tree[fmt.Sprintf(".claude/skills/s%02d/SKILL.md", i)] = listedAs(regular("x"), strconv.Itoa(math.MaxInt/8))
+	}
+
+	assert.Contains(t, slices.Collect(maps.Keys(tree)), requireBound(t, boundRun(t, tree, math.MaxInt-10)))
+}
+
+// A blob that turns out longer than its listed size fails the read, whether
+// it overruns the read's buffer or only its own size, and nothing is written.
+func TestStageRefusesBlobsLongerThanListed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"past the buffer", strings.Repeat("s", 10<<10)},
+		{"within the buffer", strings.Repeat("s", 100)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := boundRun(t, fakeTree{".claude/skills/one/SKILL.md": listedAs(regular(tc.content), "10")}, stageLimit)
+
+			_, err := f.run(t.Context())
+			require.Error(t, err)
+			assert.Len(t, f.target.rec.ofKind(kindBatch), 1)
+			assert.Empty(t, f.target.rec.ofKind(kindWrite), "a write ran")
+			requireNoSession(t, f)
+		})
+	}
 }
 
 // Links that share a target blob are read once.

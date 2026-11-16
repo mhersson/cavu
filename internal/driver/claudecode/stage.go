@@ -52,6 +52,8 @@ const (
 	// entryCost is what the budget counts for each archive entry and each link
 	// read beyond its name and content: a tar header and its padding.
 	entryCost = 1 << 10
+	// batchHeader is more than cat-file --batch writes around one object.
+	batchHeader = 200
 	// linkLimit is the longest symlink target read.
 	linkLimit = 4096
 
@@ -124,7 +126,9 @@ func stageEnv(s driver.Spec) []string {
 
 type treeEntry struct {
 	mode, oid, path string
-	size            int // -1 for an entry that is no blob
+	// size is -1 for an entry that is no blob and for one the listing gives
+	// no non-negative size, which the staging refuses to take.
+	size int
 }
 
 func (e treeEntry) regular() bool    { return e.mode == "100644" || e.mode == "100755" }
@@ -325,7 +329,7 @@ func parseListing(listing []byte) (map[string]treeEntry, error) {
 		}
 
 		size, err := strconv.Atoi(fields[3])
-		if err != nil {
+		if err != nil || size < 0 {
 			size = -1
 		}
 
@@ -363,8 +367,17 @@ func (c claudeCode) boundedFiles(ctx context.Context, t proc.Target, s driver.Sp
 	read := map[string]bool{}
 
 	for _, p := range candidates {
-		if e := tree[p]; e.symlink() && e.size >= 0 && e.size <= linkLimit && !read[e.oid] {
-			if err := budget.spend(p, entryCost+e.size); err != nil {
+		e := tree[p]
+		if !e.symlink() {
+			continue
+		}
+
+		if e.size < 0 {
+			return nil, nil, &sizeError{path: p}
+		}
+
+		if e.size <= linkLimit && !read[e.oid] {
+			if err := budget.spend(p, entryCost, e.size); err != nil {
 				return nil, nil, err
 			}
 
@@ -386,6 +399,10 @@ func (c claudeCode) boundedFiles(ctx context.Context, t proc.Target, s driver.Sp
 
 		if !e.regular() {
 			continue
+		}
+
+		if e.size < 0 {
+			return nil, nil, &sizeError{path: p}
 		}
 
 		if strings.HasPrefix(p, repoRules) {
@@ -449,6 +466,10 @@ func skillEntries(tree map[string]treeEntry) ([]treeEntry, error) {
 			return nil, fmt.Errorf("tree entry %q is not a clean path", p)
 		}
 
+		if e.size < 0 {
+			return nil, &sizeError{path: p}
+		}
+
 		out = append(out, e)
 	}
 
@@ -463,6 +484,14 @@ func cleanRepoPath(p string) bool {
 	}
 
 	return true
+}
+
+// sizeError is a file the staging takes whose size the listing does not give
+// as a non-negative number, so the bound cannot count it.
+type sizeError struct{ path string }
+
+func (e *sizeError) Error() string {
+	return fmt.Sprintf("the listing gives %s no size", e.path)
 }
 
 // boundError is a staging that would hold more than its bound; path is the
@@ -486,10 +515,15 @@ type stageBudget struct {
 	dirs         map[string]bool // directories already counted
 }
 
-// spend counts n bytes for the repository file p.
-func (b *stageBudget) spend(p string, n int) error {
-	if b.total += n; b.total > b.limit {
-		return &boundError{path: p, bound: b.limit}
+// spend counts each of parts for the repository file p. It refuses a part
+// before adding it would pass the limit, so the total never wraps.
+func (b *stageBudget) spend(p string, parts ...int) error {
+	for _, n := range parts {
+		if n < 0 || n > b.limit-b.total {
+			return &boundError{path: p, bound: b.limit}
+		}
+
+		b.total += n
 	}
 
 	return nil
@@ -512,7 +546,7 @@ func (b *stageBudget) archive(memory, rules []boundedFile, skills []treeEntry, n
 			blame = nested[0]
 		}
 
-		if err := b.spend(blame, entryCost+len(stagedMemory)+len(skeleton)); err != nil {
+		if err := b.spend(blame, entryCost, len(stagedMemory), len(skeleton)); err != nil {
 			return err
 		}
 	}
@@ -550,12 +584,12 @@ func (b *stageBudget) file(p, name string, size int) error {
 	for d := path.Dir(name); d != "." && !b.dirs[d]; d = path.Dir(d) {
 		b.dirs[d] = true
 
-		if err := b.spend(p, entryCost+len(d)); err != nil {
+		if err := b.spend(p, entryCost, len(d)); err != nil {
 			return err
 		}
 	}
 
-	return b.spend(p, entryCost+len(name)+size)
+	return b.spend(p, entryCost, len(name), size)
 }
 
 // cutSize is what a memory or rule file of size bytes holds once staged.
@@ -642,13 +676,15 @@ func (c claudeCode) readBlobs(ctx context.Context, t proc.Target, s driver.Spec,
 		total int
 	)
 
+	// The budget counted every size here; the buffer never takes more than the
+	// bound whatever they say, and fails if git streams more than they claim.
 	for _, e := range entries {
 		oids.WriteString(e.oid + "\n")
 
-		total += e.size
+		total += min(e.size, c.stageLimit-total)
 	}
 
-	out := &cappedBuffer{limit: total + len(entries)*200}
+	out := &cappedBuffer{limit: total + len(entries)*batchHeader}
 	if err := c.runCommand(ctx, t, s, gitArgv(s.Dir, "cat-file", "--batch"), oids.Bytes(), out); err != nil {
 		return nil, fmt.Errorf("read the instruction files of %s: %w", s.BaseCommit, err)
 	}
@@ -664,7 +700,11 @@ func (c claudeCode) readBlobs(ctx context.Context, t proc.Target, s driver.Spec,
 		}
 
 		size, err := strconv.Atoi(fields[2])
-		if err != nil || size > len(body)-1 || body[size] != '\n' {
+		if err != nil || size != e.size {
+			return nil, fmt.Errorf("object %s for %s is %q bytes, not the %d the listing gives", e.oid, e.path, fields[2], e.size)
+		}
+
+		if size > len(body)-1 || body[size] != '\n' {
 			return nil, fmt.Errorf("object %s for %s is cut short", e.oid, e.path)
 		}
 
