@@ -59,9 +59,9 @@ type Runner interface {
 	// Work returns how the session ended as a result, endpoint failures and
 	// usage limits included; an error means the sandbox itself failed. A
 	// resumed session that does not exist is started under its id with the
-	// task's opening prompt, whatever the mode: the process died, or ctx
-	// ended, between the claim and the start. progress is never called after
-	// Work returns.
+	// task's opening prompt, whatever the mode: the process died, ctx ended or
+	// the sandbox failed between the claim and the start. progress is never
+	// called after Work returns.
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
 	// Export exports commit, the work a session froze, never the working tree.
