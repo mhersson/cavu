@@ -184,6 +184,10 @@ func TestSpecRefused(t *testing.T) {
 		{"effort case", func(s *driver.Spec) { s.Effort = "High" }},
 		{"unknown auth mode", func(s *driver.Spec) { s.Auth.Mode = "oauth" }},
 		{"subscription without token", func(s *driver.Spec) { s.Auth.Token = "" }},
+		{"subscription token too short to mask", func(s *driver.Spec) { s.Auth.Token = "åbcdefg" }},
+		{"key mode token too short to mask", func(s *driver.Spec) {
+			s.Auth = driver.Auth{Mode: modeKey, Token: "abcdefg", BaseURL: testBridgeURL}
+		}},
 		{"key mode without token", func(s *driver.Spec) { s.Auth = driver.Auth{Mode: modeKey, BaseURL: testBridgeURL} }},
 		{"key mode without base url", func(s *driver.Spec) { s.Auth = driver.Auth{Mode: modeKey, Token: testStandIn} }},
 		{"schema not json", func(s *driver.Spec) { s.OutputSchema = json.RawMessage(`{"type":`) }},

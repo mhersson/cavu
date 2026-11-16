@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/proc"
@@ -31,6 +32,10 @@ const basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 // settings turns attribution off: empty texts drop the Co-Authored-By trailer
 // and the PR footer, and sessionUrl false drops the session link line.
 const settings = `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`
+
+// minTokenLen is the shortest secret internal/redact masks; a shorter token
+// would reach the record unmasked.
+const minTokenLen = 8
 
 var effortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 
@@ -62,8 +67,8 @@ func validate(s driver.Spec) error {
 	switch {
 	case s.Auth.Mode != modeSubscription && s.Auth.Mode != modeKey:
 		return fmt.Errorf("claudecode: auth mode %q is not %s or %s", s.Auth.Mode, modeSubscription, modeKey)
-	case s.Auth.Token == "":
-		return fmt.Errorf("claudecode: %s mode without a token", s.Auth.Mode)
+	case utf8.RuneCountInString(s.Auth.Token) < minTokenLen:
+		return fmt.Errorf("claudecode: %s mode needs a token of at least %d characters", s.Auth.Mode, minTokenLen)
 	case s.Auth.Mode == modeKey && s.Auth.BaseURL == "":
 		return errors.New("claudecode: key mode without a base URL")
 	case s.Model == "":
