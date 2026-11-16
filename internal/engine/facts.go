@@ -41,6 +41,7 @@ type SessionFact struct {
 	Outcome                string
 	Changed                bool
 	Title, Summary, Detail string
+	HeadCommit             string // the commit the session froze, which an export takes
 	Questions              []string
 	ResetsAt               time.Time
 }
@@ -114,7 +115,7 @@ func (f *Facts) apply(e store.Event) {
 			f.Pending, f.Verify = "", ""
 			f.Session = &SessionFact{
 				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary,
-				Detail: p.Detail, Questions: p.Questions, ResetsAt: p.ResetsAt,
+				Detail: p.Detail, HeadCommit: p.HeadCommit, Questions: p.Questions, ResetsAt: p.ResetsAt,
 			}
 		}
 	case VerifyStarted:

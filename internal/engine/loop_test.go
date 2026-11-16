@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -69,6 +71,7 @@ type call struct {
 	work   engine.WorkRequest
 	remove bool
 	title  string
+	commit string // the commit an export was given
 	ref    engine.RunRef
 	eco    []string // the config's ecosystems
 }
@@ -104,11 +107,13 @@ type fakeRunner struct {
 var (
 	preparedOK = engine.PrepareResult{BaseCommit: "base123", Tools: []string{"go"}, Baseline: "passed"}
 	workDone   = engine.WorkResult{
-		Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", Turns: 3,
+		Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", Turns: 3, HeadCommit: "head456",
 		Usage: []store.Usage{{Source: "agent", Model: "model-a", Input: 10, Output: 5}},
 	}
 	verifyOK = engine.VerifyResult{Result: engine.ResultPassed, Command: "make test", Output: "ok"}
-	exportOK = engine.ExportResult{HeadCommit: "head456", DiffPath: "diff.patch", BundlePath: "task.bundle", FilesChanged: 1}
+	exportOK = engine.ExportResult{
+		HeadCommit: "head456", Diff: []byte("diff --git a/x b/x\n"), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 1,
+	}
 )
 
 func (r *fakeRunner) begin(c call) {
@@ -156,8 +161,8 @@ func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.Ver
 	return pop(&r.verifies, verifyOK)
 }
 
-func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, title string) (engine.ExportResult, error) {
-	r.begin(call{method: "export", runID: c.RunID, title: title, eco: c.Ecosystems})
+func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, title, commit string) (engine.ExportResult, error) {
+	r.begin(call{method: "export", runID: c.RunID, title: title, commit: commit, eco: c.Ecosystems})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -774,6 +779,128 @@ func TestLoopCarriesEcosystems(t *testing.T) {
 				assert.Equal(t, []string{"rust"}, c.eco, c.String())
 			}
 		}
+	})
+}
+
+// The export takes the commit the newest ended session froze, also after a restart.
+func TestLoopExportsFrozenCommit(t *testing.T) {
+	t.Run("the newest session's", func(t *testing.T) {
+		h := newHarness(t)
+
+		first, fix := workDone, workDone
+		first.HeadCommit, fix.HeadCommit = "frozen1", "frozen2"
+		h.runner.works = []step[engine.WorkResult]{{res: first}, {res: fix}}
+		h.runner.verifies = []step[engine.VerifyResult]{{res: engine.VerifyResult{Result: engine.ResultFailed, Command: "make test"}}}
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, []string{"prepare", "work/start", "verify", "work/fix_verify", "verify", "export", "release/remove"},
+			h.runner.trace())
+
+		ended := h.eventsOf(engine.SessionEnded)
+		require.Len(t, ended, 2)
+		assert.Equal(t, "frozen1", payloadOf[engine.SessionEndedPayload](t, ended[0]).HeadCommit)
+		assert.Equal(t, "frozen2", payloadOf[engine.SessionEndedPayload](t, ended[1]).HeadCommit)
+		assert.Equal(t, "frozen2", h.runner.callsOf("export")[0].commit)
+	})
+
+	t.Run("after a restart", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(
+			ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`),
+			ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
+			ev(engine.SessionEnded, `{"outcome":"done","changed":true,"head_commit":"frozen3"}`),
+			ev(engine.VerifyStarted, ""), ev(engine.VerifyEnded, `{"result":"passed"}`),
+		)
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, []string{"export", "release/remove"}, h.runner.trace())
+		assert.Equal(t, "frozen3", h.runner.callsOf("export")[0].commit)
+	})
+}
+
+func artifactDir(h *harness, runID int64) string {
+	return filepath.Join(h.loop.DataDir, "artifacts", strconv.FormatInt(h.task.ID, 10), strconv.FormatInt(runID, 10))
+}
+
+// assertArtifacts checks that dir holds exactly the export's two files, private, with want's content.
+func assertArtifacts(t *testing.T, dir string, want engine.ExportResult) {
+	t.Helper()
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	got := map[string][]byte{}
+
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		require.NoError(t, err)
+
+		got[e.Name()] = data
+
+		info, err := e.Info()
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), e.Name())
+	}
+
+	assert.Equal(t, map[string][]byte{"diff.patch": want.Diff, "task.bundle": want.Bundle}, got)
+}
+
+// The loop writes the export's diff and bundle under the data directory and
+// records their paths; a write that fails leaves the export to be redone.
+func TestLoopWritesArtifacts(t *testing.T) {
+	t.Run("written and recorded", func(t *testing.T) {
+		h := newHarness(t)
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+
+		exported := h.eventsOf(engine.Exported)
+		require.Len(t, exported, 1)
+
+		dir := artifactDir(h, exported[0].RunID)
+		assert.Equal(t, engine.ExportedPayload{
+			HeadCommit: "head456", DiffPath: filepath.Join(dir, "diff.patch"), BundlePath: filepath.Join(dir, "task.bundle"),
+			FilesChanged: 1,
+		}, payloadOf[engine.ExportedPayload](t, exported[0]))
+		assertArtifacts(t, dir, exportOK)
+	})
+
+	t.Run("a failed write is redone and replaces the files", func(t *testing.T) {
+		h := newHarness(t)
+
+		long := exportOK
+		long.Diff = bytes.Repeat([]byte("x"), 4096)
+		h.runner.exports = []step[engine.ExportResult]{{res: long}}
+
+		// A directory where the bundle goes fails its rename.
+		var blocker string
+
+		h.runner.onCall = func(c call) {
+			if c.method == "export" && blocker == "" {
+				blocker = filepath.Join(artifactDir(h, c.runID), "task.bundle")
+				require.NoError(t, os.MkdirAll(blocker, 0o700))
+			}
+		}
+
+		_, err := h.run(t.Context())
+		require.Error(t, err)
+		assert.Empty(t, h.eventsOf(engine.Exported))
+		assert.Empty(t, h.eventsOf(engine.Stopped))
+
+		require.NoError(t, os.Remove(blocker))
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+
+		assert.Equal(t, []string{"prepare", "work/start", "verify", "export", "export", "release/remove"}, h.runner.trace())
+		assertArtifacts(t, artifactDir(h, h.runner.callsOf("export")[1].runID), exportOK)
 	})
 }
 

@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -483,7 +486,7 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 	if err := p.result(ctx, o, usage, draft{SessionEnded, actorRunner, SessionEndedPayload{
 		Outcome: res.Outcome, Title: res.Title, Summary: res.Summary, Assumptions: res.Assumptions,
 		Questions: res.Questions, Changed: res.Changed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD,
-		ResetsAt: res.ResetsAt, Detail: res.Detail,
+		ResetsAt: res.ResetsAt, Detail: res.Detail, HeadCommit: res.HeadCommit,
 	}}); err != nil {
 		return err
 	}
@@ -613,8 +616,11 @@ func (p *pass) verify(ctx context.Context, v view, a Action, o openRun) error {
 }
 
 func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
+	// Decide exports only after an ended session, so Session is set.
+	s := v.Facts.Session
+
 	title := v.Task.Title
-	if s := v.Facts.Session; s != nil && s.Title != "" {
+	if s.Title != "" {
 		title = s.Title
 	}
 
@@ -622,7 +628,7 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 		return err
 	}
 
-	res, err := p.Runner.Export(ctx, o.cfg, title)
+	res, err := p.Runner.Export(ctx, o.cfg, title, s.HeadCommit)
 	if err != nil {
 		return p.fault(ctx, o, err)
 	}
@@ -634,9 +640,54 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 		})
 	}
 
+	// A failed write is not a stop: the claim stays pending and the next RunTask exports again.
+	dir := filepath.Join(p.DataDir, "artifacts", strconv.FormatInt(p.taskID, 10), strconv.FormatInt(o.row.ID, 10))
+
+	diff, err := writeArtifact(dir, "diff.patch", res.Diff)
+	if err != nil {
+		return fmt.Errorf("task %d: export: %w", p.taskID, err)
+	}
+
+	bundle, err := writeArtifact(dir, "task.bundle", res.Bundle)
+	if err != nil {
+		return fmt.Errorf("task %d: export: %w", p.taskID, err)
+	}
+
 	return p.result(ctx, o, nil, draft{Exported, actorRunner, ExportedPayload{
-		HeadCommit: res.HeadCommit, DiffPath: res.DiffPath, BundlePath: res.BundlePath, FilesChanged: res.FilesChanged,
+		HeadCommit: res.HeadCommit, DiffPath: diff, BundlePath: bundle, FilesChanged: res.FilesChanged,
 	}})
+}
+
+// writeArtifact writes data to dir/name through a temporary file and a rename,
+// so a repeated export replaces the file whole. It returns the file's path.
+func writeArtifact(dir, name string, data []byte) (string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+
+	f, err := os.CreateTemp(dir, "."+name+"-*")
+	if err != nil {
+		return "", err
+	}
+
+	path := filepath.Join(dir, name)
+
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+
+	if err != nil {
+		_ = os.Remove(f.Name())
+
+		return "", err
+	}
+
+	return path, nil
 }
 
 // fault records a runner error as a sandbox stop. While ctx is done the error

@@ -71,7 +71,6 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 	c.Agent.WebTools = sw.WebTools
 	c.Identity.Name, c.Identity.Email = set.required("commit_name"), set.required("commit_email")
 	c.Task.Title, c.Task.Body = t.Title, t.Body
-	c.ArtifactDir = filepath.Join(l.DataDir, "artifacts", strconv.FormatInt(t.ID, 10), strconv.FormatInt(r.ID, 10))
 
 	if path := values["ca_bundle_path"]; path != "" {
 		if c.CABundle, err = os.ReadFile(filepath.Clean(path)); err != nil {

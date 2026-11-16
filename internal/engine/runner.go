@@ -33,10 +33,9 @@ type RunConfig struct {
 		Timeout       time.Duration
 		WebTools      bool
 	}
-	Identity    struct{ Name, Email string }
-	CABundle    []byte
-	Task        struct{ Title, Body string }
-	ArtifactDir string
+	Identity struct{ Name, Email string }
+	CABundle []byte
+	Task     struct{ Title, Body string }
 	// Ecosystems are what the run's prepare detected, for Work, Verify and
 	// Export; never a setting, and empty for Prepare.
 	Ecosystems []string
@@ -65,8 +64,9 @@ type Runner interface {
 	// Work returns.
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
-	// Export is safe to repeat for the same run.
-	Export(ctx context.Context, c RunConfig, title string) (ExportResult, error)
+	// Export exports commit, the work a session froze, never the working tree.
+	// It is safe to repeat for the same run.
+	Export(ctx context.Context, c RunConfig, title, commit string) (ExportResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
 	Release(ctx context.Context, ref RunRef, removeVolumes bool) error
 }
@@ -103,6 +103,7 @@ type WorkResult struct {
 	Detail                 string // the upstream status or error text for endpoint, usage_limit and crashed
 	Assumptions, Questions []string
 	Changed                bool
+	HeadCommit             string // the commit the session's work was frozen into
 	Turns                  int
 	CostEstimateUSD        float64
 	ResetsAt               time.Time
@@ -116,9 +117,11 @@ type VerifyResult struct {
 	Duration                time.Duration
 }
 
-// ExportResult is the exported change.
+// ExportResult is the exported change. The artifacts come back as data,
+// because a runner on another machine cannot write the server's files.
 type ExportResult struct {
-	HeadCommit, DiffPath, BundlePath string
-	FilesChanged                     int
-	Problem                          string // non-empty: stop as agent_error with this text
+	HeadCommit   string
+	Diff, Bundle []byte
+	FilesChanged int
+	Problem      string // non-empty: stop as agent_error with this text
 }

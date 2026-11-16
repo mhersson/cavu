@@ -28,7 +28,7 @@ func preparedRun(more ...store.Event) []store.Event {
 
 var (
 	firstSession = ev(engine.SessionStarted, `{"mode":"start","session_id":"s1"}`)
-	doneChanged  = ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","summary":"Fixed it."}`)
+	doneChanged  = ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","summary":"Fixed it.","head_commit":"def456"}`)
 	unfinished   = ev(engine.SessionEnded, `{"outcome":"unfinished"}`)
 	autoContinue = ev(engine.SessionStarted, `{"mode":"continue","session_id":"s1","resume":true,"automatic":true}`)
 	autoFix      = ev(engine.SessionStarted, `{"mode":"fix_verify","session_id":"s1","resume":true,"automatic":true}`)
@@ -37,7 +37,7 @@ var (
 	verifyFailed = ev(engine.VerifyEnded, `{"result":"failed","command":"make test","exit_code":2,"output":"FAIL TestLogin","duration_ms":900}`)
 	verifyPassed = ev(engine.VerifyEnded, `{"result":"passed","command":"make test","exit_code":0}`)
 	retried      = ev(engine.HumanRetried, "")
-	doneFact     = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it."}
+	doneFact     = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", HeadCommit: "def456"}
 )
 
 // verifyStop ends with a verify_failed stop after one automatic continuation and one automatic fix.

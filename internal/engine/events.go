@@ -122,6 +122,7 @@ type (
 		Assumptions     []string  `json:"assumptions"`
 		Questions       []string  `json:"questions"`
 		Changed         bool      `json:"changed"`
+		HeadCommit      string    `json:"head_commit,omitempty"`
 		Turns           int       `json:"turns"`
 		CostEstimateUSD float64   `json:"cost_estimate_usd"`
 		ResetsAt        time.Time `json:"resets_at,omitzero"`
