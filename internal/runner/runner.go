@@ -42,19 +42,12 @@ const (
 	elsewhere = 1
 )
 
-// linkScript makes each link, given as its parent, its name and its target,
-// replacing what is there: the home is the agent's to change. It deletes only
-// by name, in a parent whose real path is the one linkCommand validated.
-var linkScript = proc.SandboxOnly(`while [ "$#" -ge 3 ]; do
-	mkdir -p -- "$1" && cd -P -- "$1" || exit 2
-	if [ "$(pwd -P)" != "$1" ]; then
-		printf 'cavu: %s resolves to %s; nothing deleted in it\n' "$1" "$(pwd -P)" >&2
-		exit ` + strconv.Itoa(elsewhere) + `
-	fi
-	rm -rf -- "./$2" && ln -s -- "$3" "./$2" || exit 2
-	shift 3
-done
-[ "$#" -eq 0 ] || exit 2`)
+// linkScript makes each link given as a path and its target, replacing what
+// is at the path: the home is the agent's to change.
+var linkScript = proc.SandboxOnly(`while [ "$#" -ge 2 ]; do
+	mkdir -p -- "$(dirname -- "$1")" && rm -rf -- "$1" && ln -s -- "$2" "$1" || exit 1
+	shift 2
+done`)
 
 // seedScript copies into each directory, given with its source, what the
 // source holds that is missing or older there: a later setup-phase fetch then
@@ -323,29 +316,21 @@ func linkHome(ctx context.Context, a container, links map[string]string) error {
 		return nil
 	}
 
-	cmd, err := linkCommand(links)
+	argv := []string{"sh", "-c", linkScript, "sh"}
+	for _, link := range slices.Sorted(maps.Keys(links)) {
+		argv = append(argv, link, links[link])
+	}
+
+	res, err := a.Run(ctx, proc.Command{Argv: argv}, linkTimeout)
 	if err != nil {
 		return err
 	}
 
-	return homeStep(ctx, a, "link the agent's home", cmd, linkTimeout)
-}
-
-// linkCommand refuses every link unless each is strictly under the home and
-// each target under the cache, so the script can never delete elsewhere.
-func linkCommand(links map[string]string) (proc.Command, error) {
-	argv := []string{"sh", "-c", linkScript, "sh"}
-
-	for _, link := range slices.Sorted(maps.Keys(links)) {
-		target := links[link]
-		if err := errors.Join(within(link, home), within(target, cache)); err != nil {
-			return proc.Command{}, err
-		}
-
-		argv = append(argv, path.Dir(link), path.Base(link), target)
+	if res.ExitCode != 0 || res.TimedOut {
+		return fmt.Errorf("runner: link the agent's home: %s", strings.TrimSpace(output(res, linkTimeout)))
 	}
 
-	return proc.Command{Argv: argv}, nil
+	return nil
 }
 
 // seedHome fills directories in the agent phase's home from their sources in

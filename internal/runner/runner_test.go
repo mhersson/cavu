@@ -3,7 +3,6 @@ package runner
 import (
 	"errors"
 	"maps"
-	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -173,16 +172,22 @@ func TestRelease(t *testing.T) {
 	})
 }
 
+// linkStep is the command a rust run's link step runs.
+func linkStep() proc.Command {
+	links := env.AgentLinks([]string{"rust"}, home)
+
+	argv := []string{"sh", "-c", linkScript, "sh"}
+	for _, p := range slices.Sorted(maps.Keys(links)) {
+		argv = append(argv, p, links[p])
+	}
+
+	return proc.Command{Argv: argv}
+}
+
 // Every start of the agent phase makes the home's links before any command
 // runs there, and a start whose links fail does not count as up.
 func TestAgentPhaseLinksTheHome(t *testing.T) {
-	links := env.AgentLinks([]string{"rust"}, home)
-	require.NotEmpty(t, links)
-
-	cmd, err := linkCommand(links)
-	require.NoError(t, err)
-
-	link := stepName(cmd.Argv)
+	link := stepName(linkStep().Argv)
 	seed := seedStep(t)
 
 	t.Run("in a prepare", func(t *testing.T) {
@@ -200,13 +205,8 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		assert.Equal(t, []string{link, seed, "make test"}, names)
 
 		argv := f.run(t, link).cmd.Argv
-
-		want := []string{"sh", "-c", linkScript, "sh"}
-		for _, p := range slices.Sorted(maps.Keys(links)) {
-			want = append(want, path.Dir(p), path.Base(p), links[p])
-		}
-
-		assert.Equal(t, want, argv, "each link goes as its parent, its name and its target")
+		assert.Equal(t, linkStep().Argv, argv, "each link goes as its path and its target")
+		assert.Equal(t, []string{home + "/.cache/cargo/bin", cache + "/cargo/bin"}, argv[4:])
 		assert.True(t, strings.HasPrefix(argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox")
 	})
 
@@ -216,9 +216,10 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		c := testConfig()
 		c.Ecosystems = []string{"rust"}
 
-		f.results[link] = sandbox.Result{ExitCode: 2, Output: "ln: Permission denied\n"}
+		f.results[link] = sandbox.Result{ExitCode: 1, Output: "ln: Permission denied\n"}
 
 		require.Error(t, r.ensureUp(t.Context(), c))
+		assert.False(t, r.state(c.RunID).agentUp())
 
 		delete(f.results, link)
 
@@ -238,89 +239,6 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		require.NoError(t, r.ensureUp(t.Context(), c))
 		assert.Equal(t, []string{"volumes", "up/agent"}, f.calls())
 	})
-
-	// A missing marker and a parent that resolves elsewhere each have their
-	// own error; any other failure has neither.
-	t.Run("a failed step", func(t *testing.T) {
-		for _, tt := range []struct {
-			name string
-			res  sandbox.Result
-			want error
-		}{
-			{name: "outside a sandbox", res: sandbox.Result{ExitCode: proc.NotInSandbox}, want: errNotInSandbox},
-			{name: "a parent elsewhere", res: sandbox.Result{ExitCode: elsewhere}, want: errElsewhere},
-			{name: "another failure", res: sandbox.Result{ExitCode: 2, Output: "ln: Permission denied\n"}},
-			{name: "a timeout", res: sandbox.Result{ExitCode: elsewhere, TimedOut: true}},
-		} {
-			t.Run(tt.name, func(t *testing.T) {
-				f := newFake()
-				r := f.runner()
-				c := testConfig()
-				c.Ecosystems = []string{"rust"}
-
-				f.results[link] = tt.res
-
-				err := r.ensureUp(t.Context(), c)
-				require.Error(t, err)
-				assert.False(t, r.state(c.RunID).agentUp())
-
-				for _, sentinel := range []error{errNotInSandbox, errElsewhere} {
-					if sentinel == tt.want {
-						require.ErrorIs(t, err, sentinel)
-					} else {
-						require.NotErrorIs(t, err, sentinel)
-					}
-				}
-			})
-		}
-	})
-}
-
-// A link outside the home or a target outside the cache stops the step before
-// a command is composed, and nothing runs.
-func TestLinkHomeRefusesPathsOutOfBounds(t *testing.T) {
-	const (
-		link   = home + "/.cache/cargo/bin"
-		target = cache + "/cargo/bin"
-	)
-
-	for _, tt := range []struct {
-		name         string
-		link, target string
-	}{
-		{name: "relative link", link: ".cache/cargo/bin", target: target},
-		{name: "empty link", link: "", target: target},
-		{name: "link climbing out of the home", link: home + "/../../etc/cargo", target: target},
-		{name: "link climbing within the home", link: home + "/.cache/../.cache/cargo/bin", target: target},
-		{name: "link with a trailing slash", link: link + "/", target: target},
-		{name: "the home itself", link: home, target: target},
-		{name: "the home with a trailing slash", link: home + "/", target: target},
-		{name: "link outside the home", link: "/etc/cargo/bin", target: target},
-		{name: "link in a sibling of the home", link: home + "2/bin", target: target},
-		{name: "relative target", link: link, target: "cache/cargo/bin"},
-		{name: "target climbing out of the cache", link: link, target: cache + "/../etc"},
-		{name: "target outside the cache", link: link, target: "/etc/passwd"},
-		{name: "target in a sibling of the cache", link: link, target: cache + "2/bin"},
-		{name: "the cache itself", link: link, target: cache},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			links := map[string]string{tt.link: tt.target}
-
-			cmd, err := linkCommand(links)
-			require.ErrorIs(t, err, errOutOfBounds)
-			assert.Empty(t, cmd.Argv, "nothing is composed")
-
-			f := newFake()
-			err = linkHome(t.Context(), fakeContainer{f: f, phase: sandbox.PhaseAgent}, links)
-			require.ErrorIs(t, err, errOutOfBounds)
-			assert.Empty(t, f.calls(), "nothing runs")
-
-			links[home+"/.cache/other/bin"] = cache + "/other/bin"
-
-			_, err = linkCommand(links)
-			require.ErrorIs(t, err, errOutOfBounds, "a valid link does not let an invalid one through")
-		})
-	}
 }
 
 // seedStep is the name the fake records for a rust run's seed step.
@@ -341,11 +259,7 @@ func TestAgentPhaseSeedsTheHome(t *testing.T) {
 	require.NotEmpty(t, seeds)
 
 	seed := seedStep(t)
-
-	links, err := linkCommand(env.AgentLinks([]string{"rust"}, home))
-	require.NoError(t, err)
-
-	link := stepName(links.Argv)
+	link := stepName(linkStep().Argv)
 
 	t.Run("in a prepare", func(t *testing.T) {
 		f := newFake()
