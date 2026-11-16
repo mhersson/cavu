@@ -27,8 +27,8 @@ const EnvVar = "CAVU_FAKE_CLAUDE"
 const sleepArg = "__fakeclaude_sleep"
 
 // Scenario scripts one fake claude process. A user line that arrives before
-// the initialize answer is dropped, as a real release once dropped a message
-// written at process start.
+// the initialize answer is dropped and recorded as early input, so a test
+// catches a prompt written too soon.
 type Scenario struct {
 	Version  string // printed for --version
 	Replay   string // fixture JSONL written to stdout after the first user message
