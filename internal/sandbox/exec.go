@@ -17,7 +17,7 @@ import (
 )
 
 // pidDir must exist and be writable by the exec user in every container a
-// command runs in; CAVU mounts a tmpfs there.
+// command runs in; the caller must mount a tmpfs there.
 const pidDir = "/run/cavu"
 
 // execSlack bounds a signalling exec beyond the grace it waits out.

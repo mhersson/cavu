@@ -73,7 +73,8 @@ func (c Container) CopyIn(ctx context.Context, files map[string][]byte) error {
 // exactly one entry, a regular file, or it is an error (tar never follows a
 // symlink, so there is no check-then-read race). The host uses the entry's
 // type and bytes only, never its name. It needs a running container and works
-// on volumes and on a tmpfs.
+// on volumes and on a tmpfs. A caller copying a path the agent controls bounds
+// the copy with its writer: a writer that fails stops the client.
 func (c Container) CopyOut(ctx context.Context, p string, w io.Writer) error {
 	if err := checkArg("container name", c.name); err != nil {
 		return err
