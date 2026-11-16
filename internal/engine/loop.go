@@ -1,0 +1,764 @@
+package engine
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/mhersson/cavu/internal/auth"
+	"github.com/mhersson/cavu/internal/redact"
+	"github.com/mhersson/cavu/internal/store"
+)
+
+// Store is the part of *store.Store the loop uses; tests wrap it to inject a conflict.
+type Store interface {
+	Task(ctx context.Context, id int64) (store.Task, error)
+	UpdateTask(ctx context.Context, t store.Task) error
+	Project(ctx context.Context, id int64) (store.Project, error)
+	Settings(ctx context.Context) (map[string]string, error)
+	Events(ctx context.Context, taskID, afterID int64, limit int) ([]store.Event, error)
+	Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error)
+	CreateRun(ctx context.Context, r store.Run) (store.Run, error)
+	UpdateRun(ctx context.Context, r store.Run) error
+	OpenRun(ctx context.Context, taskID int64) (store.Run, bool, error)
+}
+
+// Loop carries out the actions Decide chooses, through a Runner.
+type Loop struct {
+	Store          Store
+	Vault          *auth.Vault
+	Runner         Runner
+	Now            func() time.Time
+	DataDir, Image string
+}
+
+// Run row outcomes besides the stop reasons that end a run.
+const (
+	RunExported  = "exported"
+	RunAbandoned = "abandoned" // the row's run was never claimed
+)
+
+// The loop's caps, per RunTask call. Hitting one is an error, not a stop.
+const (
+	maxActions   = 100 // decisions
+	maxConflicts = 5   // claims lost in a row
+	maxRepairs   = 100 // stale run rows ended
+)
+
+// defaultCaps bounds the automatic continuations and fix rounds Decide allows.
+var defaultCaps = Caps{Continuations: 2, VerifyFixes: 2}
+
+var (
+	// ErrActionCap is returned when RunTask decides maxActions times and the task has not rested.
+	ErrActionCap = errors.New("engine: action cap reached")
+	// ErrConflictCap is returned when maxConflicts claims in a row lose to another writer.
+	ErrConflictCap = errors.New("engine: claim conflict cap reached")
+
+	errNoVerifyResult = errors.New("the runner returned a verify result with no result")
+)
+
+const (
+	actorEngine = "engine"
+	actorRunner = "runner"
+	actorAgent  = "agent"
+)
+
+// progressActors are the progress types the loop records, with their actors.
+// Any other type is dropped, so a runner cannot forge a claim or a result.
+var progressActors = map[string]string{
+	AgentText: actorAgent, AgentTool: actorAgent, RateLimit: actorAgent, EgressDenied: actorRunner,
+}
+
+const maxProgressText = 2 << 10 // bytes kept of agent_text.text and agent_tool.summary
+
+// RunTask decides and acts until the task rests (action none), ctx ends, or a
+// wait is due later than ctx allows. It returns the final status.
+func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
+	secrets, err := l.Vault.Values(ctx)
+	if err != nil {
+		return "", fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	p := &pass{Loop: l, taskID: taskID, mask: redact.New(secrets...)}
+
+	if err := p.repair(ctx); err != nil {
+		return "", err
+	}
+
+	var status Status
+
+	conflicts := 0
+
+	for range maxActions {
+		v, err := p.view(ctx)
+		if err != nil {
+			return status, err
+		}
+
+		status = StatusOf(v.Facts)
+		if p.held != nil {
+			return status, p.held
+		}
+
+		a := Decide(v.Snapshot)
+
+		switch a.Kind {
+		case KindNone:
+			return status, nil
+		case KindWait:
+			if done, err := p.wait(ctx, a.Until); done {
+				return status, err
+			}
+
+			continue
+		}
+
+		err = p.act(ctx, v, a)
+		if errors.Is(err, store.ErrConflict) {
+			if conflicts++; conflicts == maxConflicts {
+				return status, fmt.Errorf("task %d: %w after %d lost claims", taskID, ErrConflictCap, conflicts)
+			}
+
+			continue
+		}
+
+		if err != nil {
+			return status, err
+		}
+
+		conflicts = 0
+	}
+
+	return status, fmt.Errorf("task %d: %w after %d actions", taskID, ErrActionCap, maxActions)
+}
+
+// pass is one RunTask call.
+type pass struct {
+	*Loop
+
+	taskID int64
+	mask   func(string) string
+	held   error // recorded after an action's result was written; returned at the next snapshot
+}
+
+// view is a snapshot with what the loop needs beside it.
+type view struct {
+	Snapshot
+
+	run    store.Run // the open run's row, while Facts.RunOpen
+	hadRun bool      // a run was started before
+}
+
+// openRun is a run row with the config its runner calls use.
+type openRun struct {
+	row store.Run
+	cfg RunConfig
+}
+
+// draft is an event before the loop stamps, encodes and masks it.
+type draft struct {
+	typ, actor string
+	payload    any
+}
+
+func (p *pass) view(ctx context.Context) (view, error) {
+	t, err := p.Store.Task(ctx, p.taskID)
+	if err != nil {
+		return view{}, fmt.Errorf("task %d: %w", p.taskID, err)
+	}
+
+	pr, err := p.Store.Project(ctx, t.ProjectID)
+	if err != nil {
+		return view{}, fmt.Errorf("task %d: project %d: %w", p.taskID, t.ProjectID, err)
+	}
+
+	sw, err := resolveSwitches(pr, t.Overrides)
+	if err != nil {
+		return view{}, fmt.Errorf("task %d: %w", p.taskID, err)
+	}
+
+	events, err := p.Store.Events(ctx, p.taskID, 0, 0)
+	if err != nil {
+		return view{}, fmt.Errorf("task %d: %w", p.taskID, err)
+	}
+
+	v := view{
+		Task: t, Project: pr, Facts: Reduce(events), Now: p.Now(), Switches: sw, Caps: defaultCaps,
+		hadRun: slices.ContainsFunc(events, func(e store.Event) bool { return e.Type == RunStarted }),
+	}
+
+	if len(events) > 0 {
+		v.LastEventID = events[len(events)-1].ID
+	}
+
+	if v.Facts.RunOpen {
+		r, ok, err := p.Store.OpenRun(ctx, p.taskID)
+		if err != nil {
+			return view{}, fmt.Errorf("task %d: %w", p.taskID, err)
+		}
+
+		if !ok {
+			return view{}, fmt.Errorf("task %d: the events hold a run open but no run row is open", p.taskID)
+		}
+
+		v.run = r
+	}
+
+	return v, nil
+}
+
+// repair makes the run rows follow the events. It ends the newest open row
+// until that row is the run the events hold open, or no open row is left.
+func (p *pass) repair(ctx context.Context) error {
+	events, err := p.Store.Events(ctx, p.taskID, 0, 0)
+	if err != nil {
+		return fmt.Errorf("task %d: %w", p.taskID, err)
+	}
+
+	started, ended := map[int64]bool{}, map[int64]string{}
+
+	for _, e := range events {
+		switch e.Type {
+		case RunStarted:
+			started[e.RunID] = true
+		case RunEnded:
+			ended[e.RunID] = decode[RunEndedPayload](e.Payload).Outcome
+		}
+	}
+
+	for range maxRepairs {
+		r, ok, err := p.Store.OpenRun(ctx, p.taskID)
+		if err != nil {
+			return fmt.Errorf("task %d: %w", p.taskID, err)
+		}
+
+		outcome, done := ended[r.ID]
+
+		switch {
+		case !ok || started[r.ID] && !done:
+			return nil
+		case done:
+			// The process died between the run's end and its release.
+			err = p.releaseEnded(ctx, r, outcome)
+		default:
+			err = p.endRun(ctx, r, RunAbandoned)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return fmt.Errorf("task %d: more than %d stale run rows", p.taskID, maxRepairs)
+}
+
+func (p *pass) releaseEnded(ctx context.Context, r store.Run, outcome string) error {
+	t, err := p.Store.Task(ctx, p.taskID)
+	if err != nil {
+		return fmt.Errorf("task %d: %w", p.taskID, err)
+	}
+
+	o, err := p.open(ctx, t, r)
+	if err != nil {
+		return err
+	}
+
+	return p.release(ctx, o, true, outcome)
+}
+
+// wait waits until the clock reaches until. It reports true when RunTask must
+// return: the wait is due later than ctx allows, or ctx ended during it.
+func (p *pass) wait(ctx context.Context, until time.Time) (bool, error) {
+	d := until.Sub(p.Now())
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < d {
+		return true, nil
+	}
+
+	t := time.NewTimer(d)
+	defer t.Stop()
+
+	select {
+	case <-ctx.Done():
+		return true, ctx.Err()
+	case <-t.C:
+		return false, nil
+	}
+}
+
+func (p *pass) act(ctx context.Context, v view, a Action) error {
+	if a.Kind == KindStop && !v.Facts.RunOpen {
+		return p.halt(ctx, v.LastEventID, nil, stopPayload(a))
+	}
+
+	row := v.run
+
+	if a.NewRun {
+		reason := "initial"
+		if v.hadRun {
+			reason = "retry"
+		}
+
+		var err error
+		if row, err = p.Store.CreateRun(ctx, store.Run{TaskID: p.taskID, Reason: reason, StartedAt: p.Now()}); err != nil {
+			return fmt.Errorf("task %d: %w", p.taskID, err)
+		}
+	}
+
+	o, err := p.open(ctx, v.Task, row)
+	if err != nil {
+		return p.abandon(ctx, a, row, err)
+	}
+
+	switch a.Kind {
+	case KindPrepare:
+		return p.prepare(ctx, v, a, o)
+	case KindWork:
+		return p.work(ctx, v, a, o)
+	case KindVerify:
+		return p.verify(ctx, v, a, o)
+	case KindExport:
+		return p.export(ctx, v, a, o)
+	case KindFinish:
+		if err := p.claim(ctx, v, o, draft{RunEnded, actorEngine, RunEndedPayload{Outcome: RunExported, Why: a.Why}}); err != nil {
+			return err
+		}
+
+		return p.release(ctx, o, true, RunExported)
+	case KindStop:
+		return p.halt(ctx, v.LastEventID, &o, stopPayload(a))
+	}
+
+	return fmt.Errorf("task %d: no handler for action %q", p.taskID, a.Kind)
+}
+
+func (p *pass) open(ctx context.Context, t store.Task, row store.Run) (openRun, error) {
+	cfg, err := p.BuildRunConfig(ctx, t, row, t.Overrides)
+	if err != nil {
+		return openRun{}, fmt.Errorf("task %d: %w", p.taskID, err)
+	}
+
+	return openRun{row: row, cfg: cfg}, nil
+}
+
+// abandon ends a new run row whose claim was never written, then returns cause.
+func (p *pass) abandon(ctx context.Context, a Action, row store.Run, cause error) error {
+	if !a.NewRun {
+		return cause
+	}
+
+	return errors.Join(cause, p.endRun(ctx, row, RunAbandoned))
+}
+
+func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
+	claim := []draft{{PrepareStarted, actorEngine, PrepareStartedPayload{Why: a.Why}}}
+	if a.NewRun {
+		claim = slices.Insert(claim, 0, draft{RunStarted, actorEngine, RunStartedPayload{Reason: o.row.Reason}})
+	}
+
+	if err := p.claim(ctx, v, o, claim...); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return p.abandon(ctx, a, o.row, err)
+		}
+
+		return err
+	}
+
+	res, err := p.Runner.Prepare(ctx, o.cfg)
+	if err != nil {
+		return p.fault(ctx, o, err)
+	}
+
+	if res.FailedStep != "" {
+		return p.result(ctx, o, nil, draft{PrepareFailed, actorRunner, PrepareFailedPayload{Step: res.FailedStep, Output: res.Output}})
+	}
+
+	// Set before prepared is written, so a crash in between redoes the prepare.
+	if v.Task.BaseCommit == "" && res.BaseCommit != "" {
+		if err := p.setBaseCommit(ctx, res.BaseCommit); err != nil {
+			return err
+		}
+	}
+
+	return p.result(ctx, o, nil, draft{Prepared, actorRunner, PreparedPayload{
+		BaseCommit: res.BaseCommit, Tools: res.Tools, Baseline: res.Baseline,
+	}})
+}
+
+func (p *pass) setBaseCommit(ctx context.Context, commit string) error {
+	t, err := p.Store.Task(ctx, p.taskID)
+	if err == nil && t.BaseCommit == "" {
+		t.BaseCommit = commit
+		err = p.Store.UpdateTask(ctx, t)
+	}
+
+	if err != nil {
+		return fmt.Errorf("task %d: base commit: %w", p.taskID, err)
+	}
+
+	return nil
+}
+
+func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
+	w := WorkRequest{Mode: a.WorkMode, SessionID: v.Facts.SessionID, Resume: v.Facts.SessionID != ""}
+	if !w.Resume {
+		w.SessionID = newSessionID()
+	}
+
+	switch a.WorkMode {
+	case ModeFixVerify:
+		w.Detail = v.Facts.LastVerifyOutput
+	case ModeAnswer:
+		w.Detail = a.Detail
+	}
+
+	if err := p.claim(ctx, v, o, draft{SessionStarted, actorEngine, SessionStartedPayload{
+		Mode: w.Mode, SessionID: w.SessionID, Resume: w.Resume, Automatic: a.Automatic, Why: a.Why,
+	}}); err != nil {
+		return err
+	}
+
+	if o.row.SessionID != w.SessionID {
+		o.row.SessionID = w.SessionID
+		if err := p.Store.UpdateRun(ctx, o.row); err != nil {
+			return fmt.Errorf("task %d: run %d session: %w", p.taskID, o.row.ID, err)
+		}
+	}
+
+	add, stop := p.progress(ctx, o.row.ID)
+	res, err := p.Runner.Work(ctx, o.cfg, w, add)
+	progressErr := stop()
+
+	if err != nil {
+		return p.fault(ctx, o, err)
+	}
+
+	usage := make([]store.Usage, len(res.Usage))
+	for i, u := range res.Usage {
+		u.RunID = o.row.ID
+		usage[i] = u
+	}
+
+	if err := p.result(ctx, o, usage, draft{SessionEnded, actorRunner, SessionEndedPayload{
+		Outcome: res.Outcome, Title: res.Title, Summary: res.Summary, Assumptions: res.Assumptions,
+		Questions: res.Questions, Changed: res.Changed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD,
+		ResetsAt: res.ResetsAt, Detail: res.Detail,
+	}}); err != nil {
+		return err
+	}
+
+	if progressErr != nil {
+		p.held = errors.Join(p.held, progressErr)
+	}
+
+	return nil
+}
+
+// progress returns the callback a session reports through, which may be called
+// from any goroutine, and a stop that closes it and returns its first append
+// error. Holding the lock across each append keeps progress before the result.
+func (p *pass) progress(ctx context.Context, runID int64) (add func(Progress), stop func() error) {
+	var (
+		mu     sync.Mutex
+		closed bool
+		first  error
+	)
+
+	add = func(pr Progress) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if closed {
+			return
+		}
+
+		if err := p.recordProgress(ctx, runID, pr); err != nil && first == nil {
+			first = err
+		}
+	}
+
+	stop = func() error {
+		mu.Lock()
+		defer mu.Unlock()
+
+		closed = true
+
+		return first
+	}
+
+	return add, stop
+}
+
+func (p *pass) recordProgress(ctx context.Context, runID int64, pr Progress) error {
+	actor, ok := progressActors[pr.Type]
+	if !ok {
+		return nil
+	}
+
+	payload, err := progressPayload(pr, p.mask)
+	if err != nil {
+		return fmt.Errorf("task %d: progress %s: %w", p.taskID, pr.Type, err)
+	}
+
+	return p.write(ctx, -1, runID, nil, draft{pr.Type, actor, payload})
+}
+
+// progressPayload reads a progress value as its event's payload struct, so only
+// that struct's fields are kept. Text is masked before it is cut, so a cut
+// cannot leave the head of a secret behind.
+func progressPayload(pr Progress, mask func(string) string) (any, error) {
+	switch pr.Type {
+	case AgentText:
+		v, err := retype[AgentTextPayload](pr.Payload)
+		v.Text = clip(mask(v.Text), maxProgressText)
+
+		return v, err
+	case AgentTool:
+		v, err := retype[AgentToolPayload](pr.Payload)
+		v.Summary = clip(mask(v.Summary), maxProgressText)
+
+		return v, err
+	case RateLimit:
+		v, err := retype[RateLimitPayload](pr.Payload)
+
+		return v, err
+	default:
+		v, err := retype[EgressDeniedPayload](pr.Payload)
+
+		return v, err
+	}
+}
+
+func retype[T any](v any) (T, error) {
+	var out T
+
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return out, err
+	}
+
+	err = json.Unmarshal(raw, &out)
+
+	return out, err
+}
+
+// clip cuts s to at most n bytes without splitting a UTF-8 sequence.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+
+	return s[:n]
+}
+
+func (p *pass) verify(ctx context.Context, v view, a Action, o openRun) error {
+	if err := p.claim(ctx, v, o, draft{VerifyStarted, actorEngine, VerifyStartedPayload{Why: a.Why}}); err != nil {
+		return err
+	}
+
+	res, err := p.Runner.Verify(ctx, o.cfg)
+	if err == nil && res.Result == "" {
+		err = errNoVerifyResult
+	}
+
+	if err != nil {
+		return p.fault(ctx, o, err)
+	}
+
+	return p.result(ctx, o, nil, draft{VerifyEnded, actorRunner, VerifyEndedPayload{
+		Result: res.Result, Command: res.Command, ExitCode: res.ExitCode, Output: res.Output,
+		DurationMS: res.Duration.Milliseconds(),
+	}})
+}
+
+func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
+	title := v.Task.Title
+	if s := v.Facts.Session; s != nil && s.Title != "" {
+		title = s.Title
+	}
+
+	if err := p.claim(ctx, v, o, draft{ExportStarted, actorEngine, ExportStartedPayload{Why: a.Why}}); err != nil {
+		return err
+	}
+
+	res, err := p.Runner.Export(ctx, o.cfg, title)
+	if err != nil {
+		return p.fault(ctx, o, err)
+	}
+
+	if res.Problem != "" {
+		return p.halt(ctx, -1, &o, StoppedPayload{
+			Reason: StopAgentError, Explanation: lineOr(res.Problem, "Exporting the change failed."), Action: ClearRetry,
+		})
+	}
+
+	return p.result(ctx, o, nil, draft{Exported, actorRunner, ExportedPayload{
+		HeadCommit: res.HeadCommit, DiffPath: res.DiffPath, BundlePath: res.BundlePath, FilesChanged: res.FilesChanged,
+	}})
+}
+
+// fault records a runner error as a sandbox stop. While ctx is done the error
+// is not a fault: the claim stays pending and the next RunTask redoes it.
+func (p *pass) fault(ctx context.Context, o openRun, cause error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	return p.halt(ctx, -1, &o, StoppedPayload{
+		Reason: StopSandbox, Explanation: lineOr("The runner failed: "+cause.Error(), "The runner failed."), Action: ClearRetry,
+	})
+}
+
+func stopPayload(a Action) StoppedPayload {
+	return StoppedPayload{Reason: a.Stop, Explanation: a.Explain, Action: a.Clear, ResetsAt: a.ResetsAt, Why: a.Why}
+}
+
+// halt records a stop, with the run's end when the stop ends it, then releases
+// the run. o is nil when no run is open.
+func (p *pass) halt(ctx context.Context, expectLast int64, o *openRun, sp StoppedPayload) error {
+	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment || sp.Reason == StopSandbox
+	drafts := []draft{{Stopped, actorEngine, sp}}
+
+	var runID int64
+
+	if o != nil {
+		runID = o.row.ID
+
+		if ends {
+			drafts = append(drafts, draft{RunEnded, actorEngine, RunEndedPayload{Outcome: sp.Reason}})
+		}
+	}
+
+	if err := p.write(ctx, expectLast, runID, nil, drafts...); err != nil {
+		return err
+	}
+
+	if o == nil {
+		return nil
+	}
+
+	return p.release(ctx, *o, ends, sp.Reason)
+}
+
+// release stops the run's containers, removing its volumes and ending its row
+// when the run ends. A Release error is held so the row is still ended.
+func (p *pass) release(ctx context.Context, o openRun, end bool, outcome string) error {
+	relErr := p.Runner.Release(ctx, o.cfg, end)
+	if relErr != nil {
+		relErr = fmt.Errorf("task %d: release run %d: %w", p.taskID, o.row.ID, relErr)
+	}
+
+	if end {
+		if err := p.endRun(ctx, o.row, outcome); err != nil {
+			return errors.Join(err, relErr)
+		}
+	}
+
+	if relErr != nil {
+		p.held = errors.Join(p.held, relErr)
+	}
+
+	return nil
+}
+
+func (p *pass) endRun(ctx context.Context, r store.Run, outcome string) error {
+	at := p.Now()
+	r.Outcome, r.EndedAt = outcome, &at
+
+	if err := p.Store.UpdateRun(ctx, r); err != nil {
+		return fmt.Errorf("task %d: end run %d: %w", p.taskID, r.ID, err)
+	}
+
+	return nil
+}
+
+// claim writes an action's first events if no event came since the snapshot.
+// A lost claim returns an error wrapping store.ErrConflict.
+func (p *pass) claim(ctx context.Context, v view, o openRun, drafts ...draft) error {
+	return p.write(ctx, v.LastEventID, o.row.ID, nil, drafts...)
+}
+
+func (p *pass) result(ctx context.Context, o openRun, usage []store.Usage, d draft) error {
+	return p.write(ctx, -1, o.row.ID, usage, d)
+}
+
+// write appends drafts as one Append. Every event goes through here, so every
+// payload is masked before it reaches the record.
+func (p *pass) write(ctx context.Context, expectLast, runID int64, usage []store.Usage, drafts ...draft) error {
+	events := make([]store.Event, len(drafts))
+
+	for i, d := range drafts {
+		payload, err := p.encode(d.payload)
+		if err != nil {
+			return fmt.Errorf("task %d: encode %s: %w", p.taskID, d.typ, err)
+		}
+
+		events[i] = store.Event{TaskID: p.taskID, RunID: runID, At: p.Now(), Type: d.typ, Actor: d.actor, Payload: payload}
+	}
+
+	if _, err := p.Store.Append(ctx, p.taskID, expectLast, events, usage); err != nil {
+		return fmt.Errorf("task %d: append %s: %w", p.taskID, drafts[0].typ, err)
+	}
+
+	return nil
+}
+
+// encode marshals a payload and masks every string in it, map keys included.
+// Masking decoded values means JSON escaping cannot hide a secret.
+func (p *pass) encode(payload any) (json.RawMessage, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(maskValue(v, p.mask))
+}
+
+func maskValue(v any, mask func(string) string) any {
+	switch x := v.(type) {
+	case string:
+		return mask(x)
+	case []any:
+		for i, e := range x {
+			x[i] = maskValue(e, mask)
+		}
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[mask(k)] = maskValue(e, mask)
+		}
+
+		return out
+	}
+
+	return v
+}
+
+// newSessionID returns a version 4 UUID.
+func newSessionID() string {
+	var b [16]byte
+
+	_, _ = rand.Read(b[:]) // rand.Read never returns an error
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
+}

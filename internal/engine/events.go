@@ -60,7 +60,8 @@ const (
 	ModeAnswer    = "answer"
 )
 
-// Event payloads. A zero time is left out of the JSON.
+// Event payloads. A zero time is left out of the JSON. Why is the one line
+// Decide gave for the action a claim records.
 type (
 	HumanAnsweredPayload struct {
 		Text string `json:"text"`
@@ -68,6 +69,10 @@ type (
 
 	RunStartedPayload struct {
 		Reason string `json:"reason"`
+	}
+
+	PrepareStartedPayload struct {
+		Why string `json:"why"`
 	}
 
 	PreparedPayload struct {
@@ -86,6 +91,7 @@ type (
 		SessionID string `json:"session_id"`
 		Resume    bool   `json:"resume"`
 		Automatic bool   `json:"automatic"` // counted toward its mode's cap
+		Why       string `json:"why,omitempty"`
 	}
 
 	AgentTextPayload struct {
@@ -120,12 +126,20 @@ type (
 		Detail          string    `json:"detail"`
 	}
 
+	VerifyStartedPayload struct {
+		Why string `json:"why"`
+	}
+
 	VerifyEndedPayload struct {
 		Result     string `json:"result"`
 		Command    string `json:"command"`
 		ExitCode   int    `json:"exit_code"`
 		Output     string `json:"output"`
 		DurationMS int64  `json:"duration_ms"`
+	}
+
+	ExportStartedPayload struct {
+		Why string `json:"why"`
 	}
 
 	ExportedPayload struct {
@@ -140,9 +154,11 @@ type (
 		Explanation string    `json:"explanation"`
 		Action      string    `json:"action"` // the one action that clears the stop
 		ResetsAt    time.Time `json:"resets_at,omitzero"`
+		Why         string    `json:"why,omitempty"` // empty for a runner fault or an export problem
 	}
 
 	RunEndedPayload struct {
 		Outcome string `json:"outcome"` // "exported", or the stop reason that ended the run
+		Why     string `json:"why,omitempty"`
 	}
 )
