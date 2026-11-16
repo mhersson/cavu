@@ -46,14 +46,16 @@ type Runner interface {
 	// when they are not running, so a restart needs no second prepare.
 	Prepare(ctx context.Context, c RunConfig) (PrepareResult, error)
 	// Work returns how the session ended as a result, endpoint failures and
-	// usage limits included; an error means the sandbox itself failed. Work
-	// with Resume true may name a session the agent never started, when the
-	// process died between the claim and the start; the runner then starts it
-	// under that id. progress is never called after Work returns.
+	// usage limits included; an error means the sandbox itself failed. A
+	// resumed session that does not exist is started under its id with the
+	// task's opening prompt, whatever the mode: the process died, or ctx
+	// ended, between the claim and the start. progress is never called after
+	// Work returns.
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
 	// Export is safe to repeat for the same run.
 	Export(ctx context.Context, c RunConfig, title string) (ExportResult, error)
+	// Release is safe to repeat, and succeeds when nothing exists to release.
 	Release(ctx context.Context, c RunConfig, removeVolumes bool) error
 }
 
@@ -61,7 +63,7 @@ type Runner interface {
 type PrepareResult struct {
 	BaseCommit string
 	Tools      []string
-	Baseline   string // passed, reused, waived, failed
+	Baseline   string // passed, reused, waived, failed; a failed baseline sets FailedStep to "baseline"
 	FailedStep string // "", clone, toolchain, setup, baseline
 	Output     string
 }
@@ -81,7 +83,8 @@ type Progress struct {
 
 // WorkResult is how a session ended.
 type WorkResult struct {
-	SessionID, Outcome     string
+	SessionID              string // the id the agent reported; the engine's own id stays authoritative
+	Outcome                string
 	Title, Summary         string
 	Detail                 string // the upstream status or error text for endpoint, usage_limit and crashed
 	Assumptions, Questions []string

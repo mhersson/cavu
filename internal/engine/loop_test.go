@@ -633,6 +633,97 @@ func TestLoopRedoesInterruptedAction(t *testing.T) {
 	})
 }
 
+// A result that comes back as ctx ends is recorded, so the next call does not redo its action.
+func TestLoopRecordsResultAfterCtxEnds(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		script func(r *fakeRunner)
+		result string // the event that records the call's result
+		status engine.Status
+		next   []string // the next RunTask's runner calls
+	}{
+		{name: "prepare", method: "prepare", result: engine.Prepared, status: engine.StatusInReview, next: []string{"work/start", "verify", "export", "release/remove"}},
+		{name: "work", method: "work", result: engine.SessionEnded, status: engine.StatusInReview, next: []string{"verify", "export", "release/remove"}},
+		{name: "verify", method: "verify", result: engine.VerifyEnded, status: engine.StatusInReview, next: []string{"export", "release/remove"}},
+		{name: "export", method: "export", result: engine.Exported, status: engine.StatusInReview, next: []string{"release/remove"}},
+		{
+			name: "an export problem", method: "export", result: engine.Stopped, status: engine.StatusBlocked, next: []string{},
+			script: func(r *fakeRunner) {
+				r.exports = []step[engine.ExportResult]{{res: engine.ExportResult{Problem: "the push was rejected"}}}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			ctx, cancel := context.WithCancel(t.Context())
+
+			if tt.script != nil {
+				tt.script(h.runner)
+			}
+
+			h.runner.onCall = func(c call) {
+				if c.method == tt.method {
+					cancel()
+				}
+			}
+
+			_, err := h.run(ctx)
+			require.ErrorIs(t, err, context.Canceled)
+			require.Len(t, h.eventsOf(tt.result), 1, "the result is recorded")
+
+			h.runner.onCall = nil
+			before := len(h.runner.calls)
+
+			status, err := h.run(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tt.status, status)
+			assert.Equal(t, tt.next, h.runner.trace()[before:])
+			assert.Len(t, h.runner.callsOf(tt.method), 1, "the action is not redone")
+		})
+	}
+
+	t.Run("a session's usage", func(t *testing.T) {
+		h := newHarness(t)
+		ctx, cancel := context.WithCancel(t.Context())
+
+		h.runner.onCall = func(c call) {
+			if c.method == "work" {
+				cancel()
+			}
+		}
+
+		_, err := h.run(ctx)
+		require.ErrorIs(t, err, context.Canceled)
+
+		usage, err := h.store.UsageTotals(t.Context(), h.task.ID)
+		require.NoError(t, err)
+		require.Len(t, usage, 1)
+		assert.Equal(t, int64(10), usage[0].Input)
+	})
+}
+
+func TestLoopFailedBaselineStops(t *testing.T) {
+	h := newHarness(t)
+	h.runner.prepares = []step[engine.PrepareResult]{{res: engine.PrepareResult{
+		BaseCommit: "base123", Baseline: engine.ResultFailed, Output: "FAIL TestLogin",
+	}}}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusBlocked, status)
+	assert.Equal(t, []string{"prepare", "release/remove"}, h.runner.trace())
+	assert.Empty(t, h.eventsOf(engine.Prepared))
+
+	failed := h.eventsOf(engine.PrepareFailed)
+	require.Len(t, failed, 1)
+	assert.Equal(t, engine.PrepareFailedPayload{Step: "baseline", Output: "FAIL TestLogin"},
+		payloadOf[engine.PrepareFailedPayload](t, failed[0]))
+	assert.Equal(t, engine.StopEnvironment, h.lastStop().Reason)
+}
+
 func TestLoopExportProblemStops(t *testing.T) {
 	h := newHarness(t)
 

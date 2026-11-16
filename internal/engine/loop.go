@@ -78,8 +78,13 @@ var progressActors = map[string]string{
 
 const maxProgressText = 2 << 10 // bytes kept of agent_text.text and agent_tool.summary
 
+// recordTimeout bounds recording a runner call's result after ctx has ended.
+const recordTimeout = 10 * time.Second
+
 // RunTask decides and acts until the task rests (action none), ctx ends, or a
-// wait is due later than ctx allows. It returns the final status.
+// wait is due later than ctx allows. It returns the final status. The caller
+// keeps one live RunTask per task by holding the data-directory lock or a
+// per-task lock: the compare-and-swap guards claims, not actions in flight.
 func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
 	secrets, err := l.Vault.Values(ctx)
 	if err != nil {
@@ -393,6 +398,11 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 		return p.fault(ctx, o, err)
 	}
 
+	// A failed baseline is an environment stop even when the runner names no step.
+	if res.FailedStep == "" && res.Baseline == ResultFailed {
+		res.FailedStep = "baseline"
+	}
+
 	if res.FailedStep != "" {
 		return p.result(ctx, o, nil, draft{PrepareFailed, actorRunner, PrepareFailedPayload{Step: res.FailedStep, Output: res.Output}})
 	}
@@ -410,6 +420,9 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 }
 
 func (p *pass) setBaseCommit(ctx context.Context, commit string) error {
+	ctx, cancel := recording(ctx)
+	defer cancel()
+
 	t, err := p.Store.Task(ctx, p.taskID)
 	if err == nil && t.BaseCommit == "" {
 		t.BaseCommit = commit
@@ -638,7 +651,8 @@ func stopPayload(a Action) StoppedPayload {
 }
 
 // halt records a stop, with the run's end when the stop ends it, then releases
-// the run. run is nil when no run is open.
+// the run. run is nil when no run is open. A stop that is a runner call's
+// result passes expectLast -1 and is recorded even after ctx ends.
 func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *store.Run, sp StoppedPayload) error {
 	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment || sp.Reason == StopSandbox
 	drafts := []draft{{Stopped, actorEngine, sp}}
@@ -653,7 +667,16 @@ func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *st
 		}
 	}
 
-	if err := p.write(ctx, expectLast, runID, nil, drafts...); err != nil {
+	wctx := ctx
+
+	if expectLast < 0 {
+		var cancel context.CancelFunc
+
+		wctx, cancel = recording(ctx)
+		defer cancel()
+	}
+
+	if err := p.write(wctx, expectLast, runID, nil, drafts...); err != nil {
 		return err
 	}
 
@@ -722,7 +745,16 @@ func (p *pass) claim(ctx context.Context, v view, o openRun, drafts ...draft) er
 }
 
 func (p *pass) result(ctx context.Context, o openRun, usage []store.Usage, d draft) error {
+	ctx, cancel := recording(ctx)
+	defer cancel()
+
 	return p.write(ctx, -1, o.row.ID, usage, d)
+}
+
+// recording returns a context for recording a runner call's result. It ignores
+// ctx's end, so a result that came back is kept and its action not redone.
+func recording(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 }
 
 // write appends drafts as one Append. Every event goes through here, so every
