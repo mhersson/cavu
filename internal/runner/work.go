@@ -238,7 +238,8 @@ func (s *session) freeze(ctx context.Context, res *engine.WorkResult) error {
 		return err
 	}
 
-	if out.ExitCode != 0 || out.TimedOut {
+	head := lastCommit(out.Output)
+	if out.ExitCode != 0 || out.TimedOut || head == "" {
 		// The summary is what the stop of a failed session explains.
 		res.Outcome, res.Summary = engine.OutcomeFailed, s.mask(strings.TrimSpace(output(out, gitTimeout)))
 		res.Detail = res.Summary
@@ -246,11 +247,21 @@ func (s *session) freeze(ctx context.Context, res *engine.WorkResult) error {
 		return nil
 	}
 
-	head := strings.TrimSpace(out.Output)
-	res.HeadCommit = head[strings.LastIndexByte(head, '\n')+1:]
-	res.Changed = res.HeadCommit != s.c.Repo.BaseCommit
+	res.HeadCommit, res.Changed = head, head != s.c.Repo.BaseCommit
 
 	return nil
+}
+
+// lastCommit is the last line of out that is a commit id: the runtime client's
+// own warnings can follow a command's output.
+func lastCommit(out string) string {
+	for _, l := range slices.Backward(strings.Split(out, "\n")) {
+		if l = strings.TrimSpace(l); commitID.MatchString(l) {
+			return l
+		}
+	}
+
+	return ""
 }
 
 // usage is the session's rows: in key mode the proxy's count of every model

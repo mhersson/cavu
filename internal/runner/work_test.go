@@ -72,10 +72,14 @@ func TestWorkMapsResults(t *testing.T) {
 		Assumptions: []string{"Spaces are typos."}, Turns: 7, CostEstimateUSD: 0.5,
 	}
 
-	changed, unchanged, refused := doneWork, doneWork, doneWork
+	// What a rootless Podman client prints after an exec's own output.
+	const warning = `time="2026-11-16T15:00:00Z" level=warning msg="The cgroupv2 manager is set to systemd but there is no systemd user session available"`
+
+	changed, unchanged, refused, noCommit := doneWork, doneWork, doneWork, doneWork
 	changed.Changed, changed.HeadCommit = true, headCommit
 	unchanged.HeadCommit = baseCommit
 	refused.Outcome, refused.Summary, refused.Detail = engine.OutcomeFailed, "HEAD left the base", "HEAD left the base"
+	noCommit.Outcome, noCommit.Summary, noCommit.Detail = engine.OutcomeFailed, warning, warning
 
 	tests := []struct {
 		name   string
@@ -111,6 +115,8 @@ func TestWorkMapsResults(t *testing.T) {
 		{name: "done", res: doneResult, freeze: &sandbox.Result{Output: headCommit + "\n"}, want: changed},
 		{name: "done without a change", res: doneResult, freeze: &sandbox.Result{Output: baseCommit + "\n"}, want: unchanged},
 		{name: "done but the freeze refuses", res: doneResult, freeze: &sandbox.Result{ExitCode: 1, Output: "HEAD left the base\n"}, want: refused},
+		{name: "done past a runtime warning", res: doneResult, freeze: &sandbox.Result{Output: headCommit + "\n" + warning + "\n"}, want: changed},
+		{name: "done with no commit printed", res: doneResult, freeze: &sandbox.Result{Output: warning + "\n"}, want: noCommit},
 		{
 			name: "blocked",
 			res:  driver.Result{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "blocked", "questions": []string{"Which form?"}})},
