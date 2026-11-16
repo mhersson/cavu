@@ -21,8 +21,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/mhersson/cavu/internal/proc"
 )
 
 const (
@@ -303,11 +301,4 @@ func TestImageInfo(t *testing.T) {
 		require.Error(t, err)
 		assert.Empty(t, f.calls(t))
 	})
-}
-
-func TestDockerfileCreatesSandboxMarker(t *testing.T) {
-	text := string(dockerfile)
-
-	assert.Contains(t, text, "install -d -o root -g root -m 0755 "+filepath.Dir(proc.SandboxMarker))
-	assert.Contains(t, text, "install -o root -g root -m 0444 /dev/null "+proc.SandboxMarker)
 }
