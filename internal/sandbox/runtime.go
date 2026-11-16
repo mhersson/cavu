@@ -276,23 +276,23 @@ func waitContext(ctx context.Context, p proc.Process) (int, error) {
 }
 
 // envFile renders env in the env-file format, refusing what the format would
-// alter or a client's line scanner would reject. Errors name the variable,
-// never its value.
+// alter or a client's line scanner would reject. Errors name a valid
+// variable or give the entry's index, never a value.
 func envFile(env []string) ([]byte, error) {
 	var b bytes.Buffer
 
-	for _, kv := range env {
+	for i, kv := range env {
 		name, value, ok := strings.Cut(kv, "=")
 
+		// A bare entry and an invalid name may be a raw value passed by
+		// mistake (a forge token matches the name pattern), so they are
+		// identified by index, never quoted.
 		switch {
-		case !ok && envName.MatchString(name):
-			// A bare name imports the client's own variable of that name.
-			return nil, fmt.Errorf("environment variable %q has no value", name)
 		case !ok:
-			// Not a name, so possibly a value passed by mistake: never print it.
-			return nil, errors.New("environment entry without = that is not a variable name")
+			// A bare name would import the client's own variable of that name.
+			return nil, fmt.Errorf("environment entry at index %d has no =", i)
 		case !envName.MatchString(name):
-			return nil, fmt.Errorf("environment variable %q: invalid name", name)
+			return nil, fmt.Errorf("environment entry at index %d: invalid variable name", i)
 		case strings.ContainsAny(value, "\n\r\x00"):
 			return nil, fmt.Errorf("environment variable %s: value holds a newline, carriage return or NUL", name)
 		case !utf8.ValidString(value):

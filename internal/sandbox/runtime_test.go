@@ -290,11 +290,15 @@ func TestEnvRefusesBadNamesAndValues(t *testing.T) {
 		"name with a digit":    "1A=" + secret,
 		"no =":                 "BARE",
 		"bare value":           "sk-" + secret + " raw",
-		"value with newline":   "A=" + secret + "\n" + secret,
-		"value with CR":        "A=" + secret + "\r",
-		"value with NUL":       "A=" + secret + "\x00",
-		"value not UTF-8":      "A=" + secret + "\xff",
-		"line over 65535":      "A=" + secret + strings.Repeat("x", 65536-2-len(secret)),
+		// A raw token passed by mistake: a forge token matches the name
+		// pattern, and base64 with padding has an invalid name before its =.
+		"bare forge token":   "ghp_" + secret + "AbCdEf0123456789",
+		"base64 token":       "dG9rZW4" + secret + "+/x==",
+		"value with newline": "A=" + secret + "\n" + secret,
+		"value with CR":      "A=" + secret + "\r",
+		"value with NUL":     "A=" + secret + "\x00",
+		"value not UTF-8":    "A=" + secret + "\xff",
+		"line over 65535":    "A=" + secret + strings.Repeat("x", 65536-2-len(secret)),
 	}
 
 	for name, entry := range cases {
