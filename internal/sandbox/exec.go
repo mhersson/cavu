@@ -132,6 +132,11 @@ type execProcess struct {
 	exited   chan struct{}
 	code     int
 	err      error
+
+	stopMu sync.Mutex
+	// clientKilled records a Stop that had to end the client while the
+	// command may still run.
+	clientKilled bool
 }
 
 // wait starts the one Wait on the client and returns a channel closed when
@@ -157,12 +162,21 @@ func (p *execProcess) Wait() (int, error) {
 // then KILL after grace, waiting at most grace for the pid file. It returns
 // nil once the command has ended. Otherwise it ends the client and reports
 // that the command may run on until the container is removed.
+//
+// Only a client that ended cleanly speaks for the command. One that died
+// (proc's line cap kills it) or that a Stop had to kill does not, so the stop
+// exec answers instead; with the group gone it ends at once.
 func (p *execProcess) Stop(grace time.Duration) error {
+	p.stopMu.Lock()
+	defer p.stopMu.Unlock()
+
 	exited := p.wait()
 
 	select {
 	case <-exited:
-		return nil
+		if p.err == nil && !p.clientKilled {
+			return nil
+		}
 	default:
 	}
 
@@ -172,20 +186,25 @@ func (p *execProcess) Stop(grace time.Duration) error {
 
 	cancel()
 
-	timer := time.NewTimer(killGrace)
-	defer timer.Stop()
+	if !p.clientKilled {
+		timer := time.NewTimer(killGrace)
+		defer timer.Stop()
 
-	select {
-	case <-exited:
-		return nil
-	case <-timer.C:
+		select {
+		case <-exited:
+			if p.err == nil || signalErr == nil {
+				return nil
+			}
+		case <-timer.C:
+			_ = p.Process.Stop(killGrace)
+
+			<-exited
+
+			p.clientKilled = true
+		}
 	}
 
-	_ = p.Process.Stop(killGrace)
-
-	<-exited
-
-	return errors.Join(fmt.Errorf("command in %s did not end; it may run until the container is removed", p.c.name), signalErr)
+	return errors.Join(fmt.Errorf("command in %s may run until the container is removed", p.c.name), signalErr)
 }
 
 // Result is a command run to its end.

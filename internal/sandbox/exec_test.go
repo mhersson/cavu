@@ -194,3 +194,62 @@ func TestStopScriptWaitsForPidFile(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, "leader"), "the leader did not finish its TERM trap")
 	assert.FileExists(t, filepath.Join(dir, "member"), "TERM did not reach the other member")
 }
+
+// stopExecs counts the calls that ran the stop script.
+func stopExecs(t *testing.T, f *fake) int {
+	t.Helper()
+
+	n := 0
+
+	for _, c := range f.calls(t) {
+		if slices.Contains(c.argv, stopScript) {
+			n++
+		}
+	}
+
+	return n
+}
+
+// TestStopAfterTheClientDied kills the client with proc's 64 MiB line cap,
+// which in a container would leave the command running, so Stop must ask
+// the stop exec rather than trust the client's end.
+func TestStopAfterTheClientDied(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+	f.set(t, "out.big-line", bytes.Repeat([]byte("x"), 65<<20))
+
+	killed := func() proc.Process {
+		p, err := r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"emit", "big-line"}})
+		require.NoError(t, err)
+		require.NoError(t, p.Stdin().Close())
+
+		_, err = p.Wait()
+		require.Error(t, err, "the line cap kills the client")
+
+		return p
+	}
+
+	require.NoError(t, killed().Stop(time.Second), "the stop exec found the group gone")
+	assert.Equal(t, 1, stopExecs(t, f))
+
+	p := killed()
+
+	f.set(t, "exit", []byte("3"))
+	require.Error(t, p.Stop(time.Second), "the stop exec could not signal")
+	assert.Equal(t, 2, stopExecs(t, f))
+}
+
+// TestStopThatHadToKillTheClient holds the command exec while the stop exec
+// answers at once without ending it, as when something outside the group
+// keeps the output open.
+func TestStopThatHadToKillTheClient(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+	f.set(t, "sleep", []byte("hold"))
+
+	p, err := r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"serve", "hold"}})
+	require.NoError(t, err)
+	require.NoError(t, p.Stdin().Close())
+
+	require.Error(t, p.Stop(100*time.Millisecond), "the client had to be killed")
+	require.Error(t, p.Stop(100*time.Millisecond), "a repeated Stop")
+	assert.Equal(t, 2, stopExecs(t, f))
+}

@@ -23,7 +23,8 @@ import (
 // "outs", then "stdout") and stderr, and exits with the canned code (the one
 // given for its exact argv in "exits", else the one in "exit").
 // "sleep" holds a call whose last argument it names for 30 seconds before
-// any output; "linger" keeps stdout open for 30 seconds after it. It finds
+// any output, "out.<last argument>" is printed for that call only, and
+// "linger" keeps stdout open for 30 seconds after the output. It finds
 // its own tools when a test narrows PATH to fakes only.
 const fakeScript = `#!/bin/sh
 PATH=/usr/bin:/bin:$PATH
@@ -40,6 +41,7 @@ tab=$(printf '\t')
 if [ -f "$d/outs" ]; then
 	while IFS=$tab read -r k v; do [ "$k" = "$*" ] && printf '%s\n' "$v"; done < "$d/outs"
 fi
+[ -f "$d/out.$last" ] && cat "$d/out.$last"
 [ -f "$d/stdout" ] && cat "$d/stdout"
 [ -f "$d/stderr" ] && cat "$d/stderr" >&2
 [ -f "$d/linger" ] && sleep 30
