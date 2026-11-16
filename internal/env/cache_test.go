@@ -98,3 +98,19 @@ func TestMiseIsolationInBothPhases(t *testing.T) {
 		assert.True(t, strings.HasPrefix(m["PATH"], "/cache/mise/shims:"), name)
 	}
 }
+
+func TestRustupHomeIsSharedInBothPhases(t *testing.T) {
+	t.Parallel()
+
+	for name, e := range map[string][]string{
+		"setup": SetupEnv([]string{"rust"}), "agent": AgentEnv([]string{"rust"}, "/home/agent"),
+	} {
+		assert.Equal(t, "/cache/rustup", envMap(t, e)["RUSTUP_HOME"], name)
+	}
+
+	for name, e := range map[string][]string{
+		"setup": SetupEnv([]string{"go"}), "agent": AgentEnv([]string{"go"}, "/home/agent"),
+	} {
+		assert.NotContains(t, envMap(t, e), "RUSTUP_HOME", name)
+	}
+}

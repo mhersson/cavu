@@ -5,7 +5,8 @@ import (
 	"sort"
 )
 
-// Container paths shared with the sandbox layout.
+// Container paths; they must match where the sandbox mounts its volumes and
+// where the image keeps the trust bundle.
 const (
 	cacheDir     = "/cache"
 	workspaceDir = "/workspace"
@@ -47,6 +48,7 @@ func cacheVars(m map[string]string, ecosystems []string, root string) {
 			m["UV_CACHE_DIR"] = path.Join(root, "uv")
 		case "rust":
 			m["CARGO_HOME"] = path.Join(root, "cargo")
+			m["RUSTUP_HOME"] = cacheDir + "/rustup"
 		}
 	}
 }
@@ -62,8 +64,11 @@ func render(m map[string]string) []string {
 	return out
 }
 
-// AgentEnv returns the environment that points each ecosystem at the read-only
-// project cache and at writable task-local directories under home.
+// AgentEnv returns the agent phase's environment. Shared from the read-only
+// project cache: Go's module downloads (through the file proxy in GOPROXY), the
+// mise toolchains (MISE_DATA_DIR and the shims) and the Rust toolchain
+// (RUSTUP_HOME). Not shared: the npm, pip, uv and Cargo caches, which start
+// empty under home, so those packages come from the registries in AgentHosts.
 func AgentEnv(ecosystems []string, home string) []string {
 	m := common()
 	cacheVars(m, ecosystems, path.Join(home, ".cache"))
