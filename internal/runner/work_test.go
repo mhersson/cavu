@@ -266,6 +266,40 @@ func TestWorkSpecCarriesNoRealCredential(t *testing.T) {
 	}
 }
 
+// AgentPhase builds what a run starts its agent phase and a session with, but
+// the session's prompt and id.
+func TestAgentPhaseIsWhatARunBuilds(t *testing.T) {
+	for _, mode := range []string{"key", "subscription"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFake()
+			c := workConfig()
+			c.Endpoint.Mode = mode
+			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}
+
+			_, err := f.workRunner(d).Work(t.Context(), c, startWork, noProgress)
+			require.NoError(t, err)
+			require.Len(t, d.specs, 1)
+
+			req, spec, err := AgentPhase(c, d)
+			require.NoError(t, err)
+
+			up := f.requests(sandbox.PhaseAgent)
+			require.Len(t, up, 1)
+
+			if mode == "key" {
+				// Each start of the phase has its own stand-in, which the agent holds.
+				assert.Equal(t, req.Model.StandIn, spec.Auth.Token)
+				req.Model.StandIn, spec.Auth.Token = up[0].Model.StandIn, up[0].Model.StandIn
+			}
+
+			spec.Prompt, spec.SessionID = d.specs[0].Prompt, d.specs[0].SessionID
+
+			assert.Equal(t, up[0], req)
+			assert.Equal(t, d.specs[0], spec)
+		})
+	}
+}
+
 // The driver adds the loopback hosts to a session's NO_PROXY, so the session
 // gets none of the runner's own; the commands the runner runs keep theirs.
 func TestWorkSessionLeavesNoProxyToTheDriver(t *testing.T) {

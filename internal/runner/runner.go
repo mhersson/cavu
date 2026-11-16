@@ -17,7 +17,6 @@ import (
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
-	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/redact"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
@@ -339,18 +338,8 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		return nil
 	}
 
-	req := sidecar.ProxyRequest{
-		AllowHosts: allowlist(env.AgentHosts(st.ecosystems), c.Setup.EgressHosts, r.driver.Hosts(c.Endpoint.Mode)),
-	}
-
-	st.standIn = ""
-
-	if c.Endpoint.Mode == modeKey {
-		st.standIn = proxy.NewStandIn()
-		req.Model = &proxy.ModelRoute{
-			BaseURL: c.Endpoint.URL, Credential: c.Endpoint.Credential, AuthHeader: c.Endpoint.AuthHeader, StandIn: st.standIn,
-		}
-	}
+	req, standIn := agentProxy(c, st.ecosystems, r.driver)
+	st.standIn = standIn
 
 	a, err := st.up(ctx, sandbox.PhaseAgent, req)
 	if err != nil {
