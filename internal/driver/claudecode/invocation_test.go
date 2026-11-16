@@ -12,7 +12,6 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/redact"
-	"github.com/mhersson/cavu/internal/testkit/fakeclaude"
 )
 
 // baseArgv is the flag set every invocation opens with.
@@ -43,7 +42,7 @@ func requireKeptOutOfArgv(t *testing.T, args []string, values ...string) {
 }
 
 // runFake runs f and requires a done result.
-func runFake(t *testing.T, f *fakeRun) fakeclaude.Recorded {
+func runFake(t *testing.T, f *fakeRun) fakeRecorded {
 	t.Helper()
 
 	res, err := f.run(t.Context())
@@ -54,7 +53,7 @@ func runFake(t *testing.T, f *fakeRun) fakeclaude.Recorded {
 }
 
 func TestArgvKeyMode(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Auth = keyAuth()
 	f.spec.Instructions = testInstr
 	f.spec.OutputSchema = json.RawMessage(`{"type": "object",
@@ -80,7 +79,7 @@ func TestArgvKeyMode(t *testing.T) {
 }
 
 func TestArgvSubscriptionMode(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 
 	args := runFake(t, f).Args
 	settings := flagValue(t, args, "--settings")
@@ -104,7 +103,7 @@ var strayAuth = []string{
 }
 
 func TestEnvKeyMode(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Auth = keyAuth()
 	f.spec.Env = append(f.spec.Env, strayAuth...)
 
@@ -120,7 +119,7 @@ func TestEnvKeyMode(t *testing.T) {
 }
 
 func TestEnvSubscriptionMode(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Env = append(f.spec.Env, strayAuth...)
 
 	names := runFake(t, f).EnvNames
@@ -137,7 +136,7 @@ func TestEnvSubscriptionMode(t *testing.T) {
 func TestEnvIsNotInherited(t *testing.T) {
 	t.Setenv("CAVU_TEST_INHERITED", "1")
 
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Env = append(f.spec.Env, "EXTRA=1")
 
 	want := []string{
@@ -158,7 +157,7 @@ func TestEnvIsNotInherited(t *testing.T) {
 
 func TestWebToolsSwitch(t *testing.T) {
 	for _, on := range []bool{false, true} {
-		f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+		f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 		f.spec.WebTools = on
 
 		rec := runFake(t, f)
@@ -215,7 +214,7 @@ func TestSpecRefused(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+			f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 			tt.mutate(&f.spec)
 
 			_, err := f.run(t.Context())
@@ -226,7 +225,7 @@ func TestSpecRefused(t *testing.T) {
 	}
 
 	for _, effort := range []string{"", "low", "medium", "high", "xhigh", "max"} {
-		f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+		f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 		f.spec.Effort = effort
 
 		_, err := f.run(t.Context())
