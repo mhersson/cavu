@@ -14,6 +14,7 @@ import (
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/prompts"
+	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/store"
 )
@@ -128,7 +129,7 @@ func (s *session) spec(w engine.WorkRequest) (driver.Spec, error) {
 
 	if c.Endpoint.Mode == modeKey {
 		// The agent holds only the stand-in; the proxy swaps the credential in.
-		spec.Auth.Token, spec.Auth.BaseURL = s.st.standIn, bridgeURL
+		spec.Auth.Token, spec.Auth.BaseURL = s.st.standIn, sandbox.BridgeURL
 	}
 
 	if w.Resume {

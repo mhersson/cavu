@@ -24,8 +24,6 @@ import (
 )
 
 const (
-	// bridgeURL is the sandbox's bridge to the proxy inside a phase container.
-	bridgeURL = "http://127.0.0.1:3128"
 	loopback  = "localhost,127.0.0.1,::1"
 	home      = "/home/agent"
 	workspace = "/workspace"
@@ -53,7 +51,7 @@ done`)
 // proxyEnv sends a command's egress through the bridge, the one way out of
 // either phase, and keeps loopback traffic off it.
 var proxyEnv = []string{
-	"HTTP_PROXY=" + bridgeURL, "HTTPS_PROXY=" + bridgeURL, "http_proxy=" + bridgeURL, "https_proxy=" + bridgeURL,
+	"HTTP_PROXY=" + sandbox.BridgeURL, "HTTPS_PROXY=" + sandbox.BridgeURL, "http_proxy=" + sandbox.BridgeURL, "https_proxy=" + sandbox.BridgeURL,
 	"NO_PROXY=" + loopback, "no_proxy=" + loopback,
 }
 

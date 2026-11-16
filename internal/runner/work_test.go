@@ -256,7 +256,7 @@ func TestWorkSpecCarriesNoRealCredential(t *testing.T) {
 	require.Len(t, d.specs, 1)
 
 	standIn := f.requests(sandbox.PhaseAgent)[0].Model.StandIn
-	assert.Equal(t, driver.Auth{Mode: "key", Token: standIn, BaseURL: bridgeURL}, d.specs[0].Auth)
+	assert.Equal(t, driver.Auth{Mode: "key", Token: standIn, BaseURL: sandbox.BridgeURL}, d.specs[0].Auth)
 
 	raw, err := json.Marshal(d.specs[0])
 	require.NoError(t, err)
