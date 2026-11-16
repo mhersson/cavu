@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
+	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/verify"
 )
 
@@ -58,4 +60,30 @@ func TestVerifyOutputIsRedacted(t *testing.T) {
 	res, err := f.runner().Verify(t.Context(), workConfig())
 	require.NoError(t, err)
 	assertMasked(t, res.Output)
+}
+
+func TestVerifyNamesDeniedHostsOnlyWhenItFails(t *testing.T) {
+	deny := func(f *fakeSandbox) {
+		f.onRun = func(name string) {
+			if name == "make test" {
+				f.send(sidecar.Line{Type: "denied", Host: "registry.example.test"})
+				f.send(sidecar.Line{Type: "denied", Host: "registry.example.test"})
+			}
+		}
+	}
+
+	f := newFake()
+	f.results["make test"] = sandbox.Result{ExitCode: 1, Output: "FAIL\n"}
+	deny(f)
+
+	res, err := f.runner().Verify(t.Context(), workConfig())
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(res.Output, "registry.example.test"))
+
+	f = newFake()
+	deny(f)
+
+	res, err = f.runner().Verify(t.Context(), workConfig())
+	require.NoError(t, err)
+	assert.NotContains(t, res.Output, "example.test")
 }

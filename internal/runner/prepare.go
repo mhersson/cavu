@@ -203,7 +203,7 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 
 	if len(det.Tools) > 0 {
 		cmd := proc.Command{Argv: []string{"mise", "install"}, Env: setupEnv(det.Ecosystems)}
-		if failed, err := runStep(ctx, sc, stepToolchain, cmd, toolchainTimeout); err != nil || failed != nil {
+		if failed, err := runStep(ctx, p.st, sc, stepToolchain, cmd, toolchainTimeout); err != nil || failed != nil {
 			return failed, err
 		}
 	}
@@ -222,13 +222,13 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 		Dir:  workspace,
 	}
 
-	if failed, err := runStep(ctx, sc, stepSetup, cmd, setupTimeout); err != nil || failed != nil || len(det.Tools) == 0 {
+	if failed, err := runStep(ctx, p.st, sc, stepSetup, cmd, setupTimeout); err != nil || failed != nil || len(det.Tools) == 0 {
 		return failed, err
 	}
 
 	reshim := proc.Command{Argv: []string{"sh", "-c", reshimScript}, Env: setupEnv(det.Ecosystems)}
 
-	return runStep(ctx, sc, stepSetup, reshim, toolchainTimeout)
+	return runStep(ctx, p.st, sc, stepSetup, reshim, toolchainTimeout)
 }
 
 // baseline verifies the base commit unless the project waives it, or a
@@ -304,27 +304,36 @@ func runVerify(ctx context.Context, st *run, c engine.RunConfig) (engine.VerifyR
 	cmd := proc.Command{Argv: verify.Argv(c.Verify.Command), Env: agentEnv(st.ecosystems), Dir: workspace}
 	start := time.Now()
 
+	st.resetDenied()
+
 	res, err := st.agent.Run(ctx, cmd, c.Verify.Timeout)
 	if err != nil {
 		return engine.VerifyResult{}, err
 	}
 
-	return engine.VerifyResult{
+	vr := engine.VerifyResult{
 		Result: verify.Classify(res.ExitCode, res.TimedOut), Command: c.Verify.Command,
 		Output: output(res, c.Verify.Timeout), ExitCode: res.ExitCode, Duration: time.Since(start),
-	}, nil
+	}
+	if vr.Result != verify.Passed {
+		vr.Output = st.withDenied(vr.Output)
+	}
+
+	return vr, nil
 }
 
 // runStep runs a setup-phase command as step. A command that cannot start is
 // an error; one that exits non-zero or times out is the step's failure.
-func runStep(ctx context.Context, c container, step string, cmd proc.Command, timeout time.Duration) (*stepFailure, error) {
+func runStep(ctx context.Context, st *run, c container, step string, cmd proc.Command, timeout time.Duration) (*stepFailure, error) {
+	st.resetDenied()
+
 	res, err := c.Run(ctx, cmd, timeout)
 	if err != nil {
 		return nil, err
 	}
 
 	if res.ExitCode != 0 || res.TimedOut {
-		return &stepFailure{step, output(res, timeout)}, nil
+		return &stepFailure{step, st.withDenied(output(res, timeout))}, nil
 	}
 
 	return nil, nil
