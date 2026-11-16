@@ -48,12 +48,15 @@ var seedScript = proc.SandboxOnly(`while [ "$#" -ge 2 ]; do
 	shift 2
 done`)
 
-// proxyEnv sends a command's egress through the bridge, the one way out of
-// either phase, and keeps loopback traffic off it.
-var proxyEnv = []string{
+// bridgeEnv sends a process's egress through the bridge, the one way out of
+// either phase.
+var bridgeEnv = []string{
 	"HTTP_PROXY=" + sandbox.BridgeURL, "HTTPS_PROXY=" + sandbox.BridgeURL, "http_proxy=" + sandbox.BridgeURL, "https_proxy=" + sandbox.BridgeURL,
-	"NO_PROXY=" + loopback, "no_proxy=" + loopback,
 }
+
+// noProxyEnv keeps a command's loopback traffic off the bridge; the driver
+// does the same for a session.
+var noProxyEnv = []string{"NO_PROXY=" + loopback, "no_proxy=" + loopback}
 
 // Runner carries out the engine's actions over a container runtime.
 type Runner struct {
@@ -420,14 +423,19 @@ func (r *Runner) Release(ctx context.Context, ref engine.RunRef, removeVolumes b
 	return st.sb.Destroy(ctx, false)
 }
 
-// agentEnv is the one environment of the agent phase: the baseline verify,
-// the verify gate and the session run with it.
+// agentEnv is the environment of the commands the runner runs in the agent
+// phase.
 func agentEnv(ecosystems []string) []string {
-	return append(env.AgentEnv(ecosystems, home), proxyEnv...)
+	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv, noProxyEnv)
+}
+
+// sessionEnv is agentEnv without noProxyEnv, which the driver adds itself.
+func sessionEnv(ecosystems []string) []string {
+	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv)
 }
 
 func setupEnv(ecosystems []string) []string {
-	return append(env.SetupEnv(ecosystems), proxyEnv...)
+	return slices.Concat(env.SetupEnv(ecosystems), bridgeEnv, noProxyEnv)
 }
 
 func allowlist(lists ...[]string) []string {

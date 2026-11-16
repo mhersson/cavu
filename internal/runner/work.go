@@ -124,7 +124,7 @@ func (s *session) spec(w engine.WorkRequest) (driver.Spec, error) {
 		Model: c.Agent.Model, Effort: c.Agent.Effort, MaxTurns: c.Agent.MaxTurns,
 		Prompt: text, Instructions: instructions, OutputSchema: prompts.ResultSchema(),
 		Dir: workspace, BaseCommit: c.Repo.BaseCommit, Home: home, ConfigDir: configDir,
-		Env: agentEnv(s.st.ecosystems), WebTools: c.Agent.WebTools,
+		Env: sessionEnv(s.st.ecosystems), WebTools: c.Agent.WebTools,
 	}
 
 	if c.Endpoint.Mode == modeKey {

@@ -234,7 +234,7 @@ func TestWorkSpec(t *testing.T) {
 				Model: "claude-test", Effort: "high", MaxTurns: 50,
 				Prompt: tt.prompt(t, c), Instructions: render(t, prompts.Instructions, nil), OutputSchema: prompts.ResultSchema(),
 				Dir: workspace, BaseCommit: baseCommit, Home: home, ConfigDir: "/home/agent/.claude-cavu",
-				Env: agentEnv([]string{"go"}), WebTools: true,
+				Env: sessionEnv([]string{"go"}), WebTools: true,
 			}
 			if tt.w.Resume {
 				want.Resume = sessionUUID
@@ -263,6 +263,38 @@ func TestWorkSpecCarriesNoRealCredential(t *testing.T) {
 
 	for _, secret := range []string{plantedEndpoint, plantedForge, plantedSetup} {
 		assert.NotContains(t, string(raw), secret)
+	}
+}
+
+// The driver adds the loopback hosts to a session's NO_PROXY, so the session
+// gets none of the runner's own; the commands the runner runs keep theirs.
+func TestWorkSessionLeavesNoProxyToTheDriver(t *testing.T) {
+	f := newFake()
+	c := workConfig()
+	f.results[freezeName(c, c.Task.Title)] = sandbox.Result{Output: headCommit + "\n"}
+	d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "done"})}}}
+
+	_, err := f.workRunner(d).Work(t.Context(), c, startWork, noProgress)
+	require.NoError(t, err)
+	require.Len(t, d.specs, 1)
+
+	names := func(env []string) []string {
+		var out []string
+
+		for _, kv := range env {
+			k, _, _ := strings.Cut(kv, "=")
+			out = append(out, k)
+		}
+
+		return out
+	}
+
+	session, freeze := names(d.specs[0].Env), names(f.run(t, freezeName(c, c.Task.Title)).cmd.Env)
+	assert.Contains(t, session, "HTTPS_PROXY")
+
+	for _, k := range []string{"NO_PROXY", "no_proxy"} {
+		assert.NotContains(t, session, k)
+		assert.Contains(t, freeze, k)
 	}
 }
 
