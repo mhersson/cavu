@@ -309,12 +309,69 @@ func TestControlAllowsListedLinkLocal(t *testing.T) {
 	hh, ok := h.(*handler)
 	require.True(t, ok)
 
-	assert.NoError(t, hh.control("tcp4", "169.254.169.254:443", nil))
-	assert.NoError(t, hh.control("tcp6", "[fe80::1]:443", nil))
-	require.Error(t, hh.control("tcp4", "169.254.1.1:443", nil))
-	require.Error(t, hh.control("tcp6", "[fe80::2]:443", nil))
-	assert.NoError(t, hh.control("tcp4", "10.1.2.3:443", nil))
-	assert.NoError(t, hh.control("tcp4", "127.0.0.1:443", nil))
+	control := hh.controlFor("")
+
+	assert.NoError(t, control("tcp4", "169.254.169.254:443", nil))
+	assert.NoError(t, control("tcp6", "[fe80::1]:443", nil))
+	require.Error(t, control("tcp4", "169.254.1.1:443", nil))
+	require.Error(t, control("tcp6", "[fe80::2]:443", nil))
+	assert.NoError(t, control("tcp4", "10.1.2.3:443", nil))
+	assert.NoError(t, control("tcp4", "127.0.0.1:443", nil))
+}
+
+func TestControlLetsTheListedHostGatewayThrough(t *testing.T) {
+	// Rootless Podman maps host.docker.internal to a link-local address.
+	const gatewayIP = "169.254.1.2:8080"
+
+	for _, tc := range []struct {
+		name    string
+		allow   []string
+		host    string
+		address string
+		ok      bool
+	}{
+		{"docker name allowed", []string{"host.docker.internal:8080"}, "host.docker.internal", gatewayIP, true},
+		{"podman name allowed", []string{"host.containers.internal"}, "host.containers.internal", gatewayIP, true},
+		{"name in another case", []string{"host.docker.internal:8080"}, "Host.Docker.Internal.", gatewayIP, true},
+		{"v6 link-local", []string{"host.docker.internal"}, "host.docker.internal", "[fe80::1]:443", true},
+		{"another allowed name on the same address", []string{"host.docker.internal:8080", "other.example:8080"}, "other.example", gatewayIP, false},
+		{"only a wildcard covers the name", []string{"*.docker.internal"}, "host.docker.internal", gatewayIP, false},
+		{"name not allowed", []string{"other.example"}, "host.docker.internal", gatewayIP, false},
+		{"unspecified address", []string{"host.docker.internal"}, "host.docker.internal", "0.0.0.0:443", false},
+		{"ip literal of the gateway", []string{"host.docker.internal"}, "169.254.1.2", gatewayIP, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, err := New(Config{AllowHosts: tc.allow})
+			require.NoError(t, err)
+
+			hh, ok := h.(*handler)
+			require.True(t, ok)
+
+			err = hh.controlFor(tc.host)("tcp", tc.address, nil)
+			if tc.ok {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorIs(t, err, errRefusedAddress)
+			}
+		})
+	}
+}
+
+func TestEgressRefusesOtherNamesOnTheGatewayAddress(t *testing.T) {
+	var d deniedLog
+
+	table := map[string]string{"host.docker.internal": "169.254.1.2", "other.example": "169.254.1.2"}
+	p := stubbed(t, Config{AllowHosts: []string{"host.docker.internal:8080", "other.example:8080"}, OnDenied: d.add}, table)
+
+	_, _, resp := connectTo(t, p, "other.example:8080")
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	r, err := viaProxy(t, p).Get("http://other.example:8080/")
+	require.NoError(t, err)
+
+	_ = r.Body.Close()
+	assert.Equal(t, http.StatusForbidden, r.StatusCode)
+	assert.Equal(t, []string{"other.example:8080", "other.example:8080"}, d.all())
 }
 
 func TestDeniedViaHandler(t *testing.T) {

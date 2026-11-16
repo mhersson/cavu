@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -148,30 +149,46 @@ const dialTimeout = 30 * time.Second
 
 var errRefusedAddress = errors.New("proxy: address refused after resolution")
 
-// control runs on every resolved address just before connect, so a second
-// resolution cannot slip past. Link-local and unspecified addresses (cloud
-// metadata among them) are refused unless that IP itself is on the allowlist.
-func (h *handler) control(_, address string, _ syscall.RawConn) error {
-	ap, err := netip.ParseAddrPort(address)
-	if err != nil {
-		return errRefusedAddress
-	}
+// The runtime writes these names into the sidecar's hosts file, so a DNS
+// answer cannot rebind them.
+var hostGateways = []string{"host.docker.internal", "host.containers.internal"}
 
-	ip := ap.Addr().Unmap().WithZone("")
-	if (ip.IsLinkLocalUnicast() || ip.IsUnspecified()) && !h.allow.listsHost(ip.String()) {
-		return errRefusedAddress
-	}
+// controlFor checks every address a dial of host resolves to, just before
+// connect, so a second resolution cannot slip past. Link-local and unspecified
+// addresses (cloud metadata among them) are refused unless that IP itself is
+// on the allowlist; link-local is also let through for a listed host gateway.
+func (h *handler) controlFor(host string) func(network, address string, c syscall.RawConn) error {
+	host = normHost(host)
+	gateway := slices.Contains(hostGateways, host) && h.allow.listsHost(host)
 
-	return nil
+	return func(_, address string, _ syscall.RawConn) error {
+		ap, err := netip.ParseAddrPort(address)
+		if err != nil {
+			return errRefusedAddress
+		}
+
+		ip := ap.Addr().Unmap().WithZone("")
+		if h.allow.listsHost(ip.String()) {
+			return nil
+		}
+
+		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() && !gateway {
+			return errRefusedAddress
+		}
+
+		return nil
+	}
 }
 
 func (h *handler) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	if h.lookup != nil {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
 
+	control := h.controlFor(host)
+
+	if h.lookup != nil {
 		if _, perr := netip.ParseAddr(host); perr != nil {
 			ips, lerr := h.lookup(ctx, host)
 			if lerr != nil || len(ips) == 0 {
@@ -182,7 +199,7 @@ func (h *handler) dialContext(ctx context.Context, network, addr string) (net.Co
 		}
 	}
 
-	return (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second, Control: h.control}).DialContext(ctx, network, addr)
+	return (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second, Control: control}).DialContext(ctx, network, addr)
 }
 
 func (h *handler) deny(w http.ResponseWriter, host, port string) {
