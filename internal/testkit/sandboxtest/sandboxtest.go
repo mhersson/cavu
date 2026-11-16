@@ -311,10 +311,9 @@ func SignatureLine(certPEM []byte) string {
 	return lines[len(lines)-2]
 }
 
-// StartTLSServer serves h over HTTPS on addr with a random port, with a
-// certificate for host.docker.internal signed by CA(t), and returns the port.
-// It stops with the test.
-func StartTLSServer(t *testing.T, addr string, h http.Handler) (port string) {
+// ServerCertificate is a fresh certificate for host.docker.internal signed by
+// CA(t).
+func ServerCertificate(t *testing.T) tls.Certificate {
 	t.Helper()
 
 	_, caKey, ca := CA(t)
@@ -333,8 +332,16 @@ func StartTLSServer(t *testing.T, addr string, h http.Handler) (port string) {
 	der, err := x509.CreateCertificate(nil, tpl, ca, srvKey.Public(), caKey)
 	require.NoError(t, err)
 
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: srvKey}
+}
+
+// StartTLSServer serves h over HTTPS on addr with a random port, with
+// ServerCertificate(t), and returns the port. It stops with the test.
+func StartTLSServer(t *testing.T, addr string, h http.Handler) (port string) {
+	t.Helper()
+
 	ln, err := tls.Listen("tcp", net.JoinHostPort(addr, "0"), &tls.Config{
-		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: srvKey}},
+		Certificates: []tls.Certificate{ServerCertificate(t)},
 		MinVersion:   tls.VersionTLS12,
 	})
 	require.NoError(t, err)

@@ -365,3 +365,89 @@ func TestMockTLS(t *testing.T) {
 	assert.Equal(t, "http", u.Scheme)
 	assert.Equal(t, "host.docker.internal", u.Hostname())
 }
+
+func TestMockErrorStatus(t *testing.T) {
+	s := Start(t, []Step{{Status: http.StatusTooManyRequests}, {Status: 529}, {Status: 418}, {Text: "after"}})
+
+	for _, want := range []struct {
+		status int
+		kind   string
+	}{
+		{http.StatusTooManyRequests, "rate_limit_error"},
+		{529, "overloaded_error"},
+		{418, "api_error"},
+	} {
+		resp := post(t, testClient, s.URL()+"/v1/messages", map[string]any{
+			"model": "claude-haiku-5-5", "stream": true, "messages": []any{},
+		}, nil)
+		require.Equal(t, want.status, resp.StatusCode)
+
+		var body struct {
+			Type  string `json:"type"`
+			Error struct {
+				Type string `json:"type"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		assert.Equal(t, "error", body.Type)
+		assert.Equal(t, want.kind, body.Error.Type)
+	}
+
+	assert.Equal(t, "after", call(t, testClient, s.URL()).text)
+}
+
+func TestMockMarksModelCalls(t *testing.T) {
+	s := Start(t, nil)
+
+	call(t, testClient, s.URL())
+
+	side := map[string]any{"model": "claude-haiku-5-5", "messages": []any{}}
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		resp := post(t, testClient, s.URL()+path, side, nil)
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
+
+	reqs := s.Requests()
+	require.Len(t, reqs, 3)
+	assert.Equal(t, []bool{true, false, false}, []bool{reqs[0].ModelCall, reqs[1].ModelCall, reqs[2].ModelCall})
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(reqs[0].Body, &body))
+	assert.Equal(t, true, body["stream"])
+	assert.JSONEq(t, `{"model":"claude-haiku-5-5","messages":[]}`, string(reqs[1].Body))
+}
+
+// The client trusts only the caller's CA, so an answer proves the server
+// serves the caller's certificate.
+func TestMockTLSWithCertificate(t *testing.T) {
+	caPEM, cert := certificates(t)
+
+	s := StartTLSWith(t, []Step{{Text: "hello"}}, cert)
+
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM(caPEM))
+
+	client := &http.Client{Timeout: testBound, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "host.docker.internal", MinVersion: tls.VersionTLS12},
+	}}
+	t.Cleanup(client.CloseIdleConnections)
+
+	assert.Equal(t, "hello", call(t, client, s.URL()).text)
+}
+
+func TestQuietHandshakesPassesOtherLines(t *testing.T) {
+	var out strings.Builder
+
+	q := quietHandshakes{&out}
+
+	for _, line := range []string{
+		"http: TLS handshake error from 172.17.0.2:36886: EOF\n",
+		"http: panic serving 127.0.0.1:1: boom\n",
+	} {
+		n, err := q.Write([]byte(line))
+		require.NoError(t, err)
+		assert.Equal(t, len(line), n)
+	}
+
+	assert.Equal(t, "http: panic serving 127.0.0.1:1: boom\n", out.String())
+}
