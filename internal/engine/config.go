@@ -118,23 +118,33 @@ func ReadSettings(values map[string]string) (RunConfig, error) {
 
 	set := settingsReader{values: values}
 
-	var c RunConfig
-
-	c.InstanceID = values["instance_id"]
-	c.Endpoint.Mode = set.oneOf("endpoint_mode", "subscription", "key")
-	c.Endpoint.URL = values["endpoint_url"]
-	c.Endpoint.AuthHeader = set.oneOf("endpoint_auth_header", "bearer", "x-api-key")
-	c.Agent.Model, c.Agent.Effort = values[keyModelWork], values[keyEffortWork]
-	c.Agent.MaxTurns = set.positiveInt("work_max_turns", 200)
-	c.Agent.Timeout = time.Duration(set.positiveInt("work_timeout_minutes", 60)) * time.Minute
-	c.Verify.Timeout = set.minutes("verify_timeout_minutes", 10, 0.5, 120)
-	c.Identity.Name, c.Identity.Email = values["commit_name"], values["commit_email"]
-
+	c := set.read()
 	if set.err != nil {
 		return RunConfig{}, set.err
 	}
 
 	return c, nil
+}
+
+// settableKeys are the settings a person sets. instance_id is generated, and
+// another value would orphan the instance's volumes.
+var settableKeys = []string{
+	"runtime", "ca_bundle_path", "endpoint_mode", "endpoint_url", "endpoint_auth_header",
+	keyModelWork, keyEffortWork, "work_timeout_minutes", "work_max_turns", "verify_timeout_minutes",
+	"commit_name", "commit_email",
+}
+
+// CheckSetting refuses a key a person cannot set and a value a run would not
+// read. An empty value unsets the key.
+func CheckSetting(key, value string) error {
+	if !slices.Contains(settableKeys, key) {
+		return fmt.Errorf("%s cannot be set; the settings are %s", key, strings.Join(settableKeys, ", "))
+	}
+
+	set := settingsReader{values: map[string]string{key: value}}
+	set.read()
+
+	return set.err
 }
 
 // resolveSwitches applies a project's switches over the defaults, then a task's
@@ -174,6 +184,23 @@ func resolveSwitches(p store.Project, overrides map[string]string) (Switches, er
 type settingsReader struct {
 	values map[string]string
 	err    error
+}
+
+// read reads every setting a run uses; a key not in values takes its default.
+func (s *settingsReader) read() RunConfig {
+	var c RunConfig
+
+	c.InstanceID = s.values["instance_id"]
+	c.Endpoint.Mode = s.oneOf("endpoint_mode", "subscription", "key")
+	c.Endpoint.URL = s.values["endpoint_url"]
+	c.Endpoint.AuthHeader = s.oneOf("endpoint_auth_header", "bearer", "x-api-key")
+	c.Agent.Model, c.Agent.Effort = s.values[keyModelWork], s.values[keyEffortWork]
+	c.Agent.MaxTurns = s.positiveInt("work_max_turns", 200)
+	c.Agent.Timeout = time.Duration(s.positiveInt("work_timeout_minutes", 60)) * time.Minute
+	c.Verify.Timeout = s.minutes("verify_timeout_minutes", 10, 0.5, 120)
+	c.Identity.Name, c.Identity.Email = s.values["commit_name"], s.values["commit_email"]
+
+	return c
 }
 
 func (s *settingsReader) fail(key, problem string) {

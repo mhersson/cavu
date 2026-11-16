@@ -154,6 +154,45 @@ func TestReadSettingsNamesEveryMissingKey(t *testing.T) {
 	assert.NotContains(t, err.Error(), "work_max_turns", "a key not set comes before a value that does not parse")
 }
 
+func TestCheckSetting(t *testing.T) {
+	tests := []struct {
+		key, value string
+		ok         bool
+	}{
+		{"endpoint_mode", "subscription", true},
+		{"endpoint_mode", "key", true},
+		{"endpoint_mode", "both", false},
+		{"endpoint_auth_header", "x-api-key", true},
+		{"endpoint_auth_header", "basic", false},
+		{"work_max_turns", "50", true},
+		{"work_max_turns", "0", false},
+		{"work_timeout_minutes", "soon", false},
+		{"verify_timeout_minutes", "2.5", true},
+		{"verify_timeout_minutes", "soon", false},
+		{"endpoint_mode", "", true},
+		{"model_work", "any-model", true},
+		{"runtime", "podman", true},
+		{"ca_bundle_path", "/etc/ca.pem", true},
+		{"commit_email", "bot@example.com", true},
+		{"instance_id", "0123456789abcdef", false},
+		{"max_turns", "5", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			err := engine.CheckSetting(tt.key, tt.value)
+			if tt.ok {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.key)
+		})
+	}
+}
+
 func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture) {
 	t.Helper()
 
