@@ -21,21 +21,12 @@ func Main(m *testing.M) {
 		panic(err)
 	}
 
-	cfg := filepath.Join(dir, "gitconfig")
-	if err := os.WriteFile(cfg, []byte("[maintenance]\n\tauto = false\n"), 0o600); err != nil {
+	env, err := isolation(dir)
+	if err != nil {
 		panic(err)
 	}
 
-	for k, v := range map[string]string{
-		"GIT_CONFIG_NOSYSTEM": "1",
-		"GIT_ATTR_NOSYSTEM":   "1",
-		"GIT_CONFIG_GLOBAL":   cfg,
-		"XDG_CONFIG_HOME":     dir,
-		"GIT_AUTHOR_NAME":     "Test",
-		"GIT_AUTHOR_EMAIL":    "test@example.com",
-		"GIT_COMMITTER_NAME":  "Test",
-		"GIT_COMMITTER_EMAIL": "test@example.com",
-	} {
+	for k, v := range env {
 		if err := os.Setenv(k, v); err != nil {
 			panic(err)
 		}
@@ -46,6 +37,41 @@ func Main(m *testing.M) {
 	_ = os.RemoveAll(dir)
 
 	os.Exit(code)
+}
+
+// Isolate is Main's isolation for one test of a package whose TestMain does
+// something else. The test cannot run in parallel.
+func Isolate(t *testing.T) {
+	t.Helper()
+
+	env, err := isolation(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+}
+
+// isolation writes a git configuration into dir and returns the variables
+// that make git use it and nothing of the machine's.
+func isolation(dir string) (map[string]string, error) {
+	cfg := filepath.Join(dir, "gitconfig")
+	if err := os.WriteFile(cfg, []byte("[maintenance]\n\tauto = false\n"), 0o600); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_ATTR_NOSYSTEM":   "1",
+		"GIT_CONFIG_GLOBAL":   cfg,
+		"XDG_CONFIG_HOME":     dir,
+		"GIT_AUTHOR_NAME":     "Test",
+		"GIT_AUTHOR_EMAIL":    "test@example.com",
+		"GIT_COMMITTER_NAME":  "Test",
+		"GIT_COMMITTER_EMAIL": "test@example.com",
+	}, nil
 }
 
 // Git runs git in dir and returns its trimmed output; it fails the test on error.

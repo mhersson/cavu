@@ -116,7 +116,8 @@ func requireNoProcess(t *testing.T, c Container, args string) {
 }
 
 // TestDetectPodmanBehindDocker puts a docker that is the real Podman first on
-// PATH, as the podman-docker shim script and as a symlink.
+// PATH, as the podman-docker shim script and as a symlink, and wants the
+// podman on PATH, which prints no notice.
 func TestDetectPodmanBehindDocker(t *testing.T) {
 	podman, err := exec.LookPath("podman")
 	if err != nil {
@@ -136,7 +137,7 @@ func TestDetectPodmanBehindDocker(t *testing.T) {
 
 			r, err := Detect(t.Context(), "")
 			require.NoError(t, err)
-			assert.Equal(t, filepath.Join(dir, "docker"), r.Bin)
+			assert.Equal(t, podman, r.Bin)
 			assert.Equal(t, "podman", r.Kind)
 		})
 	}

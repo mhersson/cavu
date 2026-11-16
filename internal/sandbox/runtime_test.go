@@ -17,25 +17,33 @@ import (
 	"github.com/mhersson/cavu/internal/proc"
 )
 
-// fakeScript stands in for the runtime client. Each call records its argv,
-// its environment names, its HOME, file descriptor 3 (when open) and stdin,
-// then prints the canned stdout (the lines given for its exact argv in
-// "outs", then "stdout") and stderr, and exits with the canned code (the one
-// given for its exact argv in "exits", else the one in "exit").
-// "sleep" holds a call whose last argument it names for 30 seconds before
-// any output, "out.<last argument>" is printed for that call only, and
-// "linger" keeps stdout open for 30 seconds after the output. It finds
-// its own tools when a test narrows PATH to fakes only.
+// fakeScript stands in for the runtime client. Each call takes the next
+// sequence number, records its argv, its environment names, its HOME, file
+// descriptor 3 (when open) and stdin, then prints the canned stdout (the
+// lines given for its exact argv in "outs", then "stdout") and stderr, and
+// exits with the canned code (the one given for its exact argv in "exits",
+// else the one in "exit"). "early.<last argument>" is printed for that call
+// before stdin is read, "sleep" holds a call whose last argument it names
+// for 30 seconds before any later output, "out.<last argument>" is printed
+// for that call only, and "linger" keeps stdout open for 30 seconds after
+// the output. It finds its own tools when a test narrows PATH to fakes only.
 const fakeScript = `#!/bin/sh
 PATH=/usr/bin:/bin:$PATH
 d='@DIR@'
-n=$(mktemp -d "$d/call.XXXXXX") || exit 99
+w=0
+while ! mkdir "$d/lock" 2>/dev/null && [ "$w" -lt 500 ]; do sleep 0.01; w=$((w + 1)); done
+i=$(( $(cat "$d/seq" 2>/dev/null || echo 0) + 1 ))
+echo "$i" > "$d/seq"
+rmdir "$d/lock" 2>/dev/null
+n=$(mktemp -d "$d/call.$(printf %06d "$i").XXXXXX") || exit 99
 for a in "$@"; do printf '%s\000' "$a"; done > "$n/argv"
 awk 'BEGIN { for (k in ENVIRON) print k }' > "$n/env"
 printf '%s' "$HOME" > "$n/home"
 if { true <&3; } 2>/dev/null; then cat <&3 > "$n/fd3"; fi
-cat > "$n/stdin"
 for last; do :; done
+[ -f "$d/early.$last" ] && cat "$d/early.$last"
+cat > "$n/stdin"
+: > "$n/eof"
 [ -f "$d/sleep" ] && [ "$(cat "$d/sleep")" = "$last" ] && sleep 30
 tab=$(printf '\t')
 if [ -f "$d/outs" ]; then
@@ -61,6 +69,8 @@ type fakeCall struct {
 	fd3    []byte
 	hasFd3 bool
 	stdin  []byte
+	// stdinRead is false while the call still waits for the end of stdin.
+	stdinRead bool
 }
 
 // fakeRuntime writes the fake client as dir/name and returns it as a Runtime
@@ -108,11 +118,13 @@ func (f *fake) appendRule(t *testing.T, file, rule string) {
 	require.NoError(t, fh.Close())
 }
 
+// calls returns the calls in the order they started.
 func (f *fake) calls(t *testing.T) []fakeCall {
 	t.Helper()
 
 	dirs, err := filepath.Glob(filepath.Join(f.dir, "call.*"))
 	require.NoError(t, err)
+	slices.Sort(dirs)
 
 	out := make([]fakeCall, 0, len(dirs))
 
@@ -138,6 +150,8 @@ func (f *fake) calls(t *testing.T) []fakeCall {
 		}
 		_, err := os.Stat(filepath.Join(d, "fd3"))
 		c.hasFd3 = err == nil
+		_, err = os.Stat(filepath.Join(d, "eof"))
+		c.stdinRead = err == nil
 		out = append(out, c)
 	}
 
@@ -884,6 +898,146 @@ func TestVolumeRemove(t *testing.T) {
 			}
 
 			assert.ElementsMatch(t, tc.calls, got)
+		})
+	}
+}
+
+func TestDetectPrefersRealPodmanOverShim(t *testing.T) {
+	for _, preferred := range []string{"", "docker"} {
+		t.Run("preferred "+strconv.Quote(preferred), func(t *testing.T) {
+			docker, fd := fakeRuntime(t, "docker")
+			fd.outFor(t, podmanVersion, askVersion...)
+			fd.set(t, "stderr", []byte(shimNotice+"\n"))
+			podman, fp := fakeRuntime(t, "podman")
+			fp.outFor(t, podmanVersion, askVersion...)
+			fp.outFor(t, "false", askRemote...)
+			onPath(t, docker, podman)
+
+			r, err := Detect(t.Context(), preferred)
+			require.NoError(t, err)
+			assert.Equal(t, Runtime{Bin: podman.Bin, Kind: "podman"}, r)
+			assert.NotContains(t, argvs(t, fd), askRemote, "the shim was asked whether it is remote")
+		})
+	}
+
+	t.Run("an error names the podman that was asked", func(t *testing.T) {
+		docker, fd := fakeRuntime(t, "docker")
+		fd.outFor(t, podmanVersion, askVersion...)
+		podman, fp := fakeRuntime(t, "podman")
+		fp.outFor(t, podmanVersion, askVersion...)
+		fp.exitFor(t, 125, askRemote...)
+		onPath(t, docker, podman)
+
+		_, err := Detect(t.Context(), "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), podman.Bin)
+		assert.NotContains(t, err.Error(), docker.Bin)
+	})
+
+	t.Run("a podman that is not Podman leaves the shim", func(t *testing.T) {
+		docker, fd := fakeRuntime(t, "docker")
+		fd.outFor(t, podmanVersion, askVersion...)
+		fd.outFor(t, "false", askRemote...)
+		other, fo := fakeRuntime(t, "podman")
+		fo.outFor(t, "nerdctl version 1.7.6", askVersion...)
+		onPath(t, docker, other)
+
+		r, err := Detect(t.Context(), "")
+		require.NoError(t, err)
+		assert.Equal(t, Runtime{Bin: docker.Bin, Kind: "podman"}, r)
+	})
+}
+
+func TestHostGatewayNeedsBridge(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+	s := goodSpec()
+	s.HostGateway = true
+
+	require.Error(t, r.Start(t.Context(), s))
+
+	_, err := r.StartAttached(t.Context(), s)
+	require.Error(t, err)
+	assert.Empty(t, f.calls(t), "the runtime was called")
+
+	s.Network = "bridge"
+	require.NoError(t, r.Start(t.Context(), s))
+	assert.Contains(t, f.only(t).argv, "--add-host=host.docker.internal:host-gateway")
+
+	t.Run("off by default", func(t *testing.T) {
+		r, f := fakeRuntime(t, "docker")
+		s := goodSpec()
+		s.Network = "bridge"
+		require.NoError(t, r.Start(t.Context(), s))
+
+		for _, a := range f.only(t).argv {
+			assert.False(t, strings.HasPrefix(a, "--add-host"), a)
+		}
+	})
+}
+
+func TestVolumeLabels(t *testing.T) {
+	for _, kind := range []string{"docker", "podman"} {
+		t.Run(kind, func(t *testing.T) {
+			r, f := fakeRuntime(t, kind)
+			f.set(t, "stdout", []byte(`{"cavu.instance":"0123456789abcdef","cavu.run":"7"}`+"\n"))
+
+			labels, err := r.VolumeLabels(t.Context(), "cavu-01234567-workspace-7")
+			require.NoError(t, err)
+			assert.Equal(t, map[string]string{"cavu.instance": "0123456789abcdef", "cavu.run": "7"}, labels)
+
+			argv := f.only(t).argv
+			assert.Equal(t, []string{"volume", "inspect"}, argv[:2])
+			assert.Equal(t, "cavu-01234567-workspace-7", argv[len(argv)-1])
+		})
+	}
+
+	t.Run("no labels", func(t *testing.T) {
+		for _, out := range []string{"null", "{}"} {
+			r, f := fakeRuntime(t, "docker")
+			f.set(t, "stdout", []byte(out+"\n"))
+
+			labels, err := r.VolumeLabels(t.Context(), "v1")
+			require.NoError(t, err)
+			assert.Empty(t, labels)
+		}
+	})
+
+	t.Run("no such volume", func(t *testing.T) {
+		r, f := fakeRuntime(t, "podman")
+		f.set(t, "exit", []byte("125"))
+
+		_, err := r.VolumeLabels(t.Context(), "v1")
+		require.Error(t, err)
+	})
+
+	t.Run("a name the client would read as a flag", func(t *testing.T) {
+		r, f := fakeRuntime(t, "docker")
+
+		_, err := r.VolumeLabels(t.Context(), "-v")
+		require.Error(t, err)
+		assert.Empty(t, f.calls(t), "the runtime was called")
+	})
+}
+
+func TestMemoryMB(t *testing.T) {
+	for kind, format := range map[string]string{"docker": "--format={{.MemTotal}}", "podman": "--format={{.Host.MemTotal}}"} {
+		t.Run(kind, func(t *testing.T) {
+			r, f := fakeRuntime(t, kind)
+			f.outFor(t, "33545605120", "info", format)
+
+			mb, err := r.MemoryMB(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, 31991, mb)
+		})
+	}
+
+	for name, out := range map[string]string{"empty": "", "not a number": "lots", "zero": "0", "negative": "-1"} {
+		t.Run(name, func(t *testing.T) {
+			r, f := fakeRuntime(t, "docker")
+			f.set(t, "stdout", []byte(out+"\n"))
+
+			_, err := r.MemoryMB(t.Context())
+			require.Error(t, err)
 		})
 	}
 }
