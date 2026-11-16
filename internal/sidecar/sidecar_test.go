@@ -86,7 +86,7 @@ func shortDir(t *testing.T) string {
 	return dir
 }
 
-// unixClient talks to the socket; with proxy true it sends absolute-form
+// unixClient talks to the socket; with proxied set it sends absolute-form
 // requests, as a client using the socket as its HTTP proxy would.
 func unixClient(sock string, proxied bool) *http.Client {
 	tr := &http.Transport{
@@ -245,6 +245,90 @@ func TestProxyOpUsageLines(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, n)
+}
+
+func TestProxyOpDrainsInFlightResponsesBeforeReturning(t *testing.T) {
+	t.Parallel()
+
+	started, release := make(chan struct{}), make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"m1",`)
+		_ = http.NewResponseController(w).Flush()
+
+		close(started)
+		<-release
+
+		_, _ = io.WriteString(w, `"usage":{"input_tokens":3,"output_tokens":5}}`)
+	}))
+	t.Cleanup(model.Close)
+	// Before model.Close, which waits for the handler.
+	t.Cleanup(releaseOnce)
+
+	sock := filepath.Join(shortDir(t), "p.sock")
+	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{
+		Socket: sock,
+		Model:  &proxy.ModelRoute{BaseURL: model.URL, Credential: "real", AuthHeader: "x-api-key", StandIn: "stand-in"},
+	}})
+	run.stdout.waitFor(t, "ready")
+
+	req, err := http.NewRequest(http.MethodPost, "http://model.invalid/v1/messages", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	req.Header.Set("x-api-key", "stand-in")
+
+	body := make(chan []byte, 1)
+
+	go func() {
+		resp, err := unixClient(sock, false).Do(req)
+		if err != nil {
+			body <- nil
+
+			return
+		}
+		defer resp.Body.Close()
+
+		b, _ := io.ReadAll(resp.Body)
+		body <- b
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the response never started")
+	}
+
+	require.NoError(t, run.stdin.Close())
+
+	select {
+	case err := <-run.done:
+		t.Fatalf("Run returned with a response in flight: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	releaseOnce()
+
+	select {
+	case err := <-run.done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not end after the response")
+	}
+
+	// Read the moment Run returns: the usage line must already be there.
+	var usage []Line
+
+	for _, l := range run.stdout.lines() {
+		if l.Type == "usage" {
+			usage = append(usage, l)
+		}
+	}
+
+	require.Len(t, usage, 1)
+	require.NotNil(t, usage[0].Usage)
+	assert.EqualValues(t, 5, usage[0].Usage.Output)
+	assert.JSONEq(t, `{"model":"m1","usage":{"input_tokens":3,"output_tokens":5}}`, string(<-body))
 }
 
 func TestProxyOpModelErrorLine(t *testing.T) {
