@@ -28,9 +28,11 @@ func TestCancelledRefWriteLeavesNoLock(t *testing.T) {
 	gitrepo.Git(t, root, "pack-refs", "--all")
 
 	// git runs the hook with "prepared" once it holds the transaction's locks.
-	started := filepath.Join(t.TempDir(), "started")
-	writeExecutable(t, filepath.Join(root, ".git", "hooks", "reference-transaction"),
-		"#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\n: > '"+started+"'\nexec sleep 30\n")
+	// Its arguments are git's, so it writes its marker next to itself, from $0.
+	hooks := filepath.Join(root, ".git", "hooks")
+	started := filepath.Join(hooks, "started")
+	writeExecutable(t, filepath.Join(hooks, "reference-transaction"),
+		"#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\n: > \"${0%/*}/started\"\nexec sleep 30\n")
 
 	_, err := run(cancelWhenWritten(t, started), call{
 		dir:  root,
