@@ -226,7 +226,8 @@ func (st *run) watching(watch func(sidecar.Line)) {
 }
 
 // act brings the agent phase up and runs do as the run's action in flight,
-// with c's mask: a sidecar error during it fails the call. The error is masked.
+// with the run's mask, which also holds its stand-in token: a sidecar error
+// during it fails the call. The error is masked.
 func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, do func(context.Context, *run, func(string) string) (T, error)) (T, error) {
 	var zero T
 
