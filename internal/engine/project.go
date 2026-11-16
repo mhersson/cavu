@@ -50,13 +50,14 @@ func (l *Loop) CheckProject(ctx context.Context, projectID int64) (PrepareResult
 		return res, suggestion, err
 	}
 
+	var b *store.Baseline // a waived verify runs none, and drops what an earlier check stored
+	if res.Baseline != ResultWaived {
+		b = &store.Baseline{Commit: res.BaseCommit, Passed: res.Baseline == ResultPassed, At: l.Now(), Output: res.Output}
+	}
+
 	p, err := l.Store.Project(ctx, projectID)
 	if err == nil {
-		p.Baseline = &store.Baseline{Commit: res.BaseCommit, Passed: res.Baseline == ResultPassed, At: l.Now(), Output: res.Output}
-		if res.Baseline == ResultWaived {
-			p.Baseline = nil // a waived verify ran no baseline
-		}
-
+		p.Baseline = b
 		err = l.Store.UpdateProject(ctx, p)
 	}
 
