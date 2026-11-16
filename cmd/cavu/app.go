@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/mhersson/cavu/internal/auth"
+	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
 )
 
@@ -86,6 +87,42 @@ func (a *app) lock() error {
 	a.held = f
 
 	return nil
+}
+
+// containerRuntime is what the verbs use of the container runtime.
+type containerRuntime interface {
+	BuildImage(ctx context.Context, o sandbox.BuildOptions, out io.Writer) error
+}
+
+// detectRuntime is the one seam to the container runtime: the unit tests
+// replace it, so they start no container and run no runtime binary.
+var detectRuntime = func(ctx context.Context, name string) (containerRuntime, error) {
+	return sandbox.Detect(ctx, name)
+}
+
+// runtime detects the runtime the runtime setting names, else the first found.
+func (a *app) runtime(ctx context.Context) (containerRuntime, error) {
+	name, _, err := a.store.Setting(ctx, "runtime")
+	if err != nil {
+		return nil, err
+	}
+
+	return detectRuntime(ctx, name)
+}
+
+// caBundle reads the CA bundle the ca_bundle_path setting names, nil when unset.
+func (a *app) caBundle(ctx context.Context) ([]byte, error) {
+	path, _, err := a.store.Setting(ctx, "ca_bundle_path")
+	if err != nil || path == "" {
+		return nil, err
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("ca_bundle_path: %w", err)
+	}
+
+	return b, nil
 }
 
 func (a *app) close() {

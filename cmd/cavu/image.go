@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -21,28 +20,29 @@ func init() {
 }
 
 func runImage(ctx context.Context, args []string, _ io.Reader, stdout, stderr io.Writer) error {
+	f := newVerbFlags("cavu image build [--cavu-binary PATH] [--ca-bundle PATH] [--data-dir DIR]", stderr)
+
+	binary := f.String("cavu-binary", "", "a Linux cavu executable to put in the image (default: this executable, on Linux)")
+	caPath := f.String("ca-bundle", "", "a PEM file of CA certificates to trust, for a network that inspects TLS (default: the file ca_bundle_path names)")
+
 	if len(args) == 0 || args[0] != "build" {
-		return errors.New("usage: cavu image build [--cavu-binary PATH] [--ca-bundle PATH]")
+		return f.usageError()
 	}
 
-	fs := flag.NewFlagSet("image build", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	binary := fs.String("cavu-binary", "", "a Linux cavu executable to put in the image (default: this executable, on Linux)")
-	caPath := fs.String("ca-bundle", "", "a PEM file of CA certificates to trust, for a network that inspects TLS")
-
-	if err := fs.Parse(args[1:]); err != nil {
-		return exitError{code: 2, err: err}
-	}
-
-	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	if _, err := f.parse(args[1:], 0); err != nil {
+		return err
 	}
 
 	bin, err := defaultBinary(runtime.GOOS, *binary, os.Executable)
 	if err != nil {
 		return err
 	}
+
+	a, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer a.close()
 
 	o := sandbox.BuildOptions{
 		CavuBinary:   bin,
@@ -52,12 +52,16 @@ func runImage(ctx context.Context, args []string, _ io.Reader, stdout, stderr io
 	}
 
 	if *caPath != "" {
-		if o.CABundle, err = os.ReadFile(*caPath); err != nil {
-			return fmt.Errorf("--ca-bundle: %w", err)
-		}
+		o.CABundle, err = os.ReadFile(*caPath)
+	} else {
+		o.CABundle, err = a.caBundle(ctx)
 	}
 
-	rt, err := sandbox.Detect(ctx, "")
+	if err != nil {
+		return err
+	}
+
+	rt, err := a.runtime(ctx)
 	if err != nil {
 		return err
 	}

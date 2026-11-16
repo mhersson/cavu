@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,8 +34,53 @@ func TestDefaultBinaryOnLinux(t *testing.T) {
 }
 
 func TestImageVerbRefusesOtherActions(t *testing.T) {
-	code, _, stderr := runCavu("image", "frobnicate")
+	code, _, stderr := runCavu("image", "frobnicate", "--data-dir", t.TempDir())
 
-	assert.Equal(t, 1, code)
+	assert.Equal(t, 2, code)
 	assert.NotEmpty(t, stderr)
+}
+
+func TestImageBuildUsesCABundleSetting(t *testing.T) {
+	fake := &fakeRuntime{}
+	useFakeRuntime(t, fake)
+
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	setting, flagged := filepath.Join(dir, "setting.pem"), filepath.Join(dir, "flag.pem")
+
+	require.NoError(t, os.WriteFile(setting, []byte("bundle of the setting"), 0o600))
+	require.NoError(t, os.WriteFile(flagged, []byte("bundle of the flag"), 0o600))
+
+	build := func(flags ...string) int {
+		args := append([]string{"image", "build", "--cavu-binary", "/linux/cavu", "--data-dir", data}, flags...)
+		code, _, _ := runCavu(args...)
+
+		return code
+	}
+	set := func(key, value string) {
+		code, _, _ := runCavu("settings", "set", key, value, "--data-dir", data)
+		require.Equal(t, 0, code)
+	}
+
+	require.Equal(t, 0, build())
+	require.Len(t, fake.builds, 1)
+	assert.Empty(t, fake.builds[0].CABundle)
+	assert.Empty(t, fake.name)
+	assert.Equal(t, "/linux/cavu", fake.builds[0].CavuBinary)
+
+	set("ca_bundle_path", setting)
+	set("runtime", "podman")
+
+	require.Equal(t, 0, build())
+	require.Len(t, fake.builds, 2)
+	assert.Equal(t, []byte("bundle of the setting"), fake.builds[1].CABundle)
+	assert.Equal(t, "podman", fake.name)
+
+	require.Equal(t, 0, build("--ca-bundle", flagged))
+	require.Len(t, fake.builds, 3)
+	assert.Equal(t, []byte("bundle of the flag"), fake.builds[2].CABundle, "the flag wins")
+
+	set("ca_bundle_path", filepath.Join(dir, "missing.pem"))
+	assert.Equal(t, 1, build())
+	assert.Len(t, fake.builds, 3, "an unreadable bundle builds nothing")
 }

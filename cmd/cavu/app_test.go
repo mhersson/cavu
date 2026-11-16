@@ -1,18 +1,27 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestMain points the default data directory at one of its own, so a test
-// that forgets --data-dir never reaches the real one.
+// that forgets --data-dir never reaches the real one, and refuses the runtime
+// to a test that forgets the fake.
 func TestMain(m *testing.M) {
+	detectRuntime = func(context.Context, string) (containerRuntime, error) {
+		return nil, errors.New("a unit test drives no container runtime")
+	}
+
 	dir, err := os.MkdirTemp("", "cavu-cmd-test-")
 	if err == nil {
 		err = os.Setenv("XDG_DATA_HOME", dir)
@@ -30,6 +39,31 @@ func TestMain(m *testing.M) {
 	_ = os.RemoveAll(dir)
 
 	os.Exit(code)
+}
+
+// fakeRuntime records what the verbs ask of the container runtime.
+type fakeRuntime struct {
+	name   string // the runtime detected
+	builds []sandbox.BuildOptions
+}
+
+func (f *fakeRuntime) BuildImage(_ context.Context, o sandbox.BuildOptions, _ io.Writer) error {
+	f.builds = append(f.builds, o)
+
+	return nil
+}
+
+func useFakeRuntime(t *testing.T, fake *fakeRuntime) {
+	t.Helper()
+
+	prev := detectRuntime
+	detectRuntime = func(_ context.Context, name string) (containerRuntime, error) {
+		fake.name = name
+
+		return fake, nil
+	}
+
+	t.Cleanup(func() { detectRuntime = prev })
 }
 
 // storedSettings reads the settings table of the data directory dir.
