@@ -446,28 +446,30 @@ func TestStagedTarRefusesUncleanNames(t *testing.T) {
 	}
 }
 
-// The staging stops before any read once what it would write passes its
-// bound, naming the file at which it does; a long rule counts as its cut. A
-// listing past its bound names no file.
+// The staging stops before it reads the staged blobs once the archive would
+// pass its bound, naming the file at which it does; a long rule counts as its
+// cut. A listing past its bound names no file.
 func TestStageLimits(t *testing.T) {
 	tree := fakeTree{
 		"CLAUDE.md":                   regular("root\n"),
 		".claude/rules/long.md":       regular(strings.Repeat("r", 2*fileLimit)),
-		".claude/skills/one/SKILL.md": regular(strings.Repeat("s", 1000)),
+		".claude/skills/one/SKILL.md": regular(strings.Repeat("s", 16<<10)),
 	}
-	counted := len("root\n") + fileLimit + 1000
 
+	// The archive is about 1.4 KiB for CLAUDE.md, 67 KiB for the rule and its
+	// directory, and 19 KiB for the skill and its two directories.
 	for _, tc := range []struct {
 		name   string
 		mutate func(*claudeCode)
 		fails  bool
 		passAt string // the file the error names
 	}{
-		{"within both", func(c *claudeCode) { c.stageLimit = counted }, false, ""},
+		{"within both", func(*claudeCode) {}, false, ""},
+		{"a long rule counts as its cut", func(c *claudeCode) { c.stageLimit = 100 << 10 }, false, ""},
 		{"listing past its limit", func(c *claudeCode) { c.listLimit = 64 }, true, ""},
-		{"past the bound at a skill", func(c *claudeCode) { c.stageLimit = counted - 1 }, true, ".claude/skills/one/SKILL.md"},
-		{"past the bound at a rule", func(c *claudeCode) { c.stageLimit = len("root\n") + fileLimit - 1 }, true, ".claude/rules/long.md"},
-		{"past the bound at a memory file", func(c *claudeCode) { c.stageLimit = len("root\n") - 1 }, true, "CLAUDE.md"},
+		{"past the bound at a memory file", func(c *claudeCode) { c.stageLimit = 100 }, true, "CLAUDE.md"},
+		{"past the bound at a rule", func(c *claudeCode) { c.stageLimit = 32 << 10 }, true, ".claude/rules/long.md"},
+		{"past the bound at a skill", func(c *claudeCode) { c.stageLimit = 76 << 10 }, true, ".claude/skills/one/SKILL.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
@@ -489,29 +491,105 @@ func TestStageLimits(t *testing.T) {
 				assert.Equal(t, tc.passAt, be.path)
 			}
 
-			assert.Empty(t, f.target.rec.ofKind(kindBatch), "a blob was read")
-			assert.Empty(t, f.target.rec.ofKind(kindWrite), "a write ran")
-			requireNoSession(t, f)
+			requireNoRead(t, f)
 		})
 	}
 }
 
-// The bound counts every staged name, so skills that share one blob, read
-// once, count once each.
-func TestStageBoundCountsEachName(t *testing.T) {
-	shared := strings.Repeat("s", 600)
+// requireNoRead fails unless f's staging read no blob and wrote nothing, and
+// no session started.
+func requireNoRead(t *testing.T, f *fakeRun) {
+	t.Helper()
 
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
-	f.spec.BaseCommit = testBase
-	f.target.rec.tree = fakeTree{".claude/skills/a/SKILL.md": regular(shared), ".claude/skills/b/SKILL.md": regular(shared)}
-	f.d.stageLimit = 1000
+	assert.Empty(t, f.target.rec.ofKind(kindBatch), "a blob was read")
+	assert.Empty(t, f.target.rec.ofKind(kindBlob), "a blob was read")
+	assert.Empty(t, f.target.rec.ofKind(kindWrite), "a write ran")
+	requireNoSession(t, f)
+}
+
+// requireBound fails unless f's run stops at the bound with no blob read,
+// and returns the file the error names.
+func requireBound(t *testing.T, f *fakeRun) string {
+	t.Helper()
 
 	_, err := f.run(t.Context())
 
 	var be *boundError
 	require.ErrorAs(t, err, &be)
-	assert.Equal(t, ".claude/skills/b/SKILL.md", be.path)
-	requireNoSession(t, f)
+	requireNoRead(t, f)
+
+	return be.path
+}
+
+// boundRun is a fake run whose base commit is tree, with a bound of limit.
+func boundRun(t *testing.T, tree fakeTree, limit int) *fakeRun {
+	t.Helper()
+
+	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f.spec.BaseCommit = testBase
+	f.target.rec.tree = tree
+	f.d.stageLimit = limit
+
+	return f
+}
+
+// The bound counts every staged name, so skills that share one blob, read
+// once, count once each.
+func TestStageBoundCountsEachName(t *testing.T) {
+	shared := strings.Repeat("s", 20<<10)
+
+	f := boundRun(t, fakeTree{".claude/skills/a/SKILL.md": regular(shared), ".claude/skills/b/SKILL.md": regular(shared)}, 30<<10)
+
+	assert.Equal(t, ".claude/skills/b/SKILL.md", requireBound(t, f))
+}
+
+// Each archive entry counts about 1 KiB, so many empty files pass the bound
+// though they hold nothing.
+func TestStageBoundCountsEachEntry(t *testing.T) {
+	tree := fakeTree{}
+	for i := range 64 {
+		tree[fmt.Sprintf(".claude/skills/one/f%02d.md", i)] = regular("")
+	}
+
+	assert.Contains(t, slices.Collect(maps.Keys(tree)), requireBound(t, boundRun(t, tree, 32<<10)))
+}
+
+// Each directory a staged file sits in is an archive entry and counts too.
+func TestStageBoundCountsDirectories(t *testing.T) {
+	deep := ".claude/skills/" + strings.Repeat("d/", 40) + "SKILL.md"
+
+	assert.Equal(t, deep, requireBound(t, boundRun(t, fakeTree{deep: regular("x")}, 32<<10)))
+}
+
+// Link targets count before they are read, each about 1 KiB, so many rule
+// links stop the staging before the link read.
+func TestStageBoundCountsLinks(t *testing.T) {
+	tree := fakeTree{}
+	for i := range 64 {
+		tree[fmt.Sprintf(".claude/rules/r%02d.md", i)] = symlink(fmt.Sprintf("../../docs/r%02d.md", i))
+	}
+
+	assert.Contains(t, slices.Collect(maps.Keys(tree)), requireBound(t, boundRun(t, tree, 32<<10)))
+}
+
+// Links that share a target blob are read once.
+func TestStageReadsEachLinkOnce(t *testing.T) {
+	f := stageFake(t, fakeTree{
+		"docs/rule.md":         regular("linked rule\n"),
+		".claude/rules/a.md":   symlink("../../docs/rule.md"),
+		".claude/rules/b.md":   symlink("../../docs/rule.md"),
+		".claude/rules/c.md":   symlink("../../docs/rule.md"),
+		".claude/rules/sub.md": regular("plain\n"),
+	})
+
+	batches := f.target.rec.ofKind(kindBatch)
+	require.Len(t, batches, 2, "the link read, then the staged read")
+	assert.Len(t, strings.Fields(string(batches[0].stdin)), 1)
+
+	got := stagedFiles(t, f)
+	for _, name := range []string{"rules/a.md", "rules/b.md", "rules/c.md"} {
+		assert.Equal(t, "linked rule\n", got[name], name)
+	}
 }
 
 // The archive holds names, contents and two modes only: 0755 for directories

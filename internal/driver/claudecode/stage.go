@@ -43,12 +43,15 @@ const (
 	keptEntry = "projects"
 
 	stageTimeout = time.Minute
-	// listLimit bounds the tree listing, stageLimit what the staging writes
-	// as checkBound counts it, and fileLimit each memory and rule file, which
-	// is cut there.
+	// listLimit bounds the tree listing, stageLimit what the staging holds as
+	// stageBudget counts it, and fileLimit each memory and rule file, which is
+	// cut there.
 	listLimit  = 64 << 20
 	stageLimit = 16 << 20
 	fileLimit  = 64 << 10
+	// entryCost is what the budget counts for each archive entry and each link
+	// read beyond its name and content: a tar header and its padding.
+	entryCost = 1 << 10
 	// linkLimit is the longest symlink target read.
 	linkLimit = 4096
 
@@ -184,9 +187,13 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 		return err
 	}
 
-	memory, rules, err := c.boundedFiles(ctx, t, s, tree)
+	// The budget counts the link targets before they are read, then the
+	// archive before the staged blobs are read.
+	budget := &stageBudget{limit: c.stageLimit, dirs: map[string]bool{}}
+
+	memory, rules, err := c.boundedFiles(ctx, t, s, tree, budget)
 	if err != nil {
-		return err
+		return fmt.Errorf("stage %s: %w", s.BaseCommit, err)
 	}
 
 	skills, err := skillEntries(tree)
@@ -194,7 +201,9 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 		return err
 	}
 
-	if err := c.checkBound(memory, rules, skills); err != nil {
+	nested := nestedFiles(tree)
+
+	if err := budget.archive(memory, rules, skills, nested); err != nil {
 		return fmt.Errorf("stage %s: %w", s.BaseCommit, err)
 	}
 
@@ -208,15 +217,14 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 	executable := map[string]bool{}
 
 	for _, e := range skills {
-		name := path.Join(stagedSkills, strings.TrimPrefix(e.path, repoSkills))
-		files[name], executable[name] = whole[e.oid], e.executable()
+		files[skillName(e)], executable[skillName(e)] = whole[e.oid], e.executable()
 	}
 
 	for _, f := range rules {
-		files[path.Join(stagedRules, strings.TrimPrefix(f.path, repoRules))] = bounded[f.blob.oid]
+		files[ruleName(f)] = bounded[f.blob.oid]
 	}
 
-	staged, err := memorySections(memory, bounded, nestedFiles(tree)).render()
+	staged, err := memorySections(memory, bounded, nested).render()
 	if err != nil {
 		return err
 	}
@@ -325,7 +333,7 @@ func parseListing(listing []byte) (map[string]treeEntry, error) {
 // boundedFiles resolves the memory files and the Markdown files under
 // .claude/rules: a regular file is taken, a symlink only when its target is
 // a regular file inside the tree, anything else skipped.
-func (c claudeCode) boundedFiles(ctx context.Context, t proc.Target, s driver.Spec, tree map[string]treeEntry) (memory, rules []boundedFile, err error) {
+func (c claudeCode) boundedFiles(ctx context.Context, t proc.Target, s driver.Spec, tree map[string]treeEntry, budget *stageBudget) (memory, rules []boundedFile, err error) {
 	var candidates []string
 
 	for _, name := range memoryNames {
@@ -344,10 +352,18 @@ func (c claudeCode) boundedFiles(ctx context.Context, t proc.Target, s driver.Sp
 		}
 	}
 
+	// Each link target is read once and counted before the read.
 	var links []treeEntry
 
+	read := map[string]bool{}
+
 	for _, p := range candidates {
-		if e := tree[p]; e.symlink() && e.size >= 0 && e.size <= linkLimit {
+		if e := tree[p]; e.symlink() && e.size >= 0 && e.size <= linkLimit && !read[e.oid] {
+			if err := budget.spend(p, entryCost+e.size); err != nil {
+				return nil, nil, err
+			}
+
+			read[e.oid] = true
 			links = append(links, e)
 		}
 	}
@@ -444,7 +460,7 @@ func cleanRepoPath(p string) bool {
 	return true
 }
 
-// boundError is a staging that would write more than its bound; path is the
+// boundError is a staging that would hold more than its bound; path is the
 // repository file at which it passes it.
 type boundError struct {
 	path  string
@@ -455,45 +471,103 @@ func (e *boundError) Error() string {
 	return fmt.Sprintf("the instruction files pass %d bytes at %s", e.bound, e.path)
 }
 
-// checkBound counts, from the listing's sizes and before anything is read,
-// what the staging writes, by staged name: each distinct memory blob and each
-// rule up to fileLimit, each skill whole. The archive holds that, the fixed
-// text, the cut lines and the nested list. Reading takes no more.
-func (c claudeCode) checkBound(memory, rules []boundedFile, skills []treeEntry) error {
-	total := 0
-	counted := map[string]bool{}
+// stageBudget counts what the staging holds against limit, in order: each
+// link target it reads, then each archive entry (CLAUDE.md, every rule and
+// skill file, and every directory they sit in) at entryCost plus its name and
+// content, the rules and memory files as cut. Reading takes no more than it
+// counts.
+type stageBudget struct {
+	limit, total int
+	dirs         map[string]bool // directories already counted
+}
 
-	count := func(p string, n int) error {
-		if total += n; total > c.stageLimit {
-			return &boundError{path: p, bound: c.stageLimit}
+// spend counts n bytes for the repository file p.
+func (b *stageBudget) spend(p string, n int) error {
+	if b.total += n; b.total > b.limit {
+		return &boundError{path: p, bound: b.limit}
+	}
+
+	return nil
+}
+
+// archive counts the archive the write gets, before its blobs are read. The
+// staged CLAUDE.md is its rendered skeleton (headings, fixed text, nested
+// list) plus each distinct memory blob.
+func (b *stageBudget) archive(memory, rules []boundedFile, skills []treeEntry, nested []string) error {
+	skeleton, err := memorySections(memory, nil, nested).render()
+	if err != nil {
+		return err
+	}
+
+	if skeleton != nil {
+		blame := stagedMemory
+		if len(memory) > 0 {
+			blame = memory[0].path
+		} else if len(nested) > 0 {
+			blame = nested[0]
 		}
 
-		return nil
+		if err := b.spend(blame, entryCost+len(stagedMemory)+len(skeleton)); err != nil {
+			return err
+		}
 	}
+
+	counted := map[string]bool{}
 
 	for _, f := range memory {
 		if !counted[f.blob.oid] {
 			counted[f.blob.oid] = true
 
-			if err := count(f.path, min(f.blob.size, fileLimit)); err != nil {
+			if err := b.spend(f.path, cutSize(f.blob.size)); err != nil {
 				return err
 			}
 		}
 	}
 
 	for _, f := range rules {
-		if err := count(f.path, min(f.blob.size, fileLimit)); err != nil {
+		if err := b.file(f.path, ruleName(f), cutSize(f.blob.size)); err != nil {
 			return err
 		}
 	}
 
 	for _, e := range skills {
-		if err := count(e.path, e.size); err != nil {
+		if err := b.file(e.path, skillName(e), e.size); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// file counts the archive entry name for the repository file p, with size
+// bytes of content, and each directory above it not counted yet.
+func (b *stageBudget) file(p, name string, size int) error {
+	for d := path.Dir(name); d != "." && !b.dirs[d]; d = path.Dir(d) {
+		b.dirs[d] = true
+
+		if err := b.spend(p, entryCost+len(d)); err != nil {
+			return err
+		}
+	}
+
+	return b.spend(p, entryCost+len(name)+size)
+}
+
+// cutSize is what a memory or rule file of size bytes holds once staged.
+func cutSize(size int) int {
+	if size <= fileLimit {
+		return size
+	}
+
+	return fileLimit + len(cutText)
+}
+
+func ruleName(f boundedFile) string {
+	return path.Join(stagedRules, strings.TrimPrefix(f.path, repoRules))
+}
+
+func skillName(e treeEntry) string {
+	return path.Join(stagedSkills, strings.TrimPrefix(e.path, repoSkills))
 }
 
 // readStaged reads the skills whole, by blob, and the bounded files cut at
