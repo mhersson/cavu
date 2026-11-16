@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
@@ -82,13 +81,11 @@ func New(c Config) (http.Handler, error) {
 }
 
 // NewStandIn returns a fresh stand-in token: 32 random bytes, hex.
-func NewStandIn() (string, error) {
+func NewStandIn() string {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("proxy: stand-in token: %w", err)
-	}
+	_, _ = rand.Read(b) // never returns an error
 
-	return hex.EncodeToString(b), nil
+	return hex.EncodeToString(b)
 }
 
 // newTransport never uses a proxy from the environment: every upstream

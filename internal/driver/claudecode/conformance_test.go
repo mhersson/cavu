@@ -119,9 +119,7 @@ func keyBoxWith(t *testing.T, authHeader string, steps ...mockapi.Step) *box {
 	r := sandboxtest.Runtime(t)
 	image := sandboxtest.Image(t, r, Version, SHA512, nil)
 
-	standIn, err := proxy.NewStandIn()
-	require.NoError(t, err)
-
+	standIn := proxy.NewStandIn()
 	b := &box{t: t, rt: r, mock: mockapi.Start(t, steps), cred: "conformance-credential-" + randomID(), standIn: standIn}
 	b.up(image, sidecar.ProxyRequest{Model: &proxy.ModelRoute{
 		BaseURL: b.mock.HostURL(), Credential: b.cred, AuthHeader: authHeader, StandIn: standIn,

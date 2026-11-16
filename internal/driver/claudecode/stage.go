@@ -90,7 +90,7 @@ var errNotInSandbox = errors.New("the sandbox image lacks " + proc.SandboxMarker
 // system config and no fetch from a promisor remote. The repository's own
 // config and object store stay the agent's.
 func stageEnv(s driver.Spec) []string {
-	return proc.BuildEnv(nil, nil, map[string]string{
+	return proc.BuildEnv(nil, map[string]string{
 		"PATH": basePath, "HOME": s.Home, "LC_ALL": "C",
 		"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
 	})

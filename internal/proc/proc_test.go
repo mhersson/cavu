@@ -104,13 +104,6 @@ func runHelper(mode string) {
 		_, _ = io.Copy(os.Stdout, os.NewFile(3, "feed"))
 	case "cat":
 		_, _ = io.Copy(os.Stdout, os.Stdin)
-	case "readfile":
-		b, err := os.ReadFile(os.Getenv("PROC_FILE")) //nolint:gosec // test-supplied path
-		if err != nil {
-			os.Exit(2)
-		}
-
-		_, _ = os.Stdout.Write(b)
 	case "env":
 		fmt.Print(strings.Join(os.Environ(), "\n"))
 	case "exit3":
@@ -434,45 +427,14 @@ func TestEnvIsComplete(t *testing.T) {
 	assert.ElementsMatch(t, []string{helperEnv + "=env", "ONLY=this"}, strings.Split(out.String(), "\n"))
 }
 
-func TestLocalWritesFilesBeforeStart(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	fresh := dir + "/fresh"
-	existing := dir + "/existing"
-	require.NoError(t, os.WriteFile(existing, []byte("old"), 0o644))
-
-	var out bytes.Buffer
-
-	c := helperCommand(t, "readfile", "PROC_FILE="+fresh)
-	c.Files = map[string][]byte{fresh: []byte("content\x00"), existing: []byte("new")}
-	c.Stdout = &out
-
-	e := waitWithin(t, startCommand(t, c), 5*time.Second)
-	require.NoError(t, e.err)
-	require.Equal(t, 0, e.code)
-	assert.Equal(t, "content\x00", out.String())
-
-	for path, want := range map[string]string{fresh: "content\x00", existing: "new"} {
-		got, err := os.ReadFile(path)
-		require.NoError(t, err)
-		assert.Equal(t, want, string(got))
-
-		info, err := os.Stat(path)
-		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), path)
-	}
-}
-
 func TestLocalRefusesBadCommands(t *testing.T) {
 	t.Parallel()
 
 	good := helperCommand(t, "lines")
 
 	cases := map[string]Command{
-		"empty argv":         {Env: good.Env},
-		"missing binary":     {Argv: []string{"/nonexistent/binary"}},
-		"relative file path": {Argv: good.Argv, Env: good.Env, Files: map[string][]byte{"relative": nil}},
+		"empty argv":     {Env: good.Env},
+		"missing binary": {Argv: []string{"/nonexistent/binary"}},
 	}
 
 	for name, c := range cases {

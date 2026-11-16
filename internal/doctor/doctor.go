@@ -298,7 +298,7 @@ func (r *doctor) sandbox(ctx context.Context) Check {
 	req := sidecar.ProxyRequest{AllowHosts: r.Driver.Hosts(mode)}
 
 	if mode == "key" {
-		r.standIn, _ = proxy.NewStandIn() // crypto/rand does not fail
+		r.standIn = proxy.NewStandIn()
 		req.Model = &proxy.ModelRoute{
 			BaseURL: r.Settings["endpoint_url"], Credential: r.Credential,
 			AuthHeader: r.Settings["endpoint_auth_header"], StandIn: r.standIn,

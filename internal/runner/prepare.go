@@ -217,7 +217,7 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 
 	cmd := proc.Command{
 		Argv: verify.Argv(p.c.Setup.Command),
-		Env:  proc.BuildEnv(setupEnv(det.Ecosystems), nil, vars),
+		Env:  proc.BuildEnv(setupEnv(det.Ecosystems), vars),
 		Dir:  workspace,
 	}
 

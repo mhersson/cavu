@@ -10,8 +10,7 @@ func TestBuildEnv(t *testing.T) {
 	t.Parallel()
 
 	got := BuildEnv(
-		[]string{"PATH=/bin", "ANTHROPIC_API_KEY=x", "HOME=/old", "KEEP=1"},
-		[]string{"ANTHROPIC_API_KEY"},
+		[]string{"PATH=/bin", "HOME=/old", "KEEP=1"},
 		map[string]string{"HOME": "/new", "B": "2", "A": "1"},
 	)
 

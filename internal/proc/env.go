@@ -5,17 +5,13 @@ import (
 	"strings"
 )
 
-// BuildEnv returns base without any key in drop, then every key in set
-// (overriding base), set keys appended in sorted order.
-func BuildEnv(base []string, drop []string, set map[string]string) []string {
+// BuildEnv returns base, then every key in set (overriding base), set keys
+// appended in sorted order.
+func BuildEnv(base []string, set map[string]string) []string {
 	out := make([]string, 0, len(base)+len(set))
 
 	for _, kv := range base {
 		key, _, _ := strings.Cut(kv, "=")
-		if slices.Contains(drop, key) {
-			continue
-		}
-
 		if _, overridden := set[key]; overridden {
 			continue
 		}

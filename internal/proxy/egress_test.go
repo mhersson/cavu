@@ -213,11 +213,7 @@ func TestNewRejectsBadConfig(t *testing.T) {
 }
 
 func TestNewStandIn(t *testing.T) {
-	a, err := NewStandIn()
-	require.NoError(t, err)
-
-	b, err := NewStandIn()
-	require.NoError(t, err)
+	a, b := NewStandIn(), NewStandIn()
 
 	assert.Len(t, a, 64)
 	assert.NotEqual(t, a, b)

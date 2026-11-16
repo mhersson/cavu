@@ -39,8 +39,8 @@ const (
 // localTarget runs the fake claude on the host and nothing else. It refuses,
 // as a test failure and without running anything, any other program and a
 // command whose dir, files or config dir, or whose scenario's record, lie
-// outside root. It creates the parent directories of a command's files, as a
-// container's copy-in does, and runs a command that names no dir in root.
+// outside root. It writes a command's files and their parent directories, as
+// a container's copy-in does, and runs a command that names no dir in root.
 type localTarget struct {
 	binary string                           // the fake claude: this test binary
 	root   string                           // a t.TempDir() of the test; every path the fake uses
@@ -85,8 +85,12 @@ func (l *localTarget) Start(ctx context.Context, c proc.Command) (proc.Process, 
 	}
 	l.mu.Unlock()
 
-	for p := range c.Files {
+	for p, content := range c.Files {
 		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return nil, err
+		}
+
+		if err := os.WriteFile(p, content, 0o600); err != nil {
 			return nil, err
 		}
 	}
