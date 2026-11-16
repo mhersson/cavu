@@ -18,7 +18,7 @@ func TestProbe(t *testing.T) {
 			d := testDriver(t)
 			target := &localTarget{env: fakeEnv(t, fakeclaude.Scenario{Version: version})}
 
-			got, err := d.Probe(t.Context(), target)
+			got, err := d.Probe(bounded(t), target)
 			require.NoError(t, err)
 			assert.Equal(t, version, got)
 
@@ -31,14 +31,14 @@ func TestProbe(t *testing.T) {
 	t.Run("binary fails", func(t *testing.T) {
 		target := &localTarget{env: []string{fakeclaude.EnvVar + "=" + filepath.Join(t.TempDir(), "missing.json")}}
 
-		_, err := testDriver(t).Probe(t.Context(), target)
+		_, err := testDriver(t).Probe(bounded(t), target)
 		require.Error(t, err)
 	})
 
 	t.Run("unrecognised output", func(t *testing.T) {
 		target := &localTarget{env: fakeEnv(t, fakeclaude.Scenario{Version: "beta"})}
 
-		_, err := testDriver(t).Probe(t.Context(), target)
+		_, err := testDriver(t).Probe(bounded(t), target)
 		require.Error(t, err)
 	})
 }

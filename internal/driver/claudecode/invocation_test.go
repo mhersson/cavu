@@ -306,17 +306,50 @@ func TestEnvProxyBypassesLoopback(t *testing.T) {
 	}
 }
 
-func TestEnvSpecOverridesBase(t *testing.T) {
-	env := environment(driver.Spec{
-		Auth: driver.Auth{Mode: modeSubscription, Token: testToken}, Home: "/home/agent", ConfigDir: "/c",
-		Env: []string{"PATH=/opt/go/bin:/usr/bin", "CLAUDE_CODE_OAUTH_TOKEN=stray"},
-	})
+// Spec.Env overrides the base, but every auth value comes from Spec.Auth
+// whatever Spec.Env holds.
+func TestEnvValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		auth   driver.Auth
+		want   map[string]string
+		absent []string
+	}{
+		{
+			name:   "subscription",
+			auth:   driver.Auth{Mode: modeSubscription, Token: testToken},
+			want:   map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": testToken},
+			absent: []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"},
+		},
+		{
+			name:   "key",
+			auth:   keyAuth(),
+			want:   map[string]string{"ANTHROPIC_BASE_URL": testBridgeURL, "ANTHROPIC_AUTH_TOKEN": testStandIn},
+			absent: []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"},
+		},
+	}
 
-	v, ok := envValue(t, env, "PATH")
-	require.True(t, ok)
-	assert.Equal(t, "/opt/go/bin:/usr/bin", v)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := environment(driver.Spec{
+				Auth: tt.auth, Home: "/home/agent", ConfigDir: "/home/agent/.claude-cavu",
+				Env: append([]string{"PATH=/opt/go/bin:/usr/bin"}, strayAuth...),
+			})
 
-	v, ok = envValue(t, env, "CLAUDE_CODE_OAUTH_TOKEN")
-	require.True(t, ok)
-	assert.Equal(t, testToken, v)
+			tt.want["PATH"] = "/opt/go/bin:/usr/bin"
+			tt.want["HOME"] = "/home/agent"
+			tt.want["CLAUDE_CONFIG_DIR"] = "/home/agent/.claude-cavu"
+
+			for name, want := range tt.want {
+				v, ok := envValue(t, env, name)
+				require.True(t, ok, name)
+				assert.Equal(t, want, v, name)
+			}
+
+			for _, name := range tt.absent {
+				_, ok := envValue(t, env, name)
+				assert.False(t, ok, name)
+			}
+		})
+	}
 }

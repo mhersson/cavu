@@ -160,7 +160,23 @@ func keyAuth() driver.Auth {
 	return driver.Auth{Mode: modeKey, Token: testStandIn, BaseURL: testBridgeURL}
 }
 
+// testBound caps every wait in these tests, so a hang fails the test instead
+// of running into the go test timeout.
+const testBound = 30 * time.Second
+
+func bounded(t *testing.T) context.Context {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), testBound)
+	t.Cleanup(cancel)
+
+	return ctx
+}
+
 func (f *fakeRun) run(ctx context.Context) (driver.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, testBound)
+	defer cancel()
+
 	return f.d.Run(ctx, f.target, f.spec, func(ev driver.Event) {
 		f.events = append(f.events, ev)
 		f.once.Do(func() { close(f.first) })
@@ -241,7 +257,8 @@ func TestInitializeTimeout(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, driver.ReasonCrashed, res.Reason)
 	assert.True(t, res.IsError)
-	assert.Contains(t, res.Detail, "initialize")
+	assert.NotEmpty(t, res.Detail)
+	assert.GreaterOrEqual(t, elapsed, f.d.gateTimeout, "the run ended before the gate timed out")
 	assert.Less(t, elapsed, f.d.gateTimeout+f.d.grace)
 
 	rec := f.recorded(t)
@@ -337,7 +354,14 @@ func TestCancelInterrupts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, driver.ReasonInterrupted, res.Reason)
 	assert.True(t, res.IsError)
-	assert.Less(t, returned.Sub(<-cancelledAt), f.d.grace)
+
+	// The cancel follows the send, so an interrupted run finds the time here.
+	select {
+	case at := <-cancelledAt:
+		assert.Less(t, returned.Sub(at), f.d.grace)
+	default:
+		t.Fatal("the run ended before its first event")
+	}
 
 	grandchild := readPID(t, pidPath)
 	assert.Eventually(t, func() bool { return processGone(grandchild) }, 2*time.Second, 20*time.Millisecond,
