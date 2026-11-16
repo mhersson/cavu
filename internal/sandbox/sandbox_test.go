@@ -3,6 +3,8 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -461,7 +463,7 @@ func TestAgentPhaseMountsCacheReadOnly(t *testing.T) {
 		volumeMount(s.name("cache"), "/cache") + ",readonly",
 		volumeMount(s.name("home"), "/home/agent"),
 	}, mountFlags(agent.argv))
-	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(agent.argv), "only the pid directory is a noexec tmpfs")
+	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(agent.argv), "only the pid directory is a tmpfs")
 	assert.Equal(t, []string{"cavu-sandbox:test", "cavu", "bridge", "--listen", "127.0.0.1:3128", "--socket", "/handoff/proxy.sock"}, agent.argv[len(agent.argv)-7:])
 
 	side := onlyRun(t, f, s.name("sidecar"))
@@ -496,7 +498,7 @@ func TestSetupPhaseHasNoHomeMount(t *testing.T) {
 
 	setup := onlyRun(t, f, s.name("setup"))
 	assert.Subset(t, setup.argv, []string{"--detach", "--network=none", "--label=cavu.run=7"})
-	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(setup.argv), "only the pid directory is a noexec tmpfs")
+	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(setup.argv), "only the pid directory is a tmpfs")
 	assert.ElementsMatch(t, []string{
 		volumeMount(s.name("workspace"), "/workspace"),
 		volumeMount(s.name("handoff"), "/handoff"),
@@ -594,6 +596,10 @@ func TestCloneFailures(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s, f := ensured(t)
 			f.set(t, "out.sidecar", []byte(out+"\n"))
+
+			if name == "no result" {
+				f.set(t, "out."+s.name("clone"), []byte(`[{"State":{"OOMKilled":false,"ExitCode":1}}]`))
+			}
 
 			_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: "https://git.example/repo.git"})
 			require.Error(t, err)
@@ -867,9 +873,9 @@ func TestUpReportsASidecarThatEnds(t *testing.T) {
 		inspect string // what the runtime reports for the sidecar container
 		want    string // what the error line carries
 	}{
-		{name: "its output ends", stderr: "panic: " + cause, want: cause},
+		{name: "its output ends", stderr: "panic: " + cause, inspect: `[{"State":{"OOMKilled":false,"ExitCode":1}}]`, want: cause},
 		{name: "its own error line", out: `{"Type":"error","Error":"proxy: ` + cause + `"}`, want: cause},
-		{name: "killed for memory", inspect: `[{"State":{"OOMKilled":true,"ExitCode":137}}]`, want: ErrOutOfMemory.Error()},
+		{name: "killed for memory", inspect: `[{"State":{"OOMKilled":true,"ExitCode":137}}]`, want: "killed for memory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, f := ensured(t)
@@ -893,6 +899,7 @@ func TestUpReportsASidecarThatEnds(t *testing.T) {
 			require.Len(t, lines, 1)
 			assert.Equal(t, "error", lines[0].Type)
 			assert.Contains(t, lines[0].Error, tc.want)
+			assert.Equal(t, 1, strings.Count(lines[0].Error, "sandbox:"))
 		})
 	}
 }
@@ -1211,4 +1218,15 @@ func TestRemoveOrphansKeepsRunsAndSharedVolumes(t *testing.T) {
 		require.Error(t, RemoveOrphans(t.Context(), r, strings.ToUpper(instanceA), nil))
 		assert.Empty(t, f.calls(t), "the runtime was called")
 	})
+}
+
+func TestSidecarDownKeepsBothSentinelsAndOnePrefix(t *testing.T) {
+	err := sidecarDown(fmt.Errorf("%w: the sidecar hit its 8 MB limit", ErrOutOfMemory))
+	require.ErrorIs(t, err, ErrSidecarDown)
+	require.ErrorIs(t, err, ErrOutOfMemory)
+	assert.Equal(t, 1, strings.Count(err.Error(), "sandbox:"))
+
+	plain := sidecarDown(errors.New("it exited"))
+	require.ErrorIs(t, plain, ErrSidecarDown)
+	require.NotErrorIs(t, plain, ErrOutOfMemory)
 }

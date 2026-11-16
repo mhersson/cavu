@@ -688,7 +688,7 @@ func (s *Sandbox) probe(ctx context.Context, name string) error {
 		case ctx.Err() != nil:
 			return fmt.Errorf("sandbox: %w", ctx.Err())
 		case !s.side.alive():
-			return fmt.Errorf("%w: %w", ErrSidecarDown, s.side.cause)
+			return sidecarDown(s.side.cause)
 		case time.Now().After(deadline):
 			return fmt.Errorf("%w: the proxy did not refuse a probe through the bridge within %s", ErrSidecarDown, s.timeouts.probe)
 		}
@@ -757,6 +757,29 @@ func (sc *sidecarProc) read() {
 	sc.fail(sc.endCause())
 }
 
+// downError carries both sentinels under one message, so the "sandbox: "
+// prefix appears once.
+type downError struct {
+	msg   string
+	cause error
+}
+
+func (e *downError) Error() string   { return e.msg }
+func (e *downError) Unwrap() []error { return []error{ErrSidecarDown, e.cause} }
+
+// sidecarDown is ErrSidecarDown for cause. A cause that is already a sandbox
+// error keeps its own sentinel and drops its repeated prefix.
+func sidecarDown(cause error) error {
+	if !errors.Is(cause, ErrOutOfMemory) {
+		return fmt.Errorf("%w: %w", ErrSidecarDown, cause)
+	}
+
+	return &downError{
+		msg:   ErrSidecarDown.Error() + ": " + strings.TrimPrefix(cause.Error(), "sandbox: "),
+		cause: cause,
+	}
+}
+
 // endCause is why the output ended. The runtime is asked only about an end
 // the sandbox did not cause, since a stopped container may be gone already.
 func (sc *sidecarProc) endCause() error {
@@ -779,7 +802,7 @@ func (sc *sidecarProc) fail(cause error) {
 
 		// Before ready, Up's error reports it.
 		if sc.isReady() && !sc.stopping.Load() {
-			sc.deliver(sidecar.Line{Type: "error", Error: fmt.Errorf("%w: %w", ErrSidecarDown, cause).Error()})
+			sc.deliver(sidecar.Line{Type: "error", Error: sidecarDown(cause).Error()})
 		}
 	})
 }
@@ -811,7 +834,7 @@ func (sc *sidecarProc) isReady() bool {
 // waitReady counts within from the sidecar's start.
 func (sc *sidecarProc) waitReady(ctx context.Context, within time.Duration) error {
 	if !sc.alive() {
-		return fmt.Errorf("%w: %w", ErrSidecarDown, sc.cause)
+		return sidecarDown(sc.cause)
 	}
 
 	// First, because for a sidecar older than within the timer below has
@@ -829,7 +852,7 @@ func (sc *sidecarProc) waitReady(ctx context.Context, within time.Duration) erro
 	case <-sc.ready:
 		return nil
 	case <-sc.down:
-		return fmt.Errorf("%w: %w", ErrSidecarDown, sc.cause)
+		return sidecarDown(sc.cause)
 	case <-timer.C:
 		return fmt.Errorf("%w: no ready line within %s", ErrSidecarDown, within)
 	case <-ctx.Done():
