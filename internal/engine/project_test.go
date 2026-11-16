@@ -168,3 +168,13 @@ func TestCheckProjectRefusesAMissingSetting(t *testing.T) {
 	assert.Contains(t, err.Error(), "model_work")
 	assert.Empty(t, h.runner.callsOf("check"))
 }
+
+func TestIsSwitch(t *testing.T) {
+	for _, name := range []string{"continuations", "verify_fix", "web_tools"} {
+		assert.True(t, engine.IsSwitch(name), name)
+	}
+
+	for _, name := range []string{"", "model_work", "web-tools"} {
+		assert.False(t, engine.IsSwitch(name), name)
+	}
+}
