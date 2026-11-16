@@ -70,6 +70,18 @@ func TestContainerStartArgv(t *testing.T) {
 	assert.Equal(t, []string{"sh", "-c"}, argv[name+1:name+3])
 }
 
+func TestRunRefusesNonPositiveTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			r, f := fakeRuntime(t, "docker")
+
+			_, err := r.Container("cavu-agent-r1").Run(t.Context(), proc.Command{Argv: []string{"true"}}, timeout)
+			require.Error(t, err)
+			assert.Empty(t, f.calls(t), "the runtime was called")
+		})
+	}
+}
+
 func TestRunReportsExitAndOutput(t *testing.T) {
 	r, f := fakeRuntime(t, "docker")
 	f.set(t, "stdout", []byte("hello\n"))

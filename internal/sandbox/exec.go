@@ -201,6 +201,10 @@ type Result struct {
 // container. The error is for a command that could not be started, read or
 // stopped.
 func (c Container) Run(ctx context.Context, cmd proc.Command, timeout time.Duration) (Result, error) {
+	if timeout <= 0 {
+		return Result{}, fmt.Errorf("run in %s: timeout %s: want a positive duration", c.name, timeout)
+	}
+
 	out := proc.NewCapture(proc.CaptureCap)
 	cmd.Stdout = out
 
