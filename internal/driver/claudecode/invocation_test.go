@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mhersson/cavu/internal/driver"
+	"github.com/mhersson/cavu/internal/redact"
 	"github.com/mhersson/cavu/internal/testkit/fakeclaude"
 )
 
@@ -211,6 +212,26 @@ func TestSpecRefused(t *testing.T) {
 		_, err := f.run(t.Context())
 		require.NoError(t, err, effort)
 	}
+}
+
+// The token floor must be redact's: a token validate accepts is one the mask
+// covers, and one rune less is one it would leave in the record.
+func TestTokenFloorIsRedacts(t *testing.T) {
+	spec := func(token string) driver.Spec {
+		return driver.Spec{
+			Auth: driver.Auth{Mode: modeSubscription, Token: token}, Model: testModel, MaxTurns: 1,
+			SessionID: testSessionID, Prompt: testPrompt, Home: "/home/agent", ConfigDir: "/home/agent/.claude-cavu",
+		}
+	}
+
+	// Multi-byte runes, so a floor counted in bytes on either side fails too.
+	floor := strings.Repeat("å", minTokenLen)
+	require.NoError(t, validate(spec(floor)))
+	assert.NotContains(t, redact.New(floor)(floor), floor, "redact masks a token at the floor")
+
+	below := strings.Repeat("å", minTokenLen-1)
+	require.Error(t, validate(spec(below)))
+	assert.Equal(t, below, redact.New(below)(below), "redact leaves a token below the floor unmasked")
 }
 
 // envValue returns the value of name in env, and whether env holds it.
