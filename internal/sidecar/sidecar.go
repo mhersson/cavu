@@ -12,7 +12,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -174,14 +173,6 @@ func scrub(msg string, req *Request) string {
 	if req != nil {
 		if c := req.Clone; c != nil {
 			secrets = append(secrets, c.Token, c.URL, c.CABundle)
-
-			if u, err := url.Parse(c.URL); err == nil && u.User != nil {
-				secrets = append(secrets, u.User.String())
-
-				if pw, ok := u.User.Password(); ok {
-					secrets = append(secrets, pw)
-				}
-			}
 		}
 
 		if p := req.Proxy; p != nil && p.Model != nil {

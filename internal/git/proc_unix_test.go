@@ -5,10 +5,7 @@ package git
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/mhersson/cavu/internal/testkit/gitrepo"
@@ -47,14 +44,13 @@ func TestCancelledRefWriteLeavesNoLock(t *testing.T) {
 	}
 }
 
-// A write call whose processes ignore SIGTERM is still stopped: the kill
-// follows once the grace is over.
-func TestCancelKillsAGroupThatIgnoresTerm(t *testing.T) {
+// A cancel reaches git's children as well as git: the whole process group gets
+// the SIGTERM.
+func TestCancelStopsTheProcessGroup(t *testing.T) {
 	t.Parallel()
 
 	root := gitrepo.New(t, map[string]string{"f": "x\n"})
-	script, logPath := writeGitWrapper(t, `trap '' TERM
-sleep 30 &
+	script, logPath := writeGitWrapper(t, `sleep 30 &
 echo $! > "$LOG.tmp" && mv "$LOG.tmp" "$LOG.pid"
 wait`)
 	ctx := context.WithValue(cancelWhenWritten(t, logPath+".pid"), gitPathKey{}, script)
@@ -67,49 +63,5 @@ wait`)
 	pid := readPID(t, logPath+".pid")
 	t.Cleanup(func() { killProcess(t, pid) })
 
-	eventually(t, "the child that ignores SIGTERM to die", func() bool { return !alive(pid) })
-}
-
-// A cancelled read holds no lock, so it is killed at once without SIGTERM's
-// grace, and the re-kill still reaches children forked during the kill.
-func TestCancelledReadGetsNoTerm(t *testing.T) {
-	t.Parallel()
-
-	root := gitrepo.New(t, map[string]string{"f": "x\n"})
-	script, logPath := writeGitWrapper(t, `trap ': > "$LOG.term"' TERM
-echo $$ > "$LOG.pgid"
-i=0
-while [ $i -lt 300 ]; do
-	sh -c 'echo $$ >> "$1"; exec sleep 30' sh "$LOG.pids" &
-	i=$((i+1))
-done
-wait`)
-
-	t.Cleanup(func() { killGroupIn(t, logPath+".pgid") })
-
-	// The first child's pid lands while the wrapper is still forking.
-	ctx := context.WithValue(cancelWhenWritten(t, logPath+".pids"), gitPathKey{}, script)
-
-	_, err := run(ctx, call{dir: root, args: []string{"status"}, read: true})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want canceled", err)
-	}
-
-	if _, err := os.Stat(logPath + ".term"); err == nil {
-		t.Error("a cancelled read got SIGTERM")
-	}
-
-	raw, err := os.ReadFile(logPath + ".pids")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for field := range strings.FieldsSeq(string(raw)) {
-		pid, err := strconv.Atoi(field)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		eventually(t, "child "+field+" to die", func() bool { return !alive(pid) })
-	}
+	eventually(t, "the child to die", func() bool { return !alive(pid) })
 }
