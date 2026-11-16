@@ -255,7 +255,7 @@ func (p *pass) repair(ctx context.Context) error {
 		case !ok || started[r.ID] && !done:
 			return nil
 		case done:
-			// The process died between the run's end and its release.
+			// The run ended but was never released.
 			o, oerr := p.open(ctx, t, r)
 			if oerr != nil {
 				// The row stays open, so the next repair releases it once the config builds.
