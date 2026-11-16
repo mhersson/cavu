@@ -1,0 +1,140 @@
+// Package gitrepo builds git repositories and serves them over HTTP for tests.
+// It runs the host's git and is never part of the shipped binary.
+package gitrepo
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/cgi" //nolint:gosec // the httpoxy flaw is fixed in every supported Go
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// Main isolates git from the machine's configuration for a test binary and
+// runs its tests. Call it from TestMain.
+func Main(m *testing.M) {
+	dir, err := os.MkdirTemp("", "cavu-git-")
+	if err != nil {
+		panic(err)
+	}
+
+	cfg := filepath.Join(dir, "gitconfig")
+	if err := os.WriteFile(cfg, []byte("[maintenance]\n\tauto = false\n"), 0o600); err != nil {
+		panic(err)
+	}
+
+	for k, v := range map[string]string{
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_ATTR_NOSYSTEM":   "1",
+		"GIT_CONFIG_GLOBAL":   cfg,
+		"XDG_CONFIG_HOME":     dir,
+		"GIT_AUTHOR_NAME":     "Test",
+		"GIT_AUTHOR_EMAIL":    "test@example.com",
+		"GIT_COMMITTER_NAME":  "Test",
+		"GIT_COMMITTER_EMAIL": "test@example.com",
+	} {
+		if err := os.Setenv(k, v); err != nil {
+			panic(err)
+		}
+	}
+
+	code := m.Run()
+
+	_ = os.RemoveAll(dir)
+
+	os.Exit(code)
+}
+
+// Git runs git in dir and returns its trimmed output; it fails the test on error.
+func Git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	var out, stderr bytes.Buffer
+
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
+	}
+
+	return strings.TrimSpace(out.String())
+}
+
+// Write writes files (path to content) under dir.
+func Write(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// New returns a repository holding files and one commit on main.
+func New(t *testing.T, files map[string]string) (dir string) {
+	t.Helper()
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	Git(t, dir, "init", "-q", "-b", "main")
+	Commit(t, dir, files, "init")
+
+	return dir
+}
+
+// Commit writes files, commits them all and returns the new commit.
+func Commit(t *testing.T, dir string, files map[string]string, msg string) string {
+	t.Helper()
+
+	Write(t, dir, files)
+	Git(t, dir, "add", "--all")
+	Git(t, dir, "commit", "-q", "-m", msg)
+
+	return Git(t, dir, "rev-parse", "HEAD")
+}
+
+// Bare returns the file:// URL of a bare copy of the repository at from.
+func Bare(t *testing.T, from string) (url string) {
+	t.Helper()
+
+	dst := filepath.Join(t.TempDir(), "repo.git")
+	Git(t, "", "clone", "-q", "--bare", from, dst)
+
+	return "file://" + dst
+}
+
+// Handler serves the bare repository at bareDir over git's smart HTTP protocol
+// at the path /<base name of bareDir>/. It is plain HTTP; mount it on a TLS
+// server and wrap it for authentication.
+func Handler(t *testing.T, bareDir string) http.Handler {
+	t.Helper()
+
+	path, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found")
+	}
+
+	return &cgi.Handler{
+		Path: path,
+		Args: []string{"http-backend"},
+		Env:  []string{"GIT_PROJECT_ROOT=" + filepath.Dir(bareDir), "GIT_HTTP_EXPORT_ALL=1"},
+		InheritEnv: []string{
+			"GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "HOME",
+		},
+	}
+}
