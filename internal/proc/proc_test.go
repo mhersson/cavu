@@ -488,6 +488,7 @@ func TestLocalRefusesBadCommands(t *testing.T) {
 
 	cases := map[string]Command{
 		"empty argv":         {Env: good.Env},
+		"missing binary":     {Argv: []string{"/nonexistent/binary"}},
 		"relative file path": {Argv: good.Argv, Env: good.Env, Files: map[string][]byte{"relative": nil}},
 	}
 
@@ -495,8 +496,13 @@ func TestLocalRefusesBadCommands(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := Local{}.Start(t.Context(), c)
+			p, err := Local{}.Start(t.Context(), c)
 			require.Error(t, err)
+
+			// A typed nil would make a later p != nil check pass.
+			if p != nil {
+				t.Errorf("a failed start returned a non-nil %T", p)
+			}
 		})
 	}
 

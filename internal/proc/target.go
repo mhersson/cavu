@@ -62,7 +62,12 @@ func (Local) Start(ctx context.Context, c Command) (Process, error) {
 		return nil, err
 	}
 
-	return start(c, maxLine)
+	p, err := start(c, maxLine)
+	if err != nil {
+		return nil, err
+	}
+
+	return p, nil
 }
 
 // writeFile narrows an existing file's mode before the content goes in, since
