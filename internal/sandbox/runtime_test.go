@@ -289,6 +289,7 @@ func TestEnvRefusesBadNamesAndValues(t *testing.T) {
 		"name with a space":    "A B=" + secret,
 		"name with a digit":    "1A=" + secret,
 		"no =":                 "BARE",
+		"bare value":           "sk-" + secret + " raw",
 		"value with newline":   "A=" + secret + "\n" + secret,
 		"value with CR":        "A=" + secret + "\r",
 		"value with NUL":       "A=" + secret + "\x00",

@@ -285,9 +285,12 @@ func envFile(env []string) ([]byte, error) {
 		name, value, ok := strings.Cut(kv, "=")
 
 		switch {
-		case !ok:
+		case !ok && envName.MatchString(name):
 			// A bare name imports the client's own variable of that name.
 			return nil, fmt.Errorf("environment variable %q has no value", name)
+		case !ok:
+			// Not a name, so possibly a value passed by mistake: never print it.
+			return nil, errors.New("environment entry without = that is not a variable name")
 		case !envName.MatchString(name):
 			return nil, fmt.Errorf("environment variable %q: invalid name", name)
 		case strings.ContainsAny(value, "\n\r\x00"):
