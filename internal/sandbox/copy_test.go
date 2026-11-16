@@ -168,3 +168,18 @@ func TestCopyOutStopsARefusedStream(t *testing.T) {
 		})
 	}
 }
+
+func TestCopyOutKeepsTarsReason(t *testing.T) {
+	const reason = "tar-reason-marker: Permission denied"
+
+	for range 5 {
+		r, f := fakeRuntime(t, "docker")
+		f.set(t, "stdout", tarOf(t))
+		f.set(t, "stderr", []byte(reason+"\n"))
+		f.set(t, "exit", []byte("2"))
+
+		err := r.Container("cavu-agent-r1").CopyOut(t.Context(), "/handoff/x", io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), reason)
+	}
+}

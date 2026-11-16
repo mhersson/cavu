@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var errNoFile = errors.New("no file in the stream")
+
 // checkPath wants an absolute, clean path below the root.
 func checkPath(p string) error {
 	if !path.IsAbs(p) || path.Clean(p) != p || p == "/" {
@@ -95,10 +97,16 @@ func (c Container) CopyOut(ctx context.Context, p string, w io.Writer) error {
 	}()
 
 	readErr := readOne(pr, w)
-	if readErr == nil {
+
+	switch {
+	case readErr == nil:
 		// Drain tar's end-of-archive padding so the client can finish cleanly.
 		_, readErr = io.Copy(io.Discard, pr)
-	} else {
+	case errors.Is(readErr, errNoFile):
+		// An empty archive is what tar sends for a path it cannot read, so
+		// the client finishes and its reason is kept.
+		_, _ = io.Copy(io.Discard, pr)
+	default:
 		// A refused stream is never read to its end; stopping the client ends it.
 		cancel()
 	}
@@ -126,7 +134,7 @@ func readOne(r io.Reader, w io.Writer) error {
 
 	h, err := tr.Next()
 	if errors.Is(err, io.EOF) {
-		return errors.New("no file in the stream")
+		return errNoFile
 	}
 
 	if err != nil {
