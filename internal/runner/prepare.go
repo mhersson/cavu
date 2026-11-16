@@ -252,37 +252,40 @@ func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult, ba
 		return engine.PrepareResult{}, err
 	}
 
-	if vr.Result == verify.Passed {
-		res.Baseline = engine.ResultPassed
-
-		failed, err := p.cleanTree(ctx, stepBaseline)
-		if err != nil || failed != nil {
-			return failure(res, failed), err
-		}
-
-		return res, nil
-	}
-
 	res.Baseline = engine.ResultFailed
 
-	return failure(res, &stepFailure{stepBaseline, vr.Output}), nil
+	if vr.Result != verify.Passed {
+		return failure(res, &stepFailure{stepBaseline, vr.Output}), nil
+	}
+
+	failed, err := p.cleanTree(ctx, stepBaseline)
+	if err != nil || failed != nil {
+		return failure(res, failed), err
+	}
+
+	res.Baseline = engine.ResultPassed
+
+	return res, nil
 }
+
+// treeScript lists the changed files and exits 1 when there are any, 2 when
+// git fails: the runtime's own stderr in the output decides nothing.
+const treeScript = `s=$(git status --porcelain) || exit 2; [ -z "$s" ] || { printf '%s\n' "$s"; exit 1; }`
 
 // cleanTree fails step when it left the working tree changed, so the agent's
 // exported diff holds only what the agent did.
 func (p *preparation) cleanTree(ctx context.Context, step string) (*stepFailure, error) {
-	cmd := proc.Command{Argv: []string{"git", "status", "--porcelain"}, Env: agentEnv(p.st.ecosystems), Dir: workspace}
+	cmd := proc.Command{Argv: []string{"sh", "-c", treeScript}, Env: agentEnv(p.st.ecosystems), Dir: workspace}
 
 	res, err := p.st.agent.Run(ctx, cmd, statusTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	if res.ExitCode != 0 || res.TimedOut {
+	switch {
+	case res.TimedOut || res.ExitCode > 1:
 		return nil, fmt.Errorf("runner: git status failed: %s", res.Output)
-	}
-
-	if strings.TrimSpace(res.Output) == "" {
+	case res.ExitCode == 0:
 		return nil, nil
 	}
 

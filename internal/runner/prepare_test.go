@@ -24,8 +24,10 @@ import (
 // reshimName is how the fake names the step that makes the tools' shims.
 var reshimName = stepName([]string{"sh", "-c", reshimScript})
 
-// treeCheck is how the fake names the working tree check.
-const treeCheck = "run/git status --porcelain"
+// treeName is how the fake names the working tree check.
+var treeName = stepName([]string{"sh", "-c", treeScript})
+
+var treeCheck = "run/" + treeName
 
 var fullOrder = []string{
 	"destroy", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
@@ -290,6 +292,28 @@ func TestPrepareReportsIgnoredTools(t *testing.T) {
 	assert.Equal(t, []string{"go@1.25.0"}, res.Tools)
 }
 
+func TestPrepareTreeCheckIgnoresRuntimeWarning(t *testing.T) {
+	f := newFake()
+	f.results[treeName] = sandbox.Result{Output: "WARN cgroupv2 manager is set to systemd\n"}
+
+	res, err := f.runner().Prepare(t.Context(), testConfig())
+	require.NoError(t, err)
+	assert.Empty(t, res.FailedStep)
+	assert.Equal(t, engine.ResultPassed, res.Baseline)
+}
+
+func TestPrepareBaselineLeavesTreeChanged(t *testing.T) {
+	f := newFake()
+	f.results[treeName] = sandbox.Result{ExitCode: 1, Output: "?? __pycache__/\n"}
+	c := testConfig()
+	c.Setup.Command = ""
+
+	res, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, "baseline", res.FailedStep)
+	assert.Equal(t, engine.ResultFailed, res.Baseline)
+}
+
 func TestPrepareStepFailures(t *testing.T) {
 	failed := sandbox.Result{ExitCode: 1, Output: "step output\n"}
 	timedOut := sandbox.Result{ExitCode: 137, Output: "step output\n", TimedOut: true}
@@ -307,7 +331,9 @@ func TestPrepareStepFailures(t *testing.T) {
 		{name: "setup exit 1", script: func(f *fakeSandbox) { f.results["make setup"] = failed }, step: "setup", last: "run/make setup"},
 		{name: "setup timeout", script: func(f *fakeSandbox) { f.results["make setup"] = timedOut }, step: "setup", last: "run/make setup"},
 		{name: "reshim exit 1", script: func(f *fakeSandbox) { f.results[reshimName] = failed }, step: "setup", last: "run/" + reshimName},
-		{name: "setup leaves the tree changed", script: func(f *fakeSandbox) { f.results[treeCheck[4:]] = sandbox.Result{Output: " M package-lock.json\n"} }, step: "setup", last: treeCheck},
+		{name: "setup leaves the tree changed", script: func(f *fakeSandbox) {
+			f.results[treeName] = sandbox.Result{ExitCode: 1, Output: " M package-lock.json\n"}
+		}, step: "setup", last: treeCheck},
 		{name: "baseline exit 1", script: func(f *fakeSandbox) { f.results["make test"] = failed }, step: "baseline", last: "run/make test"},
 		{name: "baseline timeout", script: func(f *fakeSandbox) { f.results["make test"] = timedOut }, step: "baseline", last: "run/make test"},
 	}

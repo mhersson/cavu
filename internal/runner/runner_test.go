@@ -200,7 +200,7 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 			names = append(names, r.name)
 		}
 
-		assert.Equal(t, []string{link, seed, "git status --porcelain", "make test", "git status --porcelain"}, names)
+		assert.Equal(t, []string{link, seed, treeName, "make test", treeName}, names)
 
 		argv := f.run(t, link).cmd.Argv
 		assert.Equal(t, []string{"/home/agent/.cache/cargo/bin", "/cache/cargo/bin"}, argv[4:], "the link goes as its path and its target")

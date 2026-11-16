@@ -360,10 +360,6 @@ func (c fakeContainer) Run(ctx context.Context, cmd proc.Command, timeout time.D
 		return res, nil
 	}
 
-	if name == "git status --porcelain" {
-		return sandbox.Result{}, nil
-	}
-
 	return sandbox.Result{Output: "ok\n"}, nil
 }
 
