@@ -40,6 +40,7 @@ type Scenario struct {
 	Grandchild string
 	InitDelay  time.Duration // answer the initialize request after this long
 	NoInit     bool          // never answer the initialize request
+	InitError  string        // answer the initialize request with this error instead
 	// Account replaces the initialize answer's account, which by default
 	// names the credential variable the environment holds; NoAccount leaves
 	// it out.
@@ -360,6 +361,14 @@ func (p *fake) awaitUser() (line []byte, early, ok bool) {
 			time.Sleep(p.sc.InitDelay)
 
 			answeredAt = time.Now()
+
+			if p.sc.InitError != "" {
+				writeJSONLine(map[string]any{"type": "control_response", "response": map[string]any{
+					"subtype": "error", "request_id": msg.RequestID, "error": p.sc.InitError,
+				}})
+
+				continue
+			}
 
 			answer := map[string]any{"pid": os.Getpid(), "claude_code_version": p.sc.Version}
 			if !p.sc.NoAccount {

@@ -86,7 +86,11 @@ func (r *session) supervise(ctx context.Context, gate time.Duration, prompt []by
 			}
 
 			if gateC != nil {
-				if acct, isInit := initResponse(line, id); isInit {
+				if acct, failure, isInit := initResponse(line, id); isInit {
+					if failure != "" {
+						return r.abort(driver.ReasonCrashed, failure)
+					}
+
 					if why := accountMismatch(r.mode, acct); why != "" {
 						return r.abort(driver.ReasonAuth, why)
 					}
@@ -210,17 +214,20 @@ func initRequest(id string) []byte {
 	return append(b, '\n')
 }
 
-// initResponse reports whether line answers initialize request id, and the
-// account it reports, undecoded so a changed shape still ends the gate.
-func initResponse(line []byte, id string) (json.RawMessage, bool) {
+// initResponse reports whether line answers initialize request id, the
+// account it reports (undecoded, so a changed shape still ends the gate), and
+// why the answer is not a success, empty when it is.
+func initResponse(line []byte, id string) (account json.RawMessage, failure string, ok bool) {
 	if !bytes.Contains(line, []byte(`"control_response"`)) {
-		return nil, false
+		return nil, "", false
 	}
 
 	var l struct {
 		Type     string `json:"type"`
 		Response struct {
-			RequestID string `json:"request_id"`
+			Subtype   string          `json:"subtype"`
+			RequestID string          `json:"request_id"`
+			Error     json.RawMessage `json:"error"`
 			Response  struct {
 				Account json.RawMessage `json:"account"`
 			} `json:"response"`
@@ -228,10 +235,17 @@ func initResponse(line []byte, id string) (json.RawMessage, bool) {
 	}
 
 	if json.Unmarshal(line, &l) != nil || l.Type != "control_response" || l.Response.RequestID != id {
-		return nil, false
+		return nil, "", false
 	}
 
-	return l.Response.Response.Account, true
+	if l.Response.Subtype != "success" {
+		reason := string(l.Response.Error)
+		_ = json.Unmarshal(l.Response.Error, &reason)
+
+		return nil, fmt.Sprintf("the initialize request failed (subtype %q): %s", l.Response.Subtype, reason), true
+	}
+
+	return l.Response.Response.Account, "", true
 }
 
 // minFragment is the shortest end of a secret stderrDetail drops; a shorter

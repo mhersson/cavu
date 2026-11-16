@@ -249,6 +249,24 @@ func TestInitializeTimeout(t *testing.T) {
 	assert.True(t, processGone(rec.PID))
 }
 
+func TestInitializeErrorAnswer(t *testing.T) {
+	f := newFakeRun(t, fakeclaude.Scenario{
+		Replay: fixture(t, "real/t1.jsonl"), InitError: "initialize refused for " + testToken,
+	})
+
+	res, err := f.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, driver.ReasonCrashed, res.Reason)
+	assert.True(t, res.IsError)
+	assert.Contains(t, res.Detail, "initialize refused for", "the detail carries claude's error")
+	assert.NotContains(t, res.Detail, testToken)
+
+	rec := f.recorded(t)
+	assert.Empty(t, rec.Stdin, "the prompt went to a process whose initialize failed")
+	assert.True(t, processGone(rec.PID))
+	assert.Empty(t, ofKind(f.events, driver.KindStarted))
+}
+
 func TestResume(t *testing.T) {
 	dir, configDir := t.TempDir(), t.TempDir()
 
