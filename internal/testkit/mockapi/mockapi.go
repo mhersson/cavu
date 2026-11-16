@@ -68,7 +68,7 @@ type Server struct {
 	mu       sync.Mutex
 	steps    []Step
 	requests []Request
-	hold     chan struct{}
+	holds    []chan struct{} // pending holds, taken by model calls in order
 	done     chan struct{}
 }
 
@@ -149,13 +149,14 @@ func (s *Server) Requests() []Request {
 	return slices.Clone(s.requests)
 }
 
-// Hold makes the next model call's answer wait until release is called; the
-// request is logged at once.
+// Hold makes one later model call's answer wait until release is called; the
+// request is logged at once. Holds queue: each takes the next model call not
+// already held, and each is released on its own.
 func (s *Server) Hold() (release func()) {
 	ch := make(chan struct{})
 
 	s.mu.Lock()
-	s.hold = ch
+	s.holds = append(s.holds, ch)
 	s.mu.Unlock()
 
 	var once sync.Once
@@ -261,8 +262,8 @@ func (s *Server) record(r *http.Request, body requestBody) int {
 	return len(s.requests)
 }
 
-// next consumes the next step, or answers done after the last, and takes a
-// pending hold.
+// next consumes the next step, or answers done after the last, and takes the
+// oldest pending hold.
 func (s *Server) next() (Step, chan struct{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -272,8 +273,10 @@ func (s *Server) next() (Step, chan struct{}) {
 		step, s.steps = s.steps[0], s.steps[1:]
 	}
 
-	hold := s.hold
-	s.hold = nil
+	var hold chan struct{}
+	if len(s.holds) > 0 {
+		hold, s.holds = s.holds[0], s.holds[1:]
+	}
 
 	return step, hold
 }

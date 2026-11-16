@@ -17,6 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testBound caps every wait in these tests.
+const testBound = 10 * time.Second
+
+// testClient fails a request that hangs instead of waiting forever.
+var testClient = &http.Client{Timeout: testBound}
+
 type event struct {
 	name string
 	data map[string]any
@@ -161,7 +167,7 @@ func TestMockStreamsScriptedSteps(t *testing.T) {
 	answers := make([]answer, 0, 5)
 
 	for range 5 {
-		answers = append(answers, call(t, http.DefaultClient, s.URL(), tools...))
+		answers = append(answers, call(t, testClient, s.URL(), tools...))
 	}
 
 	ids := map[string]bool{}
@@ -198,7 +204,7 @@ func TestMockRecordsRequests(t *testing.T) {
 	header.Set("Authorization", "Bearer stand-in")
 	header.Set("Anthropic-Beta", "oauth-2025-04-20")
 
-	resp := post(t, http.DefaultClient, s.URL()+"/v1/messages?beta=true", map[string]any{
+	resp := post(t, testClient, s.URL()+"/v1/messages?beta=true", map[string]any{
 		"model":    "claude-sonnet-5-5",
 		"stream":   true,
 		"system":   []any{map[string]any{"type": "text", "text": "first"}, map[string]any{"type": "text", "text": "second"}},
@@ -207,7 +213,7 @@ func TestMockRecordsRequests(t *testing.T) {
 	}, header)
 	_, _ = io.Copy(io.Discard, resp.Body)
 
-	resp = post(t, http.DefaultClient, s.URL()+"/v1/messages", map[string]any{
+	resp = post(t, testClient, s.URL()+"/v1/messages", map[string]any{
 		"model": "claude-haiku-5-5", "system": "plain", "messages": []any{},
 	}, http.Header{"X-Api-Key": {"key"}})
 	_, _ = io.Copy(io.Discard, resp.Body)
@@ -230,14 +236,15 @@ func TestMockRecordsRequests(t *testing.T) {
 	assert.Empty(t, reqs[1].Messages)
 }
 
-func TestMockHold(t *testing.T) {
-	s := Start(t, []Step{{Text: "hello"}})
-	release := s.Hold()
+// reply is one request's outcome, received off the test goroutine.
+type reply struct {
+	resp *http.Response
+	err  error
+}
 
-	type reply struct {
-		resp *http.Response
-		err  error
-	}
+// startCall sends one streaming model call in the background.
+func startCall(t *testing.T, s *Server) <-chan reply {
+	t.Helper()
 
 	got := make(chan reply, 1)
 
@@ -250,31 +257,82 @@ func TestMockHold(t *testing.T) {
 			return
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := testClient.Do(req)
 		got <- reply{resp, err}
 	}()
 
-	require.Eventually(t, func() bool { return len(s.Requests()) == 1 }, 2*time.Second, 10*time.Millisecond)
+	return got
+}
+
+// requireWaiting fails if got delivers an answer within a short while.
+func requireWaiting(t *testing.T, got <-chan reply) {
+	t.Helper()
 
 	select {
 	case <-got:
 		t.Fatal("the answer started before release")
 	case <-time.After(200 * time.Millisecond):
 	}
+}
 
-	release()
+// requireAnswer reads got's answer and returns its text.
+func requireAnswer(t *testing.T, got <-chan reply) string {
+	t.Helper()
 
 	select {
 	case r := <-got:
 		require.NoError(t, r.err)
 		t.Cleanup(func() { _ = r.resp.Body.Close() })
-		assert.Equal(t, "hello", summarise(parseStream(t, r.resp.Body)).text)
-	case <-time.After(5 * time.Second):
+
+		return summarise(parseStream(t, r.resp.Body)).text
+	case <-time.After(testBound):
 		t.Fatal("no answer after release")
+
+		return ""
 	}
+}
+
+func requireRequests(t *testing.T, s *Server, n int) {
+	t.Helper()
+
+	require.Eventually(t, func() bool { return len(s.Requests()) == n }, testBound, 10*time.Millisecond)
+}
+
+func TestMockHold(t *testing.T) {
+	s := Start(t, []Step{{Text: "hello"}})
+	release := s.Hold()
+
+	got := startCall(t, s)
+	requireRequests(t, s, 1)
+	requireWaiting(t, got)
+
+	release()
+	assert.Equal(t, "hello", requireAnswer(t, got))
 
 	// Only the next answer waits.
-	assert.Equal(t, "done", call(t, http.DefaultClient, s.URL()).text)
+	assert.Equal(t, "done", call(t, testClient, s.URL()).text)
+}
+
+func TestMockHoldsQueue(t *testing.T) {
+	s := Start(t, []Step{{Text: "first"}, {Text: "second"}})
+	releaseFirst, releaseSecond := s.Hold(), s.Hold()
+
+	first := startCall(t, s)
+	requireRequests(t, s, 1)
+
+	second := startCall(t, s)
+	requireRequests(t, s, 2)
+	requireWaiting(t, first)
+	requireWaiting(t, second)
+
+	releaseSecond()
+	assert.Equal(t, "second", requireAnswer(t, second))
+	requireWaiting(t, first)
+
+	releaseFirst()
+	assert.Equal(t, "first", requireAnswer(t, first))
+
+	assert.Equal(t, "done", call(t, testClient, s.URL()).text)
 }
 
 func TestMockTLS(t *testing.T) {
@@ -294,7 +352,7 @@ func TestMockTLS(t *testing.T) {
 
 	// A sidecar dials host.docker.internal; the certificate must verify
 	// under that name.
-	client := &http.Client{Transport: &http.Transport{
+	client := &http.Client{Timeout: testBound, Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "host.docker.internal", MinVersion: tls.VersionTLS12},
 	}}
 	t.Cleanup(client.CloseIdleConnections)
