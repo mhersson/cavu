@@ -444,6 +444,8 @@ func TestVolumesAndListing(t *testing.T) {
 
 	name, _ := startContainer(t, r, func(s *ContainerSpec) { s.Mounts = []Mount{{Volume: vol, Path: "/tmp"}} })
 
+	require.Error(t, r.VolumeRemove(t.Context(), vol), "removing a volume in use")
+
 	containers, volumes, err := r.List(t.Context(), "cavu.test="+testRun)
 	require.NoError(t, err)
 	assert.Contains(t, containers, name)

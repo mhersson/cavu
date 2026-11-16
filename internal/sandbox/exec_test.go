@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -80,6 +81,19 @@ func TestRunRefusesNonPositiveTimeout(t *testing.T) {
 			assert.Empty(t, f.calls(t), "the runtime was called")
 		})
 	}
+}
+
+func TestRunHonoursContext(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+	f.set(t, "sleep", []byte("slow-target"))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+
+	begun := time.Now()
+	_, err := r.Container("cavu-agent-r1").Run(ctx, proc.Command{Argv: []string{"make", "slow-target"}}, time.Minute)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(begun), 10*time.Second)
 }
 
 func TestRunReportsExitAndOutput(t *testing.T) {

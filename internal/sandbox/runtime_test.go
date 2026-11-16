@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,8 +19,10 @@ import (
 
 // fakeScript stands in for the runtime client. Each call records its argv,
 // its environment names, its HOME, file descriptor 3 (when open) and stdin,
-// then prints the canned stdout and stderr and exits with the canned code.
-// "linger" keeps stdout open for 30 seconds after the canned output.
+// then prints the canned stdout and stderr and exits with the canned code:
+// the code given for its exact argv in "exits", else the one in "exit".
+// "sleep" holds a call whose last argument it names for 30 seconds before
+// any output; "linger" keeps stdout open for 30 seconds after it.
 const fakeScript = `#!/bin/sh
 d='@DIR@'
 n=$(mktemp -d "$d/call.XXXXXX") || exit 99
@@ -28,11 +31,17 @@ awk 'BEGIN { for (k in ENVIRON) print k }' > "$n/env"
 printf '%s' "$HOME" > "$n/home"
 if { true <&3; } 2>/dev/null; then cat <&3 > "$n/fd3"; fi
 cat > "$n/stdin"
-[ -f "$d/sleep" ] && sleep 30
+for last; do :; done
+[ -f "$d/sleep" ] && [ "$(cat "$d/sleep")" = "$last" ] && sleep 30
 [ -f "$d/stdout" ] && cat "$d/stdout"
 [ -f "$d/stderr" ] && cat "$d/stderr" >&2
 [ -f "$d/linger" ] && sleep 30
-exit "$(cat "$d/exit" 2>/dev/null || echo 0)"
+code=$(cat "$d/exit" 2>/dev/null || echo 0)
+if [ -f "$d/exits" ]; then
+	tab=$(printf '\t')
+	while IFS=$tab read -r k v; do [ "$k" = "$*" ] && code=$v; done < "$d/exits"
+fi
+exit "$code"
 `
 
 type fake struct{ dir string }
@@ -64,6 +73,18 @@ func (f *fake) set(t *testing.T, file string, content []byte) {
 	t.Helper()
 
 	require.NoError(t, os.WriteFile(filepath.Join(f.dir, file), content, 0o600))
+}
+
+// exitFor makes the call with exactly argv exit with code.
+func (f *fake) exitFor(t *testing.T, code int, argv ...string) {
+	t.Helper()
+
+	file, err := os.OpenFile(filepath.Join(f.dir, "exits"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	require.NoError(t, err)
+
+	_, err = fmt.Fprintf(file, "%s\t%d\n", strings.Join(argv, " "), code)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
 }
 
 func (f *fake) calls(t *testing.T) []fakeCall {
@@ -267,12 +288,15 @@ func TestEnvRefusesBadNamesAndValues(t *testing.T) {
 
 			_, err = r.StartAttached(t.Context(), s)
 			require.Error(t, err)
+			assert.NotContains(t, err.Error(), secret)
 
 			_, err = r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"true"}, Env: env})
 			require.Error(t, err)
+			assert.NotContains(t, err.Error(), secret)
 
 			_, err = r.Container("cavu-agent-r1").Run(t.Context(), proc.Command{Argv: []string{"true"}, Env: env}, time.Minute)
 			require.Error(t, err)
+			assert.NotContains(t, err.Error(), secret)
 
 			assert.Empty(t, f.calls(t), "the runtime was called")
 		})
@@ -472,7 +496,7 @@ func TestClientFailureCarriesStderrNotEnv(t *testing.T) {
 
 func TestCallsHonourContext(t *testing.T) {
 	r, f := fakeRuntime(t, "docker")
-	f.set(t, "sleep", nil)
+	f.set(t, "sleep", []byte("cavu-agent-r1"))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
@@ -515,6 +539,61 @@ func TestVolumeCreateIgnoresExistingOnPodman(t *testing.T) {
 			assert.Contains(t, argv, "--label=cavu.task=t1")
 			assert.Equal(t, "cavu-home-t1", argv[len(argv)-1])
 			assert.Equal(t, name == "podman", slices.Contains(argv, "--ignore"))
+		})
+	}
+}
+
+func TestVolumeRemove(t *testing.T) {
+	t.Run("docker forces one call", func(t *testing.T) {
+		r, f := fakeRuntime(t, "docker")
+		require.NoError(t, r.VolumeRemove(t.Context(), "v1", "v2"))
+		assert.Equal(t, []string{"volume", "rm", "--force", "v1", "v2"}, f.only(t).argv)
+	})
+
+	cases := map[string]struct {
+		exits   map[string]int
+		wantErr bool
+		calls   [][]string
+	}{
+		"removed": {
+			calls: [][]string{{"volume", "rm", "v1"}, {"volume", "rm", "v2"}},
+		},
+		"absent": {
+			exits: map[string]int{"volume rm v1": 1, "volume exists v1": 1},
+			calls: [][]string{{"volume", "rm", "v1"}, {"volume", "exists", "v1"}, {"volume", "rm", "v2"}},
+		},
+		"in use": {
+			exits:   map[string]int{"volume rm v1": 2},
+			wantErr: true,
+			calls:   [][]string{{"volume", "rm", "v1"}, {"volume", "exists", "v1"}},
+		},
+		"existence unknown": {
+			exits:   map[string]int{"volume rm v1": 1, "volume exists v1": 125},
+			wantErr: true,
+			calls:   [][]string{{"volume", "rm", "v1"}, {"volume", "exists", "v1"}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run("podman "+name, func(t *testing.T) {
+			r, f := fakeRuntime(t, "podman")
+			for argv, code := range tc.exits {
+				f.exitFor(t, code, strings.Fields(argv)...)
+			}
+
+			err := r.VolumeRemove(t.Context(), "v1", "v2")
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			var got [][]string
+			for _, c := range f.calls(t) {
+				got = append(got, c.argv)
+			}
+
+			assert.ElementsMatch(t, tc.calls, got)
 		})
 	}
 }
