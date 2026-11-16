@@ -4,12 +4,15 @@ package gitrepo
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/cgi" //nolint:gosec // the httpoxy flaw is fixed in every supported Go
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -74,6 +77,50 @@ func isolation(dir string) (map[string]string, error) {
 	}, nil
 }
 
+// repoVars asks git once for its repository-local variables. Git answers this
+// before it looks for a repository, so no inherited variable can steer the call.
+var repoVars = sync.OnceValues(func() (map[string]bool, error) {
+	out, err := exec.CommandContext(context.Background(), "git", "rev-parse", "--local-env-vars").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git rev-parse --local-env-vars: %w", err)
+	}
+
+	vars := map[string]bool{}
+	for name := range strings.FieldsSeq(string(out)) {
+		vars[name] = true
+	}
+
+	if !vars["GIT_DIR"] || !vars["GIT_WORK_TREE"] || !vars["GIT_INDEX_FILE"] {
+		return nil, fmt.Errorf("git rev-parse --local-env-vars lacks a repository variable: %q", out)
+	}
+
+	return vars, nil
+})
+
+// cleanEnv is the inherited environment without git's repository-local
+// variables: under a hook or `rebase --exec` they name the operator's repository.
+func cleanEnv(t *testing.T) []string {
+	t.Helper()
+
+	vars, err := repoVars()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env []string
+
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if vars[name] || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+
+		env = append(env, kv)
+	}
+
+	return env
+}
+
 // Git runs git in dir and returns its trimmed output; it fails the test on error.
 func Git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
@@ -82,6 +129,7 @@ func Git(t *testing.T, dir string, args ...string) string {
 
 	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
+	cmd.Env = cleanEnv(t)
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 
