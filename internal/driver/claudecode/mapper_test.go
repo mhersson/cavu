@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mhersson/cavu/internal/driver"
+	"github.com/mhersson/cavu/internal/redact"
 )
 
 func readFixture(t *testing.T, path string) []byte {
@@ -592,7 +594,21 @@ func TestMaskAppliesToEveryString(t *testing.T) {
 	b, err := json.Marshal(res)
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), token)
-	assert.Contains(t, string(b), redactedSecret)
+	assert.Contains(t, string(b), redact.New(token)(token), "the masks mark where the token was")
+}
+
+func TestMaskCoversEncodedForms(t *testing.T) {
+	const token = "tok-SECRET-0123456789"
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(token))
+	line := `{"type":"assistant","message":{"id":"m1","model":"x","content":[{"type":"text","text":"env ` + encoded + `"}]}}`
+
+	evs, _ := replayData(t, []byte(line+"\n"), []string{token}, 1)
+
+	texts := ofKind(evs, driver.KindText)
+	require.Len(t, texts, 1)
+	assert.NotContains(t, texts[0].Text, encoded)
+	assert.Contains(t, texts[0].Text, "env")
 }
 
 func TestMaskCoversNoResultAndLimits(t *testing.T) {
@@ -608,14 +624,18 @@ func TestMaskCoversNoResultAndLimits(t *testing.T) {
 }
 
 func TestMaskOrdersLongerSecretsFirst(t *testing.T) {
-	mask := newMask([]string{"abc", "", "abcdef"})
+	const short, long = "abcdefgh", "abcdefgh-ijkl"
 
-	assert.Equal(t, redactedSecret+" "+redactedSecret, mask("abcdef abc"))
-	assert.Equal(t, "plain", newMask(nil)("plain"))
+	m := newMapper([]string{short, "", long}, func(driver.Event) {})
+	marker := redact.New(short)(short)
+
+	assert.Equal(t, marker+" "+marker, m.mask(long+" "+short))
+	assert.Equal(t, "plain", newMapper(nil, func(driver.Event) {}).mask("plain"))
 }
 
 func TestMaskJSONKeepsResultValid(t *testing.T) {
-	mask := newMask([]string{`"`})
+	// A mask that breaks the JSON it is given.
+	mask := func(s string) string { return s[1:] }
 
 	assert.True(t, json.Valid(maskJSON(mask, json.RawMessage(`{"a":"b"}`))))
 	assert.Equal(t, json.RawMessage(nil), maskJSON(mask, nil))

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mhersson/cavu/internal/driver"
+	"github.com/mhersson/cavu/internal/redact"
 )
 
 // maxLine is the longest stdout line the mapper reads; a longer one is skipped.
@@ -150,7 +151,7 @@ type mapper struct {
 func newMapper(secrets []string, sink func(driver.Event)) *mapper {
 	return &mapper{
 		sink:   sink,
-		mask:   newMask(secrets),
+		mask:   redact.New(secrets...),
 		closed: map[string]bool{},
 		totals: map[string]tokenBuckets{},
 	}
