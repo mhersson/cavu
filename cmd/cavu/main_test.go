@@ -89,9 +89,10 @@ func TestCommandExitErrorCarriesCode(t *testing.T) {
 		return exitError{code: 7, err: errors.New("stopped")}
 	})
 
-	code, _, _ := runCavu("coded")
+	code, _, stderr := runCavu("coded")
 
 	assert.Equal(t, 7, code)
+	assert.Empty(t, stderr)
 }
 
 func TestExitErrorUnwraps(t *testing.T) {

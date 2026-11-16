@@ -47,6 +47,9 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Restore default signal handling after the first signal, so a second
+	// interrupt stops a verb that ignores ctx.
+	context.AfterFunc(ctx, stop)
 
 	if len(args) == 0 {
 		usage(stderr)
