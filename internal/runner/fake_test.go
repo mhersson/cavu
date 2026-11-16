@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -88,6 +89,7 @@ type fakeSandbox struct {
 	runErrs  map[string]error
 	onRun    func(name string) // runs as a command starts, before its answer
 	downErr  error
+	volErr   error
 }
 
 func newFake() *fakeSandbox {
@@ -102,10 +104,54 @@ func (f *fakeSandbox) runner() *Runner {
 		f.opened = append(f.opened, o)
 		f.mu.Unlock()
 
-		return f, nil
+		return &fakeHandle{fakeSandbox: f}, nil
 	}
 
 	return r
+}
+
+var errFakeNoVolumes = errors.New("fake: the volumes are not in place")
+
+// fakeHandle is one opened sandbox on the shared fake. Like the real one, it
+// refuses Clone and Up until EnsureVolumes has run since it was opened or
+// last destroyed.
+type fakeHandle struct {
+	*fakeSandbox
+
+	volumes bool
+}
+
+func (h *fakeHandle) EnsureVolumes(ctx context.Context) error {
+	err := h.fakeSandbox.EnsureVolumes(ctx)
+	h.volumes = err == nil
+
+	return err
+}
+
+func (h *fakeHandle) Destroy(ctx context.Context, keepHome bool) error {
+	h.volumes = false
+
+	return h.fakeSandbox.Destroy(ctx, keepHome)
+}
+
+func (h *fakeHandle) Clone(ctx context.Context, r sidecar.CloneRequest) (string, error) {
+	if !h.volumes {
+		h.record("clone")
+
+		return "", errFakeNoVolumes
+	}
+
+	return h.fakeSandbox.Clone(ctx, r)
+}
+
+func (h *fakeHandle) Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error) {
+	if !h.volumes {
+		h.record("up/" + string(phase))
+
+		return nil, errFakeNoVolumes
+	}
+
+	return h.fakeSandbox.Up(ctx, phase, p, lines)
 }
 
 func (f *fakeSandbox) record(entry string) {
@@ -159,7 +205,7 @@ func (f *fakeSandbox) run(t *testing.T, name string) runCall {
 func (f *fakeSandbox) EnsureVolumes(context.Context) error {
 	f.record("volumes")
 
-	return nil
+	return f.volErr
 }
 
 func (f *fakeSandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (string, error) {

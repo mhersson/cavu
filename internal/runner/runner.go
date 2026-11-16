@@ -42,7 +42,9 @@ type Runner struct {
 	labels map[string]string // added to every container and volume; tests set it
 	open   func(sandbox.Options) (sandboxer, error)
 
-	mu   sync.Mutex
+	mu sync.Mutex
+	// runs holds only runs whose volumes are in place and whose ecosystems
+	// are known; only Prepare and ensureUp add one.
 	runs map[int64]*run
 }
 
@@ -189,20 +191,12 @@ func (r *Runner) setState(runID int64, st *run) {
 	r.runs[runID] = st
 }
 
-// newState opens the run's sandbox and keeps it as the run's state.
-func (r *Runner) newState(ref engine.RunRef) (*run, error) {
-	sb, err := r.open(sandbox.Options{
+// sandbox opens the run's sandbox.
+func (r *Runner) sandbox(ref engine.RunRef) (sandboxer, error) {
+	return r.open(sandbox.Options{
 		Runtime: r.rt, Image: ref.Image, InstanceID: ref.InstanceID,
 		RunID: ref.RunID, TaskID: ref.TaskID, ProjectID: ref.ProjectID, Labels: r.labels,
 	})
-	if err != nil {
-		return nil, err
-	}
-
-	st := &run{sb: sb}
-	r.setState(ref.RunID, st)
-
-	return st, nil
 }
 
 func refOf(c engine.RunConfig) engine.RunRef {
@@ -216,16 +210,17 @@ func refOf(c engine.RunConfig) engine.RunRef {
 func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 	st := r.state(c.RunID)
 	if st == nil {
-		var err error
-		if st, err = r.newState(refOf(c)); err != nil {
+		sb, err := r.sandbox(refOf(c))
+		if err != nil {
 			return err
 		}
 
-		if err := st.sb.EnsureVolumes(ctx); err != nil {
+		if err := sb.EnsureVolumes(ctx); err != nil {
 			return err
 		}
 
-		st.ecosystems = c.Ecosystems
+		st = &run{sb: sb, ecosystems: c.Ecosystems}
+		r.setState(c.RunID, st)
 	}
 
 	if st.agentUp() {
@@ -263,13 +258,17 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 
 // Release stops the run's containers and, when removeVolumes is set, removes
 // its run volumes and the task's home. It succeeds when nothing exists.
+// Without the run's state it releases through a sandbox it does not keep,
+// so a later start still makes the run's volumes ready.
 func (r *Runner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
 	st := r.state(ref.RunID)
 	if st == nil {
-		var err error
-		if st, err = r.newState(ref); err != nil {
+		sb, err := r.sandbox(ref)
+		if err != nil {
 			return err
 		}
+
+		st = &run{sb: sb}
 	}
 
 	if !removeVolumes {

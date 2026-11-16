@@ -58,11 +58,15 @@ func (r *Runner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (res 
 func (r *Runner) prepare(ctx context.Context, c engine.RunConfig, check bool) (engine.PrepareResult, map[string][]byte, error) {
 	mask := masker(c)
 
-	st, err := r.newState(refOf(c))
+	// The run's earlier state goes: its volumes are about to be destroyed.
+	r.setState(c.RunID, nil)
+
+	sb, err := r.sandbox(refOf(c))
 	if err != nil {
 		return engine.PrepareResult{}, nil, maskErr(err, mask)
 	}
 
+	st := &run{sb: sb}
 	ctx, end := st.begin(ctx)
 	p := &preparation{r: r, c: c, st: st, check: check}
 
@@ -159,6 +163,7 @@ func (p *preparation) detect(ctx context.Context, base string) (env.Detection, *
 	}
 
 	p.st.ecosystems = det.Ecosystems
+	p.r.setState(p.c.RunID, p.st)
 
 	return det, nil, nil
 }

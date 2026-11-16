@@ -60,6 +60,22 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 		}
 	})
 
+	t.Run("after a start whose volumes failed", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+		c := testConfig()
+		c.Ecosystems = []string{"node"}
+
+		f.volErr = errors.New("sandbox: volume busy")
+		require.ErrorIs(t, r.ensureUp(t.Context(), c), f.volErr)
+
+		f.volErr = nil
+
+		require.NoError(t, r.ensureUp(t.Context(), c))
+		assert.Equal(t, []string{"volumes", "volumes", "up/agent"}, f.calls(), "a failed start keeps no state")
+		assert.Equal(t, []string{"registry.example", "registry.npmjs.org"}, f.requests(sandbox.PhaseAgent)[0].AllowHosts)
+	})
+
 	t.Run("after the sidecar ended", func(t *testing.T) {
 		f := newFake()
 		r := f.runner()
@@ -121,6 +137,26 @@ func TestRelease(t *testing.T) {
 		require.NoError(t, r.Release(t.Context(), ref, true))
 		require.NoError(t, r.Release(t.Context(), ref, true))
 		assert.Len(t, f.opened, 2, "a release that removes the volumes forgets the run")
+	})
+
+	// A restart between a session's end and its keep-run stop makes the stop's
+	// release the process's first call on the run; the run's next start must
+	// still find its volumes and the config's ecosystems.
+	t.Run("before any start in this process", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+
+		require.NoError(t, r.Release(t.Context(), ref, false))
+
+		c := testConfig()
+		c.Ecosystems = []string{"node"}
+
+		require.NoError(t, r.ensureUp(t.Context(), c))
+		assert.Equal(t, []string{"down", "volumes", "up/agent"}, f.calls())
+
+		agent := f.requests(sandbox.PhaseAgent)
+		require.Len(t, agent, 1)
+		assert.Equal(t, []string{"registry.example", "registry.npmjs.org"}, agent[0].AllowHosts)
 	})
 
 	t.Run("an error", func(t *testing.T) {
