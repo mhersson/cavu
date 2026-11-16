@@ -13,7 +13,7 @@ help:
 	@echo "  fmt-check    fail and show the diff if formatting is needed"
 	@echo "  tidy-check   fail if go mod tidy would change go.mod or go.sum"
 	@echo "  scan         fail on em-dashes in Go, Markdown, YAML, TOML, shell and Dockerfile files"
-	@echo "  scan-commits fail on session links, attribution, task numbers, em-dashes and big blobs in SCAN_BASE..SCAN_HEAD (origin/main..HEAD)"
+	@echo "  scan-commits fail on session links, attribution, task or milestone numbers, em-dashes and big blobs in SCAN_BASE..SCAN_HEAD (origin/main..HEAD)"
 	@echo "  size         count the non-test Go lines against the budget"
 	@echo "  check        build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan"
 
