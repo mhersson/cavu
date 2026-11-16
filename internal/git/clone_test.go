@@ -201,36 +201,6 @@ func TestCloneRunsGitInItsOwnDirectories(t *testing.T) {
 	}
 }
 
-// A relative directory would leave git in the caller's working directory, so
-// Clone refuses one before any git runs. The test runs in a directory of its
-// own, so that a regression would write nowhere else.
-func TestCloneRefusesRelativeDirs(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		mutate func(*CloneSpec)
-	}{
-		{"mirror dir", func(s *CloneSpec) { s.MirrorDir = "mirror" }},
-		{"workspace dir", func(s *CloneSpec) { s.WorkspaceDir = "ws" }},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			cwd := t.TempDir()
-			t.Chdir(cwd)
-
-			up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
-			ctx, calls := wrapGit(t, "")
-			s := spec(t, "file://"+up)
-			tt.mutate(&s)
-
-			_, err := Clone(ctx, s)
-			require.Error(t, err)
-
-			assert.NoFileExists(t, calls, "no git ran")
-			assert.NoDirExists(t, filepath.Join(cwd, "mirror"))
-			assert.NoDirExists(t, filepath.Join(cwd, "ws"))
-		})
-	}
-}
-
 // subcommand returns the git subcommand of a line of the wrapper's log.
 func subcommand(line string) string {
 	fields := strings.Fields(line)

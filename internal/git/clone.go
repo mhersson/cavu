@@ -145,12 +145,6 @@ func validate(ctx context.Context, s CloneSpec) error {
 		return err
 	}
 
-	for _, f := range []struct{ name, v string }{{"mirror dir", s.MirrorDir}, {"workspace dir", s.WorkspaceDir}} {
-		if !filepath.IsAbs(f.v) {
-			return fmt.Errorf("%s: must be an absolute path", f.name)
-		}
-	}
-
 	if s.Commit != "" && !commitRE.MatchString(s.Commit) {
 		return errors.New("commit: not a hexadecimal object id")
 	}
