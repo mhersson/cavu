@@ -73,8 +73,8 @@ func TestFixturesCarryNoToken(t *testing.T) {
 	require.NotZero(t, files, "testdata holds no files")
 }
 
-// TestMapperEveryFixture replays every recording through the mapper, so each
-// copied fixture is exercised, and a new one needs an expected reason here.
+// TestMapperEveryFixture replays every fixture through the mapper and checks
+// its reason and error flag; a fixture with no expected reason here fails it.
 func TestMapperEveryFixture(t *testing.T) {
 	want := map[string]string{
 		"real/dl-httphook.jsonl":              driver.ReasonDone,
