@@ -36,8 +36,7 @@ const (
 // only through them.
 var reshimScript = proc.SandboxOnly("exec mise reshim")
 
-// Prepare starts the run from empty run volumes, keeping the task's home so
-// a later run resumes its session, and leaves the agent phase up.
+// Prepare starts the run from empty volumes and leaves the agent phase up.
 func (r *Runner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
 	res, _, err := r.prepare(ctx, c, false)
 
@@ -58,9 +57,9 @@ func (r *Runner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (res 
 	return res, verifySuggestion, errors.Join(err, maskErr(relErr, masker(c)))
 }
 
-// prepare runs a prepare and returns the root files it read. A check removes
-// the task's home first: every project's check shares task id 0, and a check
-// that died must not hand its home to the next.
+// prepare runs a prepare and returns the root files it read. The task's home
+// goes first: every project's check shares task id 0, and a check that died
+// must not hand its home to the next.
 func (r *Runner) prepare(ctx context.Context, c engine.RunConfig, check bool) (engine.PrepareResult, map[string][]byte, error) {
 	mask := masker(c)
 
@@ -98,7 +97,7 @@ type preparation struct {
 func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 	sb, c := p.st.sb, p.c
 
-	if err := sb.Destroy(ctx, !p.check); err != nil {
+	if err := sb.Destroy(ctx, false); err != nil {
 		return engine.PrepareResult{}, err
 	}
 

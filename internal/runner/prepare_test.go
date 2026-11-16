@@ -28,7 +28,7 @@ var reshimName = stepName([]string{"sh", "-c", reshimScript})
 const treeCheck = "run/git status --porcelain"
 
 var fullOrder = []string{
-	"destroy/keep-home", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
+	"destroy", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
 	"run/mise install", "run/make setup", "run/" + reshimName, "down", "up/agent", treeCheck, "run/make test", treeCheck,
 }
 
@@ -81,7 +81,7 @@ func TestPrepareStartsFromEmptyVolumes(t *testing.T) {
 	require.NoError(t, err)
 
 	calls := f.calls()
-	assert.Equal(t, "destroy/keep-home", calls[0], "the run's volumes go first and the task's home stays")
+	assert.Equal(t, "destroy", calls[0], "the run's volumes and the task's home go first")
 	assert.Equal(t, "volumes", calls[1])
 	assert.Equal(t, []sandbox.Options{{
 		Runtime: sandbox.Runtime{Bin: "docker", Kind: "docker"}, Image: "cavu-sandbox:test", InstanceID: "0123456789abcdef",
