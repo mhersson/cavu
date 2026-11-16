@@ -658,36 +658,16 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 	}})
 }
 
-// writeArtifact writes data to dir/name through a temporary file and a rename,
-// so a repeated export replaces the file whole. It returns the file's path.
+// writeArtifact writes data to dir/name, replacing a file a repeated export
+// left, and returns the file's path.
 func writeArtifact(dir, name string, data []byte) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 
-	f, err := os.CreateTemp(dir, "."+name+"-*")
-	if err != nil {
-		return "", err
-	}
-
 	path := filepath.Join(dir, name)
 
-	_, err = f.Write(data)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-
-	if err == nil {
-		err = os.Rename(f.Name(), path)
-	}
-
-	if err != nil {
-		_ = os.Remove(f.Name())
-
-		return "", err
-	}
-
-	return path, nil
+	return path, os.WriteFile(path, data, 0o600)
 }
 
 // fault records a runner error as a sandbox stop. While ctx is done the error
