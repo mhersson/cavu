@@ -2,7 +2,7 @@
 
 This file lists the removable parts of CAVU: code that makes up for a weakness of today's models and sits behind a switch, so it can be deleted when models no longer need it. Every removable part has an entry here, landed with its code, naming its switch, what the switch turns on, the assumption the part rests on, and the replay comparison that would retire it. The comparisons are to be run by a replay tool that is not built yet.
 
-It also lists what the agent adapter assumes of the agent release it pins. Those entries have no switch: they change with the pin, and name the check against a new release that would change or retire them, to be run by a conformance suite that is not built yet.
+It also lists what the Claude Code adapter assumes of the pinned Claude Code version. Those entries have no switch: they change when the pinned version changes, and name the check against a new release that would change or retire them, to be run by a conformance suite that is not built yet.
 
 ## continuations
 
@@ -20,7 +20,11 @@ It also lists what the agent adapter assumes of the agent release it pins. Those
 
 ## The pinned flag set of the Claude Code adapter
 
-- Switch: none. The flag set is a constant in `internal/driver/claudecode`, changed together with the pinned Claude Code version.
-- What it turns on: every session runs `claude -p --output-format stream-json --input-format stream-json --verbose --include-partial-messages --setting-sources user --strict-mcp-config --system-prompt-snapshot off --permission-mode bypassPermissions` with its model, session, turn cap and a settings file that turns attribution off, plus `--disallowedTools WebFetch WebSearch` unless the session allows web tools.
-- Assumption: on the pinned release these flags give user-level settings only, native instruction loading and a clean headless run.
-- Check to change or retire it: run the conformance suite against each new release. Change the flag set when the suite fails, and drop a flag once a release makes it unnecessary.
+- Switch: none. The flags and the environment are constants in `internal/driver/claudecode`, changed when the pinned Claude Code version changes.
+- What it turns on: every session runs `claude` with
+  - always: `-p --output-format stream-json --input-format stream-json --verbose --include-partial-messages --setting-sources user --strict-mcp-config --system-prompt-snapshot off --permission-mode bypassPermissions`, `--model <id>`, `--settings <file>` with a settings file that turns commit and PR attribution off, `--session-id <uuid>` or `--resume <id>`, and `--max-turns <n>`;
+  - when the session sets them: `--effort <level>`, `--append-system-prompt-file <file>` holding its instructions, and `--json-schema <schema>` for a structured result;
+  - unless the session allows web tools: `--disallowedTools WebFetch WebSearch`;
+  - an environment built whole: `HOME`, `CLAUDE_CONFIG_DIR`, `PATH`, `DISABLE_UPDATES=1`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_FAST_MODE=1`, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, `CLAUDE_CODE_DISABLE_WEB_FETCH=1` unless the session allows web tools, the auth mode's variables (`CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`), none of the other auth or provider variables the caller's environment may hold, and the loopback hosts in `NO_PROXY` and `no_proxy` when the caller's environment names a proxy.
+- Assumption: on the pinned version these flags and variables give user-level settings only, native instruction loading and a clean headless run.
+- Check to change or retire it: run the conformance suite against each new release. Change a flag or variable when the suite fails, and drop one once a release makes it unnecessary.
