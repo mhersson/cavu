@@ -380,9 +380,9 @@ func requireNoSession(t *testing.T, f *fakeRun) {
 	assert.NotContains(t, startedKinds(f), "claude", "a session started after staging failed")
 }
 
-// A failed staging command fails the run before any session. Exit 125 from a
-// command behind proc.SandboxOnly is its refusal outside a sandbox container,
-// and only there.
+// A failed staging command fails the run before any session. Exit
+// proc.NotInSandbox from a command behind proc.SandboxOnly is its refusal
+// outside a sandbox container, and only there.
 func TestStageFailureStartsNoSession(t *testing.T) {
 	for _, tc := range []struct {
 		kind         string
