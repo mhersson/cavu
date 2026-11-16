@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -120,7 +120,8 @@ func stagedDir() stagedEntry                   { return stagedEntry{tar.TypeDir,
 func stagedFile(content string) stagedEntry    { return stagedEntry{tar.TypeReg, 0o644, content} }
 func stagedProgram(content string) stagedEntry { return stagedEntry{tar.TypeReg, 0o755, content} }
 
-// staged reads back the tar on the write's stdin, nil when no write ran.
+// staged reads back the tar on the write's stdin, nil when no write ran,
+// checking every entry with requirePlainEntry.
 func staged(t *testing.T, f *fakeRun) map[string]stagedEntry {
 	t.Helper()
 
@@ -141,12 +142,42 @@ func staged(t *testing.T, f *fakeRun) map[string]stagedEntry {
 		}
 
 		require.NoError(t, err)
+		requirePlainEntry(t, h)
 
 		data, err := io.ReadAll(tr)
 		require.NoError(t, err)
 
 		out[h.Name] = stagedEntry{typeflag: h.Typeflag, mode: h.Mode, content: string(data)}
 	}
+}
+
+// requirePlainEntry fails unless h is a directory or a regular file under a
+// clean relative name, a directory 0755 and a file 0644 or 0755, with no
+// owner, no link, no device and the time at zero.
+func requirePlainEntry(t *testing.T, h *tar.Header) {
+	t.Helper()
+
+	name := strings.TrimSuffix(h.Name, "/")
+	assert.True(t, name != "" && name != "." && name != ".." && !strings.HasPrefix(name, "../") &&
+		!path.IsAbs(name) && path.Clean(name) == name, "%q is not a clean relative name", h.Name)
+
+	switch h.Typeflag {
+	case tar.TypeDir:
+		assert.Equal(t, int64(0o755), h.Mode, h.Name)
+	case tar.TypeReg:
+		assert.Contains(t, []int64{0o644, 0o755}, h.Mode, h.Name)
+	default:
+		assert.Failf(t, "neither a directory nor a regular file", "%q has type %q", h.Name, h.Typeflag)
+	}
+
+	assert.Zero(t, h.Uid, h.Name)
+	assert.Zero(t, h.Gid, h.Name)
+	assert.Empty(t, h.Uname, h.Name)
+	assert.Empty(t, h.Gname, h.Name)
+	assert.Empty(t, h.Linkname, h.Name)
+	assert.Zero(t, h.Devmajor, h.Name)
+	assert.Zero(t, h.Devminor, h.Name)
+	assert.Zero(t, h.ModTime.Unix(), h.Name)
 }
 
 // stagedFiles is the content of each file the write was given, by name.
@@ -323,12 +354,23 @@ func TestStageNestedListAlone(t *testing.T) {
 	assert.NotContains(t, got["CLAUDE.md"], "svc agents")
 }
 
-// A base commit without instruction files clears the config dir and writes
-// nothing.
+// With no root file, no rule, no skill and an empty nested list, the staging
+// clears and reads but runs no write.
 func TestStageNothingToStage(t *testing.T) {
-	f := stageFake(t, fakeTree{"README.md": regular("no instruction files\n"), "pkg/README.md": regular("none here\n")})
+	f := stageFake(t, fakeTree{
+		"README.md":               regular("no instruction files\n"),
+		"CLAUDE.md":               symlink("../outside.md"),
+		".cache/CLAUDE.md":        regular("in a dot directory, so not listed\n"),
+		"pkg/README.md":           regular("none here\n"),
+		".claude/settings.json":   regular("{}\n"),
+		".claude/agents/agent.md": regular("an agent\n"),
+		".claude/rules":           symlink("../shared/rules"),
+		".claude/skills":          symlink("../shared/skills"),
+	})
 
-	assert.Equal(t, []string{kindClear, kindListing, "claude"}, startedKinds(f))
+	// The listing, then the link's target.
+	assert.Equal(t, []string{kindClear, kindListing, kindBatch, "claude"}, startedKinds(f))
+	assert.Empty(t, f.target.rec.ofKind(kindWrite))
 }
 
 // requireNoSession fails if f started claude.
@@ -399,22 +441,33 @@ func TestStageRefusesUncleanPaths(t *testing.T) {
 // stagedTar takes clean relative names only, whatever reaches it.
 func TestStagedTarRefusesUncleanNames(t *testing.T) {
 	for _, name := range []string{"../settings.md", "/etc/settings.md", "skills/../../x", "skills//x", "./CLAUDE.md", ""} {
-		_, err := stagedTar(map[string][]byte{name: []byte("x")}, nil, time.Now())
+		_, err := stagedTar(map[string][]byte{name: []byte("x")}, nil)
 		assert.Error(t, err, "%q", name)
 	}
 }
 
+// The staging stops before any read once what it would write passes its
+// bound, naming the file at which it does; a long rule counts as its cut. A
+// listing past its bound names no file.
 func TestStageLimits(t *testing.T) {
-	tree := fakeTree{"CLAUDE.md": regular("root\n"), ".claude/skills/one/SKILL.md": regular(strings.Repeat("s", 1000))}
+	tree := fakeTree{
+		"CLAUDE.md":                   regular("root\n"),
+		".claude/rules/long.md":       regular(strings.Repeat("r", 2*fileLimit)),
+		".claude/skills/one/SKILL.md": regular(strings.Repeat("s", 1000)),
+	}
+	counted := len("root\n") + fileLimit + 1000
 
 	for _, tc := range []struct {
 		name   string
 		mutate func(*claudeCode)
 		fails  bool
+		passAt string // the file the error names
 	}{
-		{"within both", func(*claudeCode) {}, false},
-		{"listing past its limit", func(c *claudeCode) { c.listLimit = 64 }, true},
-		{"staged bytes past their limit", func(c *claudeCode) { c.stageLimit = 1000 }, true},
+		{"within both", func(c *claudeCode) { c.stageLimit = counted }, false, ""},
+		{"listing past its limit", func(c *claudeCode) { c.listLimit = 64 }, true, ""},
+		{"past the bound at a skill", func(c *claudeCode) { c.stageLimit = counted - 1 }, true, ".claude/skills/one/SKILL.md"},
+		{"past the bound at a rule", func(c *claudeCode) { c.stageLimit = len("root\n") + fileLimit - 1 }, true, ".claude/rules/long.md"},
+		{"past the bound at a memory file", func(c *claudeCode) { c.stageLimit = len("root\n") - 1 }, true, "CLAUDE.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
@@ -430,10 +483,68 @@ func TestStageLimits(t *testing.T) {
 			}
 
 			require.Error(t, err)
+
+			var be *boundError
+			if assert.Equal(t, tc.passAt != "", errors.As(err, &be)) && be != nil {
+				assert.Equal(t, tc.passAt, be.path)
+			}
+
+			assert.Empty(t, f.target.rec.ofKind(kindBatch), "a blob was read")
 			assert.Empty(t, f.target.rec.ofKind(kindWrite), "a write ran")
 			requireNoSession(t, f)
 		})
 	}
+}
+
+// The bound counts every staged name, so skills that share one blob, read
+// once, count once each.
+func TestStageBoundCountsEachName(t *testing.T) {
+	shared := strings.Repeat("s", 600)
+
+	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f.spec.BaseCommit = testBase
+	f.target.rec.tree = fakeTree{".claude/skills/a/SKILL.md": regular(shared), ".claude/skills/b/SKILL.md": regular(shared)}
+	f.d.stageLimit = 1000
+
+	_, err := f.run(t.Context())
+
+	var be *boundError
+	require.ErrorAs(t, err, &be)
+	assert.Equal(t, ".claude/skills/b/SKILL.md", be.path)
+	requireNoSession(t, f)
+}
+
+// The archive holds names, contents and two modes only: 0755 for directories
+// and for the skill files the commit marks executable, 0644 for every other
+// file, whatever mode a memory or rule blob has.
+func TestStagedArchiveEntries(t *testing.T) {
+	f := stageFake(t, fakeTree{
+		"CLAUDE.md":                        executable("root\n"),
+		".claude/rules/run.md":             executable("rule\n"),
+		".claude/rules/linked.md":          symlink("../../docs/rule.md"),
+		"docs/rule.md":                     regular("linked rule\n"),
+		".claude/skills/one/SKILL.md":      regular("skill\n"),
+		".claude/skills/one/bin/run.sh":    executable("echo run\n"),
+		".claude/skills/one/link.sh":       symlink("bin/run.sh"),
+		".claude/skills/one/deep/a/b/c.md": regular("deep\n"),
+		".claude/skills/one/vendor":        submodule,
+		"pkg/AGENTS.md":                    regular("nested\n"),
+	})
+
+	entries := staged(t, f)
+	require.NotEmpty(t, entries)
+
+	var programs []string
+
+	for name, e := range entries {
+		if e.typeflag == tar.TypeReg && e.mode == 0o755 {
+			programs = append(programs, name)
+		}
+	}
+
+	assert.Equal(t, []string{"skills/one/bin/run.sh"}, programs)
+	assert.NotContains(t, entries, "skills/one/link.sh")
+	assert.NotContains(t, entries, "skills/one/vendor")
 }
 
 // A symlink target longer than linkLimit is not read, so the link is skipped.

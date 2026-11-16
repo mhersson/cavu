@@ -43,8 +43,8 @@ const (
 	keptEntry = "projects"
 
 	stageTimeout = time.Minute
-	// listLimit bounds the tree listing, stageLimit the skills plus what is
-	// kept of the bounded files, and fileLimit each memory and rule file, which
+	// listLimit bounds the tree listing, stageLimit what the staging writes
+	// as checkBound counts it, and fileLimit each memory and rule file, which
 	// is cut there.
 	listLimit  = 64 << 20
 	stageLimit = 16 << 20
@@ -194,6 +194,10 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 		return err
 	}
 
+	if err := c.checkBound(memory, rules, skills); err != nil {
+		return fmt.Errorf("stage %s: %w", s.BaseCommit, err)
+	}
+
 	whole, bounded, err := c.readStaged(ctx, t, s, append(slices.Clone(memory), rules...), skills)
 	if err != nil {
 		return err
@@ -227,7 +231,7 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 
 	// The files travel as a tar on the write's stdin, never as the command's
 	// Files, which a target writes before the marker check runs.
-	archive, err := stagedTar(files, executable, time.Now())
+	archive, err := stagedTar(files, executable)
 	if err != nil {
 		return err
 	}
@@ -241,8 +245,11 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 
 // stagedTar packs files, named relative to the config dir, with the
 // directories they sit in: directories 0755, files 0644, and 0755 for a name
-// executable marks. It holds directories and regular files only.
-func stagedTar(files map[string][]byte, executable map[string]bool, now time.Time) ([]byte, error) {
+// executable marks. It holds directories and regular files only, with no
+// owner, no link and the time at zero.
+func stagedTar(files map[string][]byte, executable map[string]bool) ([]byte, error) {
+	epoch := time.Unix(0, 0)
+
 	dirs := map[string]bool{}
 
 	for name := range files {
@@ -260,7 +267,7 @@ func stagedTar(files map[string][]byte, executable map[string]bool, now time.Tim
 	tw := tar.NewWriter(&b)
 
 	for _, d := range slices.Sorted(maps.Keys(dirs)) {
-		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: d + "/", Mode: 0o755, ModTime: now}); err != nil {
+		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: d + "/", Mode: 0o755, ModTime: epoch}); err != nil {
 			return nil, fmt.Errorf("pack %s: %w", d, err)
 		}
 	}
@@ -271,7 +278,7 @@ func stagedTar(files map[string][]byte, executable map[string]bool, now time.Tim
 			mode = 0o755
 		}
 
-		h := &tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: mode, Size: int64(len(files[name])), ModTime: now}
+		h := &tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: mode, Size: int64(len(files[name])), ModTime: epoch}
 		if err := tw.WriteHeader(h); err != nil {
 			return nil, fmt.Errorf("pack %s: %w", name, err)
 		}
@@ -437,11 +444,62 @@ func cleanRepoPath(p string) bool {
 	return true
 }
 
+// boundError is a staging that would write more than its bound; path is the
+// repository file at which it passes it.
+type boundError struct {
+	path  string
+	bound int
+}
+
+func (e *boundError) Error() string {
+	return fmt.Sprintf("the instruction files pass %d bytes at %s", e.bound, e.path)
+}
+
+// checkBound counts, from the listing's sizes and before anything is read,
+// what the staging writes, by staged name: each distinct memory blob and each
+// rule up to fileLimit, each skill whole. The archive holds that, the fixed
+// text, the cut lines and the nested list. Reading takes no more.
+func (c claudeCode) checkBound(memory, rules []boundedFile, skills []treeEntry) error {
+	total := 0
+	counted := map[string]bool{}
+
+	count := func(p string, n int) error {
+		if total += n; total > c.stageLimit {
+			return &boundError{path: p, bound: c.stageLimit}
+		}
+
+		return nil
+	}
+
+	for _, f := range memory {
+		if !counted[f.blob.oid] {
+			counted[f.blob.oid] = true
+
+			if err := count(f.path, min(f.blob.size, fileLimit)); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, f := range rules {
+		if err := count(f.path, min(f.blob.size, fileLimit)); err != nil {
+			return err
+		}
+	}
+
+	for _, e := range skills {
+		if err := count(e.path, e.size); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // readStaged reads the skills whole, by blob, and the bounded files cut at
 // fileLimit, by blob, a bounded blob past it that no skill shares through a
 // bounded read of its own. A skill sharing a blob with a cut file stays whole.
 func (c claudeCode) readStaged(ctx context.Context, t proc.Target, s driver.Spec, files []boundedFile, skills []treeEntry) (whole, bounded map[string][]byte, err error) {
-	total := 0
 	batch := []treeEntry{}
 	inBatch := map[string]bool{}
 
@@ -449,7 +507,6 @@ func (c claudeCode) readStaged(ctx context.Context, t proc.Target, s driver.Spec
 		if !inBatch[e.oid] {
 			inBatch[e.oid] = true
 			batch = append(batch, e)
-			total += e.size
 		}
 	}
 
@@ -464,14 +521,9 @@ func (c claudeCode) readStaged(ctx context.Context, t proc.Target, s driver.Spec
 		case inBatch[f.blob.oid] || slices.ContainsFunc(long, func(e treeEntry) bool { return e.oid == f.blob.oid }):
 		case f.blob.size > fileLimit:
 			long = append(long, f.blob)
-			total += fileLimit
 		default:
 			add(f.blob)
 		}
-	}
-
-	if total > c.stageLimit {
-		return nil, nil, fmt.Errorf("the instruction files of %s hold %d bytes, more than %d", s.BaseCommit, total, c.stageLimit)
 	}
 
 	whole, err = c.readBlobs(ctx, t, s, batch)
