@@ -150,7 +150,10 @@ func ownVersions(files map[string][]byte) (map[string]string, error) {
 			return nil, err
 		}
 
-		out["node"] = node
+		if node != "" {
+			out["node"] = node
+		}
+
 		if manager != "" {
 			out[manager] = managerVersion
 		}
@@ -257,6 +260,8 @@ func parseGoMod(b []byte) (string, error) {
 	return goVer, nil
 }
 
+// parsePackageJSON returns no node version when engines.node is absent or not
+// an accepted form; the defaults table then applies.
 func parsePackageJSON(b []byte) (node, manager, managerVersion string, err error) {
 	var doc struct {
 		Engines        struct{ Node string } `json:"engines"`
@@ -265,8 +270,6 @@ func parsePackageJSON(b []byte) (node, manager, managerVersion string, err error
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return "", "", "", fmt.Errorf("package.json: %w", err)
 	}
-
-	node = defaultNode
 
 	engine := strings.TrimSpace(doc.Engines.Node)
 	if exactVersionRe.MatchString(engine) {
