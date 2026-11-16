@@ -92,6 +92,7 @@ CREATE TABLE replays (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	name       TEXT NOT NULL,
 	config     TEXT NOT NULL,
+	image      TEXT NOT NULL,
 	started_at INTEGER NOT NULL,
 	ended_at   INTEGER
 );

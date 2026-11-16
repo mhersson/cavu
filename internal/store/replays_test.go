@@ -104,7 +104,7 @@ func TestPreviousReplay(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	first, err := s.CreateReplay(ctx, Replay{Name: "first", Config: map[string]string{"model_work": "m"}})
+	first, err := s.CreateReplay(ctx, Replay{Name: "first", Image: "cavu-sandbox:1", Config: map[string]string{"model_work": "m"}})
 	require.NoError(t, err)
 	require.NoError(t, s.EndReplay(ctx, first.ID, time.Now()))
 
@@ -124,6 +124,7 @@ func TestPreviousReplay(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, first.ID, got.ID)
 	require.Equal(t, first.Config, got.Config)
+	require.Equal(t, first.Image, got.Image)
 
 	got, ok, err = s.PreviousReplay(ctx, cutOff.ID+1)
 	require.NoError(t, err)

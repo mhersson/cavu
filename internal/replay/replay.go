@@ -67,7 +67,7 @@ func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, out io.W
 		return store.Replay{}, ErrNoReferenceTasks
 	}
 
-	r, err := s.CreateReplay(ctx, store.Replay{Name: c.Name, Config: c.overrides()})
+	r, err := s.CreateReplay(ctx, store.Replay{Name: c.Name, Image: l.Image, Config: c.overrides()})
 	if err != nil {
 		return store.Replay{}, fmt.Errorf("replay: %w", err)
 	}

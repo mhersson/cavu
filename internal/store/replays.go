@@ -11,10 +11,12 @@ import (
 
 // Replay is one run of the reference set under a named configuration. Config
 // holds the task overrides every shadow task of the replay carries. EndedAt is
-// nil until the replay has recorded every item.
+// nil until the replay has recorded every item. Image is the sandbox image the
+// replay ran under.
 type Replay struct {
 	ID        int64
 	Name      string
+	Image     string
 	Config    map[string]string
 	StartedAt time.Time
 	EndedAt   *time.Time
@@ -44,8 +46,8 @@ func (s *Store) CreateReplay(ctx context.Context, r Replay) (Replay, error) {
 		return Replay{}, fmt.Errorf("encode replay: %w", err)
 	}
 
-	res, err := s.db.ExecContext(ctx, `INSERT INTO replays (name, config, started_at, ended_at) VALUES (?, ?, ?, ?)`,
-		r.Name, string(config), toMillis(r.StartedAt), endedArg(r.EndedAt))
+	res, err := s.db.ExecContext(ctx, `INSERT INTO replays (name, config, image, started_at, ended_at) VALUES (?, ?, ?, ?, ?)`,
+		r.Name, string(config), r.Image, toMillis(r.StartedAt), endedArg(r.EndedAt))
 	if err != nil {
 		return Replay{}, fmt.Errorf("create replay: %w", err)
 	}
@@ -121,8 +123,8 @@ func (s *Store) PreviousReplay(ctx context.Context, before int64) (Replay, bool,
 		ended   sql.NullInt64
 	)
 
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, config, started_at, ended_at FROM replays
-		WHERE id < ? AND ended_at IS NOT NULL ORDER BY id DESC LIMIT 1`, before).Scan(&r.ID, &r.Name, &config, &started, &ended)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, config, image, started_at, ended_at FROM replays
+		WHERE id < ? AND ended_at IS NOT NULL ORDER BY id DESC LIMIT 1`, before).Scan(&r.ID, &r.Name, &config, &r.Image, &started, &ended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Replay{}, false, nil
 	}

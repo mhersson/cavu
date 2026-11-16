@@ -191,6 +191,7 @@ func TestReplayRunsEveryReferenceTask(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, r.ID, prev.ID)
+	assert.Equal(t, e.loop.Image, prev.Image)
 
 	for i, src := range []store.Task{a, b} {
 		sh := shadows[i]
