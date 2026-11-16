@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -103,4 +104,30 @@ func TestExitErrorUnwraps(t *testing.T) {
 
 func TestExitErrorWithoutCauseDoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() { _ = exitError{code: 4}.Error() })
+}
+
+func TestSidecarAndBridgeAreInternalVerbs(t *testing.T) {
+	_, _, stderr := runCavu()
+
+	_, internal, found := strings.Cut(stderr, "internal:")
+	require.True(t, found)
+
+	assert.Contains(t, internal, "sidecar")
+	assert.Contains(t, internal, "bridge")
+}
+
+func TestSidecarReportsABadRequestAsAnErrorLine(t *testing.T) {
+	var out, errOut bytes.Buffer
+
+	code := run([]string{"sidecar"}, strings.NewReader(`{"Op":"nope"}`), &out, &errOut)
+
+	assert.Equal(t, 1, code)
+	assert.Contains(t, out.String(), `"Type":"error"`)
+}
+
+func TestBridgeRejectsAnExtraArgument(t *testing.T) {
+	code, _, stderr := runCavu("bridge", "extra")
+
+	assert.Equal(t, 1, code)
+	assert.NotEmpty(t, stderr)
 }
