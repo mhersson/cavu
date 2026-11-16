@@ -17,7 +17,9 @@ import (
 
 // writeGitWrapper writes a git wrapper script and returns its path and its log.
 // The script appends its arguments, one call per line, to the log, runs
-// extraShell (which may use $LOG), then execs the real git.
+// extraShell (which may use $LOG), then execs the real git. Its own arguments
+// are git's, so it finds the log and the real git's path next to itself, from
+// $0 (run execs it by its absolute path); no path is pasted into its text.
 func writeGitWrapper(t *testing.T, extraShell string) (script, logPath string) {
 	t.Helper()
 
@@ -27,9 +29,13 @@ func writeGitWrapper(t *testing.T, extraShell string) (script, logPath string) {
 	}
 
 	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "real-git"), []byte(realGit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	logPath = filepath.Join(dir, "calls.log")
-	body := "#!/bin/sh\nLOG='" + logPath + "'\nprintf '%s ' \"$@\" >> \"$LOG\"\necho >> \"$LOG\"\n" +
-		extraShell + "\nexec '" + realGit + "' \"$@\"\n"
+	body := "#!/bin/sh\nLOG=\"${0%/*}/calls.log\"\nprintf '%s ' \"$@\" >> \"$LOG\"\necho >> \"$LOG\"\n" +
+		extraShell + "\nexec \"$(cat \"${0%/*}/real-git\")\" \"$@\"\n"
 	script = filepath.Join(dir, "git")
 
 	writeExecutable(t, script, body)
