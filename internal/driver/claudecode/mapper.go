@@ -630,9 +630,18 @@ func (m *mapper) outcome(l streamLine) {
 	m.res.Reason = reason
 	m.res.IsError = reason != driver.ReasonDone
 
-	if m.res.IsError {
-		m.res.Detail = m.mask(errorText(l))
+	if !m.res.IsError {
+		return
 	}
+
+	// The status is the one fact a person can act on that the CLI's text may
+	// leave out.
+	detail := errorText(l)
+	if status >= 0 {
+		detail = fmt.Sprintf("upstream status %d: %s", status, detail)
+	}
+
+	m.res.Detail = m.mask(detail)
 }
 
 // errorText is the text an error result carries, from the most to the least

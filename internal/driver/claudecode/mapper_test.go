@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -462,7 +463,8 @@ func TestMapperEndpointFailures(t *testing.T) {
 
 			assert.Equal(t, tc.reason, res.Reason)
 			assert.True(t, res.IsError)
-			assert.NotEmpty(t, res.Detail)
+			assert.Contains(t, res.Detail, strconv.Itoa(tc.status), "the detail carries the upstream status")
+			assert.Contains(t, res.Detail, tc.text)
 		})
 	}
 
