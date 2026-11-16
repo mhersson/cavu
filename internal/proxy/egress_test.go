@@ -252,7 +252,7 @@ func TestEgressRefusesLinkLocalAfterResolution(t *testing.T) {
 
 	table := map[string]string{
 		"meta.example": "169.254.169.254", "v6.example": "fe80::1", "any.example": "0.0.0.0",
-		"priv.example": "127.0.0.1",
+		"priv.example": "127.0.0.1", "aws.example": "fd00:ec2::254", "ali.example": "100.100.100.200",
 	}
 
 	for _, tc := range []struct {
@@ -260,6 +260,8 @@ func TestEgressRefusesLinkLocalAfterResolution(t *testing.T) {
 		status     int
 	}{
 		{"metadata address", "meta.example", http.StatusForbidden},
+		{"aws v6 metadata address", "aws.example", http.StatusForbidden},
+		{"alibaba metadata address", "ali.example", http.StatusForbidden},
 		{"link-local v6", "v6.example", http.StatusForbidden},
 		{"unspecified", "any.example", http.StatusForbidden},
 		{"private address", "priv.example", http.StatusOK},
@@ -319,6 +321,39 @@ func TestControlAllowsListedLinkLocal(t *testing.T) {
 	assert.NoError(t, control("tcp4", "127.0.0.1:443", nil))
 }
 
+func TestControlRefusesCloudMetadataUnlessListed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		allow   []string
+		address string
+		ok      bool
+	}{
+		{"aws v6 not listed", []string{"meta.example"}, "[fd00:ec2::254]:80", false},
+		{"aws v6 listed", []string{"[fd00:ec2::254]"}, "[fd00:ec2::254]:80", true},
+		{"aws v6 listed in another spelling", []string{"fd00:ec2:0::254"}, "[fd00:ec2::254]:80", true},
+		{"alibaba not listed", []string{"meta.example"}, "100.100.100.200:80", false},
+		{"alibaba listed", []string{"100.100.100.200"}, "100.100.100.200:80", true},
+		{"alibaba v4-mapped not listed", []string{"meta.example"}, "[::ffff:100.100.100.200]:80", false},
+		{"a neighbour of aws v6", []string{"meta.example"}, "[fd00:ec2::253]:80", true},
+		{"a neighbour of alibaba", []string{"meta.example"}, "100.100.100.201:80", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, err := New(Config{AllowHosts: tc.allow})
+			require.NoError(t, err)
+
+			hh, ok := h.(*handler)
+			require.True(t, ok)
+
+			err = hh.controlFor("meta.example")("tcp", tc.address, nil)
+			if tc.ok {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorIs(t, err, errRefusedAddress)
+			}
+		})
+	}
+}
+
 func TestControlLetsTheListedHostGatewayThrough(t *testing.T) {
 	// Rootless Podman maps host.docker.internal to a link-local address.
 	const gatewayIP = "169.254.1.2:8080"
@@ -331,7 +366,8 @@ func TestControlLetsTheListedHostGatewayThrough(t *testing.T) {
 		ok      bool
 	}{
 		{"docker name allowed", []string{"host.docker.internal:8080"}, "host.docker.internal", gatewayIP, true},
-		{"podman name allowed", []string{"host.containers.internal"}, "host.containers.internal", gatewayIP, true},
+		// The sandbox writes no hosts entry for it, so DNS could answer.
+		{"podman name refused", []string{"host.containers.internal"}, "host.containers.internal", gatewayIP, false},
 		{"name in another case", []string{"host.docker.internal:8080"}, "Host.Docker.Internal.", gatewayIP, true},
 		{"v6 link-local", []string{"host.docker.internal"}, "host.docker.internal", "[fe80::1]:443", true},
 		{"another allowed name on the same address", []string{"host.docker.internal:8080", "other.example:8080"}, "other.example", gatewayIP, false},

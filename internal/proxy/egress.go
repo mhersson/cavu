@@ -149,17 +149,21 @@ const dialTimeout = 30 * time.Second
 
 var errRefusedAddress = errors.New("proxy: address refused after resolution")
 
-// The runtime writes these names into the sidecar's hosts file, so a DNS
-// answer cannot rebind them.
-var hostGateways = []string{"host.docker.internal", "host.containers.internal"}
+// hostGateway is the one name CAVU itself writes into the sidecar's hosts
+// file, through --add-host, on both runtimes, so no DNS answer can rebind it.
+const hostGateway = "host.docker.internal"
+
+// metadataAddrs are cloud metadata endpoints outside the link-local range:
+// AWS over IPv6 and Alibaba.
+var metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254"), netip.MustParseAddr("100.100.100.200")}
 
 // controlFor checks every address a dial of host resolves to, just before
-// connect, so a second resolution cannot slip past. Link-local and unspecified
-// addresses (cloud metadata among them) are refused unless that IP itself is
-// on the allowlist; link-local is also let through for a listed host gateway.
+// connect, so a second resolution cannot slip past. Link-local, unspecified
+// and cloud metadata addresses are refused unless that IP itself is on the
+// allowlist; link-local is also let through for a listed host gateway.
 func (h *handler) controlFor(host string) func(network, address string, c syscall.RawConn) error {
 	host = normHost(host)
-	gateway := slices.Contains(hostGateways, host) && h.allow.listsHost(host)
+	gateway := host == hostGateway && h.allow.listsHost(host)
 
 	return func(_, address string, _ syscall.RawConn) error {
 		ap, err := netip.ParseAddrPort(address)
@@ -172,7 +176,7 @@ func (h *handler) controlFor(host string) func(network, address string, c syscal
 			return nil
 		}
 
-		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() && !gateway {
+		if ip.IsUnspecified() || slices.Contains(metadataAddrs, ip) || ip.IsLinkLocalUnicast() && !gateway {
 			return errRefusedAddress
 		}
 
