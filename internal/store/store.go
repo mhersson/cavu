@@ -1,5 +1,5 @@
 // Package store persists CAVU's state in one SQLite file: projects, tasks,
-// runs, an append-only event log, usage, settings and sealed secrets.
+// runs, an append-only event log, usage, replays, settings and sealed secrets.
 package store
 
 import (

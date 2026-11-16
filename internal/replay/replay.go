@@ -1,4 +1,4 @@
-// Package replay re-runs the reference set of finished tasks under a named
+// Package replay re-runs the reference tasks under a named
 // configuration and records each outcome, so two replays can be compared.
 package replay
 
