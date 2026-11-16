@@ -502,14 +502,41 @@ func TestSetupPhaseHasNoHomeMount(t *testing.T) {
 		volumeMount(s.name("handoff"), "/handoff"),
 		volumeMount(s.name("cache"), "/cache"),
 	}, mountFlags(setup.argv))
+}
 
-	for _, a := range setup.argv {
-		assert.NotEqual(t, "--cap-drop=ALL", a)
-		assert.False(t, strings.HasPrefix(a, "--memory"), a)
-	}
+func TestEveryContainerIsHardened(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		totalMB int
+		want    map[string]string // container kind: its memory flag
+	}{
+		{"a large runtime", 32 << 10, map[string]string{"clone": "--memory=2048m", "sidecar": "--memory=1024m", "setup": "--memory=8192m", "agent": "--memory=8192m"}},
+		{"a runtime below the phase limit", 1536, map[string]string{"clone": "--memory=1536m", "sidecar": "--memory=1024m", "setup": "--memory=1536m", "agent": "--memory=1536m"}},
+		{"a runtime below every limit", 768, map[string]string{"clone": "--memory=768m", "sidecar": "--memory=768m", "setup": "--memory=768m", "agent": "--memory=768m"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, f := ensured(t)
+			f.set(t, memoryFile, []byte(strconv.Itoa(tc.totalMB<<20)+"\n"))
 
-	for _, c := range f.calls(t) {
-		assert.NotEqual(t, "info", c.argv[0], "the setup phase asked for the memory")
+			_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: "https://git.example/repo.git"})
+			require.NoError(t, err)
+
+			for _, phase := range []Phase{PhaseSetup, PhaseAgent} {
+				_, err := s.Up(t.Context(), phase, sidecar.ProxyRequest{}, nil)
+				require.NoError(t, err)
+			}
+
+			for kind, memory := range tc.want {
+				assert.Subset(t, onlyRun(t, f, s.name(kind)).argv, []string{
+					"--cap-drop=ALL",
+					"--security-opt=no-new-privileges",
+					"--init",
+					"--pids-limit=2048",
+					"--user=1000:1000",
+					memory,
+				}, kind)
+			}
+		})
 	}
 }
 
@@ -570,6 +597,26 @@ func TestCloneFailures(t *testing.T) {
 
 			_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: "https://git.example/repo.git"})
 			require.Error(t, err)
+			assert.NotErrorIs(t, err, ErrOutOfMemory)
+
+			calls := f.calls(t)
+			idx := runsOf(calls, s.name("clone"))
+			require.Len(t, idx, 1)
+			assert.Contains(t, removedAfter(calls, idx[0]), s.name("clone"))
+		})
+	}
+
+	for name, out := range map[string]string{
+		"killed for memory, git":      `{"Type":"error","Error":"update mirror: signal: killed"}`,
+		"killed for memory, the main": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, f := ensured(t)
+			f.set(t, "out.sidecar", []byte(out+"\n"))
+			f.set(t, "out."+s.name("clone"), []byte(`[{"State":{"OOMKilled":true,"ExitCode":137}}]`))
+
+			_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: "https://git.example/repo.git"})
+			require.ErrorIs(t, err, ErrOutOfMemory)
 
 			calls := f.calls(t)
 			idx := runsOf(calls, s.name("clone"))

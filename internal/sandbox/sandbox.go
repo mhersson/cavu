@@ -32,7 +32,10 @@ const (
 	probeHost = "cavu-probe.invalid:80"
 	probeURL  = "http://cavu-probe.invalid/"
 
-	agentMemoryMB = 8192
+	// Memory limits, each capped at what the runtime reports in total.
+	phaseMemoryMB   = 8192
+	sidecarMemoryMB = 1024
+	cloneMemoryMB   = 2048
 
 	readyTimeout = 20 * time.Second
 	// probeTimeout covers a bridge that does not listen yet.
@@ -68,6 +71,8 @@ var (
 	// ErrSidecarDown is a sidecar that did not get ready, or a proxy the phase
 	// container cannot reach through the bridge.
 	ErrSidecarDown = errors.New("sandbox: the sidecar does not answer")
+	// ErrOutOfMemory is a container the kernel killed at its memory limit.
+	ErrOutOfMemory = errors.New("sandbox: killed for memory")
 
 	errNoVolumes = errors.New("sandbox: the volumes are not in place: run EnsureVolumes first")
 )
@@ -82,14 +87,15 @@ type Options struct {
 	Labels                   map[string]string
 }
 
-// Phase is what the phase container is for.
+// Phase is what the phase container is for. Both phases are hardened alike,
+// because the setup command runs with the project's secrets.
 type Phase string
 
 const (
-	// PhaseSetup prepares the project: the cache is writable, the container
-	// is not hardened and has no agent home.
+	// PhaseSetup prepares the project: the cache is writable and there is no
+	// agent home.
 	PhaseSetup Phase = "setup"
-	// PhaseAgent runs the agent: hardened, the cache read-only, the home mounted.
+	// PhaseAgent runs the agent: the cache read-only, the home mounted.
 	PhaseAgent Phase = "agent"
 )
 
@@ -101,7 +107,7 @@ type Sandbox struct {
 	o        Options
 	timeouts struct{ ready, probe, clone time.Duration }
 	volumes  bool // EnsureVolumes succeeded
-	memoryMB int
+	totalMB  int  // the runtime's memory, read once
 	side     *sidecarProc
 	phase    Phase // of the phase container this Sandbox started, "" for none
 }
@@ -209,7 +215,25 @@ func (s *Sandbox) EnsureVolumes(ctx context.Context) error {
 	return nil
 }
 
-func (s *Sandbox) sidecarSpec(kind string, mounts ...Mount) ContainerSpec {
+// readMemory reads the runtime's total memory, once, for the limits.
+func (s *Sandbox) readMemory(ctx context.Context) error {
+	if s.totalMB > 0 {
+		return nil
+	}
+
+	total, err := s.o.Runtime.MemoryMB(ctx)
+	if err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+
+	s.totalMB = total
+
+	return nil
+}
+
+// The sidecar and the clone container are hardened too: one holds the real
+// credential and parses the agent's HTTP, the other runs git on forge content.
+func (s *Sandbox) sidecarSpec(kind string, memoryMB int, mounts ...Mount) ContainerSpec {
 	return ContainerSpec{
 		Name:        s.name(kind),
 		Image:       s.o.Image,
@@ -218,6 +242,8 @@ func (s *Sandbox) sidecarSpec(kind string, mounts ...Mount) ContainerSpec {
 		Mounts:      mounts,
 		Network:     "bridge",
 		HostGateway: true,
+		Hardened:    true,
+		MemoryMB:    min(memoryMB, s.totalMB),
 		Stdin:       true,
 	}
 }
@@ -236,14 +262,14 @@ func (s *Sandbox) phaseSpec(p Phase) ContainerSpec {
 		},
 		// The image's /tmp stays: a tmpfs there would be noexec on Docker, and
 		// go test runs the binaries it builds from TMPDIR.
-		Tmpfs:   []string{pidDir},
-		Network: "none",
+		Tmpfs:    []string{pidDir},
+		Network:  "none",
+		Hardened: true,
+		MemoryMB: min(phaseMemoryMB, s.totalMB),
 	}
 
 	if agent {
 		spec.Mounts = append(spec.Mounts, s.mount("home", "/home/agent", false))
-		spec.Hardened = true
-		spec.MemoryMB = s.memoryMB
 	}
 
 	return spec
@@ -252,7 +278,8 @@ func (s *Sandbox) phaseSpec(p Phase) ContainerSpec {
 // Clone runs the sidecar's clone operation in a short-lived container that
 // mounts the mirror and the workspace and nothing else, and returns the base
 // commit. It sets r's directories to those mounts. The token travels only on
-// the container's stdin, and the whole call is bounded.
+// the container's stdin, and the whole call is bounded. A container the
+// kernel killed at its memory limit is ErrOutOfMemory.
 func (s *Sandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (baseCommit string, err error) {
 	if !s.volumes {
 		return "", errNoVolumes
@@ -263,7 +290,11 @@ func (s *Sandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (baseCommit
 	ctx, cancel := context.WithTimeout(ctx, s.timeouts.clone)
 	defer cancel()
 
-	spec := s.sidecarSpec("clone", s.mount("mirror", "/mirror", false), s.mount("workspace", "/workspace", false))
+	if err := s.readMemory(ctx); err != nil {
+		return "", err
+	}
+
+	spec := s.sidecarSpec("clone", cloneMemoryMB, s.mount("mirror", "/mirror", false), s.mount("workspace", "/workspace", false))
 	rt := s.o.Runtime
 
 	if err := rt.Remove(ctx, spec.Name); err != nil {
@@ -279,6 +310,13 @@ func (s *Sandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (baseCommit
 
 	cleanup, done := cleanupContext(ctx)
 	defer done()
+
+	// git killed by the kernel reports only a signal, so the runtime is asked.
+	if err != nil && ctx.Err() == nil {
+		if info, ierr := rt.Inspect(cleanup, spec.Name); ierr == nil && info.OOMKilled {
+			err = fmt.Errorf("%w: the clone container hit its %d MB limit", ErrOutOfMemory, spec.MemoryMB)
+		}
+	}
 
 	if rerr := rt.Remove(cleanup, spec.Name); rerr != nil {
 		err = errors.Join(err, fmt.Errorf("sandbox: clone: %w", rerr))
@@ -367,13 +405,8 @@ func (s *Sandbox) Up(ctx context.Context, phase Phase, p sidecar.ProxyRequest, l
 }
 
 func (s *Sandbox) up(ctx context.Context, phase Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (Container, error) {
-	if phase == PhaseAgent && s.memoryMB == 0 {
-		total, err := s.o.Runtime.MemoryMB(ctx)
-		if err != nil {
-			return Container{}, fmt.Errorf("sandbox: %w", err)
-		}
-
-		s.memoryMB = min(agentMemoryMB, total)
+	if err := s.readMemory(ctx); err != nil {
+		return Container{}, err
 	}
 
 	if err := s.ensureSidecar(ctx, p, lines); err != nil {
@@ -474,7 +507,7 @@ func (s *Sandbox) ensureSidecar(ctx context.Context, p sidecar.ProxyRequest, lin
 
 	s.stopSidecar()
 
-	spec := s.sidecarSpec("sidecar", s.mount("handoff", "/handoff", false))
+	spec := s.sidecarSpec("sidecar", sidecarMemoryMB, s.mount("handoff", "/handoff", false))
 
 	if err := s.o.Runtime.Remove(ctx, spec.Name); err != nil {
 		return fmt.Errorf("sandbox: %w", err)
