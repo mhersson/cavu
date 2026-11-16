@@ -915,9 +915,6 @@ func TestLocalTargetRefuses(t *testing.T) {
 		{"a file outside", func(_ *testing.T, _ *localTarget, c *proc.Command) {
 			c.Files = map[string][]byte{outside: []byte("x")}
 		}},
-		{"a relative file", func(_ *testing.T, _ *localTarget, c *proc.Command) {
-			c.Files = map[string][]byte{"refused.txt": []byte("x")}
-		}},
 		{"a config dir outside", func(_ *testing.T, _ *localTarget, c *proc.Command) { c.Env = []string{"CLAUDE_CONFIG_DIR=/"} }},
 		{"a record outside", func(t *testing.T, l *localTarget, _ *proc.Command) {
 			l.env = scenario(t, fakeclaude.Scenario{Record: outside})
@@ -961,6 +958,15 @@ func TestLocalTargetRefuses(t *testing.T) {
 			assert.NoFileExists(t, outside+".tmp")
 		})
 	}
+
+	// Started, a relative file would land in the package directory, so this
+	// refusal is checked without Start.
+	t.Run("a relative file", func(t *testing.T) {
+		l := newLocalTarget(t, t.TempDir(), scenario(t, fakeclaude.Scenario{})...)
+
+		c := proc.Command{Argv: []string{l.binary, "--version"}, Dir: l.root, Files: map[string][]byte{"refused.txt": []byte("x")}}
+		assert.NotEmpty(t, l.refusal(c))
+	})
 
 	t.Run("the fake whose files are in its root runs", func(t *testing.T) {
 		root := t.TempDir()

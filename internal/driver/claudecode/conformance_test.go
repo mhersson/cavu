@@ -690,7 +690,8 @@ func TestConfigDirCleared(t *testing.T) {
 
 // TestConfigDirSymlinkRefused: a config dir the agent turned into a symlink
 // stops Run before any request, and the clear deletes nothing on either side
-// of the link.
+// of the link. Without a base commit no write follows the clear, so the clear
+// alone must refuse.
 func TestConfigDirSymlinkRefused(t *testing.T) {
 	const elsewhere = confHome + "/elsewhere"
 
@@ -711,8 +712,13 @@ func TestConfigDirSymlinkRefused(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 0, res.ExitCode, res.Output)
 
-			_, err = b.try(conformanceDriver(), b.spec())
-			require.Error(t, err)
+			s := b.spec()
+			s.BaseCommit = ""
+
+			_, err = b.try(conformanceDriver(), s)
+
+			var ee *exitError
+			require.ErrorAs(t, err, &ee, "the clear did not refuse")
 			require.NotErrorIs(t, err, errNotInSandbox)
 			assert.Empty(t, b.mock.Requests(), "a session started")
 
@@ -865,6 +871,13 @@ func TestStagingRefusesCraftedTree(t *testing.T) {
 			require.Error(t, err)
 			require.NotErrorIs(t, err, errNotInSandbox)
 			assert.False(t, b.exists(confConfig), "the staging wrote into the config dir")
+
+			// A tree git lists is refused by the staging's own check, not by
+			// a command.
+			if tc.listed {
+				var ee *exitError
+				assert.NotErrorAs(t, err, &ee, "a command refused")
+			}
 		})
 	}
 }
