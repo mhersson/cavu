@@ -412,7 +412,7 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 	}
 
 	return p.result(ctx, o, nil, draft{Prepared, actorRunner, PreparedPayload{
-		BaseCommit: res.BaseCommit, Tools: res.Tools, Baseline: res.Baseline,
+		BaseCommit: res.BaseCommit, Tools: res.Tools, IgnoredTools: res.IgnoredTools, Baseline: res.Baseline,
 	}})
 }
 

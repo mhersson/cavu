@@ -709,6 +709,25 @@ func TestLoopRecordsResultAfterCtxEnds(t *testing.T) {
 	})
 }
 
+func TestLoopRecordsIgnoredTools(t *testing.T) {
+	h := newHarness(t)
+
+	res := engine.PrepareResult{
+		BaseCommit: "base123", Tools: []string{"go@1.25.0"}, Baseline: engine.ResultPassed,
+		IgnoredTools: []string{".tool-versions: ubi:owner/tool 1.0"},
+	}
+	h.runner.prepares = []step[engine.PrepareResult]{{res: res}}
+
+	_, err := h.run(t.Context())
+	require.NoError(t, err)
+
+	prepared := h.eventsOf(engine.Prepared)
+	require.Len(t, prepared, 1)
+	assert.Equal(t, engine.PreparedPayload{
+		BaseCommit: res.BaseCommit, Tools: res.Tools, Baseline: res.Baseline, IgnoredTools: res.IgnoredTools,
+	}, payloadOf[engine.PreparedPayload](t, prepared[0]))
+}
+
 func TestLoopFailedBaselineStops(t *testing.T) {
 	h := newHarness(t)
 	h.runner.prepares = []step[engine.PrepareResult]{{res: engine.PrepareResult{

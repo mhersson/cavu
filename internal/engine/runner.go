@@ -70,11 +70,12 @@ type Runner interface {
 
 // PrepareResult is what preparing a run found. A failed step is a result, not an error.
 type PrepareResult struct {
-	BaseCommit string
-	Tools      []string
-	Baseline   string // passed, reused, waived, failed; a failed baseline sets FailedStep to "baseline"
-	FailedStep string // "", clone, toolchain, setup, baseline
-	Output     string
+	BaseCommit   string
+	Tools        []string
+	IgnoredTools []string // repository tool entries detection declined to install, as written
+	Baseline     string   // passed, reused, waived, failed; a failed baseline sets FailedStep to "baseline"
+	FailedStep   string   // "", clone, toolchain, setup, baseline
+	Output       string
 }
 
 // WorkRequest starts or resumes an agent session.
