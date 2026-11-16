@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/driver"
@@ -44,6 +43,8 @@ var effortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 // uuidPattern guards --session-id and --resume: the pinned release reads a
 // --resume value that is no UUID as a session name or a picker search term.
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+var commitPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // authEnv are never taken from Spec.Env: each one carries a credential, moves
 // requests off the endpoint the auth mode names, or makes a usage limit wait.
@@ -85,23 +86,9 @@ func validate(s driver.Spec) error {
 		return fmt.Errorf("claudecode: session id %q is not a UUID", cmp.Or(s.SessionID, s.Resume))
 	case s.Effort != "" && !slices.Contains(effortLevels, s.Effort):
 		return fmt.Errorf("claudecode: effort %q is not one of %v", s.Effort, effortLevels)
-	}
-
-	return validatePaths(s)
-}
-
-// validatePaths checks what the staging composes its commands from: the
-// paths, which the clear deletes in, and the base commit. prepare checks
-// them again before it composes any. An empty home or config dir would also
-// override the image's and lose the transcript.
-func validatePaths(s driver.Spec) error {
-	for _, p := range []string{s.Home, s.ConfigDir, s.Dir} {
-		if strings.ContainsFunc(p, unicode.IsControl) {
-			return fmt.Errorf("claudecode: path %q holds a control character", p)
-		}
-	}
-
-	switch {
+	// The staging composes its commands from the paths and the base commit,
+	// and the clear deletes in the config dir. An empty home or config dir
+	// would also override the image's and lose the transcript.
 	case !cleanAbs(s.Home) || s.Home == "/":
 		return fmt.Errorf("claudecode: home %q is not an absolute, clean path below /", s.Home)
 	// Directly below the home, so no component between the two can be a

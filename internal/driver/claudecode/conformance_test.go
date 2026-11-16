@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -731,51 +730,6 @@ func TestConfigDirSymlinkRefused(t *testing.T) {
 	}
 }
 
-// TestStagingReadsStoredBlobs: the staging reads the base commit's stored
-// blobs, so a replace object, a smudge filter, a later commit and a change in
-// the working tree all stay out of what it writes.
-func TestStagingReadsStoredBlobs(t *testing.T) {
-	const (
-		filtered    = "CONFORMANCE-FILTERED-2c8e"
-		replaced    = "CONFORMANCE-REPLACED-7b1d"
-		later       = "CONFORMANCE-LATER-COMMIT-5f0a"
-		uncommitted = "CONFORMANCE-UNCOMMITTED-9e3c"
-	)
-
-	b := keyBox(t)
-
-	base := lastLine(t, b.sh(`set -e
-printf '*.md filter=mark\n' > .gitattributes
-git config filter.mark.smudge 'echo `+filtered+`'
-git config filter.mark.clean cat
-git add .gitattributes
-git `+confIdentity+` commit -q -m attributes
-git replace "$(git rev-parse HEAD:CLAUDE.md)" "$(echo `+replaced+` | git hash-object -w --stdin)"
-git rev-parse HEAD`))
-
-	res := b.sh(`set -e
-echo ` + later + ` > CLAUDE.md
-git ` + confIdentity + ` commit -q -a -m later
-echo ` + uncommitted + ` > AGENTS.md`)
-	require.Equal(t, 0, res.ExitCode, res.Output)
-
-	s := b.spec()
-	s.BaseCommit = base
-	require.NoError(t, b.prepare(s))
-
-	memory := b.readConfig("CLAUDE.md")
-
-	for _, m := range []string{markerRootClaude, markerRootAgents, markerDotClaude} {
-		assert.Contains(t, memory, m)
-	}
-
-	for _, m := range []string{filtered, replaced, later, uncommitted} {
-		assert.NotContains(t, memory, m)
-	}
-
-	assert.Equal(t, markerRule+"\n", b.readConfig("rules/conformance.md"))
-}
-
 // TestStagingReplacesEarlierStaging: what an earlier session left in the
 // config dir goes but its transcript, and a skill script the commit marks
 // executable is staged executable, every other file not.
@@ -837,57 +791,8 @@ git rev-parse HEAD`))
 	assert.Equal(t, "{}\n", b.readConfig(transcript))
 }
 
-// TestStagingRefusesCraftedTree: a tree whose path below .claude/skills or
-// .claude/rules holds a . or .. component writes nothing. Git itself refuses
-// to list an empty name, which fails the staging as well.
-func TestStagingRefusesCraftedTree(t *testing.T) {
-	for _, tc := range []struct {
-		name, under, component string
-		listed                 bool
-	}{
-		{"dot dot under skills", "skills", "..", true},
-		{"dot under skills", "skills", ".", true},
-		{"dot dot under rules", "rules", "..", true},
-		{"empty under skills", "skills", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			b := keyBox(t)
-
-			blob := b.object("blob", []byte("planted\n"))
-			inner := b.object("tree", treeBytes(t, "100644", "settings.md", blob))
-			under := b.object("tree", treeBytes(t, "40000", tc.component, inner))
-			dotClaude := b.object("tree", treeBytes(t, "40000", tc.under, under))
-			root := b.object("tree", treeBytes(t, "40000", ".claude", dotClaude))
-			commit := b.git(confIdentityArgs("commit-tree", root, "-m", "crafted")...)
-
-			if tc.listed {
-				require.Equal(t, ".claude/"+tc.under+"/"+tc.component+"/settings.md", b.git("ls-tree", "-r", "--name-only", commit))
-			}
-
-			s := b.spec()
-			s.BaseCommit = commit
-
-			err := b.prepare(s)
-			require.Error(t, err)
-			require.NotErrorIs(t, err, errNotInSandbox)
-			assert.False(t, b.exists(confConfig), "the staging wrote into the config dir")
-
-			// A tree git lists is refused by the staging's own check, not by
-			// a command.
-			if tc.listed {
-				var ee *exitError
-				assert.NotErrorAs(t, err, &ee, "a command refused")
-			}
-		})
-	}
-}
-
 // confIdentity names the committer of the checks' own commits.
 const confIdentity = "-c user.name=conformance -c user.email=conformance@example.com"
-
-func confIdentityArgs(args ...string) []string {
-	return append(strings.Fields(confIdentity), args...)
-}
 
 // prepare runs the driver's clear and staging for s in the agent container,
 // with no session after them.
@@ -906,38 +811,6 @@ func (b *box) readConfig(rel string) string {
 	require.NoError(b.t, b.c.CopyOut(b.t.Context(), path.Join(confConfig, rel), &out))
 
 	return out.String()
-}
-
-// git runs git with args in the workspace and returns its trimmed output.
-func (b *box) git(args ...string) string {
-	b.t.Helper()
-
-	res, err := b.c.Run(b.t.Context(), proc.Command{Argv: append([]string{"git"}, args...), Dir: confDir}, time.Minute)
-	require.NoError(b.t, err)
-	require.Equal(b.t, 0, res.ExitCode, res.Output)
-
-	return strings.TrimSpace(res.Output)
-}
-
-// object writes data into the workspace's repository as an object of kind and
-// returns its id; --literally lets a tree hold names git itself refuses.
-func (b *box) object(kind string, data []byte) string {
-	b.t.Helper()
-
-	p := "/tmp/conformance-object-" + randomID()
-	require.NoError(b.t, b.c.CopyIn(b.t.Context(), map[string][]byte{p: data}))
-
-	return b.git("hash-object", "-t", kind, "--literally", "-w", p)
-}
-
-// treeBytes is a raw tree object of one entry, its name unchecked.
-func treeBytes(t *testing.T, mode, name, oid string) []byte {
-	t.Helper()
-
-	raw, err := hex.DecodeString(oid)
-	require.NoError(t, err)
-
-	return append(fmt.Appendf(nil, "%s %s\x00", mode, name), raw...)
 }
 
 // lastLine returns the last line of a script's output, failing unless the

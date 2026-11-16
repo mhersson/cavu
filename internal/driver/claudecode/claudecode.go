@@ -30,9 +30,6 @@ type claudeCode struct {
 	runRoot     string
 	gateTimeout time.Duration
 	grace       time.Duration
-	// listLimit and stageLimit bound the staging's tree listing and the bytes
-	// it stages.
-	listLimit, stageLimit int
 	// amend is nil outside tests; the conformance suite uses it for runs no
 	// Spec describes, such as a subscription against a mock's base URL.
 	amend func(*invocation)
@@ -40,10 +37,7 @@ type claudeCode struct {
 
 // New returns the Claude Code driver.
 func New() driver.Driver {
-	return claudeCode{
-		binary: "claude", runRoot: runRoot, gateTimeout: gateTimeout, grace: stopGrace,
-		listLimit: listLimit, stageLimit: stageLimit,
-	}
+	return claudeCode{binary: "claude", runRoot: runRoot, gateTimeout: gateTimeout, grace: stopGrace}
 }
 
 var versionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\S*`)

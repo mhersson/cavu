@@ -219,8 +219,8 @@ const (
 	kindClear   = "clear"
 	kindWrite   = "write"
 	kindListing = "ls-tree"
+	kindNested  = "nested"
 	kindBatch   = "cat-file --batch"
-	kindBlob    = "cat-file blob"
 )
 
 // commandKind names c among the commands staging starts, empty for any other.
@@ -228,18 +228,18 @@ func commandKind(c proc.Command) string {
 	argv := c.Argv
 
 	switch {
-	case len(argv) == 5 && argv[0] == "sh" && argv[1] == "-c" && argv[2] == proc.SandboxOnly(clearScript):
-		return kindClear
-	case len(argv) == 5 && argv[0] == "sh" && argv[1] == "-c" && argv[2] == proc.SandboxOnly(writeScript):
-		return kindWrite
-	case len(argv) == 0 || argv[0] != "git":
+	case len(argv) < 3:
 		return ""
-	case slices.Contains(argv, "ls-tree"):
+	case argv[2] == proc.SandboxOnly(clearScript):
+		return kindClear
+	case argv[2] == proc.SandboxOnly(writeScript):
+		return kindWrite
+	case argv[2] == nestedScript:
+		return kindNested
+	case argv[0] == "git" && argv[1] == "ls-tree":
 		return kindListing
-	case slices.Contains(argv, "cat-file") && slices.Contains(argv, "--batch"):
+	case argv[0] == "git" && argv[1] == "cat-file":
 		return kindBatch
-	case slices.Contains(argv, "cat-file") && slices.Contains(argv, "blob"):
-		return kindBlob
 	}
 
 	return ""
@@ -306,11 +306,11 @@ func (r *recordingTarget) answer(kind string, argv []string, stdin []byte) scrip
 
 	switch kind {
 	case kindListing:
-		return scripted{stdout: r.tree.listing()}
+		return scripted{stdout: r.tree.listing(argv[slices.Index(argv, "--")+1:])}
+	case kindNested:
+		return scripted{stdout: r.tree.nested()}
 	case kindBatch:
 		return scripted{stdout: r.tree.batch(stdin)}
-	case kindBlob:
-		return scripted{stdout: r.tree.blob(argv[len(argv)-1])}
 	}
 
 	return scripted{}
@@ -427,10 +427,7 @@ func testDriver(t *testing.T) claudeCode {
 	bin, err := os.Executable()
 	require.NoError(t, err)
 
-	return claudeCode{
-		binary: bin, gateTimeout: 10 * time.Second, grace: stopGrace,
-		listLimit: listLimit, stageLimit: stageLimit,
-	}
+	return claudeCode{binary: bin, gateTimeout: 10 * time.Second, grace: stopGrace}
 }
 
 func writeScenario(t *testing.T, sc fakeclaude.Scenario) string {
