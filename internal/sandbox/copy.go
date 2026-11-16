@@ -81,6 +81,9 @@ func (c Container) CopyOut(ctx context.Context, p string, w io.Writer) error {
 		return err
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
 
@@ -95,6 +98,9 @@ func (c Container) CopyOut(ctx context.Context, p string, w io.Writer) error {
 	if readErr == nil {
 		// Drain tar's end-of-archive padding so the client can finish cleanly.
 		_, readErr = io.Copy(io.Discard, pr)
+	} else {
+		// A refused stream is never read to its end; stopping the client ends it.
+		cancel()
 	}
 
 	_ = pr.CloseWithError(errors.New("stream abandoned"))

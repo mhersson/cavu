@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -131,4 +133,38 @@ func TestCopyOutReadsOneRegularFile(t *testing.T) {
 		require.Error(t, r.Container("cavu-agent-r1").CopyOut(t.Context(), "handoff/x", io.Discard))
 		assert.Empty(t, f.calls(t), "the runtime was called")
 	})
+}
+
+type failingWriter struct{}
+
+var errWriterFull = errors.New("writer full")
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errWriterFull }
+
+func TestCopyOutStopsARefusedStream(t *testing.T) {
+	cases := map[string]struct {
+		stream []byte
+		w      io.Writer
+	}{
+		"a directory":      {stream: tarOf(t, entry{tar.TypeDir, "handoff/", ""}), w: io.Discard},
+		"a failing writer": {stream: tarOf(t, entry{tar.TypeReg, "a", strings.Repeat("x", 4096)}), w: failingWriter{}},
+		"a second entry":   {stream: tarOf(t, entry{tar.TypeReg, "a", "1"}, entry{tar.TypeReg, "b", "2"}), w: io.Discard},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, f := fakeRuntime(t, "docker")
+			f.set(t, "stdout", tc.stream)
+			f.set(t, "linger", nil)
+
+			begun := time.Now()
+			err := r.Container("cavu-agent-r1").CopyOut(t.Context(), "/handoff/x", tc.w)
+			require.Error(t, err)
+			assert.Less(t, time.Since(begun), 10*time.Second, "the stream was read to its end")
+
+			if tc.w == (failingWriter{}) {
+				assert.ErrorIs(t, err, errWriterFull)
+			}
+		})
+	}
 }

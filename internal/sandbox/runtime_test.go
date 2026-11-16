@@ -19,6 +19,7 @@ import (
 // fakeScript stands in for the runtime client. Each call records its argv,
 // its environment names, its HOME, file descriptor 3 (when open) and stdin,
 // then prints the canned stdout and stderr and exits with the canned code.
+// "linger" keeps stdout open for 30 seconds after the canned output.
 const fakeScript = `#!/bin/sh
 d='@DIR@'
 n=$(mktemp -d "$d/call.XXXXXX") || exit 99
@@ -30,6 +31,7 @@ cat > "$n/stdin"
 [ -f "$d/sleep" ] && sleep 30
 [ -f "$d/stdout" ] && cat "$d/stdout"
 [ -f "$d/stderr" ] && cat "$d/stderr" >&2
+[ -f "$d/linger" ] && sleep 30
 exit "$(cat "$d/exit" 2>/dev/null || echo 0)"
 `
 
