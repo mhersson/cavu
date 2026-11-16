@@ -1,6 +1,6 @@
 #!/bin/sh
-# Prints the number of non-test Go lines outside internal/testkit. It reports a
-# count and always exits 0.
+# Prints the number of non-test Go lines outside internal/testkit. No count fails
+# it; it exits non-zero only when it cannot make its temp file or list the files.
 set -u
 
 files=$(mktemp "${TMPDIR:-/tmp}/size.XXXXXX") || exit 1
