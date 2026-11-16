@@ -4,7 +4,6 @@ package doctor
 
 import (
 	"context"
-	_ "embed" // the endpoint check's prompt
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,14 +17,12 @@ import (
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
+	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/redact"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 )
-
-//go:embed prompt.txt
-var prompt string
 
 // schema is the structured result the endpoint check asks for.
 const schema = `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`
@@ -322,6 +319,11 @@ func (r *doctor) sandbox(ctx context.Context) Check {
 func (r *doctor) endpoint(ctx context.Context) Check {
 	ctx, cancel := context.WithTimeout(ctx, endpointTimeout)
 	defer cancel()
+
+	prompt, err := prompts.Render(prompts.Doctor, nil)
+	if err != nil {
+		return failed(err, "")
+	}
 
 	auth := driver.Auth{Mode: r.Settings["endpoint_mode"], Token: r.Credential}
 	if auth.Mode == "key" {
