@@ -171,6 +171,15 @@ func (f verbFlags) parse(args []string, n int) ([]string, error) {
 	return args[:n], nil
 }
 
+// given returns the names of the flags set on the command line.
+func (f verbFlags) given() map[string]bool {
+	set := map[string]bool{}
+
+	f.Visit(func(fl *flag.Flag) { set[fl.Name] = true })
+
+	return set
+}
+
 func (f verbFlags) usageError() error {
 	f.Usage()
 
