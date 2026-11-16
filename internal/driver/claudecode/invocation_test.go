@@ -174,7 +174,24 @@ func TestSpecRefused(t *testing.T) {
 	}{
 		{"no model", func(s *driver.Spec) { s.Model = "" }},
 		{"no home", func(s *driver.Spec) { s.Home = "" }},
+		{"home is /", func(s *driver.Spec) { s.Home, s.ConfigDir = "/", "/.claude-cavu" }},
+		{"relative home", func(s *driver.Spec) { s.Home, s.ConfigDir = "home", "home/.claude-cavu" }},
+		{"unclean home", func(s *driver.Spec) { s.Home += "/" }},
 		{"no config dir", func(s *driver.Spec) { s.ConfigDir = "" }},
+		{"config dir /", func(s *driver.Spec) { s.ConfigDir = "/" }},
+		{"config dir is home", func(s *driver.Spec) { s.ConfigDir = s.Home }},
+		{"config dir is home/./", func(s *driver.Spec) { s.ConfigDir = s.Home + "/./" }},
+		{"config dir above home", func(s *driver.Spec) { s.ConfigDir = path.Dir(s.Home) }},
+		{"config dir beside home", func(s *driver.Spec) { s.ConfigDir = s.Home + "-beside" }},
+		{"config dir escaping home with ..", func(s *driver.Spec) { s.ConfigDir = s.Home + "/../escaped" }},
+		{"relative config dir", func(s *driver.Spec) { s.ConfigDir = ".claude-cavu" }},
+		{"dir is the config dir", func(s *driver.Spec) { s.Dir = s.ConfigDir }},
+		{"dir below the config dir", func(s *driver.Spec) { s.Dir = s.ConfigDir + "/repo" }},
+		{"relative dir", func(s *driver.Spec) { s.Dir = "repo" }},
+		{"unclean dir", func(s *driver.Spec) { s.Dir += "/../repo" }},
+		{"short base commit", func(s *driver.Spec) { s.BaseCommit = "abc123" }},
+		{"option as base commit", func(s *driver.Spec) { s.BaseCommit = "--output=/tmp/x" }},
+		{"base commit without a dir", func(s *driver.Spec) { s.BaseCommit, s.Dir = testBase, "" }},
 		{"no prompt", func(s *driver.Spec) { s.Prompt = "" }},
 		{"no turns", func(s *driver.Spec) { s.MaxTurns = 0 }},
 		{"session and resume", func(s *driver.Spec) { s.Resume = testSessionID }},
@@ -202,6 +219,7 @@ func TestSpecRefused(t *testing.T) {
 			_, err := f.run(t.Context())
 			require.Error(t, err)
 			assert.Empty(t, f.target.started(), "a refused spec started a process")
+			assert.Empty(t, f.target.rec.seen(), "a refused spec reached the recording target")
 		})
 	}
 

@@ -29,9 +29,10 @@ const (
 // basePath is the PATH a command gets unless Spec.Env sets one.
 const basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-// settings turns attribution off: empty texts drop the Co-Authored-By trailer
-// and the PR footer, and sessionUrl false drops the session link line.
-const settings = `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`
+// settings turns attribution off (empty texts drop the Co-Authored-By trailer
+// and the PR footer, sessionUrl false the session link line) and every hook,
+// a staged skill's own included: CAVU uses none.
+const settings = `{"attribution":{"commit":"","pr":"","sessionUrl":false},"disableAllHooks":true}`
 
 // minTokenLen is the shortest secret internal/redact masks; a shorter token
 // would reach the record unmasked.
@@ -73,9 +74,17 @@ func validate(s driver.Spec) error {
 		return errors.New("claudecode: key mode without a base URL")
 	case s.Model == "":
 		return errors.New("claudecode: no model")
-	case s.Home == "" || s.ConfigDir == "":
-		// An empty value would override the image's and lose the transcript.
-		return errors.New("claudecode: no home or config dir")
+	// Every session clears the config dir, so these hold before any command
+	// is composed; an empty value would also override the image's and lose
+	// the transcript.
+	case !cleanAbs(s.Home) || s.Home == "/":
+		return fmt.Errorf("claudecode: home %q is not an absolute, clean path below /", s.Home)
+	case !cleanAbs(s.ConfigDir) || !strings.HasPrefix(s.ConfigDir, s.Home+"/"):
+		return fmt.Errorf("claudecode: config dir %q is not a clean path below the home %q", s.ConfigDir, s.Home)
+	case s.Dir != "" && !cleanAbs(s.Dir):
+		return fmt.Errorf("claudecode: dir %q is not an absolute, clean path", s.Dir)
+	case s.Dir == s.ConfigDir || strings.HasPrefix(s.Dir, s.ConfigDir+"/"):
+		return fmt.Errorf("claudecode: the config dir %q holds the dir %q", s.ConfigDir, s.Dir)
 	case s.Prompt == "":
 		return errors.New("claudecode: no prompt")
 	case s.MaxTurns < 1:
@@ -86,9 +95,17 @@ func validate(s driver.Spec) error {
 		return fmt.Errorf("claudecode: session id %q is not a UUID", cmp.Or(s.SessionID, s.Resume))
 	case s.Effort != "" && !slices.Contains(effortLevels, s.Effort):
 		return fmt.Errorf("claudecode: effort %q is not one of %v", s.Effort, effortLevels)
+	case s.BaseCommit != "" && !commitPattern.MatchString(s.BaseCommit):
+		return fmt.Errorf("claudecode: base commit %q is not a full commit id", s.BaseCommit)
+	case s.BaseCommit != "" && s.Dir == "":
+		return errors.New("claudecode: a base commit needs a dir")
 	}
 
 	return nil
+}
+
+func cleanAbs(p string) bool {
+	return path.IsAbs(p) && path.Clean(p) == p
 }
 
 // newInvocation builds the process for s. Its files go under a fresh

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path"
@@ -36,17 +37,38 @@ const (
 	testModel     = "claude-haiku-5-5"
 )
 
-// localTarget creates the parent directories of a command's files, as a
-// container's copy-in does, then starts it with proc.Local.
+// localTarget runs the fake claude on the host and nothing else. It refuses,
+// as a test failure and without running anything, any other program and a
+// command whose dir, files or config dir lie outside the test's temporary
+// directory. It creates the parent directories of a command's files, as a
+// container's copy-in does, and runs a command that names no dir in root.
 type localTarget struct {
-	env []string // added to every command
+	binary string                           // the fake claude: this test binary
+	root   string                           // holds every t.TempDir() of the test
+	env    []string                         // added to every command
+	fail   func(format string, args ...any) // t.Errorf; the test of the refusals swaps it
 
 	mu       sync.Mutex
 	commands []proc.Command
 	existed  []string // files already on disk when the command arrived
 }
 
+func newLocalTarget(t *testing.T, env ...string) *localTarget {
+	t.Helper()
+
+	bin, err := os.Executable()
+	require.NoError(t, err)
+
+	return &localTarget{binary: bin, root: filepath.Dir(t.TempDir()), env: env, fail: t.Errorf}
+}
+
 func (l *localTarget) Start(ctx context.Context, c proc.Command) (proc.Process, error) {
+	if why := l.refusal(c); why != "" {
+		l.fail("localTarget refused %q: %s", c.Argv, why)
+
+		return nil, fmt.Errorf("localTarget refused %q: %s", c.Argv, why)
+	}
+
 	l.mu.Lock()
 	l.commands = append(l.commands, c)
 
@@ -64,8 +86,51 @@ func (l *localTarget) Start(ctx context.Context, c proc.Command) (proc.Process, 
 	}
 
 	c.Env = append(slices.Clone(c.Env), l.env...)
+	if c.Dir == "" {
+		c.Dir = l.root
+	}
 
 	return proc.Local{}.Start(ctx, c)
+}
+
+// refusal says why c must not run on the host, empty when it may. Without
+// fakeclaude.EnvVar the test binary would run the tests, not the fake; the
+// fake writes its transcripts into CLAUDE_CONFIG_DIR.
+func (l *localTarget) refusal(c proc.Command) string {
+	env := append(slices.Clone(c.Env), l.env...)
+
+	if len(c.Argv) == 0 || c.Argv[0] != l.binary {
+		return "not the fake claude"
+	}
+
+	if !slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, fakeclaude.EnvVar+"=") }) {
+		return "no fake scenario"
+	}
+
+	if c.Dir != "" && !l.holds(c.Dir) {
+		return "its dir is outside the test's temporary directory"
+	}
+
+	for p := range c.Files {
+		if !l.holds(p) {
+			return "a file is outside the test's temporary directory"
+		}
+	}
+
+	for _, kv := range env {
+		if k, v, _ := strings.Cut(kv, "="); k == "CLAUDE_CONFIG_DIR" && !l.holds(v) {
+			return "its config dir is outside the test's temporary directory"
+		}
+	}
+
+	return ""
+}
+
+// holds reports whether p is l.root or below it.
+func (l *localTarget) holds(p string) bool {
+	rel, err := filepath.Rel(l.root, p)
+
+	return err == nil && filepath.IsAbs(p) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (l *localTarget) started() []proc.Command {
@@ -75,13 +140,250 @@ func (l *localTarget) started() []proc.Command {
 	return slices.Clone(l.commands)
 }
 
+// routedTarget sends the fake claude to local and every other command to rec,
+// so nothing but the fake runs on the host. It keeps every command in order.
+type routedTarget struct {
+	local *localTarget
+	rec   *recordingTarget
+
+	mu       sync.Mutex
+	commands []proc.Command
+}
+
+func (r *routedTarget) Start(ctx context.Context, c proc.Command) (proc.Process, error) {
+	r.mu.Lock()
+	r.commands = append(r.commands, c)
+	r.mu.Unlock()
+
+	if len(c.Argv) > 0 && c.Argv[0] == r.local.binary {
+		return r.local.Start(ctx, c)
+	}
+
+	return r.rec.Start(ctx, c)
+}
+
+func (r *routedTarget) started() []proc.Command {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return slices.Clone(r.commands)
+}
+
+// The kinds of command the recording target answers.
+const (
+	kindClear   = "clear"
+	kindWrite   = "write"
+	kindListing = "ls-tree"
+	kindBatch   = "cat-file --batch"
+	kindBlob    = "cat-file blob"
+)
+
+// commandKind names c among the commands staging starts, empty for any other.
+func commandKind(c proc.Command) string {
+	argv := c.Argv
+
+	switch {
+	case len(argv) == 5 && argv[0] == "sh" && argv[1] == "-c" && argv[2] == proc.SandboxOnly(clearScript):
+		return kindClear
+	case len(argv) == 5 && argv[0] == "sh" && argv[1] == "-c" && argv[2] == proc.SandboxOnly(writeScript):
+		return kindWrite
+	case len(argv) == 0 || argv[0] != "git":
+		return ""
+	case slices.Contains(argv, "ls-tree"):
+		return kindListing
+	case slices.Contains(argv, "cat-file") && slices.Contains(argv, "--batch"):
+		return kindBatch
+	case slices.Contains(argv, "cat-file") && slices.Contains(argv, "blob"):
+		return kindBlob
+	}
+
+	return ""
+}
+
+// recordingTarget executes nothing and writes nothing. It records every
+// command with the bytes written to its stdin and answers each kind from a
+// script: the clear and the write exit 0 unless exits says otherwise, and the
+// git reads answer for tree, a canned base commit.
+type recordingTarget struct {
+	t     *testing.T
+	tree  fakeTree
+	exits map[string]int // by command kind
+
+	mu       sync.Mutex
+	commands []*recorded
+}
+
+// recorded is one command the recording target saw; stdin is set once the
+// command's stdin is closed.
+type recorded struct {
+	proc.Command
+
+	kind  string
+	stdin []byte
+}
+
+func newRecordingTarget(t *testing.T) *recordingTarget {
+	t.Helper()
+
+	return &recordingTarget{t: t, exits: map[string]int{}}
+}
+
+func (r *recordingTarget) Start(ctx context.Context, c proc.Command) (proc.Process, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	rec := &recorded{Command: c, kind: commandKind(c)}
+
+	r.mu.Lock()
+	r.commands = append(r.commands, rec)
+	r.mu.Unlock()
+
+	if rec.kind == "" {
+		r.t.Errorf("the recording target has no answer for %q", c.Argv)
+
+		return nil, errors.New("no scripted answer")
+	}
+
+	return &scriptedProcess{out: c.Stdout, done: make(chan struct{}), answer: func(stdin []byte) scripted {
+		r.mu.Lock()
+		rec.stdin = stdin
+		r.mu.Unlock()
+
+		return r.answer(rec.kind, c.Argv, stdin)
+	}}, nil
+}
+
+func (r *recordingTarget) answer(kind string, argv []string, stdin []byte) scripted {
+	if code := r.exits[kind]; code != 0 {
+		return scripted{code: code, stderr: fmt.Sprintf("scripted exit %d", code)}
+	}
+
+	switch kind {
+	case kindListing:
+		return scripted{stdout: r.tree.listing()}
+	case kindBatch:
+		return scripted{stdout: r.tree.batch(stdin)}
+	case kindBlob:
+		return scripted{stdout: r.tree.blob(argv[len(argv)-1])}
+	}
+
+	return scripted{}
+}
+
+// seen returns the commands recorded so far.
+func (r *recordingTarget) seen() []*recorded {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return slices.Clone(r.commands)
+}
+
+// ofKind returns the commands of kind seen so far.
+func (r *recordingTarget) ofKind(kind string) []*recorded {
+	var out []*recorded
+
+	for _, c := range r.seen() {
+		if c.kind == kind {
+			out = append(out, c)
+		}
+	}
+
+	return out
+}
+
+// scripted is a recorded command's answer.
+type scripted struct {
+	stdout []byte
+	code   int
+	stderr string
+}
+
+// scriptedProcess answers once its stdin is closed, writing its stdout to out
+// whole, or ends with 143 when stopped first.
+type scriptedProcess struct {
+	out    io.Writer
+	answer func(stdin []byte) scripted
+
+	mu    sync.Mutex
+	stdin bytes.Buffer
+	once  sync.Once
+	done  chan struct{}
+	res   scripted
+	err   error
+}
+
+func (p *scriptedProcess) Stdin() io.WriteCloser { return scriptedStdin{p} }
+
+func (p *scriptedProcess) Lines() <-chan []byte {
+	lines := make(chan []byte)
+	close(lines)
+
+	return lines
+}
+
+func (p *scriptedProcess) StderrTail() string {
+	select {
+	case <-p.done:
+		return p.res.stderr
+	default:
+		return ""
+	}
+}
+
+func (p *scriptedProcess) Stop(time.Duration) error {
+	p.end(func() { p.res = scripted{code: 143} })
+
+	return nil
+}
+
+func (p *scriptedProcess) Wait() (int, error) {
+	<-p.done
+
+	return p.res.code, p.err
+}
+
+func (p *scriptedProcess) end(f func()) {
+	p.once.Do(func() {
+		f()
+		close(p.done)
+	})
+}
+
+type scriptedStdin struct{ p *scriptedProcess }
+
+func (s scriptedStdin) Write(b []byte) (int, error) {
+	s.p.mu.Lock()
+	defer s.p.mu.Unlock()
+
+	return s.p.stdin.Write(b)
+}
+
+func (s scriptedStdin) Close() error {
+	s.p.end(func() {
+		s.p.mu.Lock()
+		in := bytes.Clone(s.p.stdin.Bytes())
+		s.p.mu.Unlock()
+
+		s.p.res = s.p.answer(in)
+		if s.p.out != nil && len(s.p.res.stdout) > 0 {
+			_, s.p.err = s.p.out.Write(s.p.res.stdout)
+		}
+	})
+
+	return nil
+}
+
 func testDriver(t *testing.T) claudeCode {
 	t.Helper()
 
 	bin, err := os.Executable()
 	require.NoError(t, err)
 
-	return claudeCode{binary: bin, runRoot: t.TempDir(), gateTimeout: 10 * time.Second, grace: stopGrace}
+	return claudeCode{
+		binary: bin, runRoot: t.TempDir(), gateTimeout: 10 * time.Second, grace: stopGrace,
+		listLimit: listLimit, stageLimit: stageLimit,
+	}
 }
 
 func writeScenario(t *testing.T, sc fakeclaude.Scenario) string {
@@ -116,7 +418,7 @@ func fixture(t *testing.T, rel string) string {
 
 type fakeRun struct {
 	d      claudeCode
-	target *localTarget
+	target *routedTarget
 	spec   driver.Spec
 	record string
 
@@ -125,7 +427,8 @@ type fakeRun struct {
 	events []driver.Event
 }
 
-// newFakeRun returns a subscription-mode run of the fake claude with sc.
+// newFakeRun returns a subscription-mode run of the fake claude with sc. Only
+// the fake runs on the host; the staging's commands are recorded.
 func newFakeRun(t *testing.T, sc fakeclaude.Scenario) *fakeRun {
 	t.Helper()
 
@@ -137,9 +440,11 @@ func newFakeRun(t *testing.T, sc fakeclaude.Scenario) *fakeRun {
 		sc.Version = "2.1.322"
 	}
 
+	home := t.TempDir()
+
 	return &fakeRun{
 		d:      testDriver(t),
-		target: &localTarget{},
+		target: &routedTarget{local: newLocalTarget(t), rec: newRecordingTarget(t)},
 		spec: driver.Spec{
 			Auth:      driver.Auth{Mode: modeSubscription, Token: testToken},
 			Model:     testModel,
@@ -147,8 +452,8 @@ func newFakeRun(t *testing.T, sc fakeclaude.Scenario) *fakeRun {
 			SessionID: testSessionID,
 			Prompt:    testPrompt,
 			Dir:       t.TempDir(),
-			Home:      t.TempDir(),
-			ConfigDir: t.TempDir(),
+			Home:      home,
+			ConfigDir: home + "/.claude-cavu",
 			Env:       fakeEnv(t, sc),
 		},
 		record: sc.Record,
@@ -285,17 +590,17 @@ func TestInitializeErrorAnswer(t *testing.T) {
 }
 
 func TestResume(t *testing.T) {
-	dir, configDir := t.TempDir(), t.TempDir()
+	dir, home := t.TempDir(), t.TempDir()
 
 	a := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
-	a.spec.Dir, a.spec.ConfigDir = dir, configDir
+	a.spec.Dir, a.spec.Home, a.spec.ConfigDir = dir, home, home+"/.claude-cavu"
 
 	res, err := a.run(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, driver.ReasonDone, res.Reason)
 
 	b := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
-	b.spec.Dir, b.spec.ConfigDir = dir, configDir
+	b.spec.Dir, b.spec.Home, b.spec.ConfigDir = dir, home, home+"/.claude-cavu"
 	b.spec.SessionID, b.spec.Resume = "", testSessionID
 
 	res, err = b.run(t.Context())
@@ -395,6 +700,9 @@ func TestOutcomeIgnoresExitCode(t *testing.T) {
 	}
 }
 
+// settingsJSON is the settled --settings file: attribution and every hook off.
+const settingsJSON = `{"attribution":{"commit":"","pr":"","sessionUrl":false},"disableAllHooks":true}`
+
 func TestFilesWrittenThroughCommand(t *testing.T) {
 	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Instructions = testInstr
@@ -411,14 +719,19 @@ func TestFilesWrittenThroughCommand(t *testing.T) {
 	assert.Equal(t, path.Dir(settings), path.Dir(instructions))
 	assert.Equal(t, f.d.runRoot, path.Dir(path.Dir(settings)))
 
+	// The config dir's clear, then claude.
 	cmds := f.target.started()
-	require.Len(t, cmds, 1)
-	assert.Equal(t, slices.Sorted(slices.Values([]string{settings, instructions})), slices.Sorted(maps.Keys(cmds[0].Files)))
-	assert.JSONEq(t, `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`, string(cmds[0].Files[settings]))
-	assert.Equal(t, testInstr, string(cmds[0].Files[instructions]))
-	assert.Empty(t, f.target.existed, "the driver wrote a file itself")
+	require.Len(t, cmds, 2)
+	assert.Equal(t, kindClear, commandKind(cmds[0]))
+	assert.Empty(t, cmds[0].Files)
 
-	assert.JSONEq(t, `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`, rec.RunFiles["--settings"])
+	claude := cmds[1]
+	assert.Equal(t, slices.Sorted(slices.Values([]string{settings, instructions})), slices.Sorted(maps.Keys(claude.Files)))
+	assert.JSONEq(t, settingsJSON, string(claude.Files[settings]))
+	assert.Equal(t, testInstr, string(claude.Files[instructions]))
+	assert.Empty(t, f.target.local.existed, "the driver wrote a file itself")
+
+	assert.JSONEq(t, settingsJSON, rec.RunFiles["--settings"])
 	assert.Equal(t, testInstr, rec.RunFiles["--append-system-prompt-file"])
 }
 
@@ -503,4 +816,52 @@ func TestCancelBeforeStart(t *testing.T) {
 	assert.Equal(t, driver.ReasonInterrupted, res.Reason)
 	assert.True(t, res.IsError)
 	assert.Empty(t, f.target.started(), "a cancelled run started a process")
+}
+
+// localTarget refuses, as a test failure and without starting anything, any
+// program but the fake and any path outside the test's temporary directory.
+// Each refused command would be harmless if it ran.
+func TestLocalTargetRefuses(t *testing.T) {
+	outside := filepath.Join(filepath.Dir(filepath.Dir(t.TempDir())), "cavu-refused-"+randomID())
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*localTarget, *proc.Command)
+	}{
+		{"another program", func(_ *localTarget, c *proc.Command) { c.Argv = []string{"true"} }},
+		{"a shell", func(_ *localTarget, c *proc.Command) { c.Argv = []string{"sh", "-c", "exit 0"} }},
+		{"no program", func(_ *localTarget, c *proc.Command) { c.Argv = nil }},
+		// Run without a scenario, the test binary would run no test.
+		{"no fake scenario", func(l *localTarget, c *proc.Command) { l.env, c.Argv = nil, []string{l.binary, "-test.run=^$"} }},
+		{"a dir outside", func(_ *localTarget, c *proc.Command) { c.Dir = "/" }},
+		{"a dir escaping with ..", func(l *localTarget, c *proc.Command) { c.Dir = l.root + "/.." }},
+		{"a relative dir", func(_ *localTarget, c *proc.Command) { c.Dir = "." }},
+		{"a file outside", func(_ *localTarget, c *proc.Command) { c.Files = map[string][]byte{outside: []byte("x")} }},
+		{"a relative file", func(_ *localTarget, c *proc.Command) { c.Files = map[string][]byte{"refused.txt": []byte("x")} }},
+		{"a config dir outside", func(_ *localTarget, c *proc.Command) { c.Env = []string{"CLAUDE_CONFIG_DIR=/"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newLocalTarget(t, fakeEnv(t, fakeclaude.Scenario{Version: "2.1.325"})...)
+
+			var failures []string
+
+			l.fail = func(format string, args ...any) { failures = append(failures, fmt.Sprintf(format, args...)) }
+
+			c := proc.Command{Argv: []string{l.binary, "--version"}, Dir: t.TempDir()}
+			tc.mutate(l, &c)
+
+			p, err := l.Start(bounded(t), c)
+			require.Error(t, err)
+			assert.Nil(t, p)
+			assert.Len(t, failures, 1, "the refusal is no test failure")
+			assert.Empty(t, l.started())
+			assert.NoFileExists(t, outside)
+		})
+	}
+
+	t.Run("the fake in the temporary directory runs", func(t *testing.T) {
+		got, err := testDriver(t).Probe(bounded(t), newLocalTarget(t, fakeEnv(t, fakeclaude.Scenario{Version: "2.1.325"})...))
+		require.NoError(t, err)
+		assert.Equal(t, "2.1.325", got)
+	})
 }
