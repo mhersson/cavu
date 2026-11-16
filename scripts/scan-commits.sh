@@ -1,0 +1,68 @@
+#!/bin/sh
+# Fails on what must never reach git in the commits between a base and a head:
+# task or milestone numbers in the messages and in added Go comments, Claude
+# session links and attribution lines (Co-authored-by trailers, "Generated
+# with") in the messages, em-dashes in the messages or in added Go and
+# Markdown lines, and blobs over 500 KB.
+# Usage: scan-commits.sh [base [head]]; base defaults to origin/main, head to
+# HEAD. Word boundaries are spelled out: \b is a GNU extension to POSIX ERE.
+set -u
+export LC_ALL=C
+
+base=${1:-origin/main}
+head=${2:-HEAD}
+b='(^|[^A-Za-z0-9])'
+# Matched without case: prose writes "Task 3" and "task 3" alike.
+loose="${b}(task|milestone) [0-9]"
+# Session links never reach git, whatever a contributor's tools add.
+session='claude-session|claude\.ai/code/session_'
+# Nor do attribution lines.
+attribution='^co-authored-by:|^[^A-Za-z0-9]*generated with'
+dash=$(printf '\342\200\224')
+
+# Prove each pattern matches before an empty result is trusted.
+for s in 'in Task 3' 'see milestone 2'; do
+	printf '%s\n' "$s" | grep -Eiq "$loose" || { echo "scan-commits: grep cannot match the task or milestone pattern on '$s'"; exit 1; }
+done
+for s in 'Claude-Session: x' 'https://claude.ai/code/session_x'; do
+	printf '%s\n' "$s" | grep -Eiq "$session" || { echo "scan-commits: grep cannot match the session pattern on '$s'"; exit 1; }
+done
+for s in 'Co-authored-by: x <x@y>' 'Generated with [Claude Code](https://claude.com/claude-code)' "$(printf '\360\237\244\226') Generated with [Claude Code](https://claude.com/claude-code)"; do
+	printf '%s\n' "$s" | grep -Eiq "$attribution" || { echo "scan-commits: grep cannot match the attribution pattern on '$s'"; exit 1; }
+done
+for s in '- Mocks generated with mockery'; do
+	! printf '%s\n' "$s" | grep -Eiq "$attribution" || { echo "scan-commits: the attribution pattern matches '$s'"; exit 1; }
+done
+printf 'a\342\200\224b\n' | grep -qF "$dash" || { echo "scan-commits: grep cannot match an em-dash"; exit 1; }
+
+for r in "$base" "$head"; do
+	git rev-parse --verify --quiet "$r^{commit}" >/dev/null || { echo "scan-commits: no commit $r"; exit 1; }
+done
+
+# Plain diffs whatever the user's config, so the added-line filter holds.
+gdiff() { git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$base...$head" -- "$@"; }
+added() { grep '^+' | grep -Ev '^\+\+\+ (b/|/dev/null)'; }
+
+msgs=$(git log --no-merges --format='%h %s%n%b' "$base..$head") || exit 1
+godiff=$(gdiff '*.go') || exit 1
+textdiff=$(gdiff '*.go' '*.md') || exit 1
+objects=$(git rev-list --objects "$base..$head") || exit 1
+sizes=$(printf '%s\n' "$objects" | git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)') || exit 1
+
+fail=0
+report() {
+	echo "scan-commits: $1:"
+	printf '%s\n' "$2"
+	fail=1
+}
+
+hits=$(printf '%s\n' "$msgs" | grep -Ein "$loose") && report "task or milestone numbers in commit messages" "$hits"
+hits=$(printf '%s\n' "$msgs" | grep -Ein "$session") && report "session links in commit messages" "$hits"
+hits=$(printf '%s\n' "$msgs" | grep -Ein "$attribution") && report "attribution lines in commit messages" "$hits"
+hits=$(printf '%s\n' "$msgs" | grep -nF "$dash") && report "em-dashes in commit messages" "$hits"
+hits=$(printf '%s\n' "$godiff" | added | grep -F '//' | grep -Ei "$loose") && report "task or milestone numbers in added Go comments" "$hits"
+hits=$(printf '%s\n' "$textdiff" | added | grep -nF "$dash") && report "em-dashes in added Go and Markdown lines" "$hits"
+hits=$(printf '%s\n' "$sizes" | awk '$1 == "blob" && $2 > 500000' | grep .) && report "blobs over 500 KB" "$hits"
+
+[ "$fail" = 0 ] && echo "scan-commits: $(git rev-list --count "$base..$head") commits clean"
+exit "$fail"

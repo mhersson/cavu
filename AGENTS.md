@@ -39,6 +39,15 @@ CAVU is a self-hosted tool that runs a coding agent fully unattended: a task goe
 - Tests exercise behaviour and never assert on prose.
 - One branch per plan, each task its own commit. Never push or merge.
 
+## Commands
+
+- `make check` runs build, build-darwin, fmt-check, vet, lint, test-race, tidy-check and scan.
+- `make build` builds `bin/cavu`; `make test` and `make test-race` run the tests.
+- `make fmt` formats with `golangci-lint fmt` (gofumpt and goimports); `make lint` runs `golangci-lint run`.
+- `make scan` fails on em-dashes; `make scan-commits` fails on session links, attribution lines, task or milestone numbers, em-dashes and blobs over 500 KB in the commits since `origin/main`.
+- `make size` counts non-test Go lines against the 25,000 budget.
+- Tests that need a container runtime carry the build tag `integration`; tests that need the built image and the real `claude` binary carry `conformance`. Run both with `-count=1`.
+
 ## Layout
 
 Every package states its one responsibility in its package comment. Run `go doc ./cmd/cavu` to read one.
