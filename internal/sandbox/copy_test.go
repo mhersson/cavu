@@ -183,3 +183,16 @@ func TestCopyOutKeepsTarsReason(t *testing.T) {
 		assert.Contains(t, err.Error(), reason)
 	}
 }
+
+func TestCopyOutJoinsTheClientErrorOnce(t *testing.T) {
+	const reason = "tar-reason-marker: file changed as we read it"
+
+	r, f := fakeRuntime(t, "docker")
+	f.set(t, "stdout", tarOf(t, entry{tar.TypeReg, "a", "1"}))
+	f.set(t, "stderr", []byte(reason+"\n"))
+	f.set(t, "exit", []byte("1"))
+
+	err := r.Container("cavu-agent-r1").CopyOut(t.Context(), "/handoff/x", io.Discard)
+	require.Error(t, err)
+	assert.Equal(t, 1, strings.Count(err.Error(), reason))
+}

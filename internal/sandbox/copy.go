@@ -114,9 +114,10 @@ func (c Container) CopyOut(ctx context.Context, p string, w io.Writer) error {
 	_ = pr.CloseWithError(errors.New("stream abandoned"))
 
 	// A failed tar's stderr says why; a client that only lost its reader
-	// adds nothing to the read error.
+	// adds nothing to the read error, and the drain may already hold the
+	// client's own error.
 	err := readErr
-	if runErr := <-done; err == nil || isClientError(runErr) {
+	if runErr := <-done; (err == nil || isClientError(runErr)) && !errors.Is(err, runErr) {
 		err = errors.Join(err, runErr)
 	}
 
