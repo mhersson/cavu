@@ -501,7 +501,6 @@ func TestStderrWriterAndTail(t *testing.T) {
 				Stderr: w,
 			})
 			require.NoError(t, err)
-			require.NoError(t, p.Stdin().Close())
 
 			code, err := p.Wait()
 			require.NoError(t, err)
