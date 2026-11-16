@@ -299,6 +299,8 @@ func TestLinkHomeRefusesPathsOutOfBounds(t *testing.T) {
 		{name: "relative target", link: link, target: "cache/cargo/bin"},
 		{name: "target climbing out of the cache", link: link, target: cache + "/../etc"},
 		{name: "target outside the cache", link: link, target: "/etc/passwd"},
+		{name: "target in a sibling of the cache", link: link, target: cache + "2/bin"},
+		{name: "the cache itself", link: link, target: cache},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			links := map[string]string{tt.link: tt.target}
