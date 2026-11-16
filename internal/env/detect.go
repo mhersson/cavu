@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 )
@@ -46,33 +47,46 @@ func VersionFiles() []string {
 	}
 }
 
-// Detect computes the tool list and the ecosystems present. For one tool the
-// precedence is: override, .tool-versions, mise.toml [tools], the tool's own
-// file, then the floating default. A file that cannot be parsed is an error
-// naming the file.
-func Detect(files map[string][]byte, overrides map[string]string) (tools []Tool, ecosystems []string, err error) {
+// Detection is the result of Detect.
+type Detection struct {
+	Tools      []Tool
+	Ecosystems []string
+	Ignored    []string // repository entries that were not read, as written, for a person to see
+}
+
+// Detect computes the tool list and the ecosystems present. overrides replace
+// or add versions. A file that cannot be parsed is an error naming the file.
+// For one tool the precedence is: override, .tool-versions, mise.toml [tools],
+// the tool's own file, then the floating default.
+// From repository files it reads only plain registry names (no ":") and
+// versions without a "path:" or "ref:" prefix: a backend or a path named by
+// the repository could run code in the setup container. Such entries go to
+// Ignored and shadow nothing. Overrides are the operator's and are exempt.
+func Detect(files map[string][]byte, overrides map[string]string) (Detection, error) {
 	for name, version := range overrides {
 		if name == "" || version == "" {
-			return nil, nil, errors.New("override needs a tool name and a version")
+			return Detection{}, errors.New("override needs a tool name and a version")
 		}
 	}
 
-	own, err := ownVersions(files)
+	r := &reader{}
+
+	own, err := r.ownVersions(files)
 	if err != nil {
-		return nil, nil, err
+		return Detection{}, err
 	}
 
-	mise, err := parseMise(files["mise.toml"])
+	mise, err := r.parseMise(files["mise.toml"])
 	if err != nil {
-		return nil, nil, err
+		return Detection{}, err
 	}
 
-	asdf, err := parseToolVersions(files[".tool-versions"])
+	asdf, err := r.parseToolVersions(files[".tool-versions"])
 	if err != nil {
-		return nil, nil, err
+		return Detection{}, err
 	}
 
-	ecosystems = detectEcosystems(files)
+	ecosystems := detectEcosystems(files)
 	versions := map[string]string{}
 
 	for _, layer := range []map[string]string{own, mise, asdf, overrides} {
@@ -89,13 +103,38 @@ func Detect(files map[string][]byte, overrides map[string]string) (tools []Tool,
 		}
 	}
 
+	var tools []Tool
+
 	for name, version := range versions {
 		tools = append(tools, Tool{Name: name, Version: version})
 	}
 
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 
-	return tools, ecosystems, nil
+	slices.Sort(r.ignored)
+
+	return Detection{Tools: tools, Ecosystems: ecosystems, Ignored: slices.Compact(r.ignored)}, nil
+}
+
+// reader collects the entries it declines to read.
+type reader struct{ ignored []string }
+
+// take stores a repository's version for a tool unless it names a backend or a
+// path, which is recorded as ignored instead.
+func (r *reader) take(out map[string]string, file, name, version string) error {
+	if !utf8.ValidString(name) || !utf8.ValidString(version) {
+		return fmt.Errorf("%s: a tool name or version is not valid UTF-8", file)
+	}
+
+	if strings.Contains(name, ":") || strings.HasPrefix(version, "path:") || strings.HasPrefix(version, "ref:") {
+		r.ignored = append(r.ignored, file+": "+name+" "+version)
+
+		return nil
+	}
+
+	out[normaliseTool(name)] = version
+
+	return nil
 }
 
 func detectEcosystems(files map[string][]byte) []string {
@@ -130,7 +169,7 @@ func detectEcosystems(files map[string][]byte) []string {
 }
 
 // ownVersions reads the versions each tool's own file declares.
-func ownVersions(files map[string][]byte) (map[string]string, error) {
+func (r *reader) ownVersions(files map[string][]byte) (map[string]string, error) {
 	out := map[string]string{}
 
 	if b, ok := files["go.mod"]; ok {
@@ -155,7 +194,9 @@ func ownVersions(files map[string][]byte) (map[string]string, error) {
 		}
 
 		if manager != "" {
-			out[manager] = managerVersion
+			if err := r.take(out, "package.json", manager, managerVersion); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -166,7 +207,9 @@ func ownVersions(files map[string][]byte) (map[string]string, error) {
 				v = "lts"
 			}
 
-			out["node"] = v
+			if err := r.take(out, ".nvmrc", "node", v); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -187,7 +230,9 @@ func ownVersions(files map[string][]byte) (map[string]string, error) {
 
 	if b, ok := files[".python-version"]; ok {
 		if v := firstLine(string(b), true); v != "" {
-			out["python"] = v
+			if err := r.take(out, ".python-version", "python", v); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -202,7 +247,9 @@ func ownVersions(files map[string][]byte) (map[string]string, error) {
 		}
 
 		if doc.Toolchain.Channel != "" {
-			out["rust"] = doc.Toolchain.Channel
+			if err := r.take(out, "rust-toolchain.toml", "rust", doc.Toolchain.Channel); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -297,7 +344,7 @@ func normaliseTool(name string) string {
 	return name
 }
 
-func parseToolVersions(b []byte) (map[string]string, error) {
+func (r *reader) parseToolVersions(b []byte) (map[string]string, error) {
 	out := map[string]string{}
 
 	for line := range strings.SplitSeq(string(b), "\n") {
@@ -314,13 +361,15 @@ func parseToolVersions(b []byte) (map[string]string, error) {
 			return nil, fmt.Errorf(".tool-versions: %q has no version", f[0])
 		}
 
-		out[normaliseTool(f[0])] = f[1]
+		if err := r.take(out, ".tool-versions", f[0], f[1]); err != nil {
+			return nil, err
+		}
 	}
 
 	return out, nil
 }
 
-func parseMise(b []byte) (map[string]string, error) {
+func (r *reader) parseMise(b []byte) (map[string]string, error) {
 	if b == nil {
 		return nil, nil
 	}
@@ -352,7 +401,9 @@ func parseMise(b []byte) (map[string]string, error) {
 			return nil, fmt.Errorf("mise.toml: tool %q has no version string", name)
 		}
 
-		out[normaliseTool(name)] = version
+		if err := r.take(out, "mise.toml", name, version); err != nil {
+			return nil, err
+		}
 	}
 
 	return out, nil

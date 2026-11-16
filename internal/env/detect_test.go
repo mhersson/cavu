@@ -236,7 +236,7 @@ func TestDetect(t *testing.T) {
 				files[k] = []byte(v)
 			}
 
-			tools, eco, err := Detect(files, tt.overrides)
+			got, err := Detect(files, tt.overrides)
 			if tt.wantErrHas != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErrHas)
@@ -245,8 +245,9 @@ func TestDetect(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantTools, tools)
-			assert.Equal(t, tt.wantEco, eco)
+			assert.Equal(t, tt.wantTools, got.Tools)
+			assert.Equal(t, tt.wantEco, got.Ecosystems)
+			assert.Empty(t, got.Ignored)
 		})
 	}
 }
@@ -259,4 +260,67 @@ func TestVersionFilesSortedAndFresh(t *testing.T) {
 	a[0] = "changed"
 
 	assert.NotEqual(t, "changed", VersionFiles()[0])
+}
+
+func TestDetectIgnoresBackendsAndPaths(t *testing.T) {
+	t.Parallel()
+
+	files := map[string][]byte{
+		".tool-versions": []byte("npm:prettier 3.0.0\nasdf:https://example.test/plugin 1.0\nzig path:/x\nbun ref:main\n"),
+		"mise.toml":      []byte("[tools]\n\"cargo:ripgrep\" = \"14\"\nlocal = \"path:/y\"\n"),
+	}
+	got, err := Detect(files, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got.Tools)
+	assert.Equal(t, []string{
+		".tool-versions: asdf:https://example.test/plugin 1.0",
+		".tool-versions: bun ref:main",
+		".tool-versions: npm:prettier 3.0.0",
+		".tool-versions: zig path:/x",
+		"mise.toml: cargo:ripgrep 14",
+		"mise.toml: local path:/y",
+	}, got.Ignored)
+
+	overrides := map[string]string{"npm:prettier": "3.0.0", "zig": "path:/x", "bun": "ref:main"}
+	got, err = Detect(files, overrides)
+	require.NoError(t, err)
+	assert.Equal(t, []Tool{{"bun", "ref:main"}, {"npm:prettier", "3.0.0"}, {"zig", "path:/x"}}, got.Tools)
+}
+
+func TestDetectIgnoredShadowsNothing(t *testing.T) {
+	t.Parallel()
+
+	got, err := Detect(map[string][]byte{
+		".tool-versions": []byte("nodejs ref:main\n"),
+		"package.json":   []byte(`{"engines":{"node":"^22"}}`),
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []Tool{{"node", "22"}}, got.Tools)
+	assert.Len(t, got.Ignored, 1)
+	assert.Contains(t, got.Ignored[0], ".tool-versions")
+	assert.Contains(t, got.Ignored[0], "nodejs")
+}
+
+func TestDetectNonUTF8IsAnError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ name, file, content string }{
+		{"tool-versions name", ".tool-versions", "go\xff 1.0\n"},
+		{"tool-versions version", ".tool-versions", "go 1\xff\n"},
+		{"mise name", "mise.toml", "[tools]\n\"g\xffo\" = \"1\"\n"},
+		{"python-version", ".python-version", "3\xff\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := Detect(map[string][]byte{tt.file: []byte(tt.content)}, nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.file)
+		})
+	}
+
+	got, err := Detect(nil, map[string]string{"g\xffo": "1\xff"})
+	require.NoError(t, err)
+	assert.Len(t, got.Tools, 1)
 }
