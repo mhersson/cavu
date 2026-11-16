@@ -433,6 +433,9 @@ func TestStderrDetail(t *testing.T) {
 		name, tail, want string
 	}{
 		{"cut token end", testToken[3:] + " rest\n", "rest"},
+		{"shortest stripped end", testToken[len(testToken)-minFragment:] + " rest", "rest"},
+		{"short coincidental match kept", testToken[len(testToken)-minFragment+1:] + " rest", testToken[len(testToken)-minFragment+1:] + " rest"},
+		{"last character kept", testToken[len(testToken)-1:] + "rror: connect", testToken[len(testToken)-1:] + "rror: connect"},
 		{"whole token stays for the mask", testToken + " rest", testToken + " rest"},
 		{"no token", "plain failure\n", "plain failure"},
 		{"invalid utf-8", "\xa9broken \xff tail", "broken  tail"},

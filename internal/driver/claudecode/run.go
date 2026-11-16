@@ -234,11 +234,15 @@ func initResponse(line []byte, id string) (json.RawMessage, bool) {
 	return l.Response.Response.Account, true
 }
 
+// minFragment is the shortest end of a secret stderrDetail drops; a shorter
+// one is no credential, and stripping it would cut ordinary text.
+const minFragment = 8
+
 // stderrDetail drops a leading proper suffix of secret, which a tail cut at a
 // byte count can open with and the mask cannot see. Whether the tail was cut
 // is unknown, so an uncut one that opens that way loses those bytes too.
 func stderrDetail(tail, secret string) string {
-	for n := len(secret) - 1; n > 0; n-- {
+	for n := len(secret) - 1; n >= minFragment; n-- {
 		if strings.HasPrefix(tail, secret[len(secret)-n:]) {
 			tail = tail[n:]
 
