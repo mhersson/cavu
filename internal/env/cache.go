@@ -18,19 +18,22 @@ const defaultPath = cacheDir + "/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/
 // common is set in both phases. Trust variables make tools that ignore the
 // system store still trust the instance's CA. Pointing mise at an ignored
 // /workspace keeps a repository's own mise file from ever being executed.
+// mise tells its versions host, which the setup phase reaches for version
+// lists, nothing about what a project downloads.
 func common() map[string]string {
 	return map[string]string{
-		"SSL_CERT_FILE":             caBundle,
-		"NODE_EXTRA_CA_CERTS":       caBundle,
-		"REQUESTS_CA_BUNDLE":        caBundle,
-		"PIP_CERT":                  caBundle,
-		"CARGO_HTTP_CAINFO":         caBundle,
-		"GIT_SSL_CAINFO":            caBundle,
-		"MISE_DATA_DIR":             cacheDir + "/mise",
-		"MISE_GLOBAL_CONFIG_FILE":   MiseConfigFile,
-		"MISE_TRUSTED_CONFIG_PATHS": "",
-		"MISE_IGNORED_CONFIG_PATHS": workspaceDir,
-		"PATH":                      defaultPath,
+		"SSL_CERT_FILE":                caBundle,
+		"NODE_EXTRA_CA_CERTS":          caBundle,
+		"REQUESTS_CA_BUNDLE":           caBundle,
+		"PIP_CERT":                     caBundle,
+		"CARGO_HTTP_CAINFO":            caBundle,
+		"GIT_SSL_CAINFO":               caBundle,
+		"MISE_DATA_DIR":                cacheDir + "/mise",
+		"MISE_GLOBAL_CONFIG_FILE":      MiseConfigFile,
+		"MISE_TRUSTED_CONFIG_PATHS":    "",
+		"MISE_IGNORED_CONFIG_PATHS":    workspaceDir,
+		"MISE_USE_VERSIONS_HOST_TRACK": "false",
+		"PATH":                         defaultPath,
 	}
 }
 

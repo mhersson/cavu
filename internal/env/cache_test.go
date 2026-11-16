@@ -114,3 +114,13 @@ func TestRustupHomeIsSharedInBothPhases(t *testing.T) {
 		assert.NotContains(t, envMap(t, e), "RUSTUP_HOME", name)
 	}
 }
+
+// The setup phase reaches mise's versions host, which must not learn what a
+// project downloads.
+func TestMiseReportsNoDownloads(t *testing.T) {
+	t.Parallel()
+
+	for name, e := range map[string][]string{"setup": SetupEnv(nil), "agent": AgentEnv(nil, "/home/agent")} {
+		assert.Equal(t, "false", envMap(t, e)["MISE_USE_VERSIONS_HOST_TRACK"], name)
+	}
+}
