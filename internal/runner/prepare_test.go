@@ -16,6 +16,7 @@ import (
 	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/sandbox"
+	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/verify"
 )
 
@@ -26,10 +27,16 @@ var fullOrder = []string{
 
 func TestPrepareOrder(t *testing.T) {
 	f := newFake()
+	c := testConfig()
+	c.Repo.BaseCommit = baseCommit
 
-	res, err := f.runner().Prepare(t.Context(), testConfig())
+	res, err := f.runner().Prepare(t.Context(), c)
 	require.NoError(t, err)
 	assert.Equal(t, fullOrder, f.calls())
+	assert.Equal(t, []sidecar.CloneRequest{{
+		URL: c.Repo.URL, Token: plantedForge, BaseBranch: "main", Commit: baseCommit, Branch: "cavu/fix-login",
+		CABundle: string(c.CABundle), Name: "CAVU", Email: "cavu@example.com",
+	}}, f.clones, "a redone run clones the recorded base, not the branch's tip")
 	assert.Equal(t, engine.PrepareResult{
 		BaseCommit: baseCommit, Tools: []string{"go@1.25.0"}, Ecosystems: []string{"go"}, Baseline: engine.ResultPassed,
 	}, res)
@@ -143,17 +150,34 @@ func TestSetupSecretsOnlyInSetupPhase(t *testing.T) {
 	assert.Contains(t, setup, "NPM_TOKEN="+plantedSetup)
 	assert.Contains(t, setup, "APP_ENV=test")
 
+	planted := []string{plantedSetup, plantedEndpoint, plantedForge}
+
 	mise := fmt.Sprint(f.run(t, "mise install").cmd)
-	assert.NotContains(t, mise, plantedSetup)
 	assert.NotContains(t, mise, "APP_ENV")
 
-	for _, r := range f.runsIn(sandbox.PhaseAgent) {
-		assert.NotContains(t, fmt.Sprint(r.cmd), plantedSetup, r.name)
-		assert.NotContains(t, fmt.Sprint(r.cmd), "APP_ENV", r.name)
+	for _, secret := range planted {
+		assert.NotContains(t, mise, secret)
 	}
 
+	for _, r := range f.runsIn(sandbox.PhaseAgent) {
+		assert.NotContains(t, fmt.Sprint(r.cmd), "APP_ENV", r.name)
+
+		for _, secret := range planted {
+			assert.NotContains(t, fmt.Sprint(r.cmd), secret, r.name)
+		}
+	}
+
+	// The endpoint credential goes to the proxy's model route and nowhere else.
 	for _, req := range f.requests(sandbox.PhaseAgent) {
-		assert.NotContains(t, fmt.Sprint(req.AllowHosts, req.CABundle, req.Model), plantedSetup)
+		require.NotNil(t, req.Model)
+		assert.Equal(t, plantedEndpoint, req.Model.Credential)
+
+		model := *req.Model
+		model.Credential = ""
+
+		for _, secret := range planted {
+			assert.NotContains(t, fmt.Sprint(req.AllowHosts, req.CABundle, model), secret)
+		}
 	}
 }
 
@@ -360,7 +384,7 @@ func TestPrepareFaults(t *testing.T) {
 
 		res, err := f.runner().Prepare(t.Context(), testConfig())
 		require.Error(t, err)
-		assert.Equal(t, down, err.Error())
+		require.NotErrorIs(t, err, context.Canceled, "the sidecar's fault replaces the cancelled command's error")
 		assert.Empty(t, res.FailedStep)
 		assert.Equal(t, "run/make setup", f.calls()[len(f.calls())-1], "the action in flight ends")
 	})

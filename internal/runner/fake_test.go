@@ -78,6 +78,7 @@ type fakeSandbox struct {
 	ups      []upCall
 	runs     []runCall
 	reads    []string // the commit of each read
+	clones   []sidecar.CloneRequest
 	copied   map[string][]byte
 	lines    func(sidecar.Line)
 	phase    sandbox.Phase // of the last Up, "" after Down
@@ -210,6 +211,10 @@ func (f *fakeSandbox) EnsureVolumes(context.Context) error {
 
 func (f *fakeSandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (string, error) {
 	f.record("clone")
+
+	f.mu.Lock()
+	f.clones = append(f.clones, r)
+	f.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
 		return "", err
