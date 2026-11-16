@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -45,34 +46,22 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 		}
 	}
 
-	set := settingsReader{values: values}
+	c, err := ReadSettings(values)
+	if err != nil {
+		return RunConfig{}, fmt.Errorf("run config: %w", err)
+	}
 
-	var c RunConfig
-
-	c.TaskID, c.RunID, c.ProjectID = t.ID, r.ID, p.ID
-	c.InstanceID, c.Image = set.required("instance_id"), l.Image
+	c.TaskID, c.RunID, c.ProjectID, c.Image = t.ID, r.ID, p.ID, l.Image
 	c.Repo.URL, c.Repo.BaseBranch, c.Repo.BaseCommit, c.Repo.Branch = p.RepoURL, p.BaseBranch, t.BaseCommit, BranchName(t.Title)
 	c.Setup.Command, c.Setup.Env, c.Setup.ToolOverrides, c.Setup.EgressHosts = p.SetupCommand, p.Env, p.ToolOverrides, p.EgressHosts
 	c.Verify.Command, c.Verify.Waived = p.VerifyCommand, p.VerifyWaived
-	c.Verify.Timeout = set.minutes("verify_timeout_minutes", 10, 0.5, 120)
 
 	if b := p.Baseline; b != nil {
 		c.Verify.BaselineCommit, c.Verify.BaselinePassed = b.Commit, b.Passed
 	}
 
-	c.Endpoint.Mode = set.oneOf("endpoint_mode", true, "subscription", "key")
-	c.Endpoint.URL = values["endpoint_url"]
-	c.Endpoint.AuthHeader = set.oneOf("endpoint_auth_header", false, "bearer", "x-api-key")
-	c.Agent.Model, c.Agent.Effort = set.required(keyModelWork), values[keyEffortWork]
-	c.Agent.MaxTurns = set.positiveInt("work_max_turns", 200)
-	c.Agent.Timeout = time.Duration(set.positiveInt("work_timeout_minutes", 60)) * time.Minute
 	c.Agent.WebTools = sw.WebTools
-	c.Identity.Name, c.Identity.Email = set.required("commit_name"), set.required("commit_email")
 	c.Task.Title, c.Task.Body = t.Title, t.Body
-
-	if set.err != nil {
-		return RunConfig{}, fmt.Errorf("run config: %w", set.err)
-	}
 
 	if err := l.readSecrets(ctx, p, &c); err != nil {
 		return RunConfig{}, fmt.Errorf("run config: %w", err)
@@ -110,6 +99,42 @@ func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) e
 	}
 
 	return nil
+}
+
+// ReadSettings reads the part of a run's config the settings hold: the
+// instance id, the endpoint but its credential, the agent but its web tools,
+// the identity and the verify timeout. Its error names every required setting
+// not set, else the first value that does not parse.
+func ReadSettings(values map[string]string) (RunConfig, error) {
+	required := []string{"instance_id", "endpoint_mode", keyModelWork, "commit_name", "commit_email"}
+	if values["endpoint_mode"] == "key" {
+		// The proxy routes model calls to the URL and refuses an empty header.
+		required = append(required, "endpoint_url", "endpoint_auth_header")
+	}
+
+	if missing := slices.DeleteFunc(required, func(k string) bool { return values[k] != "" }); len(missing) > 0 {
+		return RunConfig{}, fmt.Errorf("settings not set: %s", strings.Join(missing, ", "))
+	}
+
+	set := settingsReader{values: values}
+
+	var c RunConfig
+
+	c.InstanceID = values["instance_id"]
+	c.Endpoint.Mode = set.oneOf("endpoint_mode", "subscription", "key")
+	c.Endpoint.URL = values["endpoint_url"]
+	c.Endpoint.AuthHeader = set.oneOf("endpoint_auth_header", "bearer", "x-api-key")
+	c.Agent.Model, c.Agent.Effort = values[keyModelWork], values[keyEffortWork]
+	c.Agent.MaxTurns = set.positiveInt("work_max_turns", 200)
+	c.Agent.Timeout = time.Duration(set.positiveInt("work_timeout_minutes", 60)) * time.Minute
+	c.Verify.Timeout = set.minutes("verify_timeout_minutes", 10, 0.5, 120)
+	c.Identity.Name, c.Identity.Email = values["commit_name"], values["commit_email"]
+
+	if set.err != nil {
+		return RunConfig{}, set.err
+	}
+
+	return c, nil
 }
 
 // resolveSwitches applies a project's switches over the defaults, then a task's
@@ -157,22 +182,9 @@ func (s *settingsReader) fail(key, problem string) {
 	}
 }
 
-func (s *settingsReader) required(key string) string {
+func (s *settingsReader) oneOf(key string, allowed ...string) string {
 	v := s.values[key]
-	if v == "" {
-		s.fail(key, "not set")
-	}
-
-	return v
-}
-
-func (s *settingsReader) oneOf(key string, required bool, allowed ...string) string {
-	v := s.values[key]
-
-	switch {
-	case v == "" && required:
-		s.fail(key, "not set")
-	case v != "" && !slices.Contains(allowed, v):
+	if v != "" && !slices.Contains(allowed, v) {
 		s.fail(key, fmt.Sprintf("%q is not one of %q", v, allowed))
 	}
 
