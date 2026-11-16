@@ -34,15 +34,22 @@ const (
 	modeKey   = "key"
 
 	linkTimeout = time.Minute
+
+	// parentElsewhere is the link script's exit status when a link's parent
+	// resolves elsewhere; its other failures exit 2.
+	parentElsewhere = 1
 )
 
 // linkScript makes each link, given as its parent, its name and its target,
 // replacing what is there: the home is the agent's to change. It deletes only
 // by name, in a parent whose real path is the one linkCommand validated.
 var linkScript = proc.SandboxOnly(`while [ "$#" -ge 3 ]; do
-	mkdir -p -- "$1" && cd -P -- "$1" || exit 1
-	[ "$(pwd -P)" = "$1" ] || exit ` + strconv.Itoa(proc.NotInSandbox) + `
-	rm -rf -- "./$2" && ln -s -- "$3" "./$2" || exit 1
+	mkdir -p -- "$1" && cd -P -- "$1" || exit 2
+	if [ "$(pwd -P)" != "$1" ]; then
+		printf 'cavu: %s resolves to %s; nothing deleted in it\n' "$1" "$(pwd -P)" >&2
+		exit ` + strconv.Itoa(parentElsewhere) + `
+	fi
+	rm -rf -- "./$2" && ln -s -- "$3" "./$2" || exit 2
 	shift 3
 done`)
 
@@ -50,7 +57,8 @@ var (
 	errLinkPath = errors.New("runner: a home link must be a clean absolute path strictly under " + home +
 		" and its target a clean absolute path under " + cache)
 	errLinkRefused = errors.New("runner: the link step refused to run: the image lacks the sandbox marker " +
-		proc.SandboxMarker + " or the home is not where it should be; `cavu image build` builds an image with the marker")
+		proc.SandboxMarker + "; `cavu image build` builds an image with the marker")
+	errLinkParent = errors.New("runner: link the agent's home: a link's parent resolves elsewhere, and nothing in it was deleted")
 )
 
 // proxyEnv sends a command's egress through the bridge, the one way out of
@@ -301,15 +309,18 @@ func linkHome(ctx context.Context, a container, links map[string]string) error {
 		return err
 	}
 
-	if res.ExitCode == proc.NotInSandbox {
-		return errLinkRefused
+	if !res.TimedOut {
+		switch res.ExitCode {
+		case 0:
+			return nil
+		case proc.NotInSandbox:
+			return errLinkRefused
+		case parentElsewhere:
+			return fmt.Errorf("%w: %s", errLinkParent, strings.TrimSpace(res.Output))
+		}
 	}
 
-	if res.ExitCode != 0 || res.TimedOut {
-		return fmt.Errorf("runner: link the agent's home: %s", strings.TrimSpace(res.Output))
-	}
-
-	return nil
+	return fmt.Errorf("runner: link the agent's home: %s", strings.TrimSpace(res.Output))
 }
 
 // linkCommand refuses every link unless each is strictly under the home and

@@ -215,11 +215,9 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		c := testConfig()
 		c.Ecosystems = []string{"rust"}
 
-		f.results[link] = sandbox.Result{ExitCode: 1, Output: "ln: Permission denied\n"}
+		f.results[link] = sandbox.Result{ExitCode: 2, Output: "ln: Permission denied\n"}
 
-		err := r.ensureUp(t.Context(), c)
-		require.Error(t, err)
-		require.NotErrorIs(t, err, errLinkRefused)
+		require.Error(t, r.ensureUp(t.Context(), c))
 
 		delete(f.results, link)
 
@@ -240,16 +238,40 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		assert.Equal(t, []string{"volumes", "up/agent"}, f.calls())
 	})
 
-	t.Run("refused outside a sandbox", func(t *testing.T) {
-		f := newFake()
-		r := f.runner()
-		c := testConfig()
-		c.Ecosystems = []string{"rust"}
+	// A missing marker and a parent that resolves elsewhere each have their
+	// own error; any other failure has neither.
+	t.Run("a failed step", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			res  sandbox.Result
+			want error
+		}{
+			{name: "outside a sandbox", res: sandbox.Result{ExitCode: proc.NotInSandbox}, want: errLinkRefused},
+			{name: "a parent elsewhere", res: sandbox.Result{ExitCode: parentElsewhere}, want: errLinkParent},
+			{name: "another failure", res: sandbox.Result{ExitCode: 2, Output: "ln: Permission denied\n"}},
+			{name: "a timeout", res: sandbox.Result{ExitCode: parentElsewhere, TimedOut: true}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				f := newFake()
+				r := f.runner()
+				c := testConfig()
+				c.Ecosystems = []string{"rust"}
 
-		f.results[link] = sandbox.Result{ExitCode: proc.NotInSandbox}
+				f.results[link] = tt.res
 
-		require.ErrorIs(t, r.ensureUp(t.Context(), c), errLinkRefused)
-		assert.False(t, r.state(c.RunID).agentUp())
+				err := r.ensureUp(t.Context(), c)
+				require.Error(t, err)
+				assert.False(t, r.state(c.RunID).agentUp())
+
+				for _, sentinel := range []error{errLinkRefused, errLinkParent} {
+					if sentinel == tt.want {
+						require.ErrorIs(t, err, sentinel)
+					} else {
+						require.NotErrorIs(t, err, sentinel)
+					}
+				}
+			})
+		}
 	})
 }
 
