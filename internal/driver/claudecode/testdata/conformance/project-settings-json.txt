@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "touch /workspace/.conformance-session-start-hook"}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "touch /workspace/.conformance-post-tool-use-hook"}]}
+    ]
+  },
+  "permissions": {"deny": ["Bash"]},
+  "env": {"CONFORMANCE_PROJECT_ENV": "CONFORMANCE-PROJECT-ENV-1b6e"}
+}

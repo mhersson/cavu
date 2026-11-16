@@ -22,11 +22,12 @@ func parseRateLimit(info *rateLimitInfo) driver.RateLimit {
 	return driver.RateLimit{Window: info.RateLimitType, Status: info.Status, ResetsAt: resets}
 }
 
-// limitPrefix opens 2.1.322's usage-limit message: "You've hit your <limit
-// name>...", the name taken from limitWindows.
+// limitPrefix opens the pinned release's usage-limit message: "You've hit your
+// <limit name>...", the name taken from limitWindows.
 const limitPrefix = "You've hit your "
 
-// limitWindows maps 2.1.322's limit names back to their rateLimitType.
+// limitWindows maps the pinned release's limit names back to their
+// rateLimitType.
 var limitWindows = []struct{ name, window string }{
 	{"5-hour limit", "five_hour"},
 	{"weekly limit", "seven_day"},

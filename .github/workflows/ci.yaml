@@ -66,8 +66,8 @@ jobs:
       - name: pull the test image
         run: docker pull docker.io/library/busybox:1.37
 
-      - name: make image test-integration
-        run: make image test-integration
+      - name: make image test-integration test-conformance
+        run: make image test-integration test-conformance
 
   govulncheck:
     runs-on: ubuntu-latest

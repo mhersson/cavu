@@ -40,6 +40,10 @@ func (c claudeCode) Run(ctx context.Context, t proc.Target, s driver.Spec, sink 
 		}
 	}
 
+	if c.amend != nil {
+		c.amend(&inv)
+	}
+
 	var p proc.Process
 	if err = ctx.Err(); err == nil {
 		p, err = t.Start(ctx, proc.Command{Argv: inv.argv, Env: inv.env, Dir: s.Dir, Files: inv.files})

@@ -7,7 +7,7 @@ help:
 	@echo "  build-darwin cross-compile everything for darwin"
 	@echo "  test         run the tests"
 	@echo "  test-race    run the tests with the race detector"
-	@echo "  vet          go vet, with and without the integration and conformance tags"
+	@echo "  vet          go vet, with and without the integration, conformance and live tags"
 	@echo "  lint         golangci-lint run"
 	@echo "  fmt          format the code with golangci-lint fmt"
 	@echo "  fmt-check    fail and show the diff if formatting is needed"
@@ -35,7 +35,7 @@ test-race:
 
 vet:
 	go vet ./...
-	go vet -tags integration,conformance ./...
+	go vet -tags integration,conformance,live ./...
 
 lint:
 	golangci-lint run

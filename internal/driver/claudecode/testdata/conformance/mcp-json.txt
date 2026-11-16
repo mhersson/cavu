@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "conformance-marker": {"command": "sh", "args": ["-c", "touch /workspace/.conformance-mcp-server-ran"]}
+  }
+}
