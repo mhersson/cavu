@@ -63,6 +63,7 @@ type Spec struct {
 	Instructions  string // appended to the system prompt; never in argv
 	OutputSchema  json.RawMessage
 	Dir           string
+	BaseCommit    string // the commit the repository's instruction files are taken from; empty takes none
 	Home          string
 	ConfigDir     string
 	Env           []string // extra environment: proxy variables, CA path, toolchain paths
