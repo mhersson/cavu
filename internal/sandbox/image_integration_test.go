@@ -153,17 +153,16 @@ func TestImageBuilds(t *testing.T) {
 
 	sum := sha256.Sum256(caPEM)
 
-	cv, av, found, err := r.ImageInfo(t.Context(), image)
+	labels, found, err := r.ImageInfo(t.Context(), image)
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, strings.TrimPrefix(image, "cavu-sandbox:"), cv)
-	assert.Equal(t, claudecode.Version, av)
+	assert.Equal(t, sandbox.ImageLabels{
+		CavuVersion:  strings.TrimPrefix(image, "cavu-sandbox:"),
+		AgentVersion: claudecode.Version,
+		CABundle:     hex.EncodeToString(sum[:]),
+	}, labels)
 
-	label, err := exec.CommandContext(t.Context(), r.Bin, "image", "inspect", `--format={{index .Config.Labels "cavu.ca_bundle"}}`, image).Output() //nolint:gosec // our own image
-	require.NoError(t, err)
-	assert.Equal(t, hex.EncodeToString(sum[:]), strings.TrimSpace(string(label)))
-
-	_, _, found, err = r.ImageInfo(t.Context(), "cavu-sandbox:absent-"+sandboxtest.RunID)
+	_, found, err = r.ImageInfo(t.Context(), "cavu-sandbox:absent-"+sandboxtest.RunID)
 	require.NoError(t, err)
 	assert.False(t, found)
 

@@ -62,7 +62,7 @@ type BuildOptions struct {
 // The context is a tar stream on stdin, so no host path is involved. The
 // client's stdout goes to out; a failure carries the tail of its stderr.
 func (r Runtime) BuildImage(ctx context.Context, o BuildOptions, out io.Writer) error {
-	bundleSum, err := checkBundle(o.CABundle)
+	bundleSum, err := BundleSum(o.CABundle)
 	if err != nil {
 		return err
 	}
@@ -106,10 +106,10 @@ func (r Runtime) BuildImage(ctx context.Context, o BuildOptions, out io.Writer) 
 	return nil
 }
 
-// checkBundle returns the bundle's sha256, or "" for no bundle. Every PEM
-// block must be a certificate that parses, so a mistaken file fails here and
-// not as a trust failure inside the image.
-func checkBundle(b []byte) (string, error) {
+// BundleSum is the image's cavu.ca_bundle label for a CA bundle: its sha256,
+// or "" for none. Every PEM block must be a certificate that parses, so a
+// mistaken file fails here and not as a trust failure inside the image.
+func BundleSum(b []byte) (string, error) {
 	if len(bytes.TrimSpace(b)) == 0 {
 		return "", nil
 	}
@@ -210,32 +210,43 @@ func buildContext(bin, bundle []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ImageLabels are what a sandbox image's labels record.
+type ImageLabels struct {
+	CavuVersion  string // cavu.version
+	AgentVersion string // cavu.claude_code
+	CABundle     string // cavu.ca_bundle: the sha256 of the bundle built in, empty for none
+}
+
 // ImageInfo reads the labels of a local image; an absent image is not an error.
-func (r Runtime) ImageInfo(ctx context.Context, name string) (cavuVersion, agentVersion string, found bool, err error) {
+func (r Runtime) ImageInfo(ctx context.Context, name string) (ImageLabels, bool, error) {
 	if err := checkArg("image", name); err != nil {
-		return "", "", false, err
+		return ImageLabels{}, false, err
 	}
 
 	ids, err := r.output(ctx, "image", "ls", "--quiet", "--filter=reference="+name)
 	if err != nil {
-		return "", "", false, fmt.Errorf("list image %s: %w", name, err)
+		return ImageLabels{}, false, fmt.Errorf("list image %s: %w", name, err)
 	}
 
 	if len(bytes.TrimSpace(ids)) == 0 {
-		return "", "", false, nil
+		return ImageLabels{}, false, nil
 	}
 
 	raw, err := r.output(ctx, "image", "inspect", "--format={{json .Config.Labels}}", name)
 	if err != nil {
-		return "", "", false, fmt.Errorf("inspect image %s: %w", name, err)
+		return ImageLabels{}, false, fmt.Errorf("inspect image %s: %w", name, err)
 	}
 
 	var labels map[string]string
 	if err := json.Unmarshal(bytes.TrimSpace(raw), &labels); err != nil {
-		return "", "", false, fmt.Errorf("inspect image %s: %w", name, err)
+		return ImageLabels{}, false, fmt.Errorf("inspect image %s: %w", name, err)
 	}
 
-	return labels["cavu.version"], labels["cavu.claude_code"], true, nil
+	return ImageLabels{
+		CavuVersion:  labels["cavu.version"],
+		AgentVersion: labels["cavu.claude_code"],
+		CABundle:     labels["cavu.ca_bundle"],
+	}, true, nil
 }
 
 // lockedWriter lets stdout and stderr of one client share a writer.

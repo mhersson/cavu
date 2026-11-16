@@ -30,6 +30,9 @@ type claudeCode struct {
 	runRoot     string
 	gateTimeout time.Duration
 	grace       time.Duration
+	// amend is nil outside tests; the conformance suite uses it for runs no
+	// Spec describes, such as a subscription against a mock's base URL.
+	amend func(*invocation)
 }
 
 // New returns the Claude Code driver.

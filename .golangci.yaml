@@ -4,6 +4,7 @@ run:
   - integration
   - conformance
   - ecosystems
+  - live
 linters:
   default: none
   enable:

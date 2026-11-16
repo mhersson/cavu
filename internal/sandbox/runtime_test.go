@@ -1031,6 +1031,27 @@ func TestVolumeLabels(t *testing.T) {
 	})
 }
 
+func TestVersion(t *testing.T) {
+	for kind, format := range map[string]string{"docker": "--format={{.ServerVersion}}", "podman": "--format={{.Version.Version}}"} {
+		t.Run(kind, func(t *testing.T) {
+			r, f := fakeRuntime(t, kind)
+			f.outFor(t, "28.5.1", "info", format)
+
+			v, err := r.Version(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, "28.5.1", v)
+		})
+	}
+
+	t.Run("an engine that does not answer", func(t *testing.T) {
+		r, f := fakeRuntime(t, "docker")
+		f.set(t, "exit", []byte("1"))
+
+		_, err := r.Version(t.Context())
+		require.Error(t, err)
+	})
+}
+
 func TestMemoryMB(t *testing.T) {
 	for kind, format := range map[string]string{"docker": "--format={{.MemTotal}}", "podman": "--format={{.Host.MemTotal}}"} {
 		t.Run(kind, func(t *testing.T) {

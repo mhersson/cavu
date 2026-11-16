@@ -12,13 +12,13 @@ import (
 	"github.com/mhersson/cavu/internal/proc"
 )
 
-// noConversation is what the pinned release prints on stderr when --resume
-// names a session whose transcript is missing.
+// noConversation opens what the pinned release prints on stderr, after an
+// error result, when --resume names a session whose transcript is missing.
 const noConversation = "No conversation found"
 
 // Run starts or resumes one session as one claude process. The error is only
-// for a spec the driver cannot run or a target that cannot start it; every
-// other end is a Result.
+// for a spec the driver cannot run, a config dir it cannot prepare or a target
+// that cannot start it; every other end is a Result.
 func (c claudeCode) Run(ctx context.Context, t proc.Target, s driver.Spec, sink func(driver.Event)) (driver.Result, error) {
 	inv, err := c.newInvocation(s)
 	if err != nil {
@@ -26,6 +26,23 @@ func (c claudeCode) Run(ctx context.Context, t proc.Target, s driver.Spec, sink 
 	}
 
 	m := newMapper([]string{s.Auth.Token}, sink)
+	interrupted := func() driver.Result {
+		return driver.Result{Reason: driver.ReasonInterrupted, IsError: true, Detail: m.mask(interruption(ctx))}
+	}
+
+	if ctx.Err() == nil {
+		if err := c.prepare(ctx, t, s); err != nil {
+			if ctx.Err() != nil {
+				return interrupted(), nil
+			}
+
+			return driver.Result{}, fmt.Errorf("claudecode: prepare the config dir: %w", err)
+		}
+	}
+
+	if c.amend != nil {
+		c.amend(&inv)
+	}
 
 	var p proc.Process
 	if err = ctx.Err(); err == nil {
@@ -34,7 +51,7 @@ func (c claudeCode) Run(ctx context.Context, t proc.Target, s driver.Spec, sink 
 
 	if err != nil {
 		if ctx.Err() != nil {
-			return driver.Result{Reason: driver.ReasonInterrupted, IsError: true, Detail: m.mask(interruption(ctx))}, nil
+			return interrupted(), nil
 		}
 
 		return driver.Result{}, fmt.Errorf("claudecode: start: %w", err)
@@ -140,7 +157,7 @@ func (r *session) ended(ctx context.Context) driver.Result {
 
 	res := r.m.finish(code, detail)
 
-	if !r.m.sawResult && r.resume && strings.Contains(tail, noConversation) {
+	if r.resume && res.Reason == driver.ReasonCrashed && strings.Contains(tail, noConversation) {
 		res.Reason = driver.ReasonResumeRefused
 	}
 

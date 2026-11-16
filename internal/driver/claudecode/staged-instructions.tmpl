@@ -1,0 +1,19 @@
+{{- /* The fixed text the driver writes into the staged instruction files. */ -}}
+{{define "memory" -}}
+This file holds the repository's own instruction files, taken from the commit the task started from, and a reference of the form @path in it names a file of the repository, relative to the directory of the file it appears in, to read when it is relevant.
+{{- range .Sections}}
+
+# {{range $i, $name := .Names}}{{if $i}}, {{end}}{{$name}}{{end}}
+
+{{.Content}}
+{{- end}}
+{{- if .Nested}}
+
+# Instruction files in subdirectories
+
+Before working on files under one of these directories, read that directory's instruction file first:
+{{range .Nested}}
+- {{.}}
+{{- end}}
+{{- end}}
+{{end}}

@@ -3,7 +3,6 @@
 package sandbox_test
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -58,46 +57,6 @@ func schemeName(instance, kind string, id int64) string {
 	return instancePrefix(instance) + kind + "-" + strconv.FormatInt(id, 10)
 }
 
-// removeInstanceAfter removes, after the test, every container and volume
-// that carries both the instance's label and its name prefix; the instance id
-// is random, so they are this test's own.
-func removeInstanceAfter(t *testing.T, r sandbox.Runtime, instance string) {
-	t.Helper()
-
-	removeAfter(t, func(ctx context.Context) error {
-		containers, volumes, err := r.List(ctx, "cavu.instance="+instance)
-		if err != nil {
-			return err
-		}
-
-		if err := r.Remove(ctx, ownNames(t, instance, containers)...); err != nil {
-			return err
-		}
-
-		return r.VolumeRemove(ctx, ownNames(t, instance, volumes)...)
-	})
-}
-
-// ownNames keeps the names that carry the instance's prefix, so a runtime
-// that ignored the label filter cannot hand the cleanup someone else's.
-func ownNames(t *testing.T, instance string, names []string) []string {
-	t.Helper()
-
-	var own []string
-
-	for _, n := range names {
-		if !strings.HasPrefix(n, instancePrefix(instance)) {
-			t.Errorf("the filter cavu.instance=%s listed %q, which lacks the instance prefix; left in place", instance, n)
-
-			continue
-		}
-
-		own = append(own, n)
-	}
-
-	return own
-}
-
 func openSandbox(t *testing.T, r sandbox.Runtime, image, instance string, run, task, project int64) *sandbox.Sandbox {
 	t.Helper()
 
@@ -118,7 +77,7 @@ func newSandbox(t *testing.T, r sandbox.Runtime, image string) *sandbox.Sandbox 
 	t.Helper()
 
 	instance := randomInstance(t)
-	removeInstanceAfter(t, r, instance)
+	sandboxtest.RemoveInstanceAfter(t, r, instance)
 
 	s := openSandbox(t, r, image, instance, randomID(t), randomID(t), randomID(t))
 	require.NoError(t, s.EnsureVolumes(t.Context()))
@@ -269,8 +228,8 @@ func TestRemoveOrphans(t *testing.T) {
 	image := sandboxImage(t, r, nil)
 
 	instance, other := randomInstance(t), randomInstance(t)
-	removeInstanceAfter(t, r, instance)
-	removeInstanceAfter(t, r, other)
+	sandboxtest.RemoveInstanceAfter(t, r, instance)
+	sandboxtest.RemoveInstanceAfter(t, r, other)
 
 	run1, run2, task, project := randomID(t), randomID(t), randomID(t), randomID(t)
 

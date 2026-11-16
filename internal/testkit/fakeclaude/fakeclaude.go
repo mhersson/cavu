@@ -161,7 +161,12 @@ func (p *fake) run() int {
 
 	if id := p.flags["--resume"]; id != "" {
 		if matches, _ := filepath.Glob(filepath.Join(p.configDir, "projects", "*", id+".jsonl")); len(matches) == 0 {
-			fmt.Fprintf(os.Stderr, "No conversation found with session ID: %s\n", id)
+			text := "No conversation found with session ID: " + id
+			writeJSONLine(map[string]any{
+				"type": "result", "subtype": "error_during_execution", "is_error": true,
+				"num_turns": 0, "session_id": id, "errors": []string{text},
+			})
+			fmt.Fprintln(os.Stderr, text)
 
 			return 1
 		}

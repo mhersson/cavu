@@ -1,0 +1,21 @@
+---
+name: conformance-hook
+description: CONFORMANCE-HOOK-SKILL-5e3a
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "touch /workspace/.conformance-skill-pre-tool-use-hook"
+  PostToolUse:
+    - matcher: "*"
+      hooks:
+        - type: command
+          command: "touch /workspace/.conformance-skill-post-tool-use-hook"
+  Stop:
+    - hooks:
+        - type: command
+          command: "touch /workspace/.conformance-skill-stop-hook"
+---
+
+CONFORMANCE-HOOK-SKILL-BODY-7c1d

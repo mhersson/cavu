@@ -4,6 +4,7 @@
 package mockapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -16,10 +17,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,12 +42,25 @@ const structuredTool = "StructuredOutput"
 // hostName is how a container reaches a server on its host.
 const hostName = "host.docker.internal"
 
-// Step is one model call's answer: a text block, or one tool_use block when
-// Tool is set.
+// Step is one model call's answer: a text block, one tool_use block when Tool
+// is set, or the API's error body under Status when that is set.
 type Step struct {
-	Text  string
-	Tool  string // a tool name, or Structured
-	Input any    // the tool input; nil is {}
+	Text   string
+	Tool   string // a tool name, or Structured
+	Input  any    // the tool input; nil is {}
+	Status int    // an HTTP error status
+}
+
+// errorTypes are the Messages API's error types by status; any other status
+// is an api_error.
+var errorTypes = map[int]string{
+	http.StatusBadRequest:          "invalid_request_error",
+	http.StatusUnauthorized:        "authentication_error",
+	http.StatusForbidden:           "permission_error",
+	http.StatusNotFound:            "not_found_error",
+	http.StatusTooManyRequests:     "rate_limit_error",
+	http.StatusInternalServerError: "api_error",
+	529:                            "overloaded_error",
 }
 
 // Request is one logged request.
@@ -56,6 +72,10 @@ type Request struct {
 	System   string // the system prompt's text blocks, joined by newlines
 	Tools    []string
 	Messages []json.RawMessage
+	// ModelCall is a streaming call the script answered; a side request or a
+	// token count is not one.
+	ModelCall bool
+	Body      []byte
 }
 
 // Server is a running mock; it closes when the test ends.
@@ -91,12 +111,20 @@ func StartTLS(t *testing.T, steps []Step) (*Server, []byte) {
 
 	caPEM, leaf := certificates(t)
 
+	return StartTLSWith(t, steps, leaf), caPEM
+}
+
+// StartTLSWith serves steps like StartTLS, with the caller's certificate.
+func StartTLSWith(t *testing.T, steps []Step, cert tls.Certificate) *Server {
+	t.Helper()
+
 	s := newServer(t, steps)
-	s.srv.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12}
+	s.srv.Config.ErrorLog = log.New(quietHandshakes{os.Stderr}, "", log.LstdFlags)
+	s.srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	s.tls = true
 	s.srv.StartTLS()
 
-	return s, caPEM
+	return s
 }
 
 func newServer(t *testing.T, steps []Step) *Server {
@@ -185,7 +213,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 	messages := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/messages")
 	countTokens := strings.HasSuffix(r.URL.Path, "/count_tokens")
-	n, step, hold := s.record(r, body, messages && !countTokens && body.Stream)
+	n, step, hold := s.record(r, raw, body, messages && !countTokens && body.Stream)
 
 	if !messages {
 		http.NotFound(w, r)
@@ -226,6 +254,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if step.Status != 0 {
+		writeJSON(w, step.Status, errorBody(step.Status))
+
+		return
+	}
+
 	tool := step.Tool
 	if tool == Structured {
 		if !slices.Contains(body.Tools, toolDef{Name: structuredTool}) {
@@ -246,10 +280,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 // record logs r and returns its 1-based number. For a model call it also takes
 // the next step, or done after the last, and the oldest pending hold, under the
 // same lock, so log order, message ids, steps and holds always pair.
-func (s *Server) record(r *http.Request, body requestBody, modelCall bool) (int, Step, chan struct{}) {
+func (s *Server) record(r *http.Request, raw []byte, body requestBody, modelCall bool) (int, Step, chan struct{}) {
 	req := Request{
 		Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(),
 		Model: body.Model, System: systemText(body.System), Messages: body.Messages,
+		ModelCall: modelCall, Body: raw,
 	}
 
 	for _, t := range body.Tools {
@@ -345,6 +380,30 @@ func send(w io.Writer, name string, data map[string]any) {
 
 	b, _ := json.Marshal(data)
 	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b)
+}
+
+// quietHandshakes drops the server's TLS handshake errors, which a client that
+// refuses the certificate causes on purpose, and passes every other line on.
+type quietHandshakes struct{ w io.Writer }
+
+func (q quietHandshakes) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("TLS handshake error")) {
+		return len(p), nil
+	}
+
+	return q.w.Write(p)
+}
+
+// errorBody is the Messages API's error body for status.
+func errorBody(status int) map[string]any {
+	kind, ok := errorTypes[status]
+	if !ok {
+		kind = "api_error"
+	}
+
+	return map[string]any{"type": "error", "error": map[string]any{
+		"type": kind, "message": "mockapi: scripted " + strconv.Itoa(status),
+	}}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
