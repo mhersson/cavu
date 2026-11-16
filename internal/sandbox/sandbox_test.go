@@ -875,7 +875,7 @@ func TestUpReportsASidecarThatEnds(t *testing.T) {
 	}{
 		{name: "its output ends", stderr: "panic: " + cause, inspect: `[{"State":{"OOMKilled":false,"ExitCode":1}}]`, want: cause},
 		{name: "its own error line", out: `{"Type":"error","Error":"proxy: ` + cause + `"}`, want: cause},
-		{name: "killed for memory", inspect: `[{"State":{"OOMKilled":true,"ExitCode":137}}]`, want: "killed for memory"},
+		{name: "killed for memory", inspect: `[{"State":{"OOMKilled":true,"ExitCode":137}}]`, want: oomText},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, f := ensured(t)

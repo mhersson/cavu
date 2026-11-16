@@ -73,7 +73,7 @@ var (
 	// container cannot reach through the bridge.
 	ErrSidecarDown = errors.New("sandbox: the sidecar does not answer")
 	// ErrOutOfMemory is a container the kernel killed at its memory limit.
-	ErrOutOfMemory = errors.New("sandbox: killed for memory")
+	ErrOutOfMemory = errors.New(errPrefix + oomText)
 
 	errNoVolumes = errors.New("sandbox: the volumes are not in place: run EnsureVolumes first")
 )
@@ -757,6 +757,11 @@ func (sc *sidecarProc) read() {
 	sc.fail(sc.endCause())
 }
 
+const (
+	errPrefix = "sandbox: "
+	oomText   = "killed for memory"
+)
+
 // downError carries both sentinels under one message, so the "sandbox: "
 // prefix appears once.
 type downError struct {
@@ -775,7 +780,7 @@ func sidecarDown(cause error) error {
 	}
 
 	return &downError{
-		msg:   ErrSidecarDown.Error() + ": " + strings.TrimPrefix(cause.Error(), "sandbox: "),
+		msg:   ErrSidecarDown.Error() + ": " + strings.TrimPrefix(cause.Error(), errPrefix),
 		cause: cause,
 	}
 }
