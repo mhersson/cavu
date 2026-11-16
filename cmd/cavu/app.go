@@ -10,8 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/mhersson/cavu/internal/auth"
+	"github.com/mhersson/cavu/internal/doctor"
+	"github.com/mhersson/cavu/internal/driver/claudecode"
+	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/runner"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
 )
@@ -92,12 +97,24 @@ func (a *app) lock() error {
 // containerRuntime is what the verbs use of the container runtime.
 type containerRuntime interface {
 	BuildImage(ctx context.Context, o sandbox.BuildOptions, out io.Writer) error
+	ImageInfo(ctx context.Context, name string) (sandbox.ImageLabels, bool, error)
+	Runner() engine.Runner
 }
+
+// hostRuntime is the runtime on this host, with a runner of Claude Code over it.
+type hostRuntime struct{ sandbox.Runtime }
+
+func (r hostRuntime) Runner() engine.Runner { return runner.New(r.Runtime, claudecode.New()) }
 
 // detectRuntime is the one seam to the container runtime: the unit tests
 // replace it, so they start no container and run no runtime binary.
 var detectRuntime = func(ctx context.Context, name string) (containerRuntime, error) {
-	return sandbox.Detect(ctx, name)
+	rt, err := sandbox.Detect(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	return hostRuntime{rt}, nil
 }
 
 // runtime detects the runtime the runtime setting names, else the first found.
@@ -123,6 +140,33 @@ func (a *app) caBundle(ctx context.Context) ([]byte, error) {
 	}
 
 	return b, nil
+}
+
+// checkImage stops a verb before any container starts unless this binary's
+// image is built and carries the configured CA bundle.
+func (a *app) checkImage(ctx context.Context, rt containerRuntime) error {
+	bundle, err := a.caBundle(ctx)
+	if err != nil {
+		return err
+	}
+
+	labels, found, err := rt.ImageInfo(ctx, sandbox.ImageName(version))
+	if err != nil {
+		return err
+	}
+
+	if c := doctor.CheckImage(labels, found, version, bundle); !c.OK {
+		return fmt.Errorf("%s; fix: %s", c.Detail, c.Fix)
+	}
+
+	return nil
+}
+
+// loop is the engine over rt's runner and this binary's image.
+func (a *app) loop(rt containerRuntime) *engine.Loop {
+	return &engine.Loop{
+		Store: a.store, Vault: a.vault, Runner: rt.Runner(), Now: time.Now, DataDir: a.dir, Image: sandbox.ImageName(version),
+	}
 }
 
 func (a *app) close() {

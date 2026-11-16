@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,6 +24,21 @@ func cavuIn(t *testing.T, dir string, args ...string) string {
 	require.Equal(t, 0, code, stderr)
 
 	return stdout
+}
+
+// runData returns a data directory with the settings a run reads.
+func runData(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	for _, kv := range [][2]string{
+		{"endpoint_mode", "subscription"}, {"model_work", "model-a"}, {"commit_name", "CAVU"}, {"commit_email", "cavu@example.com"},
+	} {
+		cavuIn(t, dir, "settings", "set", kv[0], kv[1])
+	}
+
+	return dir
 }
 
 func storedProjects(t *testing.T, dir string) []store.Project {
@@ -275,6 +293,141 @@ func TestProjectList(t *testing.T) {
 	assert.Equal(t, []string{"web", repo, "main", "pytest", "passed"}, strings.Fields(lines[3]))
 }
 
+// checkSetup is a data directory with the project web, and a fake runtime
+// whose image is this binary's.
+func checkSetup(t *testing.T, addArgs ...string) (string, *fakeRuntime) {
+	t.Helper()
+
+	dir := runData(t)
+	cavuIn(t, dir, append([]string{"project", "add", "web", "--repo", repo}, addArgs...)...)
+
+	fake := &fakeRuntime{labels: sandbox.ImageLabels{CavuVersion: version}, found: true, runner: &fakeRunner{}}
+	useFakeRuntime(t, fake)
+
+	return dir, fake
+}
+
+func TestProjectCheck(t *testing.T) {
+	t.Run("a passed baseline is stored", func(t *testing.T) {
+		dir, fake := checkSetup(t, "--verify", "make test")
+		fake.runner.check = engine.PrepareResult{
+			BaseCommit: "base123", Tools: []string{"go@1.27"}, IgnoredTools: []string{"python@2.7"}, Baseline: engine.ResultPassed,
+		}
+		fake.runner.suggestion = "go test ./..."
+
+		code, stdout, stderr := runCavu("project", "check", "web", "--data-dir", dir)
+
+		require.Equal(t, 0, code, stderr)
+		assert.Equal(t, sandbox.ImageName(version), fake.image)
+		require.Len(t, fake.runner.checks, 1)
+		assert.Equal(t, storedProject(t, dir, "web").ID, fake.runner.checks[0].ProjectID)
+		assert.Equal(t, sandbox.ImageName(version), fake.runner.checks[0].Image)
+
+		for _, v := range []string{"base123", "go@1.27", "python@2.7", engine.ResultPassed} {
+			assert.Contains(t, stdout, v)
+		}
+
+		assert.NotContains(t, stdout, "cavu project set", "a project with a verify command gets no suggestion")
+
+		b := storedProject(t, dir, "web").Baseline
+		require.NotNil(t, b)
+		assert.True(t, b.Passed)
+		assert.Equal(t, "base123", b.Commit)
+	})
+
+	t.Run("a failed step is stored as not passed", func(t *testing.T) {
+		dir, fake := checkSetup(t, "--verify", "make test")
+		fake.runner.check = engine.PrepareResult{BaseCommit: "base123", FailedStep: "setup", Output: "no rule to make target"}
+
+		code, stdout, _ := runCavu("project", "check", "web", "--data-dir", dir)
+
+		assert.Equal(t, 1, code)
+		assert.Contains(t, stdout, "setup")
+		assert.Contains(t, stdout, "no rule to make target")
+
+		b := storedProject(t, dir, "web").Baseline
+		require.NotNil(t, b)
+		assert.False(t, b.Passed)
+	})
+
+	t.Run("a waived verify passes", func(t *testing.T) {
+		dir, fake := checkSetup(t, "--no-verify")
+		fake.runner.check = engine.PrepareResult{BaseCommit: "base123", Baseline: engine.ResultWaived}
+
+		code, stdout, stderr := runCavu("project", "check", "web", "--data-dir", dir)
+
+		require.Equal(t, 0, code, stderr)
+		assert.Contains(t, stdout, engine.ResultWaived)
+		assert.NotContains(t, stdout, "cavu project set")
+	})
+
+	t.Run("no verify command prints the suggestion", func(t *testing.T) {
+		dir, fake := checkSetup(t)
+		fake.runner.checkErr = errors.New("runner: the verify command is blank and the project does not waive it")
+		fake.runner.suggestion = "go test ./..."
+
+		code, stdout, stderr := runCavu("project", "check", "web", "--data-dir", dir)
+
+		assert.Equal(t, 1, code)
+		assert.Contains(t, stderr, fake.runner.checkErr.Error())
+		assert.Contains(t, stdout, "cavu project set web --verify 'go test ./...'")
+		assert.Nil(t, storedProject(t, dir, "web").Baseline)
+	})
+
+	t.Run("no verify command and nothing to suggest", func(t *testing.T) {
+		dir, fake := checkSetup(t)
+		fake.runner.checkErr = errors.New("runner: the verify command is blank and the project does not waive it")
+
+		code, stdout, _ := runCavu("project", "check", "web", "--data-dir", dir)
+
+		assert.Equal(t, 1, code)
+		assert.Contains(t, stdout, "cavu project set web --no-verify")
+	})
+}
+
+func TestProjectCheckRefusesBeforeTheRunner(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, dir string, fake *fakeRuntime)
+		names string // what standard error names
+	}{
+		{"an image not built", func(_ *testing.T, _ string, fake *fakeRuntime) { fake.found = false }, "cavu image build"},
+		{"an image of another version", func(_ *testing.T, _ string, fake *fakeRuntime) { fake.labels.CavuVersion = "0.0.1" }, "cavu image build"},
+		{"an image with another CA bundle", func(_ *testing.T, _ string, fake *fakeRuntime) { fake.labels.CABundle = "sum-of-a-bundle" }, "cavu image build"},
+		{"the lock held", func(t *testing.T, dir string, _ *fakeRuntime) {
+			a, err := openApp(t.Context(), dir)
+			require.NoError(t, err)
+			require.NoError(t, a.lock())
+			t.Cleanup(a.close)
+		}, "lock"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, fake := checkSetup(t, "--verify", "make test")
+			tc.setup(t, dir, fake)
+
+			code, stdout, stderr := runCavu("project", "check", "web", "--data-dir", dir)
+
+			assert.Equal(t, 1, code)
+			assert.Empty(t, stdout)
+			assert.Contains(t, stderr, tc.names)
+			assert.Empty(t, fake.runner.checks, "no container starts")
+			assert.Nil(t, storedProject(t, dir, "web").Baseline)
+		})
+	}
+
+	t.Run("an unknown project", func(t *testing.T) {
+		dir, fake := checkSetup(t, "--verify", "make test")
+
+		code, _, stderr := runCavu("project", "check", "api", "--data-dir", dir)
+
+		assert.Equal(t, 1, code)
+		assert.Contains(t, stderr, strconv.Quote("api"))
+		assert.Empty(t, fake.runner.checks)
+	})
+}
+
 func TestProjectUsageErrors(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 
@@ -283,6 +436,8 @@ func TestProjectUsageErrors(t *testing.T) {
 		{"project", "remove", "web"},
 		{"project", "add"},
 		{"project", "set"},
+		{"project", "check"},
+		{"project", "check", "web", "extra"},
 		{"project", "list", "extra"},
 		{"project", "set", "web", "--name", "api"},
 	} {

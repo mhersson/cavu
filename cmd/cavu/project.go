@@ -17,7 +17,7 @@ import (
 
 func init() {
 	commands["project"] = command{
-		summary: "project add | set | list: add a project, change one, or list them",
+		summary: "project add | set | list | check: add a project, change one, list them, or check one's environment",
 		run:     runProject,
 	}
 }
@@ -26,7 +26,8 @@ const (
 	projectAddUsage = "cavu project add NAME --repo URL [--base BRANCH, default main] [--setup CMD] [--verify CMD | --no-verify] [--data-dir DIR]"
 	projectSetUsage = "cavu project set NAME [--base BRANCH] [--setup CMD] [--verify CMD | --no-verify] [--egress HOST]... [--env K=V]...\n" +
 		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--data-dir DIR]"
-	projectListUsage = "cavu project list [--data-dir DIR]"
+	projectListUsage  = "cavu project list [--data-dir DIR]"
+	projectCheckUsage = "cavu project check NAME [--data-dir DIR]"
 )
 
 var (
@@ -43,10 +44,12 @@ func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr 
 			return projectSet(ctx, args[1:], stderr)
 		case "list":
 			return projectList(ctx, args[1:], stdout, stderr)
+		case "check":
+			return projectCheck(ctx, args[1:], stdout, stderr)
 		}
 	}
 
-	usage := strings.Join([]string{projectAddUsage, projectSetUsage, projectListUsage}, "\n       ")
+	usage := strings.Join([]string{projectAddUsage, projectSetUsage, projectListUsage, projectCheckUsage}, "\n       ")
 
 	return newVerbFlags(usage, stderr).usageError()
 }
@@ -303,4 +306,84 @@ func projectList(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 
 	return w.Flush()
+}
+
+func projectCheck(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	f := newVerbFlags(projectCheckUsage, stderr)
+
+	name, err := f.parse(args, 1)
+	if err != nil {
+		return err
+	}
+
+	a, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+
+	p, err := a.store.ProjectByName(ctx, name[0])
+	if err != nil {
+		return fmt.Errorf("project %q: %w", name[0], err)
+	}
+
+	// Every check runs under run and task id 0, and a task run removes the
+	// containers it does not own: one verb drives containers at a time.
+	if err := a.lock(); err != nil {
+		return err
+	}
+
+	rt, err := a.runtime(ctx)
+	if err != nil {
+		return err
+	}
+
+	if err := a.checkImage(ctx, rt); err != nil {
+		return err
+	}
+
+	// The runner masked the result and the error.
+	res, suggestion, err := a.loop(rt).CheckProject(ctx, p.ID)
+	if err == nil {
+		printCheck(stdout, res)
+	}
+
+	if p.VerifyCommand == "" && !p.VerifyWaived {
+		printSuggestion(stdout, p.Name, suggestion)
+	}
+
+	switch {
+	case err != nil:
+		return err
+	case res.Baseline != engine.ResultPassed && res.Baseline != engine.ResultWaived:
+		return exitError{code: 1}
+	}
+
+	return nil
+}
+
+func printCheck(w io.Writer, res engine.PrepareResult) {
+	fmt.Fprintf(w, "base commit:   %s\n", res.BaseCommit)
+	fmt.Fprintf(w, "tools:         %s\n", strings.Join(res.Tools, " "))
+	fmt.Fprintf(w, "ignored tools: %s\n", strings.Join(res.IgnoredTools, " "))
+
+	if res.FailedStep != "" {
+		fmt.Fprintf(w, "failed step:   %s\n%s\n", res.FailedStep, strings.TrimRight(res.Output, "\n"))
+
+		return
+	}
+
+	fmt.Fprintf(w, "baseline:      %s\n", res.Baseline)
+}
+
+// printSuggestion prints the line that sets the suggested verify command, or
+// waives verify when the repository suggests none.
+func printSuggestion(w io.Writer, name, suggestion string) {
+	if suggestion == "" {
+		fmt.Fprintf(w, "no verify command to suggest; set one with --verify, or waive verify:\n  cavu project set %s --no-verify\n", name)
+
+		return
+	}
+
+	fmt.Fprintf(w, "suggested verify command:\n  cavu project set %s --verify '%s'\n", name, suggestion)
 }

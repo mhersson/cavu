@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,12 +46,41 @@ func TestMain(m *testing.M) {
 type fakeRuntime struct {
 	name   string // the runtime detected
 	builds []sandbox.BuildOptions
+	image  string              // the image whose labels were read
+	labels sandbox.ImageLabels // the image's, when found
+	found  bool
+	runner *fakeRunner
 }
 
 func (f *fakeRuntime) BuildImage(_ context.Context, o sandbox.BuildOptions, _ io.Writer) error {
 	f.builds = append(f.builds, o)
 
 	return nil
+}
+
+func (f *fakeRuntime) ImageInfo(_ context.Context, name string) (sandbox.ImageLabels, bool, error) {
+	f.image = name
+
+	return f.labels, f.found, nil
+}
+
+func (f *fakeRuntime) Runner() engine.Runner { return f.runner }
+
+// fakeRunner answers a project check and records its configs. A method it
+// does not define panics on the nil Runner it embeds.
+type fakeRunner struct {
+	engine.Runner
+
+	checks     []engine.RunConfig
+	check      engine.PrepareResult
+	suggestion string
+	checkErr   error
+}
+
+func (r *fakeRunner) CheckEnvironment(_ context.Context, c engine.RunConfig) (engine.PrepareResult, string, error) {
+	r.checks = append(r.checks, c)
+
+	return r.check, r.suggestion, r.checkErr
 }
 
 func useFakeRuntime(t *testing.T, fake *fakeRuntime) {
