@@ -193,7 +193,6 @@ func TestDoctorAllGreen(t *testing.T) {
 			require.Len(t, h.ups, 1)
 			up := h.ups[0]
 			assert.Equal(t, drv.Hosts(mode), up.AllowHosts)
-			assert.Equal(t, string(d.CABundle), up.CABundle)
 
 			require.Len(t, drv.specs, 2)
 			first, second := drv.specs[0], drv.specs[1]

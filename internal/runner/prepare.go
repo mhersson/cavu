@@ -107,7 +107,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 
 	base, err := sb.Clone(ctx, sidecar.CloneRequest{
 		URL: c.Repo.URL, Token: c.Repo.Token, BaseBranch: c.Repo.BaseBranch, Commit: c.Repo.BaseCommit, Branch: c.Repo.Branch,
-		CABundle: string(c.CABundle), Name: c.Identity.Name, Email: c.Identity.Email,
+		Name: c.Identity.Name, Email: c.Identity.Email,
 	})
 	if err != nil {
 		if sandboxFault(ctx, err) {
@@ -154,7 +154,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 // runs under it, and detects the tools. Root files that detection cannot
 // parse, or that are too large to read, fail the toolchain step.
 func (p *preparation) detect(ctx context.Context, base string) (env.Detection, *stepFailure, error) {
-	sc, err := p.st.up(ctx, sandbox.PhaseSetup, sidecar.ProxyRequest{CABundle: string(p.c.CABundle)})
+	sc, err := p.st.up(ctx, sandbox.PhaseSetup, sidecar.ProxyRequest{})
 	if err != nil {
 		return env.Detection{}, nil, err
 	}
@@ -188,7 +188,6 @@ type stepFailure struct{ step, output string }
 func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailure, error) {
 	req := sidecar.ProxyRequest{
 		AllowHosts: allowlist(env.SetupHosts(det.Ecosystems), p.c.Setup.EgressHosts),
-		CABundle:   string(p.c.CABundle),
 	}
 
 	sc, err := p.st.up(ctx, sandbox.PhaseSetup, req)
@@ -218,7 +217,7 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 
 	cmd := proc.Command{
 		Argv: verify.Argv(p.c.Setup.Command),
-		Env:  proc.BuildEnv(setupEnv(det.Ecosystems), nil, vars),
+		Env:  proc.BuildEnv(setupEnv(det.Ecosystems), vars),
 		Dir:  workspace,
 	}
 

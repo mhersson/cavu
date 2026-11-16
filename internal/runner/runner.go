@@ -340,20 +340,14 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 
 	req := sidecar.ProxyRequest{
 		AllowHosts: allowlist(env.AgentHosts(st.ecosystems), c.Setup.EgressHosts, r.driver.Hosts(c.Endpoint.Mode)),
-		CABundle:   string(c.CABundle),
 	}
 
 	st.standIn = ""
 
 	if c.Endpoint.Mode == modeKey {
-		standIn, err := proxy.NewStandIn()
-		if err != nil {
-			return err
-		}
-
-		st.standIn = standIn
+		st.standIn = proxy.NewStandIn()
 		req.Model = &proxy.ModelRoute{
-			BaseURL: c.Endpoint.URL, Credential: c.Endpoint.Credential, AuthHeader: c.Endpoint.AuthHeader, StandIn: standIn,
+			BaseURL: c.Endpoint.URL, Credential: c.Endpoint.Credential, AuthHeader: c.Endpoint.AuthHeader, StandIn: st.standIn,
 		}
 	}
 

@@ -1,4 +1,4 @@
-//go:build conformance
+//go:build integration
 
 package claudecode
 
@@ -119,9 +119,7 @@ func keyBoxWith(t *testing.T, authHeader string, steps ...mockapi.Step) *box {
 	r := sandboxtest.Runtime(t)
 	image := sandboxtest.Image(t, r, Version, SHA512, nil)
 
-	standIn, err := proxy.NewStandIn()
-	require.NoError(t, err)
-
+	standIn := proxy.NewStandIn()
 	b := &box{t: t, rt: r, mock: mockapi.Start(t, steps), cred: "conformance-credential-" + randomID(), standIn: standIn}
 	b.up(image, sidecar.ProxyRequest{Model: &proxy.ModelRoute{
 		BaseURL: b.mock.HostURL(), Credential: b.cred, AuthHeader: authHeader, StandIn: standIn,
@@ -711,7 +709,7 @@ func TestConfigDirSymlinkRefused(t *testing.T) {
 
 			_, err = b.try(conformanceDriver(), s)
 
-			var ee *exitError
+			var ee *proc.ExitError
 			require.ErrorAs(t, err, &ee, "the clear did not refuse")
 			require.NotErrorIs(t, err, errNotInSandbox)
 			assert.Empty(t, b.mock.Requests(), "a session started")

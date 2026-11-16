@@ -1,4 +1,4 @@
-//go:build conformance && live
+//go:build integration && live
 
 package claudecode
 
@@ -140,9 +140,7 @@ func TestLiveGatewayCacheReads(t *testing.T) {
 		header = "x-api-key"
 	}
 
-	standIn, err := proxy.NewStandIn()
-	require.NoError(t, err)
-
+	standIn := proxy.NewStandIn()
 	b := liveBox(t, sidecar.ProxyRequest{Model: &proxy.ModelRoute{
 		BaseURL: vars[0], Credential: vars[1], AuthHeader: header, StandIn: standIn,
 	}})

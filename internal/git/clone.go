@@ -19,12 +19,11 @@ var allowFileURLs bool
 // branch name first, and a pushed branch could then pick the base commit.
 var commitRE = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
-// CloneSpec says what to clone and where. The token and the CA bundle are not
-// stored anywhere under MirrorDir or WorkspaceDir.
+// CloneSpec says what to clone and where. The token is not stored anywhere
+// under MirrorDir or WorkspaceDir.
 type CloneSpec struct {
 	URL, Token, BaseBranch, Commit, Branch string // Commit "" = tip of BaseBranch
 	MirrorDir, WorkspaceDir                string // absolute
-	CABundle                               string // PEM, optional
 	Name, Email                            string // commit identity set in the workspace
 }
 
@@ -36,12 +35,6 @@ func Clone(ctx context.Context, s CloneSpec) (string, error) {
 	if err := validate(ctx, s); err != nil {
 		return "", err
 	}
-
-	caFile, cleanup, err := writeCA(s.CABundle)
-	if err != nil {
-		return "", err
-	}
-	defer cleanup()
 
 	allowed := "https"
 	if allowFileURLs {
@@ -61,7 +54,7 @@ func Clone(ctx context.Context, s CloneSpec) (string, error) {
 	fetch := call{
 		dir:  s.MirrorDir,
 		args: []string{"fetch", "--prune", "--no-tags", "--quiet", "--", s.URL, "+refs/heads/*:refs/heads/*"},
-		env:  netEnv(s.URL, s.Token, caFile, allowed),
+		env:  netEnv(s.URL, s.Token, allowed),
 		net:  true, noHooks: true,
 	}
 	if _, err := run(ctx, fetch); err != nil {
@@ -199,39 +192,4 @@ func checkURL(raw string) error {
 	}
 
 	return errors.New("url: only https is allowed")
-}
-
-// writeCA writes the system CA bundle, when one is readable, followed by pem to
-// a private temporary file, and returns its path ("" when pem is empty) and a
-// cleanup. git's CA file replaces curl's default, so the system roots are copied
-// in and pem only adds trust.
-func writeCA(pem string) (path string, cleanup func(), err error) {
-	if pem == "" {
-		return "", func() {}, nil
-	}
-
-	f, err := os.CreateTemp("", "cavu-ca-*.pem")
-	if err != nil {
-		return "", nil, fmt.Errorf("write ca bundle: %w", err)
-	}
-
-	cleanup = func() { _ = os.Remove(f.Name()) }
-
-	system, _ := systemBundle()
-
-	if _, err := f.Write(append(append(system, '\n'), pem...)); err != nil {
-		_ = f.Close()
-
-		cleanup()
-
-		return "", nil, fmt.Errorf("write ca bundle: %w", err)
-	}
-
-	if err := f.Close(); err != nil {
-		cleanup()
-
-		return "", nil, fmt.Errorf("write ca bundle: %w", err)
-	}
-
-	return f.Name(), cleanup, nil
 }

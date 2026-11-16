@@ -119,7 +119,7 @@ func TestSidecarAndBridgeAreInternalVerbs(t *testing.T) {
 func TestSidecarReportsABadRequestAsAnErrorLine(t *testing.T) {
 	var out, errOut bytes.Buffer
 
-	code := run([]string{"sidecar"}, strings.NewReader(`{"Op":"nope"}`), &out, &errOut)
+	code := run([]string{"sidecar"}, strings.NewReader(`{}`), &out, &errOut)
 
 	assert.Equal(t, 1, code)
 	assert.Contains(t, out.String(), `"Type":"error"`)

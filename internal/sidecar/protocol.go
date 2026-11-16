@@ -14,14 +14,12 @@ type ProxyRequest struct {
 	Socket     string // /handoff/proxy.sock
 	AllowHosts []string
 	Model      *proxy.ModelRoute
-	CABundle   string // PEM
 }
 
 // CloneRequest configures the clone op. Token is the forge token.
 type CloneRequest struct {
 	URL, Token, BaseBranch, Commit, Branch string // Commit "" = tip of BaseBranch
 	MirrorDir, WorkspaceDir                string
-	CABundle                               string
 	Name, Email                            string // commit identity configured in the workspace
 }
 

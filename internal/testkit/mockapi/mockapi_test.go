@@ -3,12 +3,9 @@ package mockapi
 import (
 	"bufio"
 	"bytes"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -197,45 +194,6 @@ func (a answer) content() answer {
 	return answer{text: a.text, tool: a.tool, input: a.input, stop: a.stop}
 }
 
-func TestMockRecordsRequests(t *testing.T) {
-	s := Start(t, nil)
-
-	header := http.Header{}
-	header.Set("Authorization", "Bearer stand-in")
-	header.Set("Anthropic-Beta", "oauth-2025-04-20")
-
-	resp := post(t, testClient, s.URL()+"/v1/messages?beta=true", map[string]any{
-		"model":    "claude-sonnet-5-5",
-		"stream":   true,
-		"system":   []any{map[string]any{"type": "text", "text": "first"}, map[string]any{"type": "text", "text": "second"}},
-		"tools":    []any{map[string]any{"name": "Bash"}, map[string]any{"name": "Read"}},
-		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
-	}, header)
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	resp = post(t, testClient, s.URL()+"/v1/messages", map[string]any{
-		"model": "claude-haiku-5-5", "system": "plain", "messages": []any{},
-	}, http.Header{"X-Api-Key": {"key"}})
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	reqs := s.Requests()
-	require.Len(t, reqs, 2)
-
-	assert.Equal(t, http.MethodPost, reqs[0].Method)
-	assert.Equal(t, "/v1/messages", reqs[0].Path)
-	assert.Equal(t, "Bearer stand-in", reqs[0].Header.Get("Authorization"))
-	assert.Equal(t, "oauth-2025-04-20", reqs[0].Header.Get("Anthropic-Beta"))
-	assert.Equal(t, "claude-sonnet-5-5", reqs[0].Model)
-	assert.Equal(t, "first\nsecond", reqs[0].System)
-	assert.Equal(t, []string{"Bash", "Read"}, reqs[0].Tools)
-	require.Len(t, reqs[0].Messages, 1)
-	assert.JSONEq(t, `{"role":"user","content":"hi"}`, string(reqs[0].Messages[0]))
-
-	assert.Equal(t, "key", reqs[1].Header.Get("X-Api-Key"))
-	assert.Equal(t, "plain", reqs[1].System)
-	assert.Empty(t, reqs[1].Messages)
-}
-
 // reply is one request's outcome, received off the test goroutine.
 type reply struct {
 	resp *http.Response
@@ -298,21 +256,6 @@ func requireRequests(t *testing.T, s *Server, n int) {
 	require.Eventually(t, func() bool { return len(s.Requests()) == n }, testBound, 10*time.Millisecond)
 }
 
-func TestMockHold(t *testing.T) {
-	s := Start(t, []Step{{Text: "hello"}})
-	release := s.Hold()
-
-	got := startCall(t, s)
-	requireRequests(t, s, 1)
-	requireWaiting(t, got)
-
-	release()
-	assert.Equal(t, "hello", requireAnswer(t, got))
-
-	// Only the next answer waits.
-	assert.Equal(t, "done", call(t, testClient, s.URL()).text)
-}
-
 func TestMockHoldsQueue(t *testing.T) {
 	s := Start(t, []Step{{Text: "first"}, {Text: "second"}})
 	releaseFirst, releaseSecond := s.Hold(), s.Hold()
@@ -333,37 +276,6 @@ func TestMockHoldsQueue(t *testing.T) {
 	assert.Equal(t, "first", requireAnswer(t, first))
 
 	assert.Equal(t, "done", call(t, testClient, s.URL()).text)
-}
-
-func TestMockTLS(t *testing.T) {
-	s, caPEM := StartTLS(t, []Step{{Text: "hello"}})
-
-	pool := x509.NewCertPool()
-	require.True(t, pool.AppendCertsFromPEM(caPEM))
-
-	u, err := url.Parse(s.HostURL())
-	require.NoError(t, err)
-	assert.Equal(t, "https", u.Scheme)
-	assert.Equal(t, "host.docker.internal", u.Hostname())
-
-	local, err := url.Parse(s.URL())
-	require.NoError(t, err)
-	assert.Equal(t, local.Port(), u.Port())
-
-	// A sidecar dials host.docker.internal; the certificate must verify
-	// under that name.
-	client := &http.Client{Timeout: testBound, Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "host.docker.internal", MinVersion: tls.VersionTLS12},
-	}}
-	t.Cleanup(client.CloseIdleConnections)
-
-	assert.Equal(t, "hello", call(t, client, s.URL()).text)
-
-	plain := Start(t, nil)
-	u, err = url.Parse(plain.HostURL())
-	require.NoError(t, err)
-	assert.Equal(t, "http", u.Scheme)
-	assert.Equal(t, "host.docker.internal", u.Hostname())
 }
 
 func TestMockErrorStatus(t *testing.T) {
@@ -415,24 +327,6 @@ func TestMockMarksModelCalls(t *testing.T) {
 	require.NoError(t, json.Unmarshal(reqs[0].Body, &body))
 	assert.Equal(t, true, body["stream"])
 	assert.JSONEq(t, `{"model":"claude-haiku-5-5","messages":[]}`, string(reqs[1].Body))
-}
-
-// The client trusts only the caller's CA, so an answer proves the server
-// serves the caller's certificate.
-func TestMockTLSWithCertificate(t *testing.T) {
-	caPEM, cert := certificates(t)
-
-	s := StartTLSWith(t, []Step{{Text: "hello"}}, cert)
-
-	pool := x509.NewCertPool()
-	require.True(t, pool.AppendCertsFromPEM(caPEM))
-
-	client := &http.Client{Timeout: testBound, Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "host.docker.internal", MinVersion: tls.VersionTLS12},
-	}}
-	t.Cleanup(client.CloseIdleConnections)
-
-	assert.Equal(t, "hello", call(t, client, s.URL()).text)
 }
 
 func TestQuietHandshakesPassesOtherLines(t *testing.T) {

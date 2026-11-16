@@ -127,33 +127,6 @@ func TestMirrorHoldsOnlyHeads(t *testing.T) {
 	assert.Empty(t, gitrepo.Git(t, s.MirrorDir, "tag", "--list"))
 }
 
-// The CA file git gets holds the system roots as well as the given bundle, so
-// a bundle adds trust and never replaces it.
-func TestCABundleAddsToSystemRoots(t *testing.T) {
-	t.Parallel()
-
-	system, ok := systemBundle()
-	if !ok {
-		t.Skip("no system CA bundle on this host")
-	}
-
-	up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
-	bare := strings.TrimPrefix(gitrepo.Bare(t, up), "file://")
-	srv, ca := tlsServer(t, gitrepo.Handler(t, bare))
-
-	ctx, calls := wrapGit(t, `[ -n "$GIT_SSL_CAINFO" ] && cp "$GIT_SSL_CAINFO" "$LOG.ca"`)
-	s := spec(t, srv.URL+"/"+filepath.Base(bare))
-	s.CABundle = ca
-
-	_, err := Clone(ctx, s)
-	require.NoError(t, err)
-
-	got, err := os.ReadFile(calls + ".ca")
-	require.NoError(t, err)
-	assert.Contains(t, string(got), strings.TrimSpace(string(system)))
-	assert.Contains(t, string(got), strings.TrimSpace(ca))
-}
-
 // Every git call runs in a directory the clone owns or in the one that holds
 // it, never in the caller's working directory.
 func TestCloneRunsGitInItsOwnDirectories(t *testing.T) {
@@ -236,15 +209,13 @@ func TestMirrorUpdates(t *testing.T) {
 	assert.Equal(t, second, gitrepo.Git(t, s.WorkspaceDir, "rev-parse", "HEAD"))
 }
 
-func tlsServer(t *testing.T, h http.Handler) (*httptest.Server, string) {
+func tlsServer(t *testing.T, h http.Handler) *httptest.Server {
 	t.Helper()
 
 	srv := httptest.NewTLSServer(h)
 	t.Cleanup(srv.Close)
 
-	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
-
-	return srv, string(ca)
+	return srv
 }
 
 // A token reaches the host it is scoped to and nothing else: not argv, not a
@@ -264,7 +235,7 @@ func TestCredentialHelperScope(t *testing.T) {
 		otherAu []string
 	)
 
-	main, ca := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	main := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != "x-access-token" || pass != token {
 			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
@@ -279,7 +250,7 @@ func TestCredentialHelperScope(t *testing.T) {
 		backend.ServeHTTP(w, r)
 	}))
 
-	other, _ := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	other := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 
 		otherAu = append(otherAu, r.Header.Get("Authorization"))
@@ -288,9 +259,20 @@ func TestCredentialHelperScope(t *testing.T) {
 	}))
 
 	repoPath := "/" + filepath.Base(bare)
-	ctx, calls := wrapGit(t, "")
+	redirect := tlsServer(t, http.RedirectHandler(other.URL+repoPath+"/info/refs?service=git-upload-pack", http.StatusFound))
+
+	// The wrapper points git at a CA file that trusts the three servers.
+	ctx, calls := wrapGit(t, `GIT_SSL_CAINFO="${0%/*}/ca.pem"; export GIT_SSL_CAINFO`)
+
+	var ca []byte
+	for _, srv := range []*httptest.Server{main, other, redirect} {
+		ca = append(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})...)
+	}
+
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(calls), "ca.pem"), ca, 0o600))
+
 	s := spec(t, main.URL+repoPath)
-	s.Token, s.CABundle = token, ca
+	s.Token = token
 
 	_, err := Clone(ctx, s)
 	require.NoError(t, err)
@@ -321,11 +303,10 @@ func TestCredentialHelperScope(t *testing.T) {
 	}
 
 	// A server that redirects to another host never sees the token.
-	redirect, rca := tlsServer(t, http.RedirectHandler(other.URL+repoPath+"/info/refs?service=git-upload-pack", http.StatusFound))
 	r := spec(t, redirect.URL+repoPath)
-	r.Token, r.CABundle = token, rca+ca+string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: other.Certificate().Raw}))
+	r.Token = token
 
-	_, err = Clone(context.Background(), r)
+	_, err = Clone(ctx, r)
 	require.Error(t, err)
 
 	mu.Lock()
@@ -405,10 +386,9 @@ func TestCloneRefusesFileURLsWhenSwitchIsOff(t *testing.T) {
 func TestNetEnvScopesCredentialToHost(t *testing.T) {
 	t.Parallel()
 
-	env := netEnv("https://forge.example:8443/o/r.git", "tok", "/ca.pem", "https")
+	env := netEnv("https://forge.example:8443/o/r.git", "tok", "https")
 
 	assert.Contains(t, env, "CAVU_GIT_TOKEN=tok")
-	assert.Contains(t, env, "GIT_SSL_CAINFO=/ca.pem")
 	assert.Contains(t, env, "GIT_CONFIG_KEY_0=credential.helper")
 	assert.Contains(t, env, "GIT_CONFIG_VALUE_0=")
 	assert.Contains(t, env, "GIT_CONFIG_KEY_1=credential.https://forge.example:8443.helper")

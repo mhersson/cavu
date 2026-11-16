@@ -34,7 +34,6 @@ type RunConfig struct {
 		WebTools      bool
 	}
 	Identity struct{ Name, Email string }
-	CABundle []byte
 	Task     struct{ Title, Body string }
 	// Ecosystems are what the run's prepare detected, for Work, Verify and
 	// Export; never a setting, and empty for Prepare.

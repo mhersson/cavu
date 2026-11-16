@@ -193,7 +193,7 @@ func quietEnv() map[string]string {
 }
 
 func probeEnvironment() []string {
-	return proc.BuildEnv(nil, nil, quietEnv())
+	return proc.BuildEnv(nil, quietEnv())
 }
 
 // environment builds the whole process environment: nothing is inherited, a
@@ -233,7 +233,7 @@ func environment(s driver.Spec) []string {
 		}
 	}
 
-	return proc.BuildEnv(nil, nil, set)
+	return proc.BuildEnv(nil, set)
 }
 
 var (

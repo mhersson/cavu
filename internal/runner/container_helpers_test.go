@@ -1,4 +1,4 @@
-//go:build integration || ecosystems || conformance
+//go:build integration || ecosystems
 
 package runner
 
@@ -53,7 +53,6 @@ func fixtureRun(t *testing.T, files map[string]string) (*Runner, engine.RunConfi
 	c.Repo.BaseBranch, c.Repo.Branch = "main", "cavu/fixture"
 	c.Endpoint.Mode = "subscription"
 	c.Identity.Name, c.Identity.Email = "CAVU Test", "cavu@example.com"
-	c.CABundle = caPEM
 
 	removeInstanceAfter(t, rt, c.InstanceID)
 

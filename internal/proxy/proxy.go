@@ -6,10 +6,7 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
@@ -23,8 +20,6 @@ type Config struct {
 	AllowHosts []string
 	// Model is nil in subscription mode; origin-form requests then answer 404.
 	Model *ModelRoute
-	// CABundle is PEM added to the system roots for the proxy's own TLS.
-	CABundle []byte
 	// The callbacks may be nil and may be called from concurrent requests; the
 	// caller serialises its own output. They run inline and must not block: a
 	// slow OnUsage holds back the end of the response.
@@ -72,17 +67,12 @@ func New(c Config) (http.Handler, error) {
 		return nil, err
 	}
 
-	roots, err := rootsWith(c.CABundle)
-	if err != nil {
-		return nil, err
-	}
-
 	h := &handler{cfg: c, allow: allow}
-	h.egress = newTransport(roots, h.dialContext)
+	h.egress = newTransport(h.dialContext)
 
 	if c.Model != nil {
 		plain := (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext
-		if h.model, err = newModelHandler(c.Model, newTransport(roots, plain), h); err != nil {
+		if h.model, err = newModelHandler(c.Model, newTransport(plain), h); err != nil {
 			return nil, err
 		}
 	}
@@ -91,19 +81,18 @@ func New(c Config) (http.Handler, error) {
 }
 
 // NewStandIn returns a fresh stand-in token: 32 random bytes, hex.
-func NewStandIn() (string, error) {
+func NewStandIn() string {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("proxy: stand-in token: %w", err)
-	}
+	_, _ = rand.Read(b) // never returns an error
 
-	return hex.EncodeToString(b), nil
+	return hex.EncodeToString(b)
 }
 
 // newTransport never uses a proxy from the environment: every upstream
 // connection is direct. Compression is off so bodies and headers pass untouched.
-func newTransport(roots *x509.CertPool, dial func(context.Context, string, string) (net.Conn, error)) *http.Transport {
-	tr := &http.Transport{
+// TLS trusts the system roots, where the image build puts the instance's CA.
+func newTransport(dial func(context.Context, string, string) (net.Conn, error)) *http.Transport {
+	return &http.Transport{
 		DialContext:           dial,
 		DisableCompression:    true,
 		ForceAttemptHTTP2:     true,
@@ -116,11 +105,6 @@ func newTransport(roots *x509.CertPool, dial func(context.Context, string, strin
 		// detected before the agent's stall timeout.
 		HTTP2: &http.HTTP2Config{SendPingTimeout: 30 * time.Second},
 	}
-	if roots != nil {
-		tr.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
-	}
-
-	return tr
 }
 
 // ServeHTTP dispatches on the request shape: CONNECT, absolute-form, or

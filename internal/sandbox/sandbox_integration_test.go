@@ -15,12 +15,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/testkit/gitrepo"
@@ -272,11 +274,56 @@ func TestRemoveOrphans(t *testing.T) {
 	assert.True(t, info.Running, "the other instance's container stopped")
 }
 
+// TestModelRouteTrustsTheImageCA sends a model request through the bridge to
+// an upstream whose certificate the test CA signs, with nothing about the CA
+// passed at run time: the sidecar's own TLS trusts it only in an image built
+// with the CA.
+func TestModelRouteTrustsTheImageCA(t *testing.T) {
+	t.Parallel()
+
+	r := sandboxtest.Runtime(t)
+	caPEM, _, _ := sandboxtest.CA(t)
+
+	var reached atomic.Int32
+
+	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, r), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		fmt.Fprint(w, "{}")
+	}))
+
+	for _, tc := range []struct {
+		name    string
+		ca      []byte
+		status  string
+		reached int32
+	}{
+		{"trusting image", caPEM, "200", 1},
+		{"plain image", nil, "502", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reached.Store(0)
+
+			s := newSandbox(t, r, sandboxImage(t, r, tc.ca))
+
+			c, err := s.Up(t.Context(), sandbox.PhaseAgent, sidecar.ProxyRequest{Model: &proxy.ModelRoute{
+				BaseURL: "https://host.docker.internal:" + port, Credential: "credential", AuthHeader: "bearer", StandIn: "stand-in",
+			}}, nil)
+			require.NoError(t, err)
+
+			res := run(t, c, "curl", "--silent", "--output", "/dev/null", "--max-time", "10", "--write-out", "%{http_code}",
+				"--header", "Authorization: Bearer stand-in", "--data", "{}", viaBridge+"/v1/messages")
+			assert.Equal(t, tc.status, res.Output)
+			assert.Equal(t, tc.reached, reached.Load())
+		})
+	}
+}
+
+// TestCloneThenAgentSeesWorkspace clones from a server whose certificate the
+// CA built into the image signs; nothing about the CA is passed at run time.
 func TestCloneThenAgentSeesWorkspace(t *testing.T) {
 	gitrepo.Isolate(t)
 
 	r := sandboxtest.Runtime(t)
-	image := sandboxImage(t, r, nil)
 	caPEM, _, _ := sandboxtest.CA(t)
 
 	repo := gitrepo.New(t, map[string]string{"README.md": "hello\n"})
@@ -284,16 +331,23 @@ func TestCloneThenAgentSeesWorkspace(t *testing.T) {
 	bare := strings.TrimPrefix(gitrepo.Bare(t, repo), "file://")
 	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, r), gitrepo.Handler(t, bare))
 
-	s := newSandbox(t, r, image)
-
-	base, err := s.Clone(t.Context(), sidecar.CloneRequest{
+	req := sidecar.CloneRequest{
 		URL:        "https://host.docker.internal:" + port + "/" + filepath.Base(bare),
 		BaseBranch: "main",
 		Branch:     "cavu/test",
-		CABundle:   string(caPEM),
 		Name:       "CAVU Test",
 		Email:      "cavu@example.com",
+	}
+
+	t.Run("plain image", func(t *testing.T) {
+		_, err := newSandbox(t, r, sandboxImage(t, r, nil)).Clone(t.Context(), req)
+		t.Log(err)
+		require.Error(t, err)
 	})
+
+	s := newSandbox(t, r, sandboxImage(t, r, caPEM))
+
+	base, err := s.Clone(t.Context(), req)
 	require.NoError(t, err)
 	assert.Equal(t, head, base)
 

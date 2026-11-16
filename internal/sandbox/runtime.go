@@ -191,17 +191,9 @@ type Info struct {
 // volume, the host path for a bind and empty for a tmpfs.
 type MountInfo struct{ Type, Source, Target string }
 
-// clientError is a client call that exited non-zero. It carries the client's
-// stderr tail, which never holds an environment value.
-type clientError struct {
-	code   int
-	stderr string
-}
-
-func (e *clientError) Error() string { return fmt.Sprintf("exit %d: %s", e.code, e.stderr) }
-
+// isClientError reports a client call that exited non-zero.
 func isClientError(err error) bool {
-	_, ok := errors.AsType[*clientError](err)
+	_, ok := errors.AsType[*proc.ExitError](err)
 
 	return ok
 }
@@ -215,41 +207,25 @@ type call struct {
 }
 
 // run runs the client to its end; when ctx is done first it stops the client
-// and returns an error wrapping ctx's.
+// and returns an error wrapping ctx's. A non-zero exit is a *proc.ExitError,
+// whose stderr tail never holds an environment value.
 func (r Runtime) run(ctx context.Context, c call) error {
 	stdout := c.stdout
 	if stdout == nil {
 		stdout = io.Discard
 	}
 
-	p, err := proc.Local{}.Start(ctx, proc.Command{
+	err := proc.Run(ctx, proc.Local{}, proc.Command{
 		Argv:   append([]string{r.Bin}, c.args...),
 		Env:    os.Environ(),
 		Stdout: stdout,
 		Stderr: c.stderr,
-	})
-	if err != nil {
-		return err
+	}, c.stdin)
+	if err != nil && errors.Is(err, ctx.Err()) {
+		return fmt.Errorf("runtime client stopped: %w", err)
 	}
 
-	go func() {
-		if len(c.stdin) > 0 {
-			_, _ = p.Stdin().Write(c.stdin)
-		}
-
-		_ = p.Stdin().Close()
-	}()
-
-	code, err := waitContext(ctx, p)
-	if err != nil {
-		return err
-	}
-
-	if code != 0 {
-		return &clientError{code: code, stderr: strings.TrimSpace(p.StderrTail())}
-	}
-
-	return nil
+	return err
 }
 
 func (r Runtime) output(ctx context.Context, args ...string) ([]byte, error) {
@@ -258,32 +234,6 @@ func (r Runtime) output(ctx context.Context, args ...string) ([]byte, error) {
 	err := r.run(ctx, call{args: args, stdout: &out})
 
 	return out.Bytes(), err
-}
-
-// waitContext waits for p, stopping it when ctx is done first.
-func waitContext(ctx context.Context, p proc.Process) (int, error) {
-	type exit struct {
-		code int
-		err  error
-	}
-
-	done := make(chan exit, 1)
-
-	go func() {
-		code, err := p.Wait()
-		done <- exit{code, err}
-	}()
-
-	select {
-	case e := <-done:
-		return e.code, e.err
-	case <-ctx.Done():
-		_ = p.Stop(killGrace)
-
-		<-done
-
-		return 0, fmt.Errorf("runtime client stopped: %w", ctx.Err())
-	}
 }
 
 // envFile renders env in the env-file format, refusing what the format would
@@ -502,7 +452,7 @@ func (r Runtime) VolumeRemove(ctx context.Context, names ...string) error {
 		}
 
 		exists := r.run(ctx, call{args: []string{"volume", "exists", n}})
-		if ce, ok := errors.AsType[*clientError](exists); ok && ce.code == 1 {
+		if e, ok := errors.AsType[*proc.ExitError](exists); ok && e.Code == 1 {
 			continue
 		}
 

@@ -90,7 +90,7 @@ var errNotInSandbox = errors.New("the sandbox image lacks " + proc.SandboxMarker
 // system config and no fetch from a promisor remote. The repository's own
 // config and object store stay the agent's.
 func stageEnv(s driver.Spec) []string {
-	return proc.BuildEnv(nil, nil, map[string]string{
+	return proc.BuildEnv(nil, map[string]string{
 		"PATH": basePath, "HOME": s.Home, "LC_ALL": "C",
 		"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
 	})
@@ -207,7 +207,7 @@ func (c claudeCode) readRoots(ctx context.Context, t proc.Target, s driver.Spec,
 		in.WriteString(s.BaseCommit + ":" + name + "\n")
 	}
 
-	out := &cappedBuffer{limit: stageLimit}
+	out := proc.NewBuffer(stageLimit)
 	if err := c.runCommand(ctx, t, s, []string{"git", "cat-file", "--batch", "--follow-symlinks"}, []byte(in.String()), out); err != nil {
 		return nil, fmt.Errorf("read the instruction files of %s: %w", s.BaseCommit, err)
 	}
@@ -217,7 +217,7 @@ func (c claudeCode) readRoots(ctx context.Context, t proc.Target, s driver.Spec,
 		oids     []string
 	)
 
-	rest := out.buf.Bytes()
+	rest := out.Bytes()
 
 	for _, name := range roots {
 		header, body, _ := bytes.Cut(rest, []byte("\n"))
@@ -296,102 +296,36 @@ func nestedDepth(dir string) int {
 
 // capture runs argv and returns its stdout, failing past stageLimit bytes.
 func (c claudeCode) capture(ctx context.Context, t proc.Target, s driver.Spec, argv []string, stdin []byte) ([]byte, error) {
-	out := &cappedBuffer{limit: stageLimit}
+	out := proc.NewBuffer(stageLimit)
 	if err := c.runCommand(ctx, t, s, argv, stdin, out); err != nil {
 		return nil, err
 	}
 
-	if out.over {
+	if out.Dropped() {
 		return nil, fmt.Errorf("more than %d bytes of output", stageLimit)
 	}
 
-	return out.buf.Bytes(), nil
+	return out.Bytes(), nil
 }
 
 // sandboxed runs script under shell through proc.SandboxOnly with args as its
 // positional parameters, and names a refusal by the marker check.
 func (c claudeCode) sandboxed(ctx context.Context, t proc.Target, s driver.Spec, shell, script string, stdin []byte, args ...string) error {
 	err := c.runCommand(ctx, t, s, append([]string{shell, "-c", proc.SandboxOnly(script), shell}, args...), stdin, io.Discard)
-	if e, ok := errors.AsType[*exitError](err); ok && e.code == proc.NotInSandbox {
+	if e, ok := errors.AsType[*proc.ExitError](err); ok && e.Code == proc.NotInSandbox {
 		return fmt.Errorf("%w (%w)", errNotInSandbox, err)
 	}
 
 	return err
 }
 
-// exitError is a staging command that ended with a non-zero status.
-type exitError struct {
-	program string
-	code    int
-	tail    string
-}
-
-func (e *exitError) Error() string {
-	return fmt.Sprintf("%s exited %d: %s", e.program, e.code, e.tail)
-}
-
 // runCommand runs argv in s.Dir on t to its end, with stdout going to out;
-// stdin is written and closed. A staging command never carries Files.
+// stdin is written and closed. A staging command never carries Files. A
+// non-zero exit is a *proc.ExitError.
 func (c claudeCode) runCommand(ctx context.Context, t proc.Target, s driver.Spec, argv []string, stdin []byte, out io.Writer) error {
-	p, err := t.Start(ctx, proc.Command{Argv: argv, Env: stageEnv(s), Dir: s.Dir, Stdout: out})
-	if err != nil {
-		return err
-	}
-
-	go func() {
-		_, _ = p.Stdin().Write(stdin)
-		_ = p.Stdin().Close()
-	}()
-
-	type exit struct {
-		code int
-		err  error
-	}
-
-	done := make(chan exit, 1)
-
-	go func() {
-		code, err := p.Wait()
-		done <- exit{code, err}
-	}()
-
-	var e exit
-
-	select {
-	case e = <-done:
-	case <-ctx.Done():
-		_ = p.Stop(c.grace)
-
-		<-done
-
-		return ctx.Err()
-	}
-
-	switch {
-	case e.err != nil:
-		return e.err
-	case e.code != 0:
-		return &exitError{program: argv[0], code: e.code, tail: strings.TrimSpace(p.StderrTail())}
+	if err := proc.Run(ctx, t, proc.Command{Argv: argv, Env: stageEnv(s), Dir: s.Dir, Stdout: out}, stdin); err != nil {
+		return fmt.Errorf("%s: %w", argv[0], err)
 	}
 
 	return nil
-}
-
-// cappedBuffer keeps the first limit bytes written and drops the rest, so the
-// command still runs to its end.
-type cappedBuffer struct {
-	buf   bytes.Buffer
-	limit int
-	over  bool
-}
-
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	n := len(p)
-	if room := b.limit - b.buf.Len(); n > room {
-		p, b.over = p[:room], true
-	}
-
-	b.buf.Write(p)
-
-	return n, nil
 }

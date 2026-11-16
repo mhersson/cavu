@@ -331,29 +331,31 @@ func TestProxyOpDrainsInFlightResponsesBeforeReturning(t *testing.T) {
 	assert.JSONEq(t, `{"model":"m1","usage":{"input_tokens":3,"output_tokens":5}}`, string(<-body))
 }
 
-func gitServer(t *testing.T, up string) (url, ca, repo string) {
+// gitServer serves up over HTTPS and points git at a CA file that trusts it,
+// through the environment, so its caller cannot run in parallel.
+func gitServer(t *testing.T, up string) (url, repo string) {
 	t.Helper()
 
 	bare := strings.TrimPrefix(gitrepo.Bare(t, up), "file://")
 	srv := httptest.NewTLSServer(gitrepo.Handler(t, bare))
 	t.Cleanup(srv.Close)
 
-	ca = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600))
+	t.Setenv("GIT_SSL_CAINFO", ca)
 
-	return srv.URL, ca, "/" + filepath.Base(bare)
+	return srv.URL, "/" + filepath.Base(bare)
 }
 
 func TestCloneOpWritesClonedLine(t *testing.T) {
-	t.Parallel()
-
 	up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
-	base, ca, repo := gitServer(t, up)
+	base, repo := gitServer(t, up)
 	root := t.TempDir()
 
 	var out syncBuffer
 
 	err := Run(context.Background(), encode(t, Request{Clone: &CloneRequest{
-		URL: base + repo, Token: "tok", BaseBranch: "main", Branch: "cavu/x", CABundle: ca,
+		URL: base + repo, Token: "tok", BaseBranch: "main", Branch: "cavu/x",
 		MirrorDir: filepath.Join(root, "mirror"), WorkspaceDir: filepath.Join(root, "ws"),
 		Name: "Cavu", Email: "cavu@example.com",
 	}}), &out)
