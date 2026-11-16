@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"bytes"
+	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -103,4 +106,65 @@ func TestRunOutputHoldsClientStderr(t *testing.T) {
 		assert.True(t, strings.HasPrefix(res.Output, "line\n"))
 		assert.True(t, strings.HasSuffix(res.Output, "line\n"+fromClient))
 	})
+}
+
+// groupScript leads its own process group, as proc.Local starts it. It has a
+// second member, writes the pid file only after a delay, and both it and the
+// member record the TERM they get in the directory $2. The leader waits for
+// the member in its trap, so the member's record is never cut short.
+const groupScript = `sh -c 'trap "echo > \"$1/member\"; exit 0" TERM; while :; do sleep 0.1; done' sh "$2" &
+member=$!
+trap 'wait "$member"; echo > "$2/leader"; exit 0' TERM
+sleep 0.5
+echo $$ > "$1"
+while :; do sleep 0.1; done`
+
+func waitFor(t *testing.T, p proc.Process, d time.Duration) int {
+	t.Helper()
+
+	type exit struct {
+		code int
+		err  error
+	}
+
+	ch := make(chan exit, 1)
+
+	go func() {
+		code, err := p.Wait()
+		ch <- exit{code, err}
+	}()
+
+	select {
+	case e := <-ch:
+		require.NoError(t, e.err)
+
+		return e.code
+	case <-time.After(d):
+		require.FailNow(t, "the process did not end in time")
+
+		return 0
+	}
+}
+
+func TestStopScriptWaitsForPidFile(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "cmd.pid")
+
+	start := func(argv ...string) proc.Process {
+		p, err := proc.Local{}.Start(t.Context(), proc.Command{Argv: argv, Env: os.Environ(), Stdout: io.Discard})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = p.Stop(time.Second) })
+
+		return p
+	}
+
+	stop := start("sh", "-c", stopScript, "sh", pidFile, "50")
+	require.NoFileExists(t, pidFile)
+
+	group := start("sh", "-c", groupScript, "sh", pidFile, dir)
+
+	assert.Equal(t, 0, waitFor(t, stop, 10*time.Second), "stop script")
+	assert.Equal(t, 0, waitFor(t, group, 10*time.Second), "group leader")
+	assert.FileExists(t, filepath.Join(dir, "leader"), "the leader did not finish its TERM trap")
+	assert.FileExists(t, filepath.Join(dir, "member"), "TERM did not reach the other member")
 }
