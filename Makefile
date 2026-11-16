@@ -73,7 +73,7 @@ test-integration:
 	go test -tags integration -count=1 -timeout 30m ./...
 
 test-conformance:
-	go test -tags conformance -count=1 ./internal/driver/claudecode/
+	go test -tags conformance -count=1 -timeout 30m ./...
 
 check: build build-darwin fmt-check vet lint test-race tidy-check scan
 
