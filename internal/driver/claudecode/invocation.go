@@ -68,6 +68,11 @@ func validate(s driver.Spec) error {
 		return errors.New("claudecode: key mode without a base URL")
 	case s.Model == "":
 		return errors.New("claudecode: no model")
+	case s.Home == "" || s.ConfigDir == "":
+		// An empty value would override the image's and lose the transcript.
+		return errors.New("claudecode: no home or config dir")
+	case s.Prompt == "":
+		return errors.New("claudecode: no prompt")
 	case s.MaxTurns < 1:
 		return fmt.Errorf("claudecode: max turns %d is below 1", s.MaxTurns)
 	case (s.SessionID == "") == (s.Resume == ""):

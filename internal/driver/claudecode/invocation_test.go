@@ -172,6 +172,9 @@ func TestSpecRefused(t *testing.T) {
 		mutate func(*driver.Spec)
 	}{
 		{"no model", func(s *driver.Spec) { s.Model = "" }},
+		{"no home", func(s *driver.Spec) { s.Home = "" }},
+		{"no config dir", func(s *driver.Spec) { s.ConfigDir = "" }},
+		{"no prompt", func(s *driver.Spec) { s.Prompt = "" }},
 		{"no turns", func(s *driver.Spec) { s.MaxTurns = 0 }},
 		{"session and resume", func(s *driver.Spec) { s.Resume = testSessionID }},
 		{"neither session nor resume", func(s *driver.Spec) { s.SessionID = "" }},
