@@ -82,7 +82,7 @@ func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, out io.W
 			return r, fmt.Errorf("replay: %w", err)
 		}
 
-		fmt.Fprintf(out, "task %d (%s): verify %q, stop %q, %d turns, %d tokens\n",
+		fmt.Fprintf(out, "task %d (%q): verify %q, stop %q, %d turns, %d tokens\n",
 			src.ID, src.Title, item.Verify, item.Stop, item.Turns, item.Tokens)
 	}
 
