@@ -34,7 +34,7 @@ type Scenario struct {
 	Replay   string // fixture JSONL written to stdout after the first user message
 	Stderr   string // written to stderr before exiting
 	ExitCode int
-	Hang     bool   // block after the replay or the last turn until killed
+	Hang     bool   // block after the replay until killed
 	Record   string // write Recorded JSON here
 	// Grandchild spawns a sleeping grandchild and writes its PID to this path.
 	Grandchild string
@@ -47,10 +47,6 @@ type Scenario struct {
 	Account     json.RawMessage
 	NoAccount   bool
 	ExitAtStart bool // write Stderr and exit with ExitCode before reading stdin
-
-	// Turns replaces Replay: one fixture per user message received. A turn
-	// without a result line ends the process.
-	Turns []string
 }
 
 // Recorded is what the fake saw.
@@ -190,50 +186,24 @@ func (p *fake) run() int {
 		}
 	}
 
-	paths := p.sc.Turns
-	if len(paths) == 0 {
-		paths = []string{p.sc.Replay}
-	}
-
-	turns, err := p.loadFixtures(paths...)
+	replay, err := p.loadFixture(p.sc.Replay)
 	if err != nil {
 		return fail(err)
 	}
 
-	return p.converse(first, turns)
-}
-
-// converse replays one fixture per user message, as a stream-json session
-// answers each message with its own init and result.
-func (p *fake) converse(msg []byte, turns [][][]byte) int {
-	finished := false
-
-	for i, lines := range turns {
-		if i > 0 {
-			var ok bool
-			if msg, ok = p.nextUser(); !ok {
-				return 0
-			}
-		}
-
-		if err := p.persist(append([][]byte{msg}, lines...)); err != nil {
-			return fail(err)
-		}
-
-		for _, line := range lines {
-			writeLine(line)
-		}
-
-		if finished = hasResult(lines); !finished {
-			break
-		}
+	if err := p.persist(append([][]byte{first}, replay...)); err != nil {
+		return fail(err)
 	}
 
-	return p.exit(finished)
+	for _, line := range replay {
+		writeLine(line)
+	}
+
+	return p.exit(hasResult(replay))
 }
 
 // exit writes the scripted stderr and returns the exit code, hanging first
-// when told to. Like the CLI, a finished turn waits for the next message
+// when told to. Like the CLI, a finished replay waits for the next message
 // until stdin closes when waitInput is set.
 func (p *fake) exit(waitInput bool) int {
 	_, _ = os.Stderr.WriteString(p.sc.Stderr)
@@ -392,32 +362,17 @@ func (p *fake) awaitUser() (line []byte, early, ok bool) {
 	return nil, early, false
 }
 
-// nextUser returns the next user line; ok is false once stdin closes.
-func (p *fake) nextUser() ([]byte, bool) {
-	for l := range p.in {
-		if lineType(l.data) == "user" {
-			return l.data, true
-		}
-	}
-
-	return nil, false
-}
-
 func (p *fake) drainStdin() {
 	for range p.in { //nolint:revive // runs until the caller closes stdin
 	}
 }
 
-// loadFixtures returns each fixture's lines (none for an empty path) with the
-// fixtures' session ID replaced by this process's.
-func (p *fake) loadFixtures(paths ...string) ([][][]byte, error) {
-	fixtures := make([][][]byte, len(paths))
+// loadFixture returns the fixture's lines (none for an empty path) with its
+// session ID replaced by this process's.
+func (p *fake) loadFixture(path string) ([][]byte, error) {
+	var lines [][]byte
 
-	for i, path := range paths {
-		if path == "" {
-			continue
-		}
-
+	if path != "" {
 		data, err := os.ReadFile(path) //nolint:gosec // the test names the fixture
 		if err != nil {
 			return nil, fmt.Errorf("read fixture: %w", err)
@@ -425,14 +380,14 @@ func (p *fake) loadFixtures(paths ...string) ([][][]byte, error) {
 
 		for line := range bytes.Lines(data) {
 			if line = bytes.TrimSpace(line); len(line) > 0 {
-				fixtures[i] = append(fixtures[i], line)
+				lines = append(lines, line)
 			}
 		}
 	}
 
 	fixtureSID := ""
 
-	for _, line := range slices.Concat(fixtures...) {
+	for _, line := range lines {
 		var l struct {
 			SessionID string `json:"session_id"`
 		}
@@ -447,14 +402,12 @@ func (p *fake) loadFixtures(paths ...string) ([][][]byte, error) {
 	p.sid = firstSet(p.flags["--session-id"], p.flags["--resume"], fixtureSID, "fake-session")
 
 	if fixtureSID != "" && fixtureSID != p.sid {
-		for _, lines := range fixtures {
-			for i, line := range lines {
-				lines[i] = bytes.ReplaceAll(line, []byte(fixtureSID), []byte(p.sid))
-			}
+		for i, line := range lines {
+			lines[i] = bytes.ReplaceAll(line, []byte(fixtureSID), []byte(p.sid))
 		}
 	}
 
-	return fixtures, nil
+	return lines, nil
 }
 
 func firstSet(vals ...string) string {
