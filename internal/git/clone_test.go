@@ -154,6 +154,99 @@ func TestCABundleAddsToSystemRoots(t *testing.T) {
 	assert.Contains(t, string(got), strings.TrimSpace(ca))
 }
 
+// Every git call runs in a directory the clone owns or in the one that holds
+// it, never in the caller's working directory.
+func TestCloneRunsGitInItsOwnDirectories(t *testing.T) {
+	t.Parallel()
+
+	up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
+	ctx, calls := wrapGit(t, `pwd -P >> "$LOG.dirs"`)
+	s := spec(t, "file://"+up)
+
+	_, err := Clone(ctx, s)
+	require.NoError(t, err)
+
+	root, err := filepath.EvalSymlinks(filepath.Dir(s.MirrorDir))
+	require.NoError(t, err)
+
+	mirror, ws := filepath.Join(root, filepath.Base(s.MirrorDir)), filepath.Join(root, filepath.Base(s.WorkspaceDir))
+	want := map[string]string{"check-ref-format": root, "init": root, "clone": root, "fetch": mirror, "rev-parse": mirror}
+
+	log, err := os.ReadFile(calls)
+	require.NoError(t, err)
+
+	dirs, err := os.ReadFile(calls + ".dirs")
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
+	got := strings.Split(strings.TrimSpace(string(dirs)), "\n")
+	require.Len(t, got, len(lines))
+
+	ran := map[string]bool{}
+
+	for i, line := range lines {
+		sub := subcommand(line)
+		ran[sub] = true
+
+		dir, ok := want[sub]
+		if !ok {
+			dir = ws
+		}
+
+		assert.Equal(t, dir, got[i], line)
+	}
+
+	for _, sub := range []string{"check-ref-format", "init", "clone"} {
+		assert.True(t, ran[sub], sub)
+	}
+}
+
+// A relative directory would leave git in the caller's working directory, so
+// Clone refuses one before any git runs. The test runs in a directory of its
+// own, so that a regression would write nowhere else.
+func TestCloneRefusesRelativeDirs(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*CloneSpec)
+	}{
+		{"mirror dir", func(s *CloneSpec) { s.MirrorDir = "mirror" }},
+		{"workspace dir", func(s *CloneSpec) { s.WorkspaceDir = "ws" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+
+			up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
+			ctx, calls := wrapGit(t, "")
+			s := spec(t, "file://"+up)
+			tt.mutate(&s)
+
+			_, err := Clone(ctx, s)
+			require.Error(t, err)
+
+			assert.NoFileExists(t, calls, "no git ran")
+			assert.NoDirExists(t, filepath.Join(cwd, "mirror"))
+			assert.NoDirExists(t, filepath.Join(cwd, "ws"))
+		})
+	}
+}
+
+// subcommand returns the git subcommand of a line of the wrapper's log.
+func subcommand(line string) string {
+	fields := strings.Fields(line)
+	for i := 0; i < len(fields); i++ {
+		if fields[i] == "-c" {
+			i++
+
+			continue
+		}
+
+		return fields[i]
+	}
+
+	return ""
+}
+
 func TestMirrorUpdates(t *testing.T) {
 	t.Parallel()
 
