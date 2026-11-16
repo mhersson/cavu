@@ -5,7 +5,10 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +29,13 @@ const (
 	home      = "/home/agent"
 	workspace = "/workspace"
 	modeKey   = "key"
+
+	linkTimeout = time.Minute
 )
+
+// linkScript makes each link given as a path and its target, replacing what
+// is at the path: the home is the agent's to change.
+const linkScript = `while [ "$#" -gt 1 ]; do mkdir -p "$(dirname "$1")" && rm -rf "$1" && ln -s "$2" "$1" || exit 1; shift 2; done`
 
 // proxyEnv sends a command's egress through the bridge, the one way out of
 // either phase, and keeps loopback traffic off it.
@@ -251,9 +260,41 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		return err
 	}
 
+	if err := linkHome(ctx, a, st.ecosystems); err != nil {
+		return err
+	}
+
 	st.agent = a
 
 	return nil
+}
+
+// linkHome makes the links the agent phase's layout needs in the home.
+func linkHome(ctx context.Context, a container, ecosystems []string) error {
+	links := env.AgentLinks(ecosystems, home)
+	if len(links) == 0 {
+		return nil
+	}
+
+	res, err := a.Run(ctx, linkCommand(links), linkTimeout)
+	if err != nil {
+		return err
+	}
+
+	if res.ExitCode != 0 || res.TimedOut {
+		return fmt.Errorf("runner: link the agent's home: %s", strings.TrimSpace(res.Output))
+	}
+
+	return nil
+}
+
+func linkCommand(links map[string]string) proc.Command {
+	argv := []string{"sh", "-c", linkScript, "sh"}
+	for _, p := range slices.Sorted(maps.Keys(links)) {
+		argv = append(argv, p, links[p])
+	}
+
+	return proc.Command{Argv: argv}
 }
 
 // Release stops the run's containers and, when removeVolumes is set, removes

@@ -2,12 +2,15 @@ package runner
 
 import (
 	"errors"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/sandbox"
 )
 
@@ -164,5 +167,67 @@ func TestRelease(t *testing.T) {
 		f.downErr = errors.New("remove containers: daemon unreachable")
 
 		require.ErrorIs(t, f.runner().Release(t.Context(), ref, false), f.downErr)
+	})
+}
+
+// Every start of the agent phase makes the home's links before any command
+// runs there, and a start whose links fail does not count as up.
+func TestAgentPhaseLinksTheHome(t *testing.T) {
+	links := env.AgentLinks([]string{"rust"}, home)
+	require.NotEmpty(t, links)
+
+	link := stepName(linkCommand(links).Argv)
+
+	t.Run("in a prepare", func(t *testing.T) {
+		f := newFake()
+		f.files = map[string]string{"Cargo.toml": "[package]\nname = \"web\"\n"}
+
+		_, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+
+		var names []string
+		for _, r := range f.runsIn(sandbox.PhaseAgent) {
+			names = append(names, r.name)
+		}
+
+		assert.Equal(t, []string{link, "make test"}, names)
+
+		argv := f.run(t, link).cmd.Argv
+
+		var pairs []string
+		for _, p := range slices.Sorted(maps.Keys(links)) {
+			pairs = append(pairs, p, links[p])
+		}
+
+		assert.Equal(t, pairs, argv[len(argv)-len(pairs):], "each link goes as its path and its target")
+	})
+
+	t.Run("after a restart", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+		c := testConfig()
+		c.Ecosystems = []string{"rust"}
+
+		f.results[link] = sandbox.Result{ExitCode: 1, Output: "ln: Permission denied\n"}
+
+		require.Error(t, r.ensureUp(t.Context(), c))
+
+		delete(f.results, link)
+
+		for range 2 {
+			require.NoError(t, r.ensureUp(t.Context(), c))
+		}
+
+		assert.Equal(t, []string{"volumes", "up/agent", "run/" + link, "up/agent", "run/" + link}, f.calls())
+	})
+
+	t.Run("without rust", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+		c := testConfig()
+		c.Ecosystems = []string{"go", "node", "python"}
+
+		require.NoError(t, r.ensureUp(t.Context(), c))
+		assert.Equal(t, []string{"volumes", "up/agent"}, f.calls())
 	})
 }

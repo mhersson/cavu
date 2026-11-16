@@ -2,6 +2,7 @@ package env
 
 import (
 	"path"
+	"slices"
 	"sort"
 )
 
@@ -50,11 +51,16 @@ func cacheVars(m map[string]string, ecosystems []string, root string) {
 			m["PIP_CACHE_DIR"] = path.Join(root, "pip")
 			m["UV_CACHE_DIR"] = path.Join(root, "uv")
 		case "rust":
-			m["CARGO_HOME"] = path.Join(root, "cargo")
+			m["CARGO_HOME"] = cargoHome(root)
 			m["RUSTUP_HOME"] = cacheDir + "/rustup"
 		}
 	}
 }
+
+func cargoHome(root string) string { return path.Join(root, "cargo") }
+
+// agentRoot holds the agent phase's caches, in its writable home.
+func agentRoot(home string) string { return path.Join(home, ".cache") }
 
 func render(m map[string]string) []string {
 	out := make([]string, 0, len(m))
@@ -70,11 +76,12 @@ func render(m map[string]string) []string {
 // AgentEnv returns the agent phase's environment. Shared from the read-only
 // project cache: Go's module downloads (through the file proxy in GOPROXY), the
 // mise toolchains (MISE_DATA_DIR and the shims) and the Rust toolchain
-// (RUSTUP_HOME). Not shared: the npm, pip, uv and Cargo caches, which start
-// empty under home, so those packages come from the registries in AgentHosts.
+// (RUSTUP_HOME, and Cargo's binaries through AgentLinks). Not shared: the npm,
+// pip, uv and Cargo caches, which start empty under home, so those packages
+// come from the registries in AgentHosts.
 func AgentEnv(ecosystems []string, home string) []string {
 	m := common()
-	cacheVars(m, ecosystems, path.Join(home, ".cache"))
+	cacheVars(m, ecosystems, agentRoot(home))
 
 	for _, e := range ecosystems {
 		if e == "go" {
@@ -84,6 +91,20 @@ func AgentEnv(ecosystems []string, home string) []string {
 	}
 
 	return render(m)
+}
+
+// AgentLinks are the symbolic links, path to target, that the agent phase
+// needs in home each time it comes up. mise looks for Rust's binaries under
+// CARGO_HOME and hands every command that CARGO_HOME, so the agent's writable
+// Cargo home links its bin to the binaries the setup phase installed.
+func AgentLinks(ecosystems []string, home string) map[string]string {
+	if !slices.Contains(ecosystems, "rust") {
+		return nil
+	}
+
+	return map[string]string{
+		path.Join(cargoHome(agentRoot(home)), "bin"): path.Join(cargoHome(cacheDir), "bin"),
+	}
 }
 
 // SetupEnv returns the environment of the setup phase: caches under /cache, writable.
