@@ -459,7 +459,7 @@ func (p *pass) setBaseCommit(ctx context.Context, commit string) error {
 func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 	w := WorkRequest{Mode: a.WorkMode, SessionID: v.Facts.SessionID, Resume: v.Facts.SessionID != ""}
 	if !w.Resume {
-		w.SessionID = newSessionID()
+		w.SessionID = NewSessionID()
 	}
 
 	switch a.WorkMode {
@@ -866,8 +866,8 @@ func maskValue(v any, mask func(string) string) any {
 	return v
 }
 
-// newSessionID returns a version 4 UUID.
-func newSessionID() string {
+// NewSessionID returns a version 4 UUID.
+func NewSessionID() string {
 	var b [16]byte
 
 	_, _ = rand.Read(b[:]) // rand.Read never returns an error

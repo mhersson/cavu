@@ -4,7 +4,6 @@ package doctor
 
 import (
 	"context"
-	"crypto/rand"
 	_ "embed" // the endpoint check's prompt
 	"encoding/json"
 	"errors"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mhersson/cavu/internal/driver"
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/proxy"
@@ -329,7 +329,7 @@ func (r *doctor) endpoint(ctx context.Context) Check {
 	}
 
 	s := driver.Spec{
-		Auth: auth, Model: r.Settings["model_work"], MaxTurns: 4, SessionID: sessionID(),
+		Auth: auth, Model: r.Settings["model_work"], MaxTurns: 4, SessionID: engine.NewSessionID(),
 		Prompt: prompt, OutputSchema: json.RawMessage(schema),
 		Dir: "/workspace", Home: home, ConfigDir: home + "/.claude-cavu",
 		Env: append(env.AgentEnv(nil, home), "HTTPS_PROXY="+sandbox.BridgeURL, "HTTP_PROXY="+sandbox.BridgeURL),
@@ -416,15 +416,6 @@ func (r *doctor) forge(ctx context.Context) Check {
 	}
 
 	return Check{OK: true}
-}
-
-// sessionID is a random version 4 UUID.
-func sessionID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	b[6], b[8] = b[6]&0x0f|0x40, b[8]&0x3f|0x80
-
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // runtimeHost drives the runtime through internal/sandbox.
