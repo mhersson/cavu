@@ -463,42 +463,6 @@ func (m *mapper) onRateLimit(info *rateLimitInfo) {
 	}
 }
 
-// limitPrefix opens 2.1.322's usage-limit message: "You've hit your <limit
-// name>...", the name taken from limitWindows.
-const limitPrefix = "You've hit your "
-
-// limitWindows maps 2.1.322's limit names back to their rateLimitType.
-var limitWindows = []struct{ name, window string }{
-	{"5-hour limit", "five_hour"},
-	{"weekly limit", "seven_day"},
-	{"Opus limit", "seven_day_opus"},
-	{"Sonnet limit", "seven_day_sonnet"},
-	{"Fable limit", "seven_day_overage_included"},
-	{"usage credit limit", "overage"},
-}
-
-func isUsageLimitText(text string) bool {
-	return strings.HasPrefix(text, limitPrefix) || strings.Contains(strings.ToLower(text), "usage limit")
-}
-
-// resultLimit names the usage limit a 429 result carried by its text; the
-// result has no reset time.
-func resultLimit(text string) *driver.RateLimit {
-	rl := &driver.RateLimit{Status: "rejected"}
-
-	if rest, ok := strings.CutPrefix(text, limitPrefix); ok {
-		for _, w := range limitWindows {
-			if strings.HasPrefix(rest, w.name) {
-				rl.Window = w.window
-
-				break
-			}
-		}
-	}
-
-	return rl
-}
-
 // closeCall emits the open call's events: its text, its usage, its tool uses,
 // then the results that arrived early.
 func (m *mapper) closeCall() {
