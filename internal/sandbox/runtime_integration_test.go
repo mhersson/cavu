@@ -8,6 +8,8 @@ import (
 	"crypto/rand"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -406,6 +408,135 @@ func TestNoNetwork(t *testing.T) {
 	assert.Equal(t, "none", info.Network)
 	assert.True(t, info.Running)
 	assert.Equal(t, testRun, info.Labels["cavu.test"])
+}
+
+// environ parses a NUL-separated environment.
+func environ(raw string) map[string]string {
+	env := map[string]string{}
+
+	for kv := range strings.SplitSeq(strings.TrimSuffix(raw, "\x00"), "\x00") {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+
+	return env
+}
+
+// controlEnv is the little a client needs, so a control run that copies its
+// client's environment into a container copies none of the operator's.
+func controlEnv() []string {
+	keep := []string{
+		"PATH", "HOME", "USER", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "DBUS_SESSION_BUS_ADDRESS",
+		"DOCKER_CONFIG", "CONTAINERS_CONF_OVERRIDE", "CAVU_TEST_CANARY", "HTTP_PROXY", "HTTPS_PROXY",
+	}
+
+	var env []string
+
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); slices.Contains(keep, k) {
+			env = append(env, kv)
+		}
+	}
+
+	return env
+}
+
+// TestHostConfigNeverReachesContainer gives the client a scratch Docker
+// config with proxies, a scratch containers.conf with env_host, and a canary
+// in its own environment, and shows none of it reaches a container.
+func TestHostConfigNeverReachesContainer(t *testing.T) {
+	const proxyHost = "proxy-canary.invalid"
+
+	canary := "canary-" + strings.ToLower(rand.Text()[:12])
+	dir := t.TempDir()
+	dockerConfig := filepath.Join(dir, "docker")
+	containersConf := filepath.Join(dir, "containers.conf")
+
+	require.NoError(t, os.Mkdir(dockerConfig, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dockerConfig, "config.json"), []byte(`{"proxies":{"default":{`+
+		`"httpProxy":"http://`+proxyHost+`:3128","httpsProxy":"http://`+proxyHost+`:3129","ftpProxy":"http://`+proxyHost+`:3130",`+
+		`"noProxy":"`+proxyHost+`","allProxy":"socks5://`+proxyHost+`:1080"}}}`), 0o600))
+	require.NoError(t, os.WriteFile(containersConf, []byte("[containers]\nenv_host = true\n"), 0o600))
+
+	t.Setenv("DOCKER_CONFIG", dockerConfig)
+	t.Setenv("CONTAINERS_CONF_OVERRIDE", containersConf)
+	t.Setenv("CAVU_TEST_CANARY", canary)
+	t.Setenv("HTTP_PROXY", "http://"+proxyHost+":3128")
+	t.Setenv("HTTPS_PROXY", "http://"+proxyHost+":3129")
+
+	r := testRuntime(t)
+
+	// A plain run shows the scratch configuration reaches the runtime, so the
+	// assertions below cannot pass for want of anything to keep out.
+	control := uniqueName()
+
+	cleanup(t, func(ctx context.Context) error { return r.Remove(ctx, control) })
+
+	var out bytes.Buffer
+
+	p, err := proc.Local{}.Start(t.Context(), proc.Command{
+		Argv:   []string{r.Bin, "run", "--rm", "--pull=never", "--network=none", "--name=" + control, "--label=cavu.test=" + testRun, testImage, "env"},
+		Env:    controlEnv(),
+		Stdout: &out,
+	})
+	require.NoError(t, err)
+	require.NoError(t, p.Stdin().Close())
+
+	if code, err := p.Wait(); err != nil || code != 0 {
+		t.Skipf("the runtime cannot be reached with a scratch configuration (exit %d, %v): %s", code, err, p.StderrTail())
+	}
+
+	injected := canary
+	if !r.podman() {
+		injected = proxyHost
+	}
+
+	if !strings.Contains(out.String(), injected) {
+		t.Skipf("the scratch configuration did not reach %s: a plain run shows nothing injected", r.Bin)
+	}
+
+	vol := createVolume(t, r)
+	name, c := startContainer(t, r, func(s *ContainerSpec) {
+		s.Mounts = []Mount{{Volume: vol, Path: "/tmp"}}
+		s.Env = []string{"MINE=1"}
+	})
+
+	mainEnv := environ(run(t, c, "cat", "/proc/1/environ").Output)
+	execEnv := environ(run(t, c, "cat", "/proc/self/environ").Output)
+
+	// Failures name variables only: with a leak, the values would be the
+	// test process's own environment.
+	for label, env := range map[string]map[string]string{"main process": mainEnv, "exec": execEnv} {
+		assert.Equal(t, "1", env["MINE"], label)
+
+		_, hasCanary := env["CAVU_TEST_CANARY"]
+		assert.False(t, hasCanary, "%s has CAVU_TEST_CANARY", label)
+
+		for k, v := range env {
+			if strings.Contains(v, proxyHost) || strings.Contains(v, canary) {
+				t.Errorf("%s: %s carries the scratch proxy or the canary", label, k)
+			}
+		}
+	}
+
+	info, err := r.Inspect(t.Context(), name)
+	require.NoError(t, err)
+
+	// Inspect invents no name and misses none but the two Docker sets on the
+	// process without recording them.
+	for _, n := range info.EnvNames {
+		_, ok := mainEnv[n]
+		assert.True(t, ok, "Inspect lists %s, which the container does not have", n)
+	}
+
+	for n := range mainEnv {
+		if !slices.Contains(info.EnvNames, n) {
+			assert.True(t, n == "HOME" || n == "HOSTNAME", "Inspect misses %s", n)
+		}
+	}
+
+	assert.Equal(t, []MountInfo{{Type: "tmpfs", Target: "/run/cavu"}, {Type: "volume", Source: vol, Target: "/tmp"}}, info.Mounts)
 }
 
 func TestExitCode(t *testing.T) {
