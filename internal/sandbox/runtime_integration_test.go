@@ -481,6 +481,8 @@ func TestHostConfigNeverReachesContainer(t *testing.T) {
 	// Failures name variables only: with a leak, the values would be the
 	// test process's own environment.
 	for label, env := range map[string]map[string]string{"main process": mainEnv, "exec": execEnv} {
+		assert.Contains(t, env, "PATH", "%s: the environment read is empty", label)
+
 		_, hasCanary := env["CAVU_TEST_CANARY"]
 		assert.False(t, hasCanary, "%s has CAVU_TEST_CANARY", label)
 
