@@ -43,7 +43,9 @@ linters:
             desc: the server half must run where no container runtime exists
           - pkg: github.com/mhersson/cavu/internal/sidecar
             desc: the server half must run where no container runtime exists
-          - pkg: github.com/mhersson/cavu/internal/git
+          - pkg: github.com/mhersson/cavu/internal/git$
+            desc: the server half must run where no container runtime exists
+          - pkg: github.com/mhersson/cavu/internal/git/
             desc: the server half must run where no container runtime exists
           - pkg: github.com/mhersson/cavu/internal/driver
             desc: the server half must run where no container runtime exists
