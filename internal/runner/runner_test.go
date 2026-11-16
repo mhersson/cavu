@@ -183,6 +183,7 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 	require.NoError(t, err)
 
 	link := stepName(cmd.Argv)
+	seed := seedStep(t)
 
 	t.Run("in a prepare", func(t *testing.T) {
 		f := newFake()
@@ -196,7 +197,7 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 			names = append(names, r.name)
 		}
 
-		assert.Equal(t, []string{link, "make test"}, names)
+		assert.Equal(t, []string{link, seed, "make test"}, names)
 
 		argv := f.run(t, link).cmd.Argv
 
@@ -225,7 +226,7 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 			require.NoError(t, r.ensureUp(t.Context(), c))
 		}
 
-		assert.Equal(t, []string{"volumes", "up/agent", "run/" + link, "up/agent", "run/" + link}, f.calls())
+		assert.Equal(t, []string{"volumes", "up/agent", "run/" + link, "up/agent", "run/" + link, "run/" + seed}, f.calls())
 	})
 
 	t.Run("without rust", func(t *testing.T) {
@@ -318,6 +319,160 @@ func TestLinkHomeRefusesPathsOutOfBounds(t *testing.T) {
 
 			_, err = linkCommand(links)
 			require.ErrorIs(t, err, errOutOfBounds, "a valid link does not let an invalid one through")
+		})
+	}
+}
+
+// seedStep is the name the fake records for a rust run's seed step.
+func seedStep(t *testing.T) string {
+	t.Helper()
+
+	cmd, err := seedCommand(env.AgentSeeds([]string{"rust"}, home))
+	require.NoError(t, err)
+
+	return stepName(cmd.Argv)
+}
+
+// Every start of the agent phase fills the home's Cargo directories from the
+// cache after its links and before any other command, and a start whose
+// copy fails does not count as up.
+func TestAgentPhaseSeedsTheHome(t *testing.T) {
+	seeds := env.AgentSeeds([]string{"rust"}, home)
+	require.NotEmpty(t, seeds)
+
+	seed := seedStep(t)
+
+	links, err := linkCommand(env.AgentLinks([]string{"rust"}, home))
+	require.NoError(t, err)
+
+	link := stepName(links.Argv)
+
+	t.Run("in a prepare", func(t *testing.T) {
+		f := newFake()
+		f.files = map[string]string{"Cargo.toml": "[package]\nname = \"web\"\n"}
+
+		_, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+
+		argv := f.run(t, seed).cmd.Argv
+
+		want := []string{"sh", "-c", seedScript, "sh"}
+		for _, dir := range slices.Sorted(maps.Keys(seeds)) {
+			want = append(want, dir, seeds[dir])
+		}
+
+		assert.Equal(t, want, argv, "each directory goes with its source")
+		assert.True(t, strings.HasPrefix(argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox")
+	})
+
+	t.Run("after a restart", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+		c := testConfig()
+		c.Ecosystems = []string{"rust"}
+
+		f.results[seed] = sandbox.Result{ExitCode: 2, Output: "cp: No space left on device\n"}
+
+		require.Error(t, r.ensureUp(t.Context(), c))
+		assert.False(t, r.state(c.RunID).agentUp())
+
+		delete(f.results, seed)
+
+		for range 2 {
+			require.NoError(t, r.ensureUp(t.Context(), c))
+		}
+
+		assert.Equal(t, []string{
+			"volumes", "up/agent", "run/" + link, "run/" + seed, "up/agent", "run/" + link, "run/" + seed,
+		}, f.calls(), "a start whose copy failed comes up again, and one that is up is not filled again")
+	})
+
+	t.Run("without rust", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+		c := testConfig()
+		c.Ecosystems = []string{"go", "node", "python"}
+
+		require.NoError(t, r.ensureUp(t.Context(), c))
+		assert.Empty(t, f.runsIn(sandbox.PhaseAgent))
+	})
+
+	t.Run("a failed step", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			res  sandbox.Result
+			want error
+		}{
+			{name: "outside a sandbox", res: sandbox.Result{ExitCode: proc.NotInSandbox}, want: errNotInSandbox},
+			{name: "a directory elsewhere", res: sandbox.Result{ExitCode: elsewhere}, want: errElsewhere},
+			{name: "another failure", res: sandbox.Result{ExitCode: 2, Output: "cp: No space left on device\n"}},
+			{name: "a timeout", res: sandbox.Result{ExitCode: elsewhere, TimedOut: true}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				f := newFake()
+				r := f.runner()
+				c := testConfig()
+				c.Ecosystems = []string{"rust"}
+
+				f.results[seed] = tt.res
+
+				err := r.ensureUp(t.Context(), c)
+				require.Error(t, err)
+				assert.False(t, r.state(c.RunID).agentUp())
+
+				for _, sentinel := range []error{errNotInSandbox, errElsewhere} {
+					if sentinel == tt.want {
+						require.ErrorIs(t, err, sentinel)
+					} else {
+						require.NotErrorIs(t, err, sentinel)
+					}
+				}
+			})
+		}
+	})
+}
+
+// A directory outside the home or a source outside the cache stops the step
+// before a command is composed, and nothing runs.
+func TestSeedHomeRefusesPathsOutOfBounds(t *testing.T) {
+	const (
+		dir = home + "/.cache/cargo/registry/index"
+		src = cache + "/cargo/registry/index"
+	)
+
+	for _, tt := range []struct {
+		name     string
+		dir, src string
+	}{
+		{name: "relative directory", dir: ".cache/cargo/registry/index", src: src},
+		{name: "empty directory", dir: "", src: src},
+		{name: "directory climbing out of the home", dir: home + "/../../etc/cargo", src: src},
+		{name: "directory with a trailing slash", dir: dir + "/", src: src},
+		{name: "the home itself", dir: home, src: src},
+		{name: "directory outside the home", dir: "/etc/cargo", src: src},
+		{name: "directory in a sibling of the home", dir: home + "2/index", src: src},
+		{name: "relative source", dir: dir, src: "cache/cargo/registry/index"},
+		{name: "source climbing out of the cache", dir: dir, src: cache + "/../etc"},
+		{name: "source outside the cache", dir: dir, src: "/etc"},
+		{name: "source in a sibling of the cache", dir: dir, src: cache + "2/index"},
+		{name: "the cache itself", dir: dir, src: cache},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seeds := map[string]string{tt.dir: tt.src}
+
+			cmd, err := seedCommand(seeds)
+			require.ErrorIs(t, err, errOutOfBounds)
+			assert.Empty(t, cmd.Argv, "nothing is composed")
+
+			f := newFake()
+			err = seedHome(t.Context(), fakeContainer{f: f, phase: sandbox.PhaseAgent}, seeds)
+			require.ErrorIs(t, err, errOutOfBounds)
+			assert.Empty(t, f.calls(), "nothing runs")
+
+			seeds[home+"/.cache/other/index"] = cache + "/other/index"
+
+			_, err = seedCommand(seeds)
+			require.ErrorIs(t, err, errOutOfBounds, "a valid directory does not let an invalid one through")
 		})
 	}
 }

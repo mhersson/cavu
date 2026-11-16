@@ -116,7 +116,9 @@ var ecosystemFixtures = []ecosystemFixture{
 			"src/lib.rs": "pub fn format(n: u64) -> String {\n    itoa::Buffer::new().format(n).to_string()\n}\n\n" +
 				"#[cfg(test)]\nmod tests {\n    #[test]\n    fn formats() {\n        assert_eq!(super::format(42), \"42\");\n    }\n}\n",
 		},
-		setup: "cargo fetch", verify: "cargo test",
+		// Offline, so the baseline and the second verify pass only on the
+		// crates the setup phase fetched; the dependency add stays online.
+		setup: "cargo fetch", verify: "cargo test --offline",
 		tools:        []string{"rust@stable"},
 		toolchainURL: "https://static.rust-lang.org/dist/channel-rust-stable.toml.sha256", version: "cargo --version",
 		added: map[string]string{

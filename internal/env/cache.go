@@ -75,11 +75,12 @@ func render(m map[string]string) []string {
 
 // AgentEnv returns the agent phase's environment. Shared from the read-only
 // project cache: Go's module downloads (through the file proxy in GOPROXY), the
-// mise toolchains (MISE_DATA_DIR and the shims) and the Rust toolchain
-// (RUSTUP_HOME, and Cargo's binaries through AgentLinks). Not shared: the npm,
-// pip, uv and Cargo caches, which start empty under home, so those packages
-// come from the registries in AgentHosts. mise installs nothing there: its data
-// is read-only and the toolchain hosts are out of reach.
+// mise toolchains (MISE_DATA_DIR and the shims) and the Rust toolchain and
+// crates (RUSTUP_HOME, Cargo's binaries through AgentLinks and its downloads
+// through AgentSeeds). Not shared: the npm, pip and uv caches, which start
+// empty under home, so those packages come from the registries in AgentHosts.
+// mise installs nothing there: its data is read-only and the toolchain hosts
+// are out of reach.
 func AgentEnv(ecosystems []string, home string) []string {
 	m := common()
 	cacheVars(m, ecosystems, agentRoot(home))

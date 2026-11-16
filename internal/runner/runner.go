@@ -34,6 +34,8 @@ const (
 	modeKey   = "key"
 
 	linkTimeout = time.Minute
+	// seedTimeout leaves room for a large project's crates on a slow volume.
+	seedTimeout = 10 * time.Minute
 
 	// elsewhere is a guarded script's exit status when a directory it would
 	// change resolves elsewhere; its other failures exit 2.
@@ -51,6 +53,24 @@ var linkScript = proc.SandboxOnly(`while [ "$#" -ge 3 ]; do
 	fi
 	rm -rf -- "./$2" && ln -s -- "$3" "./$2" || exit 2
 	shift 3
+done
+[ "$#" -eq 0 ] || exit 2`)
+
+// seedScript copies into each directory, given with its source, what the
+// source holds that is missing or older there: a later setup-phase fetch then
+// replaces a stale index entry in a kept home, and the agent's newer files
+// stay. It writes only by relative name in a directory whose real path is the
+// one seedCommand validated; -f replaces the read-only files git writes.
+var seedScript = proc.SandboxOnly(`while [ "$#" -ge 2 ]; do
+	if [ -d "$2" ]; then
+		mkdir -p -- "$1" && cd -P -- "$1" || exit 2
+		if [ "$(pwd -P)" != "$1" ]; then
+			printf 'cavu: %s resolves to %s; nothing copied into it\n' "$1" "$(pwd -P)" >&2
+			exit ` + strconv.Itoa(elsewhere) + `
+		fi
+		cp -R -u -f -- "$2/." . || exit 2
+	fi
+	shift 2
 done
 [ "$#" -eq 0 ] || exit 2`)
 
@@ -288,6 +308,10 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		return err
 	}
 
+	if err := seedHome(ctx, a, env.AgentSeeds(st.ecosystems, home)); err != nil {
+		return err
+	}
+
 	st.agent = a
 
 	return nil
@@ -319,6 +343,38 @@ func linkCommand(links map[string]string) (proc.Command, error) {
 		}
 
 		argv = append(argv, path.Dir(link), path.Base(link), target)
+	}
+
+	return proc.Command{Argv: argv}, nil
+}
+
+// seedHome fills directories in the agent phase's home from their sources in
+// the cache.
+func seedHome(ctx context.Context, a container, seeds map[string]string) error {
+	if len(seeds) == 0 {
+		return nil
+	}
+
+	cmd, err := seedCommand(seeds)
+	if err != nil {
+		return err
+	}
+
+	return homeStep(ctx, a, "seed the agent's home", cmd, seedTimeout)
+}
+
+// seedCommand refuses every directory unless each is strictly under the home
+// and each source under the cache, so the script copies only into the home.
+func seedCommand(seeds map[string]string) (proc.Command, error) {
+	argv := []string{"sh", "-c", seedScript, "sh"}
+
+	for _, dir := range slices.Sorted(maps.Keys(seeds)) {
+		src := seeds[dir]
+		if err := errors.Join(within(dir, home), within(src, cache)); err != nil {
+			return proc.Command{}, err
+		}
+
+		argv = append(argv, dir, src)
 	}
 
 	return proc.Command{Argv: argv}, nil
