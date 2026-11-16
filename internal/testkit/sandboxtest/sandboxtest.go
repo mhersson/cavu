@@ -1,7 +1,8 @@
 // Package sandboxtest is what integration tests that need a container runtime
 // share: the runtime under test, unique labelled names, the sandbox image built
-// once per test binary, the host address a container can reach, and a test CA
-// with a TLS server that CA signs for. It names no agent: the caller passes
+// once per test binary, the removal of a test instance's containers and
+// volumes, the host address a container can reach, and a test CA with a TLS
+// server that CA signs for. It names no agent: the caller passes
 // the agent version and checksums the image installs.
 package sandboxtest
 
@@ -231,6 +232,50 @@ func RunInImage(t *testing.T, r sandbox.Runtime, image string, argv ...string) (
 	out, err := exec.CommandContext(t.Context(), r.Bin, args...).CombinedOutput() //nolint:gosec // test containers with a test label
 
 	return string(out), err
+}
+
+// RemoveInstanceAfter removes, after the test, the containers and then the
+// volumes the label cavu.instance=instance lists, keeping to the names with the
+// instance's cavu-<first 8>- prefix. It reports any other name and leaves it,
+// so a runtime that ignored the filter cannot hand it someone else's.
+func RemoveInstanceAfter(t *testing.T, r sandbox.Runtime, instance string) {
+	t.Helper()
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+
+		containers, volumes, err := r.List(ctx, "cavu.instance="+instance)
+		if err != nil {
+			t.Errorf("list instance %s: %v", instance, err)
+
+			return
+		}
+
+		own := func(names []string) []string {
+			var out []string
+
+			for _, n := range names {
+				if !strings.HasPrefix(n, "cavu-"+instance[:8]+"-") {
+					t.Errorf("the filter cavu.instance=%s listed %q, which lacks the instance prefix; left in place", instance, n)
+
+					continue
+				}
+
+				out = append(out, n)
+			}
+
+			return out
+		}
+
+		if err := r.Remove(ctx, own(containers)...); err != nil {
+			t.Errorf("remove the containers of instance %s: %v", instance, err)
+		}
+
+		if err := r.VolumeRemove(ctx, own(volumes)...); err != nil {
+			t.Errorf("remove the volumes of instance %s: %v", instance, err)
+		}
+	})
 }
 
 // HostAddr is the narrowest address on this host that a container started with

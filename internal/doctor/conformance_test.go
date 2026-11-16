@@ -3,12 +3,10 @@
 package doctor
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -35,17 +33,7 @@ func TestDoctorAgainstMock(t *testing.T) {
 	_, _ = rand.Read(b)
 	instance := hex.EncodeToString(b)
 
-	// Everything the doctor made carries the instance's label and name prefix.
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-
-		containers, volumes, err := r.List(ctx, "cavu.instance="+instance)
-		if assert.NoError(t, err) {
-			assert.NoError(t, r.Remove(ctx, own(t, instance, containers)...))
-			assert.NoError(t, r.VolumeRemove(ctx, own(t, instance, volumes)...))
-		}
-	})
+	sandboxtest.RemoveInstanceAfter(t, r, instance)
 
 	credential := "doctor-credential-" + instance
 	checks := Run(t.Context(), Deps{
@@ -85,24 +73,4 @@ func TestDoctorAgainstMock(t *testing.T) {
 	}
 
 	assert.Equal(t, 3, calls)
-}
-
-// own keeps the names that carry the instance's prefix, so a runtime that
-// ignored the label filter cannot hand the cleanup someone else's.
-func own(t *testing.T, instance string, names []string) []string {
-	t.Helper()
-
-	var out []string
-
-	for _, n := range names {
-		if !strings.HasPrefix(n, "cavu-"+instance[:8]+"-") {
-			t.Errorf("the filter cavu.instance=%s listed %q, which lacks the instance prefix; left in place", instance, n)
-
-			continue
-		}
-
-		out = append(out, n)
-	}
-
-	return out
 }
