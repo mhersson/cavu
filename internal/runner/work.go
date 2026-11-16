@@ -16,7 +16,6 @@ import (
 	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/store"
-	"github.com/mhersson/cavu/internal/verify"
 )
 
 const (
@@ -148,7 +147,7 @@ func prompt(c engine.RunConfig, mode, detail string) (string, error) {
 	case engine.ModeContinue:
 		return prompts.Render(prompts.Continue, nil)
 	case engine.ModeFixVerify:
-		return prompts.Render(prompts.FixVerify, prompts.FixVerifyData{Command: c.Verify.Command, Output: verify.Excerpt(detail)})
+		return prompts.Render(prompts.FixVerify, prompts.FixVerifyData{Command: c.Verify.Command, Output: detail})
 	case engine.ModeAnswer:
 		return prompts.Render(prompts.Answer, prompts.AnswerData{Answer: detail})
 	}

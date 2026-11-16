@@ -24,8 +24,8 @@ const (
 // WorkData fills the work prompt.
 type WorkData struct{ Title, Body string }
 
-// FixVerifyData fills the fix_verify prompt. Output is the excerpt of the
-// verify output a fix prompt gets.
+// FixVerifyData fills the fix_verify prompt. Output is the recorded verify
+// output, capped at 64 KiB with its head and tail kept.
 type FixVerifyData struct{ Command, Output string }
 
 // AnswerData fills the answer prompt.

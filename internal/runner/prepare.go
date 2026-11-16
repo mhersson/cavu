@@ -301,22 +301,17 @@ func runVerify(ctx context.Context, st *run, c engine.RunConfig) (engine.VerifyR
 		return engine.VerifyResult{}, errors.New("runner: the verify command is blank and the project does not waive it")
 	}
 
-	timeout := c.Verify.Timeout
-	if timeout <= 0 {
-		timeout = verify.ClampTimeout(0)
-	}
-
 	cmd := proc.Command{Argv: verify.Argv(c.Verify.Command), Env: agentEnv(st.ecosystems), Dir: workspace}
 	start := time.Now()
 
-	res, err := st.agent.Run(ctx, cmd, timeout)
+	res, err := st.agent.Run(ctx, cmd, c.Verify.Timeout)
 	if err != nil {
 		return engine.VerifyResult{}, err
 	}
 
 	return engine.VerifyResult{
 		Result: verify.Classify(res.ExitCode, res.TimedOut), Command: c.Verify.Command,
-		Output: output(res, timeout), ExitCode: res.ExitCode, Duration: time.Since(start),
+		Output: output(res, c.Verify.Timeout), ExitCode: res.ExitCode, Duration: time.Since(start),
 	}, nil
 }
 

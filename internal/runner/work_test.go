@@ -19,7 +19,6 @@ import (
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/store"
-	"github.com/mhersson/cavu/internal/verify"
 )
 
 const (
@@ -207,7 +206,7 @@ func TestWorkSpec(t *testing.T) {
 		{
 			name: "fix verify", w: engine.WorkRequest{Mode: engine.ModeFixVerify, SessionID: sessionUUID, Resume: true, Detail: "ok\n--- FAIL: TestLogin\n"},
 			prompt: func(t *testing.T, c engine.RunConfig) string {
-				return render(t, prompts.FixVerify, prompts.FixVerifyData{Command: c.Verify.Command, Output: verify.Excerpt("ok\n--- FAIL: TestLogin\n")})
+				return render(t, prompts.FixVerify, prompts.FixVerifyData{Command: c.Verify.Command, Output: "ok\n--- FAIL: TestLogin\n"})
 			},
 		},
 		{

@@ -548,16 +548,6 @@ func TestVerifyResultsMatchEngine(t *testing.T) {
 	assert.Equal(t, engine.ResultTimeout, verify.Timeout)
 }
 
-func TestVerifyTimeoutDefault(t *testing.T) {
-	f := newFake()
-	c := testConfig()
-	c.Verify.Timeout = 0
-
-	_, err := f.runner().Prepare(t.Context(), c)
-	require.NoError(t, err)
-	assert.Equal(t, verify.ClampTimeout(0), f.run(t, "make test").timeout)
-}
-
 func sorted(s []string) []string {
 	s = slices.Clone(s)
 	slices.Sort(s)
