@@ -97,9 +97,10 @@ var repoVars = sync.OnceValues(func() (map[string]bool, error) {
 	return vars, nil
 })
 
-// cleanEnv is the inherited environment without git's repository-local
-// variables: under a hook or `rebase --exec` they name the operator's repository.
-func cleanEnv(t *testing.T) []string {
+// cleanEnv returns inherited without git's repository-local variables: under a
+// hook or `rebase --exec` they name the operator's repository. It never returns
+// nil, because a nil Cmd.Env passes on the whole inherited environment.
+func cleanEnv(t *testing.T, inherited []string) []string {
 	t.Helper()
 
 	vars, err := repoVars()
@@ -107,9 +108,9 @@ func cleanEnv(t *testing.T) []string {
 		t.Fatal(err)
 	}
 
-	var env []string
+	env := make([]string, 0, len(inherited))
 
-	for _, kv := range os.Environ() {
+	for _, kv := range inherited {
 		name, _, _ := strings.Cut(kv, "=")
 		if vars[name] || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
 			continue
@@ -129,7 +130,7 @@ func Git(t *testing.T, dir string, args ...string) string {
 
 	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
-	cmd.Env = cleanEnv(t)
+	cmd.Env = cleanEnv(t, os.Environ())
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 
