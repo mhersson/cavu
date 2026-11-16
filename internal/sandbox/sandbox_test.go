@@ -259,10 +259,11 @@ func TestOpenRefusesBadInstanceID(t *testing.T) {
 		"negative task":   func(o *Options) { o.TaskID = -1 },
 		"zero project":    func(o *Options) { o.ProjectID = 0 },
 		"negative run id": func(o *Options) { o.RunID = -7 },
-		"zero run and task, zero project": func(o *Options) {
-			o.RunID, o.TaskID, o.ProjectID = 0, 0, 0
+		"zero run and task, negative project": func(o *Options) {
+			o.RunID, o.TaskID, o.ProjectID = 0, 0, -1
 		},
 		"zero run, negative task": func(o *Options) { o.RunID, o.TaskID = 0, -1 },
+		"zero project, zero run":  func(o *Options) { o.RunID, o.ProjectID = 0, 0 },
 	}
 
 	for name, mutate := range cases {
@@ -286,8 +287,9 @@ func TestOpenRefusesBadInstanceID(t *testing.T) {
 	})
 }
 
-// Run id 0 with task id 0 is the environment check's sandbox.
-func TestOpenAcceptsTheEnvironmentCheck(t *testing.T) {
+// Run id 0 with task id 0 is the environment check's sandbox, and with
+// project id 0 the doctor's.
+func TestOpenAcceptsTheReservedIDs(t *testing.T) {
 	r, f := fakeRuntime(t, "docker")
 	o := goodOptions(r)
 	o.RunID, o.TaskID = 0, 0
@@ -298,6 +300,12 @@ func TestOpenAcceptsTheEnvironmentCheck(t *testing.T) {
 	assert.Equal(t, "cavu-01234567-workspace-0", s.name("workspace"))
 	assert.Equal(t, "cavu-01234567-home-0", s.name("home"))
 	assert.Equal(t, "cavu-01234567-cache-3", s.name("cache"))
+
+	o.ProjectID = 0
+
+	s, err = Open(o)
+	require.NoError(t, err, "the doctor's ids")
+	assert.Equal(t, "cavu-01234567-mirror-0", s.name("mirror"))
 }
 
 func TestOpenRefusesBadOptions(t *testing.T) {
