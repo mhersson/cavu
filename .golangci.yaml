@@ -34,6 +34,7 @@ linters:
           files:
           - "**/internal/engine/**"
           - "**/internal/store/**"
+          - "**/internal/replay/**"
           deny:
           - pkg: github.com/mhersson/cavu/internal/sandbox
             desc: the server half must run where no container runtime exists
