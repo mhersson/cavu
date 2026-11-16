@@ -248,6 +248,7 @@ func TestEnvRefusesBadNamesAndValues(t *testing.T) {
 		"value with newline":   "A=" + secret + "\n" + secret,
 		"value with CR":        "A=" + secret + "\r",
 		"value with NUL":       "A=" + secret + "\x00",
+		"value not UTF-8":      "A=" + secret + "\xff",
 		"line over 65535":      "A=" + secret + strings.Repeat("x", 65536-2-len(secret)),
 	}
 

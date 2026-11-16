@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/proc"
 )
@@ -207,6 +208,9 @@ func envFile(env []string) ([]byte, error) {
 			return nil, fmt.Errorf("environment variable %q: invalid name", name)
 		case strings.ContainsAny(value, "\n\r\x00"):
 			return nil, fmt.Errorf("environment variable %s: value holds a newline, carriage return or NUL", name)
+		case !utf8.ValidString(value):
+			// Docker refuses such a line and prints it, value included.
+			return nil, fmt.Errorf("environment variable %s: value is not valid UTF-8", name)
 		case len(kv) > maxEnvLine:
 			return nil, fmt.Errorf("environment variable %s: longer than %d bytes", name, maxEnvLine)
 		}
