@@ -89,36 +89,28 @@ func TestProjectAddValidatesInput(t *testing.T) {
 	tests := []struct {
 		name  string
 		args  []string // after project add
-		names string   // what standard error names
+		names string   // the field or flag standard error names
 	}{
-		{"an upper-case name", []string{"Web", "--repo", repo}, strconv.Quote("Web")},
-		{"an empty name", []string{"", "--repo", repo}, strconv.Quote("")},
-		{"a name over 40 characters", []string{strings.Repeat("a", 41), "--repo", repo}, strconv.Quote(strings.Repeat("a", 41))},
-		{"a name with a slash", []string{"web/app", "--repo", repo}, strconv.Quote("web/app")},
-		{"no repository", []string{"web"}, "--repo"},
-		{"an ssh repository", []string{"web", "--repo", "git@example.com:web.git"}, "--repo"},
-		{"an http repository", []string{"web", "--repo", "http://example.com/web.git"}, "--repo"},
-		{"a repository with whitespace", []string{"web", "--repo", "https://example.com/my web.git"}, "--repo"},
-		{"a repository with a control character", []string{"web", "--repo", repo + "\x1b"}, "--repo"},
-		{"a base starting with -", []string{"web", "--repo", repo, "--base=-main"}, "--base"},
-		{"a base with whitespace", []string{"web", "--repo", repo, "--base", "my branch"}, "--base"},
-		{"a base with a control character", []string{"web", "--repo", repo, "--base", "main\n"}, "--base"},
-		{"an empty base", []string{"web", "--repo", repo, "--base", ""}, "--base"},
-		{"verify with no-verify", []string{"web", "--repo", repo, "--verify", "make test", "--no-verify"}, "--no-verify"},
-		{"a blank verify", []string{"web", "--repo", repo, "--verify", " "}, "--verify"},
-		{"a blank setup", []string{"web", "--repo", repo, "--setup", ""}, "--setup"},
+		{"an upper-case name", []string{"Web", "--repo", repo}, "name"},
+		{"no repository", []string{"web"}, "repo_url"},
+		{"an http repository", []string{"web", "--repo", "http://example.com/web.git"}, "repo_url"},
+		{"a base starting with -", []string{"web", "--repo", repo, "--base=-main"}, "base_branch"},
+		{"verify with no-verify", []string{"web", "--repo", repo, "--verify", "make test", "--no-verify"}, "verify_waived"},
+		{"a blank verify", []string{"web", "--repo", repo, "--verify", " "}, "verify_command"},
+		{"an empty verify", []string{"web", "--repo", repo, "--verify", ""}, "--verify"},
+		{"an empty setup", []string{"web", "--repo", repo, "--setup", ""}, "--setup"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "data")
+			dir := t.TempDir()
 
 			code, stdout, stderr := runCavu(append(append([]string{"project", "add"}, tc.args...), "--data-dir", dir)...)
 
 			assert.Equal(t, 1, code)
 			assert.Empty(t, stdout)
 			assert.Contains(t, stderr, tc.names)
-			assert.NoDirExists(t, dir, "nothing is created")
+			assert.Empty(t, storedProjects(t, dir), "nothing is stored")
 		})
 	}
 
@@ -166,18 +158,18 @@ func TestProjectSetValidatesInput(t *testing.T) {
 	tests := []struct {
 		name  string
 		args  []string // after project set web
-		names string
+		names string   // the field or flag standard error names
 	}{
-		{"a base starting with -", []string{"--base=-x"}, "--base"},
-		{"a blank setup", []string{"--setup", " "}, "--setup"},
-		{"a blank verify", []string{"--verify", ""}, "--verify"},
-		{"verify with no-verify", []string{"--verify", "make test", "--no-verify"}, "--no-verify"},
-		{"an environment name that starts with a digit", []string{"--env", "1CI=1"}, "--env"},
+		{"a base starting with -", []string{"--base=-x"}, "base_branch"},
+		{"a blank setup", []string{"--setup", " "}, "setup_command"},
+		{"an empty verify", []string{"--verify", ""}, "--verify"},
+		{"verify with no-verify", []string{"--verify", "make test", "--no-verify"}, "verify_waived"},
+		{"an environment name that starts with a digit", []string{"--env", "1CI=1"}, "env"},
 		{"an environment value without a name", []string{"--env", "CI"}, "--env"},
-		{"a secret variable with a dash", []string{"--secret", "NPM-TOKEN"}, "--secret"},
-		{"a tool without a version", []string{"--tool", "go="}, "--tool"},
-		{"a version without a tool", []string{"--tool", "=1.27"}, "--tool"},
-		{"an unknown switch", []string{"--switch", "fast=on"}, "--switch"},
+		{"a secret variable with a dash", []string{"--secret", "NPM-TOKEN"}, "secret_vars"},
+		{"a tool without a version", []string{"--tool", "go="}, "tool_overrides"},
+		{"a tool without =", []string{"--tool", "go"}, "--tool"},
+		{"an unknown switch", []string{"--switch", "fast=on"}, "switches"},
 		{"a switch neither on nor off", []string{"--switch", "web_tools=yes"}, "--switch"},
 	}
 

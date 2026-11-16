@@ -20,11 +20,12 @@ import (
 	"github.com/mhersson/cavu/internal/store"
 )
 
-// Store is the part of *store.Store the loop uses; tests wrap it to inject a conflict.
+// Store is the part of *store.Store the engine uses; tests wrap it to inject a conflict.
 type Store interface {
 	Task(ctx context.Context, id int64) (store.Task, error)
 	UpdateTask(ctx context.Context, t store.Task) error
 	Project(ctx context.Context, id int64) (store.Project, error)
+	CreateProject(ctx context.Context, p store.Project) (store.Project, error)
 	UpdateProject(ctx context.Context, p store.Project) error
 	Settings(ctx context.Context) (map[string]string, error)
 	Events(ctx context.Context, taskID, afterID int64, limit int) ([]store.Event, error)

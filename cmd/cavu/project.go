@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"regexp"
 	"strings"
 	"text/tabwriter"
-	"unicode"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -28,11 +26,6 @@ const (
 		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--data-dir DIR]"
 	projectListUsage  = "cavu project list [--data-dir DIR]"
 	projectCheckUsage = "cavu project check NAME [--data-dir DIR]"
-)
-
-var (
-	projectName = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
-	varName     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr io.Writer) error {
@@ -95,45 +88,35 @@ func (l *listFlag) Set(v string) error {
 	return nil
 }
 
-// apply writes the flags given over p, or refuses the first value p cannot
-// use, naming its flag. A list flag replaces its field.
+// apply writes the flags given over p; a list flag replaces its field. What
+// p may hold is the engine's to refuse.
 func (f *projectFlags) apply(p *store.Project) error {
 	given := f.given()
 
+	// The engine reads an empty command as none, so an empty value would clear the field.
 	switch {
-	case given["base"] && !plainArg(f.base):
-		return fmt.Errorf("--base %q: want a branch name that does not start with - and holds no whitespace", f.base)
-	case given["setup"] && strings.TrimSpace(f.setup) == "":
-		return errors.New("--setup is blank")
-	case given["verify"] && f.noVerify:
-		return errors.New("--verify and --no-verify: give one")
-	case given["verify"] && strings.TrimSpace(f.verify) == "":
-		return errors.New("--verify is blank; to waive verify, give --no-verify")
+	case given["setup"] && f.setup == "":
+		return errors.New("--setup needs a command")
+	case given["verify"] && f.verify == "":
+		return errors.New("--verify needs a command; to waive verify, give --no-verify")
 	}
 
-	env, err := pairs("--env", "NAME=VALUE, NAME of letters, digits and _, not starting with a digit", f.env,
-		func(k, _ string) bool { return varName.MatchString(k) })
+	env, err := pairs("--env", f.env)
 	if err != nil {
 		return err
 	}
 
-	tools, err := pairs("--tool", "NAME=VERSION", f.tools, func(k, v string) bool { return k != "" && v != "" })
+	tools, err := pairs("--tool", f.tools)
 	if err != nil {
 		return err
-	}
-
-	for _, v := range f.secrets {
-		if !varName.MatchString(v) {
-			return fmt.Errorf("--secret %q: want a variable name of letters, digits and _, not starting with a digit", v)
-		}
 	}
 
 	switches := map[string]bool{}
 
 	for _, s := range f.switches {
 		k, v, _ := strings.Cut(s, "=")
-		if !engine.IsSwitch(k) || v != "on" && v != "off" {
-			return fmt.Errorf("--switch %q: want continuations, verify_fix or web_tools, then =on or =off", s)
+		if v != "on" && v != "off" {
+			return fmt.Errorf("--switch %q: want NAME=on or NAME=off", s)
 		}
 
 		switches[k] = v == "on"
@@ -147,12 +130,9 @@ func (f *projectFlags) apply(p *store.Project) error {
 		p.SetupCommand = f.setup
 	}
 
-	if given["verify"] {
-		p.VerifyCommand, p.VerifyWaived = f.verify, false
-	}
-
-	if f.noVerify {
-		p.VerifyCommand, p.VerifyWaived = "", true
+	// Given together, the command and the waiver reach the engine, which refuses them.
+	if given["verify"] || f.noVerify {
+		p.VerifyCommand, p.VerifyWaived = f.verify, f.noVerify
 	}
 
 	if given["egress"] {
@@ -180,27 +160,20 @@ func (f *projectFlags) apply(p *store.Project) error {
 	return nil
 }
 
-// pairs reads K=V values into a map, each pair checked by ok.
-func pairs(flagName, want string, values []string, ok func(k, v string) bool) (map[string]string, error) {
+// pairs splits NAME=VALUE values into a map.
+func pairs(flagName string, values []string) (map[string]string, error) {
 	m := make(map[string]string, len(values))
 
 	for _, s := range values {
 		k, v, found := strings.Cut(s, "=")
-		if !found || !ok(k, v) {
-			return nil, fmt.Errorf("%s %q: want %s", flagName, s, want)
+		if !found {
+			return nil, fmt.Errorf("%s %q: want NAME=VALUE", flagName, s)
 		}
 
 		m[k] = v
 	}
 
 	return m, nil
-}
-
-// plainArg reports whether s reaches git as one plain argument: not empty,
-// not an option, and free of whitespace and control characters.
-func plainArg(s string) bool {
-	return s != "" && !strings.HasPrefix(s, "-") &&
-		!strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 }
 
 func projectAdd(ctx context.Context, args []string, stderr io.Writer) error {
@@ -210,13 +183,6 @@ func projectAdd(ctx context.Context, args []string, stderr io.Writer) error {
 	name, err := f.parse(args, 1)
 	if err != nil {
 		return err
-	}
-
-	switch {
-	case !projectName.MatchString(name[0]):
-		return fmt.Errorf("NAME %q: want 1 to 40 of a-z, 0-9 and -", name[0])
-	case !strings.HasPrefix(*repoURL, "https://") || !plainArg(*repoURL):
-		return fmt.Errorf("--repo %q: want an https:// URL with no whitespace", *repoURL)
 	}
 
 	p := store.Project{Name: name[0], RepoURL: *repoURL, BaseBranch: "main"}
@@ -230,13 +196,9 @@ func projectAdd(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	defer a.close()
 
-	if _, err := a.store.CreateProject(ctx, p); errors.Is(err, store.ErrConflict) {
-		return fmt.Errorf("NAME %q: a project of that name exists", p.Name)
-	} else if err != nil {
-		return err
-	}
+	_, err = engine.AddProject(ctx, a.store, p)
 
-	return nil
+	return err
 }
 
 func projectSet(ctx context.Context, args []string, stderr io.Writer) error {

@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/mhersson/cavu/internal/engine"
@@ -79,8 +80,113 @@ func TestEditProjectClearsBaseline(t *testing.T) {
 func TestEditProjectOfAMissingProject(t *testing.T) {
 	h := newHarness(t)
 
-	err := engine.EditProject(t.Context(), h.store, store.Project{ID: 999, Name: "gone"})
-	assert.ErrorIs(t, err, store.ErrNotFound)
+	gone := h.project()
+	gone.ID, gone.Name = 999, "gone"
+
+	assert.ErrorIs(t, engine.EditProject(t.Context(), h.store, gone), store.ErrNotFound)
+}
+
+// validProject is a project that holds only what a project may hold.
+func validProject() store.Project {
+	return store.Project{
+		Name: "api", RepoURL: "https://example.com/api.git", BaseBranch: "main", SetupCommand: "make deps", VerifyCommand: "make test",
+		Env: map[string]string{"CI": "1", "_X2": "y"}, SecretVars: []string{"NPM_TOKEN"}, ToolOverrides: map[string]string{"go": "1.27"},
+		Switches: map[string]bool{"continuations": false, "verify_fix": true, "web_tools": true}, EgressHosts: []string{"proxy.golang.org"},
+	}
+}
+
+func TestProjectRules(t *testing.T) {
+	tests := []struct {
+		name  string
+		edit  func(p *store.Project)
+		field string // what the error names
+	}{
+		{"an upper-case name", func(p *store.Project) { p.Name = "Api" }, "name"},
+		{"an empty name", func(p *store.Project) { p.Name = "" }, "name"},
+		{"a name over 40 characters", func(p *store.Project) { p.Name = strings.Repeat("a", 41) }, "name"},
+		{"a name with a slash", func(p *store.Project) { p.Name = "api/v2" }, "name"},
+		{"no repository", func(p *store.Project) { p.RepoURL = "" }, "repo_url"},
+		{"an ssh repository", func(p *store.Project) { p.RepoURL = "git@example.com:api.git" }, "repo_url"},
+		{"an http repository", func(p *store.Project) { p.RepoURL = "http://example.com/api.git" }, "repo_url"},
+		{"a repository with whitespace", func(p *store.Project) { p.RepoURL = "https://example.com/my api.git" }, "repo_url"},
+		{"a repository with a control character", func(p *store.Project) { p.RepoURL = "https://example.com/api.git\x1b" }, "repo_url"},
+		{"an empty base", func(p *store.Project) { p.BaseBranch = "" }, "base_branch"},
+		{"a base starting with -", func(p *store.Project) { p.BaseBranch = "-main" }, "base_branch"},
+		{"a base with whitespace", func(p *store.Project) { p.BaseBranch = "my branch" }, "base_branch"},
+		{"a base with a control character", func(p *store.Project) { p.BaseBranch = "main\n" }, "base_branch"},
+		{"a blank setup", func(p *store.Project) { p.SetupCommand = " " }, "setup_command"},
+		{"a blank verify", func(p *store.Project) { p.VerifyCommand = "\t" }, "verify_command"},
+		{"verify with its waiver", func(p *store.Project) { p.VerifyWaived = true }, "verify_waived"},
+		{"an environment name starting with a digit", func(p *store.Project) { p.Env = map[string]string{"1CI": "1"} }, "env"},
+		{"an environment name with a dash", func(p *store.Project) { p.Env = map[string]string{"GO-FLAGS": "x"} }, "env"},
+		{"a secret variable with a dash", func(p *store.Project) { p.SecretVars = []string{"NPM-TOKEN"} }, "secret_vars"},
+		{"a tool without a version", func(p *store.Project) { p.ToolOverrides = map[string]string{"go": ""} }, "tool_overrides"},
+		{"a version without a tool", func(p *store.Project) { p.ToolOverrides = map[string]string{"": "1.27"} }, "tool_overrides"},
+		{"an unknown switch", func(p *store.Project) { p.Switches = map[string]bool{"fast": true} }, "switches"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+
+			add := validProject()
+			tc.edit(&add)
+
+			_, err := engine.AddProject(t.Context(), h.store, add)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.field)
+
+			ps, err := h.store.Projects(t.Context())
+			require.NoError(t, err)
+			assert.Len(t, ps, 1, "nothing is added")
+
+			h.withBaseline()
+
+			before := h.project()
+			edit := before
+			tc.edit(&edit)
+
+			err = engine.EditProject(t.Context(), h.store, edit)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.field)
+			assert.Equal(t, before, h.project(), "nothing is changed")
+		})
+	}
+}
+
+func TestAddProject(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+
+	want := validProject()
+
+	got, err := engine.AddProject(ctx, h.store, want)
+	require.NoError(t, err)
+	assert.NotZero(t, got.ID)
+
+	stored, err := h.store.ProjectByName(ctx, "api")
+	require.NoError(t, err)
+
+	want.ID = got.ID
+	assert.Equal(t, want, stored)
+
+	_, err = engine.AddProject(ctx, h.store, want)
+	require.ErrorIs(t, err, store.ErrConflict, "a duplicate name")
+
+	for name, edit := range map[string]func(p *store.Project){
+		"bare":   func(p *store.Project) { p.SetupCommand, p.VerifyCommand = "", "" },
+		"waived": func(p *store.Project) { p.VerifyCommand, p.VerifyWaived = "", true },
+		"empty": func(p *store.Project) {
+			p.Env, p.SecretVars, p.ToolOverrides, p.Switches, p.EgressHosts = nil, nil, nil, nil, nil
+		},
+	} {
+		p := validProject()
+		p.Name = name
+		edit(&p)
+
+		_, err := engine.AddProject(ctx, h.store, p)
+		assert.NoError(t, err, name)
+	}
 }
 
 func TestCheckProjectStoresTheBaseline(t *testing.T) {
@@ -167,14 +273,4 @@ func TestCheckProjectRefusesAMissingSetting(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "model_work")
 	assert.Empty(t, h.runner.callsOf("check"))
-}
-
-func TestIsSwitch(t *testing.T) {
-	for _, name := range []string{"continuations", "verify_fix", "web_tools"} {
-		assert.True(t, engine.IsSwitch(name), name)
-	}
-
-	for _, name := range []string{"", "model_work", "web-tools"} {
-		assert.False(t, engine.IsSwitch(name), name)
-	}
 }

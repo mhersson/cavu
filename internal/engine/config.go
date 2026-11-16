@@ -152,13 +152,6 @@ func switchFields(sw *Switches) map[string]*bool {
 	return map[string]*bool{"continuations": &sw.Continuations, "verify_fix": &sw.VerifyFix, "web_tools": &sw.WebTools}
 }
 
-// IsSwitch reports whether name is one of a project's switches.
-func IsSwitch(name string) bool {
-	_, ok := switchFields(&Switches{})[name]
-
-	return ok
-}
-
 // resolveSwitches applies a project's switches over the defaults, then a task's
 // overrides. The snapshot and the run config both resolve through it.
 func resolveSwitches(p store.Project, overrides map[string]string) (Switches, error) {

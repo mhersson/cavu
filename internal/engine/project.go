@@ -2,17 +2,40 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/mhersson/cavu/internal/store"
 )
 
-// EditProject writes a person's edit of a project. It keeps the stored
-// baseline only when the edit leaves alone everything the baseline rests on,
-// and never writes one of its own.
+var (
+	projectName = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	varName     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+// AddProject stores a new project that holds only what a project may hold.
+// A duplicate name returns an error wrapping store.ErrConflict.
+func AddProject(ctx context.Context, s Store, p store.Project) (store.Project, error) {
+	if err := checkProject(p); err != nil {
+		return store.Project{}, err
+	}
+
+	return s.CreateProject(ctx, p)
+}
+
+// EditProject writes a person's edit of a project that holds only what a
+// project may hold. It keeps the stored baseline only when the edit leaves
+// alone everything the baseline rests on, and never writes one of its own.
 func EditProject(ctx context.Context, s Store, p store.Project) error {
+	if err := checkProject(p); err != nil {
+		return err
+	}
+
 	old, err := s.Project(ctx, p.ID)
 	if err != nil {
 		return fmt.Errorf("project %d: %w", p.ID, err)
@@ -24,6 +47,66 @@ func EditProject(ctx context.Context, s Store, p store.Project) error {
 	}
 
 	return s.UpdateProject(ctx, p)
+}
+
+// checkProject refuses what a project may not hold, naming the field: a
+// value a person typed never reaches git as an option, nor a shell as a blank
+// command, which exits 0.
+func checkProject(p store.Project) error {
+	switch {
+	case !projectName.MatchString(p.Name):
+		return fmt.Errorf("name %q: want 1 to 40 of a-z, 0-9 and -", p.Name)
+	case !strings.HasPrefix(p.RepoURL, "https://") || !plainArg(p.RepoURL):
+		return fmt.Errorf("repo_url %q: want an https:// URL with no whitespace", p.RepoURL)
+	case !plainArg(p.BaseBranch):
+		return fmt.Errorf("base_branch %q: want a branch name that does not start with - and holds no whitespace", p.BaseBranch)
+	case blank(p.SetupCommand):
+		return errors.New("setup_command is blank")
+	case blank(p.VerifyCommand):
+		return errors.New("verify_command is blank")
+	case p.VerifyCommand != "" && p.VerifyWaived:
+		return errors.New("verify_command and verify_waived: give one")
+	}
+
+	for k := range p.Env {
+		if !varName.MatchString(k) {
+			return fmt.Errorf("env %q: want a variable name of letters, digits and _, not starting with a digit", k)
+		}
+	}
+
+	for _, v := range p.SecretVars {
+		if !varName.MatchString(v) {
+			return fmt.Errorf("secret_vars %q: want a variable name of letters, digits and _, not starting with a digit", v)
+		}
+	}
+
+	for k, v := range p.ToolOverrides {
+		if k == "" || v == "" {
+			return fmt.Errorf("tool_overrides %q=%q: want a tool name and a version", k, v)
+		}
+	}
+
+	known := switchFields(&Switches{})
+
+	for k := range p.Switches {
+		if known[k] == nil {
+			return fmt.Errorf("switches %q: want continuations, verify_fix or web_tools", k)
+		}
+	}
+
+	return nil
+}
+
+// plainArg reports whether s reaches git as one plain argument: not empty,
+// not an option, and free of whitespace and control characters.
+func plainArg(s string) bool {
+	return s != "" && !strings.HasPrefix(s, "-") &&
+		!strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
+// blank reports a command that is set but holds only whitespace; an empty one is none.
+func blank(command string) bool {
+	return command != "" && strings.TrimSpace(command) == ""
 }
 
 // sameBaselineGround reports whether a and b agree on what a baseline rests on.
