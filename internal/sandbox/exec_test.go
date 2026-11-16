@@ -26,8 +26,13 @@ func TestContainerStartRefuses(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r, f := fakeRuntime(t, "docker")
 
-			_, err := r.Container("cavu-agent-r1").Start(t.Context(), cmd)
+			p, err := r.Container("cavu-agent-r1").Start(t.Context(), cmd)
 			require.Error(t, err)
+
+			// A typed nil would make a later p != nil check pass.
+			if p != nil {
+				t.Errorf("a failed start returned a non-nil %T", p)
+			}
 
 			_, err = r.Container("cavu-agent-r1").Run(t.Context(), cmd, time.Minute)
 			require.Error(t, err)

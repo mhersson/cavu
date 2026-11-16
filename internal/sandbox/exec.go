@@ -47,7 +47,12 @@ func (r Runtime) Container(name string) Container { return Container{r: r, name:
 // Start writes cmd.Files with CopyIn, then execs cmd in the container with
 // stdin attached. The context bounds only the start.
 func (c Container) Start(ctx context.Context, cmd proc.Command) (proc.Process, error) {
-	return c.start(ctx, cmd, false)
+	p, err := c.start(ctx, cmd, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return p, nil
 }
 
 // start execs cmd behind a wrapper that records its pid, so Stop can signal
