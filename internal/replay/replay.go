@@ -105,10 +105,7 @@ func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay,
 		return store.ReplayItem{}, fmt.Errorf("replay: shadow of task %d: %w", src.ID, err)
 	}
 
-	start := store.Event{Type: engine.TaskStarted, Actor: "user", Payload: json.RawMessage("{}")}
-	if l.Now != nil {
-		start.At = l.Now()
-	}
+	start := store.Event{At: l.Now(), Type: engine.TaskStarted, Actor: "user", Payload: json.RawMessage("{}")}
 
 	if _, err := s.Append(ctx, shadow.ID, -1, []store.Event{start}, nil); err != nil {
 		return store.ReplayItem{}, fmt.Errorf("replay: start shadow %d of task %d: %w", shadow.ID, src.ID, err)

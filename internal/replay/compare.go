@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"cmp"
 	"slices"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -38,7 +39,7 @@ func Compare(now, before []store.ReplayItem, titles map[int64]string) []Row {
 		out = append(out, *r)
 	}
 
-	slices.SortFunc(out, func(a, b Row) int { return int(a.SourceTaskID - b.SourceTaskID) })
+	slices.SortFunc(out, func(a, b Row) int { return cmp.Compare(a.SourceTaskID, b.SourceTaskID) })
 
 	return out
 }
