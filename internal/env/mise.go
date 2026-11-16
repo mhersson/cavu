@@ -2,20 +2,16 @@ package env
 
 import (
 	"bytes"
-	"sort"
 
 	"github.com/BurntSushi/toml"
 )
 
 // MiseConfig renders the mise configuration CAVU writes. It holds only a
 // [tools] table, encoded so no name or version can open another table: CAVU
-// never writes [env], [tasks] or hooks.
+// never writes [env], [tasks] or hooks. The encoder sorts keys.
 func MiseConfig(tools []Tool) []byte {
-	sorted := append([]Tool(nil), tools...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-
-	table := make(map[string]string, len(sorted))
-	for _, t := range sorted {
+	table := make(map[string]string, len(tools))
+	for _, t := range tools {
 		table[t.Name] = t.Version
 	}
 
