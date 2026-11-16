@@ -253,3 +253,12 @@ func TestStopThatHadToKillTheClient(t *testing.T) {
 	require.Error(t, p.Stop(100*time.Millisecond), "a repeated Stop")
 	assert.Equal(t, 2, stopExecs(t, f))
 }
+
+func TestRunReportsAFailedStopAtTheTimeout(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+	f.set(t, "sleep", []byte("hold"))
+
+	_, err := r.Container("cavu-agent-r1").Run(t.Context(), proc.Command{Argv: []string{"serve", "hold"}}, 200*time.Millisecond)
+	require.Error(t, err, "the command may still run, so Run must not report a plain timeout")
+	assert.Equal(t, 1, stopExecs(t, f))
+}
