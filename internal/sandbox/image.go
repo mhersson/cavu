@@ -210,32 +210,43 @@ func buildContext(bin, bundle []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ImageLabels are what a sandbox image's labels record.
+type ImageLabels struct {
+	CavuVersion  string // cavu.version
+	AgentVersion string // cavu.claude_code
+	CABundle     string // cavu.ca_bundle: the sha256 of the bundle built in, empty for none
+}
+
 // ImageInfo reads the labels of a local image; an absent image is not an error.
-func (r Runtime) ImageInfo(ctx context.Context, name string) (cavuVersion, agentVersion string, found bool, err error) {
+func (r Runtime) ImageInfo(ctx context.Context, name string) (ImageLabels, bool, error) {
 	if err := checkArg("image", name); err != nil {
-		return "", "", false, err
+		return ImageLabels{}, false, err
 	}
 
 	ids, err := r.output(ctx, "image", "ls", "--quiet", "--filter=reference="+name)
 	if err != nil {
-		return "", "", false, fmt.Errorf("list image %s: %w", name, err)
+		return ImageLabels{}, false, fmt.Errorf("list image %s: %w", name, err)
 	}
 
 	if len(bytes.TrimSpace(ids)) == 0 {
-		return "", "", false, nil
+		return ImageLabels{}, false, nil
 	}
 
 	raw, err := r.output(ctx, "image", "inspect", "--format={{json .Config.Labels}}", name)
 	if err != nil {
-		return "", "", false, fmt.Errorf("inspect image %s: %w", name, err)
+		return ImageLabels{}, false, fmt.Errorf("inspect image %s: %w", name, err)
 	}
 
 	var labels map[string]string
 	if err := json.Unmarshal(bytes.TrimSpace(raw), &labels); err != nil {
-		return "", "", false, fmt.Errorf("inspect image %s: %w", name, err)
+		return ImageLabels{}, false, fmt.Errorf("inspect image %s: %w", name, err)
 	}
 
-	return labels["cavu.version"], labels["cavu.claude_code"], true, nil
+	return ImageLabels{
+		CavuVersion:  labels["cavu.version"],
+		AgentVersion: labels["cavu.claude_code"],
+		CABundle:     labels["cavu.ca_bundle"],
+	}, true, nil
 }
 
 // lockedWriter lets stdout and stderr of one client share a writer.

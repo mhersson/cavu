@@ -278,20 +278,19 @@ func TestImageInfo(t *testing.T) {
 	t.Run("found", func(t *testing.T) {
 		r, f := fakeRuntime(t, "docker")
 		f.outFor(t, "sha256:abc", "image", "ls", "--quiet", "--filter=reference="+name)
-		f.outFor(t, `{"cavu.version":"v1","cavu.claude_code":"1.2.3","cavu.ca_bundle":""}`,
+		f.outFor(t, `{"cavu.version":"v1","cavu.claude_code":"1.2.3","cavu.ca_bundle":"ab12"}`,
 			"image", "inspect", "--format={{json .Config.Labels}}", name)
 
-		cv, av, found, err := r.ImageInfo(t.Context(), name)
+		labels, found, err := r.ImageInfo(t.Context(), name)
 		require.NoError(t, err)
 		assert.True(t, found)
-		assert.Equal(t, "v1", cv)
-		assert.Equal(t, "1.2.3", av)
+		assert.Equal(t, ImageLabels{CavuVersion: "v1", AgentVersion: "1.2.3", CABundle: "ab12"}, labels)
 	})
 
 	t.Run("absent", func(t *testing.T) {
 		r, f := fakeRuntime(t, "docker")
 
-		_, _, found, err := r.ImageInfo(t.Context(), name)
+		_, found, err := r.ImageInfo(t.Context(), name)
 		require.NoError(t, err)
 		assert.False(t, found)
 		assert.Len(t, f.calls(t), 1)
@@ -300,7 +299,7 @@ func TestImageInfo(t *testing.T) {
 	t.Run("refuses an option as a name", func(t *testing.T) {
 		r, f := fakeRuntime(t, "docker")
 
-		_, _, _, err := r.ImageInfo(t.Context(), "--all")
+		_, _, err := r.ImageInfo(t.Context(), "--all")
 		require.Error(t, err)
 		assert.Empty(t, f.calls(t))
 	})

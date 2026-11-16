@@ -677,6 +677,27 @@ func (r Runtime) MemoryMB(ctx context.Context) (int, error) {
 	return int(total >> 20), nil
 }
 
+// Version is the version the runtime's engine reports, so it also shows that
+// the engine answers.
+func (r Runtime) Version(ctx context.Context) (string, error) {
+	podman, err := r.podman()
+	if err != nil {
+		return "", err
+	}
+
+	format := "--format={{.ServerVersion}}"
+	if podman {
+		format = "--format={{.Version.Version}}"
+	}
+
+	out, err := r.output(ctx, "info", format)
+	if err != nil {
+		return "", fmt.Errorf("runtime version: %w", err)
+	}
+
+	return strings.TrimSpace(string(out)), nil
+}
+
 // Inspect reports a container's state.
 func (r Runtime) Inspect(ctx context.Context, name string) (Info, error) {
 	if err := checkArg("container name", name); err != nil {
