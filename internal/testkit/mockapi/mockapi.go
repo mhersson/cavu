@@ -6,19 +6,13 @@ package mockapi
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +22,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // Structured names the request tool that carries the structured-output
@@ -103,18 +96,7 @@ func Start(t *testing.T, steps []Step) *Server {
 	return s
 }
 
-// StartTLS serves steps like Start, over TLS with a certificate for
-// host.docker.internal (and loopback) signed by a fresh test CA, returned as
-// PEM.
-func StartTLS(t *testing.T, steps []Step) (*Server, []byte) {
-	t.Helper()
-
-	caPEM, leaf := certificates(t)
-
-	return StartTLSWith(t, steps, leaf), caPEM
-}
-
-// StartTLSWith serves steps like StartTLS, with the caller's certificate.
+// StartTLSWith serves steps like Start, over TLS with the caller's certificate.
 func StartTLSWith(t *testing.T, steps []Step, cert tls.Certificate) *Server {
 	t.Helper()
 
@@ -441,67 +423,4 @@ func randomHex(n int) string {
 	_, _ = rand.Read(b)
 
 	return hex.EncodeToString(b)
-}
-
-// certificates returns a fresh CA as PEM and a server certificate it signed.
-func certificates(t *testing.T) ([]byte, tls.Certificate) {
-	t.Helper()
-
-	now := time.Now()
-
-	caKey := newKey(t)
-	caTmpl := &x509.Certificate{
-		SerialNumber: serial(t), Subject: pkix.Name{CommonName: "mockapi test CA"},
-		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-	}
-
-	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatalf("mockapi: create CA: %v", err)
-	}
-
-	ca, err := x509.ParseCertificate(caDER)
-	if err != nil {
-		t.Fatalf("mockapi: parse CA: %v", err)
-	}
-
-	leafKey := newKey(t)
-	leafTmpl := &x509.Certificate{
-		SerialNumber: serial(t), Subject: pkix.Name{CommonName: hostName},
-		DNSNames: []string{hostName, "localhost"}, IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
-		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-
-	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, ca, &leafKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatalf("mockapi: create certificate: %v", err)
-	}
-
-	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
-
-	return caPEM, tls.Certificate{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}
-}
-
-func newKey(t *testing.T) *ecdsa.PrivateKey {
-	t.Helper()
-
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("mockapi: generate key: %v", err)
-	}
-
-	return key
-}
-
-func serial(t *testing.T) *big.Int {
-	t.Helper()
-
-	n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
-	if err != nil {
-		t.Fatalf("mockapi: serial: %v", err)
-	}
-
-	return n
 }
