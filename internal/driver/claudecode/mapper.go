@@ -250,13 +250,12 @@ func (m *mapper) emit(ev driver.Event) {
 	ev.ToolInput = maskJSON(m.mask, ev.ToolInput)
 
 	if ev.Capabilities != nil {
-		ev.Capabilities = slices.Collect(func(yield func(string) bool) {
-			for _, c := range ev.Capabilities {
-				if !yield(m.mask(c)) {
-					return
-				}
-			}
-		})
+		masked := make([]string, len(ev.Capabilities))
+		for i, c := range ev.Capabilities {
+			masked[i] = m.mask(c)
+		}
+
+		ev.Capabilities = masked
 	}
 
 	if ev.Usage != nil {

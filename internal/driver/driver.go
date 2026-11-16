@@ -77,7 +77,7 @@ type Event struct {
 	ToolName     string
 	ToolInput    json.RawMessage
 	ToolError    bool
-	Usage        *Usage // usage: one model call
+	Usage        *Usage // usage: one model call, or the tokens the result reports beyond the streamed calls
 	RateLimit    *RateLimit
 	Retry        *Retry
 }

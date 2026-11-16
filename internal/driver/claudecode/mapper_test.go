@@ -170,6 +170,7 @@ func TestMapperRejectedRateLimit(t *testing.T) {
 	assert.Equal(t, "rejected", res.RateLimit.Status)
 	assert.True(t, res.RateLimit.ResetsAt.Equal(time.Unix(1794510000, 0)))
 	assert.Contains(t, kinds(evs), driver.KindRateLimit)
+	assert.Equal(t, []driver.Usage{{Model: "claude-haiku-5-5", Input: 2, Output: 4, CacheRead: 11382, CacheWrite: 6379}}, res.Usage, "the usage streamed so far")
 }
 
 func TestMapperRejectedHaltsFeeding(t *testing.T) {
@@ -220,6 +221,8 @@ func TestMapperNoResultIsNeverSuccess(t *testing.T) {
 			assert.True(t, res.IsError)
 			assert.NotEmpty(t, res.Detail)
 			assert.Equal(t, "Done.", res.Text)
+			assert.Equal(t, 2, res.Turns)
+			assert.Equal(t, []driver.Usage{{Model: "claude-sonnet-5-5", Input: 4, Output: 7, CacheRead: 3844, CacheWrite: 3977}}, res.Usage, "the usage streamed so far")
 			assert.Equal(t, sumUsage(evs), sortedUsage(res.Usage))
 		})
 	}
@@ -283,17 +286,28 @@ func TestMapperLivePartial(t *testing.T) {
 	evs, res := replay(t, "real/p4-partial-messages.jsonl", 0)
 
 	assert.Equal(t, []driver.Usage{{Model: "claude-haiku-5-5", Input: 2, Output: 4, CacheRead: 11382, CacheWrite: 6379}}, res.Usage)
-	assert.Equal(t, sumUsage(evs), res.Usage)
+	assert.Len(t, ofKind(evs, driver.KindUsage), 1, "no remainder event")
 }
 
-func TestMapperPartialAndParallel(t *testing.T) {
-	for _, path := range []string{"synthetic/partial.jsonl", "synthetic/parallel.jsonl"} {
-		t.Run(path, func(t *testing.T) {
-			evs, res := replay(t, path, 0)
+func TestMapperPartialAndParallelUsage(t *testing.T) {
+	for _, tc := range []struct {
+		path  string
+		calls int
+		total driver.Usage
+	}{
+		{"synthetic/partial.jsonl", 2, driver.Usage{Model: "claude-sonnet-5-5", Input: 4, Output: 125, CacheRead: 3844, CacheWrite: 3977}},
+		{"synthetic/parallel.jsonl", 2, driver.Usage{Model: "claude-haiku-5-5", Input: 20, Output: 10}},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			evs, res := replay(t, tc.path, 0)
 
 			assert.Equal(t, driver.ReasonDone, res.Reason)
-			assert.NotEmpty(t, res.Usage)
-			assert.Equal(t, sumUsage(evs), res.Usage, "usage events add up to the result totals")
+			assert.Equal(t, []driver.Usage{tc.total}, res.Usage)
+
+			// One event per call and none for a remainder: the streamed usage
+			// alone reaches the fixture's totals.
+			assert.Len(t, ofKind(evs, driver.KindUsage), tc.calls)
+			assert.Equal(t, []driver.Usage{tc.total}, sumUsage(evs))
 		})
 	}
 }
@@ -415,12 +429,15 @@ func TestLineTooLong(t *testing.T) {
 }
 
 func TestStructuredOutput(t *testing.T) {
-	const out = `{"verdict": "ship",  "items":[1, 2]}`
+	// Spacing and key order change under any re-encoding.
+	const out = `{"verdict": "ship",  "items":[1, 2], "a":null}`
 
-	_, res := replayData(t, resultLine(t, map[string]any{"structured_output": json.RawMessage(out)}), nil, 0)
+	line := `{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":` + out + "}\n"
+
+	_, res := replayData(t, []byte(line), nil, 0)
 
 	assert.Equal(t, driver.ReasonDone, res.Reason)
-	assert.JSONEq(t, out, string(res.Structured))
+	assert.True(t, bytes.Equal([]byte(out), res.Structured), "copied byte for byte")
 
 	_, res = replayData(t, resultLine(t, nil), nil, 0)
 	assert.Nil(t, res.Structured)
@@ -490,20 +507,21 @@ func TestMapperErrorReasons(t *testing.T) {
 		name   string
 		fields map[string]any
 		reason string
+		detail string
 	}{
-		{"status 400", map[string]any{"is_error": true, "api_error_status": 400, "result": "bad"}, driver.ReasonEndpoint},
-		{"status 404", map[string]any{"is_error": true, "api_error_status": 404, "result": "no model"}, driver.ReasonEndpoint},
-		{"connection failure", map[string]any{"is_error": true, "terminal_reason": "api_error", "result": "connect ECONNREFUSED"}, driver.ReasonEndpoint},
-		{"execution error", map[string]any{"is_error": true, "subtype": "error_during_execution", "errors": []string{"it broke"}}, driver.ReasonCrashed},
-		{"unknown error", map[string]any{"is_error": true, "subtype": "error_future", "terminal_reason": "something_new"}, driver.ReasonCrashed},
-		{"not logged in", map[string]any{"is_error": true, "result": "Not logged in · Please run /login"}, driver.ReasonAuth},
+		{"status 400", map[string]any{"is_error": true, "api_error_status": 400, "result": "bad"}, driver.ReasonEndpoint, "bad"},
+		{"status 404", map[string]any{"is_error": true, "api_error_status": 404, "result": "no model"}, driver.ReasonEndpoint, "no model"},
+		{"connection failure", map[string]any{"is_error": true, "terminal_reason": "api_error", "result": "connect ECONNREFUSED"}, driver.ReasonEndpoint, "connect ECONNREFUSED"},
+		{"execution error", map[string]any{"is_error": true, "subtype": "error_during_execution", "errors": []string{"it broke"}}, driver.ReasonCrashed, "it broke"},
+		{"unknown error", map[string]any{"is_error": true, "subtype": "error_future", "terminal_reason": "something_new"}, driver.ReasonCrashed, "error_future"},
+		{"not logged in", map[string]any{"is_error": true, "result": "Not logged in · Please run /login"}, driver.ReasonAuth, "Not logged in"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, res := replayData(t, resultLine(t, tc.fields), nil, 1)
 
 			assert.Equal(t, tc.reason, res.Reason)
 			assert.True(t, res.IsError)
-			assert.NotEmpty(t, res.Detail)
+			assert.Contains(t, res.Detail, tc.detail)
 			assert.NotEqual(t, driver.ReasonDone, res.Reason)
 		})
 	}
@@ -576,4 +594,106 @@ func TestMaskJSONKeepsResultValid(t *testing.T) {
 
 	assert.True(t, json.Valid(maskJSON(mask, json.RawMessage(`{"a":"b"}`))))
 	assert.Equal(t, json.RawMessage(nil), maskJSON(mask, nil))
+}
+
+func dropLines(data []byte, markers ...string) []byte {
+	var out []byte
+
+	for line := range bytes.Lines(data) {
+		if !slices.ContainsFunc(markers, func(mk string) bool { return bytes.Contains(line, []byte(mk)) }) {
+			out = append(out, line...)
+		}
+	}
+
+	return out
+}
+
+func TestMapperUnknownTerminalReason(t *testing.T) {
+	t1 := readFixture(t, "real/t1.jsonl")
+	want, wantRes := replayData(t, t1, nil, 0)
+
+	for name, data := range map[string][]byte{
+		"absent":  bytes.ReplaceAll(t1, []byte(`"terminal_reason":"completed",`), nil),
+		"unknown": bytes.ReplaceAll(t1, []byte(`"terminal_reason":"completed"`), []byte(`"terminal_reason":"x_future_reason"`)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.NotEqual(t, t1, data)
+
+			got, gotRes := replayData(t, data, nil, 0)
+			assert.Equal(t, want, got)
+			assert.Equal(t, wantRes, gotRes)
+		})
+	}
+}
+
+func TestMapperErrorResult(t *testing.T) {
+	t.Run("auth failure makes no call", func(t *testing.T) {
+		// The assistant message of an auth failure is <synthetic>: no API call.
+		evs, res := replay(t, "real/t2.jsonl", 1)
+
+		assert.Empty(t, ofKind(evs, driver.KindText))
+		assert.Empty(t, ofKind(evs, driver.KindUsage))
+		assert.Empty(t, res.Usage)
+		assert.Equal(t, driver.ReasonAuth, res.Reason)
+	})
+
+	t.Run("is_error outranks a completed run", func(t *testing.T) {
+		data := bytes.Replace(readFixture(t, "real/t1.jsonl"), []byte(`"is_error":false`), []byte(`"is_error":true`), 1)
+		require.NotEqual(t, readFixture(t, "real/t1.jsonl"), data)
+
+		evs, res := replayData(t, data, nil, 0)
+
+		assert.NotEqual(t, driver.ReasonDone, res.Reason)
+		assert.True(t, res.IsError)
+		assert.Len(t, ofKind(evs, driver.KindUsage), 1)
+	})
+}
+
+func TestMapperCallClosesOnNextCall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []byte
+		want []string
+		call driver.Usage
+	}{
+		{
+			"assistant lines", dropLines(readFixture(t, "real/t5.jsonl"), `"type":"user"`),
+			[]string{
+				driver.KindStarted, driver.KindRateLimit, driver.KindText, driver.KindUsage, driver.KindToolUse,
+				driver.KindText, driver.KindUsage, driver.KindUsage,
+			},
+			driver.Usage{Model: "claude-sonnet-5-5", Input: 2, Output: 2, CacheWrite: 3844},
+		},
+		{
+			"stream events", dropLines(readFixture(t, "synthetic/partial.jsonl"), `"type":"user"`, `"type":"message_stop"`),
+			[]string{
+				driver.KindStarted, driver.KindRateLimit, driver.KindText, driver.KindUsage, driver.KindToolUse,
+				driver.KindText, driver.KindUsage,
+			},
+			driver.Usage{Model: "claude-sonnet-5-5", Input: 2, Output: 120, CacheWrite: 3844},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			evs, res := replayData(t, tc.data, nil, 0)
+
+			assert.Equal(t, tc.want, kinds(evs))
+			assert.Equal(t, tc.call, *ofKind(evs, driver.KindUsage)[0].Usage)
+			assert.Equal(t, []driver.Usage{{Model: "claude-sonnet-5-5", Input: 4, Output: 125, CacheRead: 3844, CacheWrite: 3977}}, res.Usage)
+		})
+	}
+}
+
+func TestMapperUsageLimitResultIgnoresAllowedWindow(t *testing.T) {
+	// The five_hour window was fine; the weekly one stopped the run.
+	allowed := `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794510000,"rateLimitType":"five_hour"}}` + "\n"
+	data := append([]byte(allowed), resultLine(t, map[string]any{
+		"is_error": true, "api_error_status": 429, "result": "You've hit your weekly limit",
+	})...)
+
+	_, res := replayData(t, data, nil, 1)
+
+	assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
+	require.NotNil(t, res.RateLimit)
+	assert.Equal(t, "seven_day", res.RateLimit.Window)
+	assert.True(t, res.RateLimit.ResetsAt.IsZero(), "the allowed window's reset must not be reported")
 }

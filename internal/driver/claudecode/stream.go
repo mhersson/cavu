@@ -46,11 +46,10 @@ type streamLine struct {
 }
 
 type apiMessage struct {
-	ID         string          `json:"id"`
-	Model      string          `json:"model"`
-	Content    json.RawMessage `json:"content"` // a string for plain user text, else blocks
-	StopReason string          `json:"stop_reason"`
-	Usage      apiUsage        `json:"usage"`
+	ID      string          `json:"id"`
+	Model   string          `json:"model"`
+	Content json.RawMessage `json:"content"` // a string for plain user text, else blocks
+	Usage   apiUsage        `json:"usage"`
 }
 
 type contentBlock struct {
@@ -75,7 +74,6 @@ type streamEvent struct {
 type eventDelta struct {
 	Type        string `json:"type"`
 	PartialJSON string `json:"partial_json"`
-	StopReason  string `json:"stop_reason"`
 }
 
 // apiUsage keeps absent buckets nil so a later source can fill them.
@@ -100,7 +98,8 @@ type rateLimitInfo struct {
 	RateLimitType string   `json:"rateLimitType"`
 }
 
-// decodeLine reports false for a line that is not a JSON object. A known field
+// decodeLine reports false for a line that is not JSON; JSON that is not an
+// object decodes to an empty line. A known field
 // whose type changed is left zero instead of dropping the line, so a newer
 // release degrades rather than failing the run.
 func decodeLine(b []byte) (streamLine, bool) {
