@@ -22,8 +22,10 @@ import (
 // then prints the canned stdout and stderr and exits with the canned code:
 // the code given for its exact argv in "exits", else the one in "exit".
 // "sleep" holds a call whose last argument it names for 30 seconds before
-// any output; "linger" keeps stdout open for 30 seconds after it.
+// any output; "linger" keeps stdout open for 30 seconds after it. It finds
+// its own tools when a test narrows PATH to fakes only.
 const fakeScript = `#!/bin/sh
+PATH=/usr/bin:/bin:$PATH
 d='@DIR@'
 n=$(mktemp -d "$d/call.XXXXXX") || exit 99
 for a in "$@"; do printf '%s\000' "$a"; done > "$n/argv"
@@ -403,16 +405,47 @@ func TestStartRefusesBadSpecs(t *testing.T) {
 }
 
 func TestDetect(t *testing.T) {
-	t.Run("only podman on PATH", func(t *testing.T) {
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "podman"), []byte("#!/bin/sh\nexit 1\n"), 0o700))
-		t.Setenv("PATH", dir)
+	askRemote := []string{"info", "--format={{.Host.ServiceIsRemote}}"}
+
+	for answer, remote := range map[string]bool{"false\n": false, "true\n": true} {
+		t.Run("only podman on PATH, remote "+strconv.FormatBool(remote), func(t *testing.T) {
+			podman, f := fakeRuntime(t, "podman")
+			f.set(t, "stdout", []byte(answer))
+			t.Setenv("PATH", filepath.Dir(podman.Bin))
+
+			r, err := Detect(t.Context(), "")
+			require.NoError(t, err)
+			assert.Equal(t, Runtime{Bin: podman.Bin, Remote: remote}, r)
+			assert.Equal(t, askRemote, f.only(t).argv, "podman is asked once whether it is remote")
+		})
+	}
+
+	t.Run("podman that does not answer", func(t *testing.T) {
+		podman, f := fakeRuntime(t, "podman")
+		f.set(t, "exit", []byte("125"))
+		t.Setenv("PATH", filepath.Dir(podman.Bin))
+
+		_, err := Detect(t.Context(), "")
+		require.Error(t, err)
+	})
+
+	t.Run("docker is chosen without being called", func(t *testing.T) {
+		docker, fd := fakeRuntime(t, "docker")
+		podman, fp := fakeRuntime(t, "podman")
+		t.Setenv("PATH", filepath.Dir(docker.Bin)+string(os.PathListSeparator)+filepath.Dir(podman.Bin))
 
 		r, err := Detect(t.Context(), "")
 		require.NoError(t, err)
-		assert.Equal(t, filepath.Join(dir, "podman"), r.Bin)
+		assert.Equal(t, Runtime{Bin: docker.Bin}, r)
+		assert.Empty(t, fd.calls(t))
+		assert.Empty(t, fp.calls(t))
+	})
 
-		_, err = Detect(t.Context(), "docker")
+	t.Run("a preference that is not on PATH", func(t *testing.T) {
+		podman, _ := fakeRuntime(t, "podman")
+		t.Setenv("PATH", filepath.Dir(podman.Bin))
+
+		_, err := Detect(t.Context(), "docker")
 		require.Error(t, err)
 	})
 
@@ -428,6 +461,73 @@ func TestDetect(t *testing.T) {
 	t.Run("unknown preference", func(t *testing.T) {
 		_, err := Detect(t.Context(), "nerdctl")
 		require.Error(t, err)
+	})
+}
+
+// clientProxyNames spells the ten names out, so the test does not trust the
+// package's own list.
+var clientProxyNames = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "NO_PROXY", "ALL_PROXY",
+	"http_proxy", "https_proxy", "ftp_proxy", "no_proxy", "all_proxy",
+}
+
+func TestRunNeutralisesClientConfig(t *testing.T) {
+	t.Run("docker empties every proxy variable", func(t *testing.T) {
+		r, f := fakeRuntime(t, "docker")
+		require.NoError(t, r.Start(t.Context(), goodSpec()))
+
+		argv := f.only(t).argv
+		for _, n := range clientProxyNames {
+			assert.Contains(t, argv, "--env="+n+"=")
+		}
+
+		assert.NotContains(t, argv, "--env-host=false")
+	})
+
+	for _, remote := range []bool{false, true} {
+		t.Run("podman remote "+strconv.FormatBool(remote), func(t *testing.T) {
+			r, f := fakeRuntime(t, "podman")
+			r.Remote = remote
+			require.NoError(t, r.Start(t.Context(), goodSpec()))
+
+			argv := f.only(t).argv
+			assert.Contains(t, argv, "--http-proxy=false")
+			assert.Equal(t, !remote, slices.Contains(argv, "--env-host=false"))
+
+			for _, a := range argv {
+				assert.False(t, strings.HasPrefix(a, "--env="), a)
+			}
+		})
+	}
+
+	for _, n := range append(slices.Clone(clientProxyNames), "Http_Proxy") {
+		t.Run("refuses "+n, func(t *testing.T) {
+			for _, bin := range []string{"docker", "podman"} {
+				r, f := fakeRuntime(t, bin)
+				s := goodSpec()
+				s.Env = []string{n + "=http://proxy.invalid:3128"}
+
+				err := r.Start(t.Context(), s)
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "proxy.invalid")
+
+				_, err = r.StartAttached(t.Context(), s)
+				require.Error(t, err)
+				assert.Empty(t, f.calls(t), "the runtime was called")
+			}
+		})
+	}
+
+	t.Run("an exec may carry a proxy", func(t *testing.T) {
+		r, f := fakeRuntime(t, "docker")
+
+		p, err := r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"true"}, Env: []string{"HTTPS_PROXY=http://proxy.invalid:3128"}})
+		require.NoError(t, err)
+		require.NoError(t, p.Stdin().Close())
+
+		_, err = p.Wait()
+		require.NoError(t, err)
+		assert.Equal(t, "HTTPS_PROXY=http://proxy.invalid:3128\n", string(f.only(t).fd3))
 	})
 }
 

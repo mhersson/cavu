@@ -41,12 +41,23 @@ var (
 	envName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
+// proxyNames are the variables the Docker client fills in from the proxies
+// of its config.json on `run`, overriding an env-file value of the same name.
+var proxyNames = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "NO_PROXY", "ALL_PROXY",
+	"http_proxy", "https_proxy", "ftp_proxy", "no_proxy", "all_proxy",
+}
+
 // Runtime is a container runtime client binary.
-type Runtime struct{ Bin string } // the docker or podman client, by name or path
+type Runtime struct {
+	Bin    string // the docker or podman client, by name or path
+	Remote bool   // a Podman client that talks to a service
+}
 
 // Detect finds the runtime client on PATH: preferred when set, otherwise
-// docker, then podman. It checks PATH only and runs neither.
-func Detect(_ context.Context, preferred string) (Runtime, error) {
+// docker, then podman. A docker is chosen without being called; a podman is
+// asked once whether it is remote.
+func Detect(ctx context.Context, preferred string) (Runtime, error) {
 	names := []string{"docker", "podman"}
 
 	if preferred != "" {
@@ -58,9 +69,26 @@ func Detect(_ context.Context, preferred string) (Runtime, error) {
 	}
 
 	for _, n := range names {
-		if bin, err := exec.LookPath(n); err == nil {
-			return Runtime{Bin: bin}, nil
+		bin, err := exec.LookPath(n)
+		if err != nil {
+			continue
 		}
+
+		r := Runtime{Bin: bin}
+		if !r.podman() {
+			return r, nil
+		}
+
+		out, err := r.output(ctx, "info", "--format={{.Host.ServiceIsRemote}}")
+		if err == nil {
+			r.Remote, err = strconv.ParseBool(strings.TrimSpace(string(out)))
+		}
+
+		if err != nil {
+			return Runtime{}, fmt.Errorf("podman found at %s but did not answer: %w", bin, err)
+		}
+
+		return r, nil
 	}
 
 	return Runtime{}, fmt.Errorf("no container runtime: %s not found on PATH", strings.Join(names, " or "))
@@ -292,6 +320,13 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 		return nil, nil, err
 	}
 
+	for _, kv := range s.Env {
+		name, _, _ := strings.Cut(kv, "=")
+		if slices.ContainsFunc(proxyNames, func(p string) bool { return strings.EqualFold(p, name) }) {
+			return nil, nil, fmt.Errorf("environment variable %s: a proxy variable goes to a container per exec, not at run", name)
+		}
+	}
+
 	// A pull would be a network request of CAVU's own; images are built locally.
 	args := []string{"run", "--pull=never", "--name=" + s.Name, "--network=" + s.Network}
 
@@ -303,9 +338,19 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 		args = append(args, "--interactive")
 	}
 
-	if r.podman() {
-		// Podman otherwise copies the client's proxy variables into the container.
+	// Host-side client configuration must not put variables into a container.
+	switch {
+	case !r.podman():
+		// An empty value set here keeps the config's proxies out.
+		for _, n := range proxyNames {
+			args = append(args, "--env="+n+"=")
+		}
+	case r.Remote:
+		// The remote client has no --env-host.
 		args = append(args, "--http-proxy=false")
+	default:
+		// env_host in containers.conf would copy the client's whole environment in.
+		args = append(args, "--http-proxy=false", "--env-host=false")
 	}
 
 	labels, err := labelArgs(s.Labels)
