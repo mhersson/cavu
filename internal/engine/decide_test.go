@@ -132,7 +132,6 @@ func decideCases() []decideCase {
 		{name: "exported", snap: snap(exported), want: none},
 		{name: "no open run", snap: snap(startedOnly), want: engine.Action{Kind: engine.KindPrepare, NewRun: true}},
 		{name: "resumed from environment", snap: snap(resumed(engine.StopEnvironment, "")), want: engine.Action{Kind: engine.KindPrepare, NewRun: true}},
-		{name: "resumed from sandbox", snap: snap(resumed(engine.StopSandbox, "")), want: engine.Action{Kind: engine.KindPrepare, NewRun: true}},
 		{name: "run not prepared", snap: snap(unprepared), want: engine.Action{Kind: engine.KindPrepare}},
 		{name: "prepare failed", snap: snap(prepareFailed), want: halt(engine.StopEnvironment, engine.ClearRetry), explainHas: "setup"},
 		{

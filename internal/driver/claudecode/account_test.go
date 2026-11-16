@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mhersson/cavu/internal/driver"
-	"github.com/mhersson/cavu/internal/testkit/fakeclaude"
 )
 
 // requireAccountRefused checks that f ended as an auth result naming what the
@@ -47,7 +46,7 @@ func TestAccountCheckSubscription(t *testing.T) {
 
 	for name, acct := range foreign {
 		t.Run(name, func(t *testing.T) {
-			f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl"), Account: json.RawMessage(acct)})
+			f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl"), Account: json.RawMessage(acct)})
 
 			var seen map[string]string
 			require.NoError(t, json.Unmarshal([]byte(acct), &seen))
@@ -61,20 +60,20 @@ func TestAccountCheckSubscription(t *testing.T) {
 		"not an object": `"CLAUDE_CODE_OAUTH_TOKEN"`,
 	} {
 		t.Run("unreadable "+name, func(t *testing.T) {
-			f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl"), Account: json.RawMessage(acct)})
+			f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl"), Account: json.RawMessage(acct)})
 			requireAccountRefused(t, f)
 		})
 	}
 
 	t.Run("no account passes", func(t *testing.T) {
-		f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl"), NoAccount: true})
+		f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl"), NoAccount: true})
 		runFake(t, f)
 	})
 }
 
 func TestAccountCheckKeyMode(t *testing.T) {
 	t.Run("oauth token source", func(t *testing.T) {
-		f := newFakeRun(t, fakeclaude.Scenario{
+		f := newFakeRun(t, fakeScenario{
 			Replay:  fixture(t, "real/t1.jsonl"),
 			Account: json.RawMessage(`{"tokenSource":"CLAUDE_CODE_OAUTH_TOKEN","apiProvider":"firstParty"}`),
 		})
@@ -84,21 +83,21 @@ func TestAccountCheckKeyMode(t *testing.T) {
 	})
 
 	t.Run("unreadable", func(t *testing.T) {
-		f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl"), Account: json.RawMessage(`[]`)})
+		f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl"), Account: json.RawMessage(`[]`)})
 		f.spec.Auth = keyAuth()
 
 		requireAccountRefused(t, f)
 	})
 
 	t.Run("no account passes", func(t *testing.T) {
-		f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl"), NoAccount: true})
+		f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl"), NoAccount: true})
 		f.spec.Auth = keyAuth()
 
 		runFake(t, f)
 	})
 
 	t.Run("auth token source passes", func(t *testing.T) {
-		f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+		f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 		f.spec.Auth = keyAuth()
 
 		runFake(t, f)

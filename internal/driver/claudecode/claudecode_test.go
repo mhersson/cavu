@@ -6,8 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/mhersson/cavu/internal/testkit/fakeclaude"
 )
 
 func TestProbe(t *testing.T) {
@@ -16,7 +14,7 @@ func TestProbe(t *testing.T) {
 	for _, version := range []string{"2.1.325", "9.0.1"} {
 		t.Run(version, func(t *testing.T) {
 			d := testDriver(t)
-			target := newLocalTarget(t, t.TempDir(), fakeEnv(t, fakeclaude.Scenario{Version: version})...)
+			target := newLocalTarget(t, t.TempDir(), fakeEnv(t, fakeScenario{Version: version})...)
 
 			got, err := d.Probe(bounded(t), target)
 			require.NoError(t, err)
@@ -29,14 +27,14 @@ func TestProbe(t *testing.T) {
 	}
 
 	t.Run("binary fails", func(t *testing.T) {
-		target := newLocalTarget(t, t.TempDir(), fakeclaude.EnvVar+"="+filepath.Join(t.TempDir(), "missing.json"))
+		target := newLocalTarget(t, t.TempDir(), fakeEnvVar+"="+filepath.Join(t.TempDir(), "missing.json"))
 
 		_, err := testDriver(t).Probe(bounded(t), target)
 		require.Error(t, err)
 	})
 
 	t.Run("unrecognised output", func(t *testing.T) {
-		target := newLocalTarget(t, t.TempDir(), fakeEnv(t, fakeclaude.Scenario{Version: "beta"})...)
+		target := newLocalTarget(t, t.TempDir(), fakeEnv(t, fakeScenario{Version: "beta"})...)
 
 		_, err := testDriver(t).Probe(bounded(t), target)
 		require.Error(t, err)

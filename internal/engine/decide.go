@@ -17,7 +17,6 @@ type Caps struct{ Continuations, VerifyFixes int }
 // Snapshot is a task at one moment, as Decide sees it.
 type Snapshot struct {
 	Task        store.Task
-	Project     store.Project
 	Facts       Facts
 	Now         time.Time
 	Switches    Switches
@@ -114,7 +113,7 @@ func Decide(s Snapshot) Action {
 		return Action{Kind: KindNone, Why: "The change is exported."}
 	}
 
-	if f.resumedFrom(StopEnvironment) || f.resumedFrom(StopSandbox) || !f.RunOpen {
+	if f.resumedFrom(StopEnvironment) || !f.RunOpen {
 		return Action{Kind: KindPrepare, Why: "The task needs a fresh run.", NewRun: true}
 	}
 

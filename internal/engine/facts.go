@@ -15,12 +15,11 @@ type Facts struct {
 	Prepared                   bool     // in the open run
 	Ecosystems                 []string // of the open run's prepare, which Work, Verify and Export run with
 	PrepareFailure             *PrepareFailure
-	Pending                    string       // an action claimed and not finished: "", "prepare", "work", "verify", "export"
 	SessionID                  string       // of the open run, "" before the first session
-	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action came after it, or while a newer session is pending
+	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action other than a sandbox retry came after it, or while a newer session is pending
 	Verify                     string       // result for the newest ended session; "" while a session or a verify is pending
 	Exported                   bool
-	Resumed                    *Resume // a human retry or answer after a stop, not yet followed by a finished session or prepare, or by a new run when it came from environment or sandbox
+	Resumed                    *Resume // a human retry or answer after a stop, other than a sandbox retry, not yet followed by a finished session or prepare, or by a new run when it came from environment
 	LastVerifyOutput           string  // of the newest verify_ended, for the next fix prompt
 	Continuations, VerifyFixes int     // session starts marked automatic, per mode, since the last human action
 }
@@ -74,14 +73,20 @@ func (f *Facts) apply(e store.Event) {
 		f.resume(decode[HumanAnsweredPayload](e.Payload).Text)
 		f.humanAction()
 	case HumanRetried:
-		f.resume("")
-		f.humanAction()
+		// A sandbox stop is a fault that cut an action short, not a session's
+		// result: its retry is no resume and keeps the session, so Decide redoes that action.
+		if f.stoppedFor(StopSandbox) {
+			f.clearStop()
+		} else {
+			f.resume("")
+			f.humanAction()
+		}
 	case HumanCancelled:
 		f.Cancelled = true
 		f.humanAction()
 	case RunStarted:
-		// The new run is what a resume from environment or sandbox asked for.
-		if f.resumedFrom(StopEnvironment) || f.resumedFrom(StopSandbox) {
+		// The new run is what a resume from environment asked for.
+		if f.resumedFrom(StopEnvironment) {
 			f.Resumed = nil
 		}
 
@@ -92,19 +97,19 @@ func (f *Facts) apply(e store.Event) {
 		f.RunOpen = false
 	case PrepareStarted:
 		if f.RunOpen {
-			f.Pending, f.Prepared, f.PrepareFailure, f.Ecosystems = string(KindPrepare), false, nil, nil
+			f.Prepared, f.PrepareFailure, f.Ecosystems = false, nil, nil
 		}
 	case Prepared:
 		f.Resumed = nil
 		if f.RunOpen {
-			f.Pending, f.Prepared = "", true
+			f.Prepared = true
 			f.Ecosystems = decode[PreparedPayload](e.Payload).Ecosystems
 		}
 	case PrepareFailed:
 		f.Resumed = nil
 		if f.RunOpen {
 			p := decode[PrepareFailedPayload](e.Payload)
-			f.Pending, f.PrepareFailure = "", &PrepareFailure{Step: p.Step, Output: p.Output}
+			f.PrepareFailure = &PrepareFailure{Step: p.Step, Output: p.Output}
 		}
 	case SessionStarted:
 		f.sessionStarted(decode[SessionStartedPayload](e.Payload))
@@ -112,7 +117,7 @@ func (f *Facts) apply(e store.Event) {
 		f.Resumed = nil
 		if f.RunOpen {
 			p := decode[SessionEndedPayload](e.Payload)
-			f.Pending, f.Verify = "", ""
+			f.Verify = ""
 			f.Session = &SessionFact{
 				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary,
 				Detail: p.Detail, HeadCommit: p.HeadCommit, Questions: p.Questions, ResetsAt: p.ResetsAt,
@@ -120,31 +125,32 @@ func (f *Facts) apply(e store.Event) {
 		}
 	case VerifyStarted:
 		if f.RunOpen {
-			f.Pending, f.Verify = string(KindVerify), ""
+			f.Verify = ""
 		}
 	case VerifyEnded:
 		if f.RunOpen {
 			p := decode[VerifyEndedPayload](e.Payload)
-			f.Pending, f.Verify, f.LastVerifyOutput = "", p.Result, p.Output
-		}
-	case ExportStarted:
-		if f.RunOpen {
-			f.Pending = string(KindExport)
+			f.Verify, f.LastVerifyOutput = p.Result, p.Output
 		}
 	case Exported:
-		f.Exported, f.Pending = true, ""
+		f.Exported = true
 	case Stopped:
-		// A stop is also the result of whatever action was pending.
 		p := decode[StoppedPayload](e.Payload)
 		f.OpenStop = &StopFact{Reason: p.Reason, Explanation: p.Explanation, ResetsAt: p.ResetsAt}
-		f.Pending = ""
 	}
 }
 
 // Hiding the session before a person's action keeps Decide from stopping again
 // on the result the person just acted on.
 func (f *Facts) humanAction() {
-	f.OpenStop, f.Session = nil, nil
+	f.clearStop()
+	f.Session = nil
+}
+
+// clearStop closes the open stop and restarts the caps' count, which runs from
+// the last human action.
+func (f *Facts) clearStop() {
+	f.OpenStop = nil
 	f.Continuations, f.VerifyFixes = 0, 0
 }
 
@@ -169,7 +175,7 @@ func (f *Facts) sessionStarted(p SessionStartedPayload) {
 	}
 
 	if f.RunOpen {
-		f.Pending, f.Session, f.Verify = string(KindWork), nil, ""
+		f.Session, f.Verify = nil, ""
 		if p.SessionID != "" {
 			f.SessionID = p.SessionID
 		}
@@ -177,7 +183,7 @@ func (f *Facts) sessionStarted(p SessionStartedPayload) {
 }
 
 func (f *Facts) resetRun() {
-	f.Prepared, f.PrepareFailure, f.Pending, f.Ecosystems = false, nil, "", nil
+	f.Prepared, f.PrepareFailure, f.Ecosystems = false, nil, nil
 	f.SessionID, f.Session, f.Verify, f.LastVerifyOutput = "", nil, "", ""
 }
 

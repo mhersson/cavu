@@ -1,7 +1,6 @@
 // Package verify holds the pure parts of the verify gate: suggesting a command
-// from a repository's root files, wrapping it for bash, classifying the result,
-// clamping the timeout and cutting a failure excerpt. It runs nothing and reads
-// no disk.
+// from a repository's root files, wrapping it for bash and classifying the
+// result. It runs nothing and reads no disk.
 package verify
 
 import (

@@ -138,6 +138,7 @@ type run struct {
 	fault  error      // the sidecar's error during the action in flight
 	cancel context.CancelCauseFunc
 	watch  func(sidecar.Line) // takes the other lines while a session runs
+	denied []string           // hosts the proxy refused while no session watched, in order, once each
 }
 
 // lines takes the sidecar's lines. An error line means the phase lost its
@@ -149,8 +150,11 @@ func (st *run) lines(l sidecar.Line) {
 	defer st.mu.Unlock()
 
 	if l.Type != "error" {
-		if st.watch != nil {
+		switch {
+		case st.watch != nil:
 			st.watch(l)
+		case l.Type == "denied" && l.Host != "" && !slices.Contains(st.denied, l.Host):
+			st.denied = append(st.denied, l.Host)
 		}
 
 		return
@@ -186,6 +190,32 @@ func (st *run) begin(ctx context.Context) (context.Context, func() error) {
 	}
 }
 
+// resetDenied starts a new collection of denied hosts for the step or verify
+// that follows.
+func (st *run) resetDenied() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.denied = nil
+}
+
+// withDenied ends a failed step's output with a line naming the hosts the
+// proxy refused since resetDenied, so a person sees why the tool failed.
+func (st *run) withDenied(out string) string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if len(st.denied) == 0 {
+		return out
+	}
+
+	if out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+
+	return out + "The egress proxy refused these hosts: " + strings.Join(st.denied, ", ") + "\n"
+}
+
 // watching hands the sidecar's lines other than errors to watch until
 // watching(nil); a line that arrives after that is dropped.
 func (st *run) watching(watch func(sidecar.Line)) {
@@ -196,17 +226,26 @@ func (st *run) watching(watch func(sidecar.Line)) {
 }
 
 // act brings the agent phase up and runs do as the run's action in flight,
-// with c's mask: a sidecar error during it fails the call. The error is masked.
+// with the run's mask, which also holds its stand-in token: a sidecar error
+// during it fails the call. The error is masked.
 func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, do func(context.Context, *run, func(string) string) (T, error)) (T, error) {
 	var zero T
 
-	mask := masker(c)
+	err := r.ensureUp(ctx, c)
 
-	if err := r.ensureUp(ctx, c); err != nil {
+	// Read after ensureUp, which makes key mode's stand-in: no vault holds it.
+	st := r.state(c.RunID)
+
+	var standIn string
+	if st != nil {
+		standIn = st.standIn
+	}
+
+	mask := masker(c, standIn)
+	if err != nil {
 		return zero, maskErr(err, mask)
 	}
 
-	st := r.state(c.RunID)
 	ctx, end := st.begin(ctx)
 
 	res, err := do(ctx, st, mask)
@@ -410,9 +449,9 @@ func allowlist(lists ...[]string) []string {
 	return slices.Compact(out)
 }
 
-// masker masks the secrets of a run's configuration.
-func masker(c engine.RunConfig) func(string) string {
-	secrets := []string{c.Endpoint.Credential, c.Repo.Token}
+// masker masks the secrets of a run's configuration and the extra ones.
+func masker(c engine.RunConfig, extra ...string) func(string) string {
+	secrets := append([]string{c.Endpoint.Credential, c.Repo.Token}, extra...)
 	for _, v := range c.Setup.Secrets {
 		secrets = append(secrets, v)
 	}

@@ -18,7 +18,6 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/proc"
-	"github.com/mhersson/cavu/internal/testkit/fakeclaude"
 )
 
 // testBase is the base commit the recording target's tree stands for.
@@ -109,7 +108,7 @@ func (tr fakeTree) batch(stdin []byte) []byte {
 func stageFake(t *testing.T, tree fakeTree) *fakeRun {
 	t.Helper()
 
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.BaseCommit = testBase
 	f.target.rec.tree = tree
 
@@ -165,7 +164,7 @@ func section(content string, names ...string) memorySection {
 }
 
 func TestStageInstructionFiles(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.BaseCommit, f.spec.Instructions = testBase, testInstr
 	f.target.rec.tree = fakeTree{
 		"CLAUDE.md":                   regular("root claude\n"),
@@ -300,7 +299,7 @@ func TestStageFailureStartsNoSession(t *testing.T) {
 		{kindBatch, 128, false},
 	} {
 		t.Run(fmt.Sprintf("%s exits %d", tc.kind, tc.code), func(t *testing.T) {
-			f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+			f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 			f.spec.BaseCommit = testBase
 			f.target.rec.tree = fakeTree{"CLAUDE.md": regular("root\n")}
 			f.target.rec.exits[tc.kind] = tc.code
@@ -320,7 +319,7 @@ func TestStageFailureStartsNoSession(t *testing.T) {
 // Root files past stageLimit fail the staging with an error naming the file
 // at which they pass it, and nothing is written.
 func TestStageCap(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.BaseCommit = testBase
 	f.target.rec.tree = fakeTree{"CLAUDE.md": regular("root\n"), "AGENTS.md": regular(strings.Repeat("a", stageLimit))}
 
@@ -346,7 +345,7 @@ func (c cancelOnListing) Start(ctx context.Context, cmd proc.Command) (proc.Proc
 }
 
 func TestStageCancelled(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.BaseCommit = testBase
 	f.target.rec.tree = fakeTree{"CLAUDE.md": regular("root\n")}
 
@@ -363,7 +362,7 @@ func TestStageCancelled(t *testing.T) {
 // Without a base commit nothing is staged, but the config dir is cleared all
 // the same.
 func TestClearWithoutBaseCommit(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 
 	runFake(t, f)
 

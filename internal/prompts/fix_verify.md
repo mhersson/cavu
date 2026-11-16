@@ -6,7 +6,7 @@ The command:
 {{.Command}}
 ```
 
-Its output, cut to the failing part:
+Its output (a long output keeps its start and end and drops the middle):
 
 ```
 {{.Output}}

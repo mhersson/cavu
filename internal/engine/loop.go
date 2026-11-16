@@ -25,6 +25,7 @@ type Store interface {
 	Task(ctx context.Context, id int64) (store.Task, error)
 	UpdateTask(ctx context.Context, t store.Task) error
 	Project(ctx context.Context, id int64) (store.Project, error)
+	UpdateProject(ctx context.Context, p store.Project) error
 	Settings(ctx context.Context) (map[string]string, error)
 	Events(ctx context.Context, taskID, afterID int64, limit int) ([]store.Event, error)
 	Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error)
@@ -198,7 +199,7 @@ func (p *pass) view(ctx context.Context) (view, error) {
 	}
 
 	v := view{
-		Task: t, Project: pr, Facts: Reduce(events), Now: p.Now(), Switches: sw, Caps: defaultCaps,
+		Task: t, Facts: Reduce(events), Now: p.Now(), Switches: sw, Caps: defaultCaps,
 		hadRun: slices.ContainsFunc(events, func(e store.Event) bool { return e.Type == RunStarted }),
 	}
 
@@ -387,18 +388,6 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 		return err
 	}
 
-	// A prepare redone after a crash may find a partial clone; start it from empty volumes.
-	if v.Facts.Pending == string(KindPrepare) {
-		ref, err := p.ref(ctx, o.task, o.row)
-		if err != nil {
-			return err
-		}
-
-		if err := p.Runner.Release(ctx, ref, true); err != nil {
-			return p.fault(ctx, o, err)
-		}
-	}
-
 	res, err := p.Runner.Prepare(ctx, o.cfg)
 	if err != nil {
 		return p.fault(ctx, o, err)
@@ -420,10 +409,34 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 		}
 	}
 
+	// A verified baseline is stored before prepared is written, so the next task at this commit reuses it.
+	if res.Baseline == ResultPassed {
+		if err := p.setBaseline(ctx, o.task.ProjectID, res.BaseCommit); err != nil {
+			return err
+		}
+	}
+
 	return p.result(ctx, o, nil, draft{Prepared, actorRunner, PreparedPayload{
 		BaseCommit: res.BaseCommit, Tools: res.Tools, IgnoredTools: res.IgnoredTools, Ecosystems: res.Ecosystems,
 		Baseline: res.Baseline,
 	}})
+}
+
+func (p *pass) setBaseline(ctx context.Context, projectID int64, commit string) error {
+	ctx, cancel := recording(ctx)
+	defer cancel()
+
+	pr, err := p.Store.Project(ctx, projectID)
+	if err == nil {
+		pr.Baseline = &store.Baseline{Commit: commit, Passed: true, At: p.Now()}
+		err = p.Store.UpdateProject(ctx, pr)
+	}
+
+	if err != nil {
+		return fmt.Errorf("task %d: baseline: %w", p.taskID, err)
+	}
+
+	return nil
 }
 
 func (p *pass) setBaseCommit(ctx context.Context, commit string) error {
@@ -446,7 +459,7 @@ func (p *pass) setBaseCommit(ctx context.Context, commit string) error {
 func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 	w := WorkRequest{Mode: a.WorkMode, SessionID: v.Facts.SessionID, Resume: v.Facts.SessionID != ""}
 	if !w.Resume {
-		w.SessionID = newSessionID()
+		w.SessionID = NewSessionID()
 	}
 
 	switch a.WorkMode {
@@ -619,16 +632,11 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 	// Decide exports only after an ended session, so Session is set.
 	s := v.Facts.Session
 
-	title := v.Task.Title
-	if s.Title != "" {
-		title = s.Title
-	}
-
 	if err := p.claim(ctx, v, o, draft{ExportStarted, actorEngine, ExportStartedPayload{Why: a.Why}}); err != nil {
 		return err
 	}
 
-	res, err := p.Runner.Export(ctx, o.cfg, title, s.HeadCommit)
+	res, err := p.Runner.Export(ctx, o.cfg, s.HeadCommit)
 	if err != nil {
 		return p.fault(ctx, o, err)
 	}
@@ -691,7 +699,8 @@ func stopPayload(a Action) StoppedPayload {
 // the run. run is nil when no run is open. A stop that is a runner call's
 // result passes expectLast -1 and is recorded even after ctx ends.
 func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *store.Run, sp StoppedPayload) error {
-	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment || sp.Reason == StopSandbox
+	// A sandbox stop keeps the run, so a retry redoes the cut action on its volumes.
+	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment
 	drafts := []draft{{Stopped, actorEngine, sp}}
 
 	var runID int64
@@ -857,8 +866,8 @@ func maskValue(v any, mask func(string) string) any {
 	return v
 }
 
-// newSessionID returns a version 4 UUID.
-func newSessionID() string {
+// NewSessionID returns a version 4 UUID.
+func NewSessionID() string {
 	var b [16]byte
 
 	_, _ = rand.Read(b[:]) // rand.Read never returns an error

@@ -31,7 +31,7 @@ g update-ref "refs/heads/$3" "$2" && g diff --binary "$1" "$2" >"$4" && g bundle
 
 // Export exports commit, the work a session froze: it points the task branch
 // at it and returns the diff from the base commit and a bundle of the branch.
-func (r *Runner) Export(ctx context.Context, c engine.RunConfig, _, commit string) (engine.ExportResult, error) {
+func (r *Runner) Export(ctx context.Context, c engine.RunConfig, commit string) (engine.ExportResult, error) {
 	if !commitID.MatchString(commit) {
 		return engine.ExportResult{Problem: "No session froze its work into a commit, so there is nothing to export."}, nil
 	}

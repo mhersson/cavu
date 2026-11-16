@@ -74,7 +74,7 @@ func work(t *testing.T, r *Runner, c engine.RunConfig, w engine.WorkRequest) eng
 func export(t *testing.T, r *Runner, c engine.RunConfig, res engine.WorkResult) engine.ExportResult {
 	t.Helper()
 
-	ex, err := r.Export(t.Context(), c, res.Title, res.HeadCommit)
+	ex, err := r.Export(t.Context(), c, res.HeadCommit)
 	require.NoError(t, err)
 	require.Empty(t, ex.Problem)
 	assert.Equal(t, res.HeadCommit, ex.HeadCommit)

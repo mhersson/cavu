@@ -12,7 +12,6 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/redact"
-	"github.com/mhersson/cavu/internal/testkit/fakeclaude"
 )
 
 // baseArgv is the flag set every invocation opens with.
@@ -43,7 +42,7 @@ func requireKeptOutOfArgv(t *testing.T, args []string, values ...string) {
 }
 
 // runFake runs f and requires a done result.
-func runFake(t *testing.T, f *fakeRun) fakeclaude.Recorded {
+func runFake(t *testing.T, f *fakeRun) fakeRecorded {
 	t.Helper()
 
 	res, err := f.run(t.Context())
@@ -54,7 +53,7 @@ func runFake(t *testing.T, f *fakeRun) fakeclaude.Recorded {
 }
 
 func TestArgvKeyMode(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Auth = keyAuth()
 	f.spec.Instructions = testInstr
 	f.spec.OutputSchema = json.RawMessage(`{"type": "object",
@@ -80,7 +79,7 @@ func TestArgvKeyMode(t *testing.T) {
 }
 
 func TestArgvSubscriptionMode(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 
 	args := runFake(t, f).Args
 	settings := flagValue(t, args, "--settings")
@@ -104,7 +103,7 @@ var strayAuth = []string{
 }
 
 func TestEnvKeyMode(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Auth = keyAuth()
 	f.spec.Env = append(f.spec.Env, strayAuth...)
 
@@ -120,7 +119,7 @@ func TestEnvKeyMode(t *testing.T) {
 }
 
 func TestEnvSubscriptionMode(t *testing.T) {
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Env = append(f.spec.Env, strayAuth...)
 
 	names := runFake(t, f).EnvNames
@@ -137,7 +136,7 @@ func TestEnvSubscriptionMode(t *testing.T) {
 func TestEnvIsNotInherited(t *testing.T) {
 	t.Setenv("CAVU_TEST_INHERITED", "1")
 
-	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 	f.spec.Env = append(f.spec.Env, "EXTRA=1")
 
 	want := []string{
@@ -158,7 +157,7 @@ func TestEnvIsNotInherited(t *testing.T) {
 
 func TestWebToolsSwitch(t *testing.T) {
 	for _, on := range []bool{false, true} {
-		f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+		f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 		f.spec.WebTools = on
 
 		rec := runFake(t, f)
@@ -215,7 +214,7 @@ func TestSpecRefused(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+			f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 			tt.mutate(&f.spec)
 
 			_, err := f.run(t.Context())
@@ -226,7 +225,7 @@ func TestSpecRefused(t *testing.T) {
 	}
 
 	for _, effort := range []string{"", "low", "medium", "high", "xhigh", "max"} {
-		f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+		f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 		f.spec.Effort = effort
 
 		_, err := f.run(t.Context())
@@ -273,7 +272,7 @@ func envValue(t *testing.T, env []string, name string) (string, bool) {
 	return value, found
 }
 
-func TestEnvProxyBypassesLoopback(t *testing.T) {
+func TestEnvProxyAppendsLoopback(t *testing.T) {
 	const loopback = "127.0.0.1,localhost,::1"
 
 	spec := func(env ...string) driver.Spec {
@@ -281,76 +280,26 @@ func TestEnvProxyBypassesLoopback(t *testing.T) {
 	}
 
 	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
-		t.Run(name, func(t *testing.T) {
-			env := environment(spec("PATH=/bin", name+"=http://proxy:3128"))
+		env := environment(spec(name + "=http://proxy:3128"))
 
-			for _, np := range []string{"NO_PROXY", "no_proxy"} {
-				v, ok := envValue(t, env, np)
-				require.True(t, ok, np)
-				assert.Equal(t, loopback, v, np)
-			}
-
-			assert.Contains(t, env, name+"=http://proxy:3128")
-		})
+		for _, np := range []string{"NO_PROXY", "no_proxy"} {
+			v, ok := envValue(t, env, np)
+			require.True(t, ok, "%s with %s", np, name)
+			assert.Equal(t, loopback, v, "%s with %s", np, name)
+		}
 	}
 
-	for _, tc := range []struct {
-		name         string
-		env          []string
-		upper, lower string
-		set          bool
-	}{
-		{name: "no proxy", env: []string{"PATH=/bin"}},
-		{name: "empty proxy", env: []string{"PATH=/bin", "HTTP_PROXY="}},
-		{name: "no proxy keeps NO_PROXY as is", env: []string{"NO_PROXY=corp"}, upper: "corp", set: true},
-		{
-			name: "NO_PROXY kept and seeds no_proxy", env: []string{"HTTPS_PROXY=http://p:1", "NO_PROXY=corp.internal"},
-			upper: "corp.internal," + loopback, lower: "corp.internal," + loopback, set: true,
-		},
-		{
-			name: "no_proxy kept and seeds NO_PROXY", env: []string{"https_proxy=http://p:1", "no_proxy=.corp"},
-			upper: ".corp," + loopback, lower: ".corp," + loopback, set: true,
-		},
-		{
-			name: "each form keeps its own entries", env: []string{"ALL_PROXY=socks5://p:1", "NO_PROXY=a", "no_proxy=b, localhost"},
-			upper: "a," + loopback, lower: "b, localhost,127.0.0.1,::1", set: true,
-		},
-		{
-			name: "empty no_proxy starts from NO_PROXY", env: []string{"HTTPS_PROXY=http://p:1", "NO_PROXY=corp", "no_proxy="},
-			upper: "corp," + loopback, lower: "corp," + loopback, set: true,
-		},
-		{
-			name: "loopback already listed", env: []string{"HTTP_PROXY=http://p:1", "NO_PROXY=::1,LOCALHOST,127.0.0.1"},
-			upper: "::1,LOCALHOST,127.0.0.1", lower: "::1,LOCALHOST,127.0.0.1", set: true,
-		},
-		{
-			name: "trailing comma", env: []string{"HTTP_PROXY=http://p:1", "NO_PROXY=corp,"},
-			upper: "corp," + loopback, lower: "corp," + loopback, set: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			env := environment(spec(tc.env...))
+	env := environment(spec("HTTPS_PROXY=http://p:1", "NO_PROXY=corp", "no_proxy=.lan"))
+	upper, _ := envValue(t, env, "NO_PROXY")
+	lower, _ := envValue(t, env, "no_proxy")
+	assert.Equal(t, "corp,"+loopback, upper)
+	assert.Equal(t, ".lan,"+loopback, lower)
 
-			upper, upperOK := envValue(t, env, "NO_PROXY")
-			lower, lowerOK := envValue(t, env, "no_proxy")
-
-			if !tc.set {
-				assert.False(t, upperOK, "NO_PROXY=%s", upper)
-				assert.False(t, lowerOK, "no_proxy=%s", lower)
-
-				return
-			}
-
-			assert.Equal(t, tc.upper, upper, "NO_PROXY")
-
-			if tc.lower == "" {
-				assert.False(t, lowerOK, "no_proxy=%s", lower)
-
-				return
-			}
-
-			assert.Equal(t, tc.lower, lower, "no_proxy")
-		})
+	for _, e := range [][]string{{"PATH=/bin"}, {"HTTP_PROXY="}} {
+		env := environment(spec(e...))
+		_, upperOK := envValue(t, env, "NO_PROXY")
+		_, lowerOK := envValue(t, env, "no_proxy")
+		assert.False(t, upperOK || lowerOK, "%v", e)
 	}
 }
 

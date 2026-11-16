@@ -59,14 +59,14 @@ type Runner interface {
 	// Work returns how the session ended as a result, endpoint failures and
 	// usage limits included; an error means the sandbox itself failed. A
 	// resumed session that does not exist is started under its id with the
-	// task's opening prompt, whatever the mode: the process died, or ctx
-	// ended, between the claim and the start. progress is never called after
-	// Work returns.
+	// task's opening prompt, whatever the mode: the process died, ctx ended or
+	// the sandbox failed between the claim and the start. progress is never
+	// called after Work returns.
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
 	// Export exports commit, the work a session froze, never the working tree.
 	// It is safe to repeat for the same run.
-	Export(ctx context.Context, c RunConfig, title, commit string) (ExportResult, error)
+	Export(ctx context.Context, c RunConfig, commit string) (ExportResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
 	Release(ctx context.Context, ref RunRef, removeVolumes bool) error
 }
@@ -97,7 +97,6 @@ type Progress struct {
 
 // WorkResult is how a session ended.
 type WorkResult struct {
-	SessionID              string // the id the agent reported; the engine's own id stays authoritative
 	Outcome                string
 	Title, Summary         string
 	Detail                 string // the upstream status or error text for endpoint, usage_limit and crashed

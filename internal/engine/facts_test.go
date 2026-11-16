@@ -37,6 +37,7 @@ var (
 	verifyFailed = ev(engine.VerifyEnded, `{"result":"failed","command":"make test","exit_code":2,"output":"FAIL TestLogin","duration_ms":900}`)
 	verifyPassed = ev(engine.VerifyEnded, `{"result":"passed","command":"make test","exit_code":0}`)
 	retried      = ev(engine.HumanRetried, "")
+	sandboxStop  = ev(engine.Stopped, `{"reason":"sandbox","explanation":"The runner failed.","action":"retry"}`)
 	doneFact     = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", HeadCommit: "def456"}
 )
 
@@ -107,6 +108,11 @@ func TestReduce(t *testing.T) {
 			},
 		},
 		{
+			name:   "a retry after a sandbox stop",
+			events: preparedRun(firstSession, unfinished, autoContinue, doneChanged, verifying, sandboxStop, retried),
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact},
+		},
+		{
 			name:   "a retry with no open stop",
 			events: preparedRun(firstSession, doneChanged, retried),
 			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1"},
@@ -114,12 +120,12 @@ func TestReduce(t *testing.T) {
 		{
 			name:   "a session started and not ended",
 			events: preparedRun(firstSession),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, Pending: "work", SessionID: "s1"},
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1"},
 		},
 		{
 			name:   "a session start with no session id",
 			events: preparedRun(firstSession, unfinished, ev(engine.SessionStarted, `{"mode":"continue","automatic":true}`)),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, Pending: "work", SessionID: "s1", Continuations: 1},
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Continuations: 1},
 		},
 		{
 			name:   "an answer after a question",
@@ -179,13 +185,13 @@ func TestReduce(t *testing.T) {
 				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
 				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.PrepareStarted, ""),
 			},
-			want: engine.Facts{Started: true, RunOpen: true, Pending: "prepare"},
+			want: engine.Facts{Started: true, RunOpen: true},
 		},
 		{
 			name: "a later run's prepare replaces them",
 			events: []store.Event{
 				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
-				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.RunEnded, `{"outcome":"sandbox"}`),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.RunEnded, `{"outcome":"environment"}`),
 				ev(engine.RunStarted, `{"reason":"retry"}`), ev(engine.PrepareStarted, ""),
 				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["rust"]}`),
 			},
@@ -218,7 +224,7 @@ func TestReduce(t *testing.T) {
 	}
 }
 
-func TestReducePendingAndCounting(t *testing.T) {
+func TestReduceCounting(t *testing.T) {
 	resets := time.Date(2030, 1, 1, 13, 0, 0, 0, time.UTC)
 	usageLimit := preparedRun(firstSession, unfinished, autoContinue,
 		ev(engine.SessionEnded, `{"outcome":"usage_limit","resets_at":"2030-01-01T13:00:00Z"}`),
@@ -240,7 +246,6 @@ func TestReducePendingAndCounting(t *testing.T) {
 
 		assert.Nil(t, f.OpenStop)
 		assert.Equal(t, 1, f.Continuations)
-		assert.Equal(t, "work", f.Pending)
 	})
 
 	t.Run("only automatic fix sessions count", func(t *testing.T) {
@@ -259,7 +264,6 @@ func TestReducePendingAndCounting(t *testing.T) {
 
 		assert.Nil(t, f.Session)
 		assert.Empty(t, f.Verify)
-		assert.Equal(t, "work", f.Pending)
 		assert.Equal(t, 2, f.VerifyFixes)
 
 		got := engine.Decide(snap(f))
@@ -267,42 +271,23 @@ func TestReducePendingAndCounting(t *testing.T) {
 		assert.Equal(t, work(engine.ModeContinue, false), got)
 	})
 
-	reprepares := []struct {
-		name    string
-		stopped []store.Event
-	}{
-		{
-			name: "environment",
-			stopped: []store.Event{
-				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
-				ev(engine.PrepareFailed, `{"step":"setup","output":"exit 1"}`),
-				ev(engine.Stopped, `{"reason":"environment","explanation":"Setup failed.","action":"retry"}`),
-				ev(engine.RunEnded, `{"outcome":"environment"}`),
-			},
-		},
-		{
-			name: "sandbox",
-			stopped: preparedRun(firstSession,
-				ev(engine.Stopped, `{"reason":"sandbox","explanation":"The agent container died.","action":"retry"}`),
-				ev(engine.RunEnded, `{"outcome":"sandbox"}`)),
-		},
-	}
-
-	for _, tc := range reprepares {
-		t.Run("a crash during the new run's prepare after a retry from "+tc.name+" prepares that run", func(t *testing.T) {
-			events := append(slices.Clone(tc.stopped), retried, ev(engine.RunStarted, `{"reason":"retry"}`), ev(engine.PrepareStarted, ""))
-			f := engine.Reduce(events)
-
-			assert.True(t, f.RunOpen)
-			assert.False(t, f.Prepared)
-			assert.Equal(t, "prepare", f.Pending)
-			assert.Nil(t, f.Resumed)
-
-			got := engine.Decide(snap(f))
-			got.Why, got.Explain = "", ""
-			assert.Equal(t, engine.Action{Kind: engine.KindPrepare}, got)
+	t.Run("a crash during the new run's prepare after a retry from environment prepares that run", func(t *testing.T) {
+		f := engine.Reduce([]store.Event{
+			ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+			ev(engine.PrepareFailed, `{"step":"setup","output":"exit 1"}`),
+			ev(engine.Stopped, `{"reason":"environment","explanation":"Setup failed.","action":"retry"}`),
+			ev(engine.RunEnded, `{"outcome":"environment"}`),
+			retried, ev(engine.RunStarted, `{"reason":"retry"}`), ev(engine.PrepareStarted, ""),
 		})
-	}
+
+		assert.True(t, f.RunOpen)
+		assert.False(t, f.Prepared)
+		assert.Nil(t, f.Resumed)
+
+		got := engine.Decide(snap(f))
+		got.Why, got.Explain = "", ""
+		assert.Equal(t, engine.Action{Kind: engine.KindPrepare}, got)
+	})
 
 	crashes := []struct {
 		name   string
@@ -339,6 +324,57 @@ func TestReducePendingAndCounting(t *testing.T) {
 	for _, tc := range crashes {
 		t.Run("a crash with "+tc.name+" decides it again", func(t *testing.T) {
 			got := engine.Decide(snap(engine.Reduce(tc.events)))
+			got.Why, got.Explain = "", ""
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// A retry after a sandbox stop redoes, in the same run, the action the fault cut.
+func TestReduceRetryAfterSandboxStop(t *testing.T) {
+	answering := ev(engine.SessionStarted, `{"mode":"answer","session_id":"s1","resume":true}`)
+
+	tests := []struct {
+		name   string
+		events []store.Event
+		want   engine.Action
+	}{
+		{
+			name: "a prepare",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), sandboxStop, retried,
+			},
+			want: engine.Action{Kind: engine.KindPrepare},
+		},
+		{name: "a session", events: preparedRun(firstSession, sandboxStop, retried), want: work(engine.ModeContinue, false)},
+		{
+			name:   "a verify",
+			events: preparedRun(firstSession, doneChanged, verifying, sandboxStop, retried),
+			want:   engine.Action{Kind: engine.KindVerify},
+		},
+		{
+			name:   "an export",
+			events: preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""), sandboxStop, retried),
+			want:   engine.Action{Kind: engine.KindExport},
+		},
+		{
+			name:   "an answer session",
+			events: append(questionAnswered(), answering, sandboxStop, retried),
+			want:   engine.Action{Kind: engine.KindWork, WorkMode: engine.ModeAnswer, Detail: "Use 8080."},
+		},
+		{
+			name:   "an automatic fix session",
+			events: preparedRun(firstSession, doneChanged, verifying, verifyFailed, autoFix, sandboxStop, retried),
+			want:   work(engine.ModeContinue, false),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := engine.Reduce(tc.events)
+			assert.True(t, f.RunOpen)
+
+			got := engine.Decide(snap(f))
 			got.Why, got.Explain = "", ""
 			assert.Equal(t, tc.want, got)
 		})

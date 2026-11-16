@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/mhersson/cavu/internal/driver"
-	"github.com/mhersson/cavu/internal/redact"
 )
 
 // maxLine is the longest stdout line the mapper reads; a longer one is skipped.
@@ -127,7 +126,6 @@ func overlay(dst *apiUsage, src apiUsage) {
 // fed from one goroutine.
 type mapper struct {
 	sink func(driver.Event)
-	mask func(string) string
 
 	open   *apiCall
 	closed map[string]bool
@@ -139,29 +137,25 @@ type mapper struct {
 	sessionID string                  // from init
 	lastText  string
 	rateLimit *driver.RateLimit // the last rate_limit_event
-	limit     *driver.RateLimit // a usage limit that ended the run
 
 	authFailed bool
 	sawResult  bool
-	halted     bool // a usage limit was seen; later lines are ignored
 	res        driver.Result
 }
 
-// newMapper masks every string it emits or returns against secrets.
-func newMapper(secrets []string, sink func(driver.Event)) *mapper {
+func newMapper(sink func(driver.Event)) *mapper {
 	return &mapper{
 		sink:   sink,
-		mask:   redact.New(secrets...),
 		closed: map[string]bool{},
 		totals: map[string]tokenBuckets{},
 	}
 }
 
 // feed consumes one stdout line and reports whether the caller should stop the
-// process: the run's result or a usage limit has been seen. Lines the mapper
+// process: the run's result has been seen. Lines the mapper
 // does not know, or that are not JSON, are ignored.
 func (m *mapper) feed(line []byte) (stop bool) {
-	if m.halted || m.sawResult {
+	if m.sawResult {
 		return true
 	}
 
@@ -200,7 +194,7 @@ func (m *mapper) feed(line []byte) (stop bool) {
 		m.onResult(l)
 	}
 
-	return m.halted || m.sawResult
+	return m.sawResult
 }
 
 // finish returns the run's result once the stream has ended. exitCode and
@@ -214,94 +208,35 @@ func (m *mapper) finish(exitCode int, stderrTail string) driver.Result {
 	m.closeCall()
 
 	m.res.Turns = m.calls
-	m.res.Text = m.mask(m.lastText)
-	m.res.SessionID = m.mask(m.sessionID)
+	m.res.Text = m.lastText
+	m.res.SessionID = m.sessionID
 	m.res.Usage = m.usageTotals()
+	m.res.RateLimit = m.rateLimit
 	m.res.IsError = true
 
 	switch {
-	case m.limit != nil:
-		m.res.Reason = driver.ReasonUsageLimit
-		m.res.RateLimit = m.maskedLimit(m.limit)
 	case m.authFailed:
 		m.res.Reason = driver.ReasonAuth
-		m.res.RateLimit = m.maskedLimit(m.rateLimit)
-		m.res.Detail = m.mask("not logged in")
+		m.res.Detail = "not logged in"
 	default:
 		m.res.Reason = driver.ReasonCrashed
-		m.res.RateLimit = m.maskedLimit(m.rateLimit)
 
 		detail := strings.TrimSpace(stderrTail)
 		if detail == "" {
 			detail = fmt.Sprintf("the stream ended without a result (exit %d)", exitCode)
 		}
 
-		m.res.Detail = m.mask(detail)
+		m.res.Detail = detail
 	}
 
 	return m.res
-}
-
-// emit masks every string field, so ids and names are covered too.
-func (m *mapper) emit(ev driver.Event) {
-	ev.SessionID = m.mask(ev.SessionID)
-	ev.Model = m.mask(ev.Model)
-	ev.Text = m.mask(ev.Text)
-	ev.ToolID = m.mask(ev.ToolID)
-	ev.ToolName = m.mask(ev.ToolName)
-	ev.ToolInput = maskJSON(m.mask, ev.ToolInput)
-
-	if ev.Capabilities != nil {
-		masked := make([]string, len(ev.Capabilities))
-		for i, c := range ev.Capabilities {
-			masked[i] = m.mask(c)
-		}
-
-		ev.Capabilities = masked
-	}
-
-	if ev.Usage != nil {
-		u := *ev.Usage
-		u.Model = m.mask(u.Model)
-		ev.Usage = &u
-	}
-
-	if ev.RateLimit != nil {
-		rl := m.maskRateLimit(*ev.RateLimit)
-		ev.RateLimit = &rl
-	}
-
-	if ev.Retry != nil {
-		r := *ev.Retry
-		r.Kind = m.mask(r.Kind)
-		ev.Retry = &r
-	}
-
-	m.sink(ev)
-}
-
-func (m *mapper) maskRateLimit(rl driver.RateLimit) driver.RateLimit {
-	rl.Window = m.mask(rl.Window)
-	rl.Status = m.mask(rl.Status)
-
-	return rl
-}
-
-func (m *mapper) maskedLimit(rl *driver.RateLimit) *driver.RateLimit {
-	if rl == nil {
-		return nil
-	}
-
-	masked := m.maskRateLimit(*rl)
-
-	return &masked
 }
 
 func (m *mapper) onInit(l streamLine) {
 	m.model = l.Model
 	m.sessionID = l.SessionID
 
-	m.emit(driver.Event{
+	m.sink(driver.Event{
 		Kind: driver.KindStarted, SessionID: l.SessionID, Model: l.Model, Capabilities: l.Capabilities,
 	})
 }
@@ -312,7 +247,7 @@ func (m *mapper) onRetry(l streamLine) {
 		r.Status = *l.ErrorStatus
 	}
 
-	m.emit(driver.Event{Kind: driver.KindRetry, Retry: r})
+	m.sink(driver.Event{Kind: driver.KindRetry, Retry: r})
 }
 
 // callFor returns the open call for id, closing a different open call and
@@ -448,19 +383,14 @@ func (m *mapper) onUser(msg *apiMessage) {
 }
 
 func (m *mapper) onToolResult(r contentBlock) {
-	m.emit(driver.Event{Kind: driver.KindToolResult, ToolID: r.ToolUseID, ToolError: r.IsError})
+	m.sink(driver.Event{Kind: driver.KindToolResult, ToolID: r.ToolUseID, ToolError: r.IsError})
 }
 
 func (m *mapper) onRateLimit(info *rateLimitInfo) {
 	rl := parseRateLimit(info)
 	m.rateLimit = &rl
 
-	m.emit(driver.Event{Kind: driver.KindRateLimit, RateLimit: &rl})
-
-	if rl.Status == "rejected" {
-		m.limit = &rl
-		m.halted = true
-	}
+	m.sink(driver.Event{Kind: driver.KindRateLimit, RateLimit: &rl})
 }
 
 // closeCall emits the open call's events: its text, its usage, its tool uses,
@@ -476,13 +406,13 @@ func (m *mapper) closeCall() {
 
 	m.lastText = strings.Join(c.text, "\n\n")
 	if m.lastText != "" {
-		m.emit(driver.Event{Kind: driver.KindText, Text: m.lastText})
+		m.sink(driver.Event{Kind: driver.KindText, Text: m.lastText})
 	}
 
 	m.emitUsage(c.model, c.usage())
 
 	for _, t := range c.tools {
-		m.emit(driver.Event{Kind: driver.KindToolUse, ToolID: t.id, ToolName: t.name, ToolInput: t.args()})
+		m.sink(driver.Event{Kind: driver.KindToolUse, ToolID: t.id, ToolName: t.name, ToolInput: t.args()})
 	}
 
 	for _, r := range c.results {
@@ -493,19 +423,19 @@ func (m *mapper) closeCall() {
 func (m *mapper) emitUsage(model string, u tokenBuckets) {
 	m.totals[model] = m.totals[model].add(u)
 
-	m.emit(driver.Event{Kind: driver.KindUsage, Usage: &driver.Usage{
+	m.sink(driver.Event{Kind: driver.KindUsage, Usage: &driver.Usage{
 		Model: model, Input: u.input, Output: u.output, CacheRead: u.cacheRead, CacheWrite: u.cacheWrite,
 	}})
 }
 
-// usageTotals lists the per-model totals sorted by model, masked.
+// usageTotals lists the per-model totals sorted by model.
 func (m *mapper) usageTotals() []driver.Usage {
 	var out []driver.Usage
 
 	for _, model := range slices.Sorted(maps.Keys(m.totals)) {
 		if b := m.totals[model]; b != (tokenBuckets{}) {
 			out = append(out, driver.Usage{
-				Model: m.mask(model), Input: b.input, Output: b.output, CacheRead: b.cacheRead, CacheWrite: b.cacheWrite,
+				Model: model, Input: b.input, Output: b.output, CacheRead: b.cacheRead, CacheWrite: b.cacheWrite,
 				CostEstimateUSD: m.costs[model],
 			})
 		}
@@ -560,13 +490,13 @@ func (m *mapper) onResult(l streamLine) {
 		Turns:           l.NumTurns,
 		CostEstimateUSD: cost,
 		Usage:           m.usageTotals(),
-		SessionID:       m.mask(cmp.Or(l.SessionID, m.sessionID)),
-		Text:            m.mask(l.Result),
-		RateLimit:       m.maskedLimit(m.rateLimit),
+		SessionID:       cmp.Or(l.SessionID, m.sessionID),
+		Text:            l.Result,
+		RateLimit:       m.rateLimit,
 	}
 
 	if len(l.StructuredOutput) > 0 && string(l.StructuredOutput) != "null" {
-		m.res.Structured = maskJSON(m.mask, l.StructuredOutput)
+		m.res.Structured = l.StructuredOutput
 	}
 
 	m.outcome(l)
@@ -587,11 +517,8 @@ func (m *mapper) outcome(l streamLine) {
 		reason = driver.ReasonAuth
 	case l.IsError && status == 429 && isUsageLimitText(l.Result):
 		reason = driver.ReasonUsageLimit
-		m.res.RateLimit = m.maskedLimit(resultLimit(l.Result))
 	case l.Subtype == "error_max_turns":
 		reason = driver.ReasonMaxTurns
-	case l.Subtype == "error_max_budget_usd":
-		reason = driver.ReasonMaxBudget
 	case !l.IsError:
 		// terminal_reason is not consulted, so a release that drops or renames
 		// it degrades instead of failing every run.
@@ -614,7 +541,7 @@ func (m *mapper) outcome(l streamLine) {
 		detail = fmt.Sprintf("upstream status %d: %s", status, detail)
 	}
 
-	m.res.Detail = m.mask(detail)
+	m.res.Detail = detail
 }
 
 // errorText is the text an error result carries, from the most to the least

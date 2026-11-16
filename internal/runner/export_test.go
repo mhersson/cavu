@@ -30,7 +30,7 @@ func TestExportScript(t *testing.T) {
 	f.out = map[string][]byte{diffFile: []byte(twoFiles), bundleFile: []byte("# v2 git bundle\n")}
 	c := workConfig()
 
-	res, err := f.runner().Export(t.Context(), c, "Fix the login form", headCommit)
+	res, err := f.runner().Export(t.Context(), c, headCommit)
 	require.NoError(t, err)
 	assert.Equal(t, engine.ExportResult{
 		HeadCommit: headCommit, Diff: []byte(twoFiles), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 2,
@@ -50,7 +50,7 @@ func TestExportProblems(t *testing.T) {
 	t.Run("no frozen commit", func(t *testing.T) {
 		f := newFake()
 
-		res, err := f.runner().Export(t.Context(), workConfig(), "Fix login", "")
+		res, err := f.runner().Export(t.Context(), workConfig(), "")
 		require.NoError(t, err)
 		assert.NotEmpty(t, res.Problem)
 		assert.Empty(t, f.calls())
@@ -61,7 +61,7 @@ func TestExportProblems(t *testing.T) {
 		c := workConfig()
 		f.results[exportName(c, headCommit)] = sandbox.Result{ExitCode: 1, Output: "not a descendant\n"}
 
-		res, err := f.runner().Export(t.Context(), c, "Fix login", headCommit)
+		res, err := f.runner().Export(t.Context(), c, headCommit)
 		require.NoError(t, err)
 		assert.Equal(t, engine.ExportResult{Problem: "not a descendant"}, res)
 	})
@@ -72,7 +72,7 @@ func TestExportProblems(t *testing.T) {
 			f.out = map[string][]byte{diffFile: []byte(twoFiles), bundleFile: []byte("# v2 git bundle\n")}
 			f.out[file] = bytes.Repeat([]byte{'x'}, maxArtifact+1)
 
-			res, err := f.runner().Export(t.Context(), workConfig(), "Fix login", headCommit)
+			res, err := f.runner().Export(t.Context(), workConfig(), headCommit)
 			require.NoError(t, err)
 			assert.NotEmpty(t, res.Problem)
 			assert.Nil(t, res.Diff)

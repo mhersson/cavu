@@ -548,19 +548,56 @@ func TestVerifyResultsMatchEngine(t *testing.T) {
 	assert.Equal(t, engine.ResultTimeout, verify.Timeout)
 }
 
-func TestVerifyTimeoutDefault(t *testing.T) {
-	f := newFake()
-	c := testConfig()
-	c.Verify.Timeout = 0
-
-	_, err := f.runner().Prepare(t.Context(), c)
-	require.NoError(t, err)
-	assert.Equal(t, verify.ClampTimeout(0), f.run(t, "make test").timeout)
-}
-
 func sorted(s []string) []string {
 	s = slices.Clone(s)
 	slices.Sort(s)
 
 	return slices.Compact(s)
+}
+
+func TestDeniedHostsAreNamedInAFailedStep(t *testing.T) {
+	deny := func(f *fakeSandbox, command string) {
+		f.onRun = func(name string) {
+			if name == command {
+				f.send(sidecar.Line{Type: "denied", Host: "registry.example.test"})
+				f.send(sidecar.Line{Type: "denied", Host: "registry.example.test"})
+				f.send(sidecar.Line{Type: "denied", Host: "cdn.example.test"})
+			}
+		}
+	}
+
+	t.Run("a failed setup step", func(t *testing.T) {
+		f := newFake()
+		f.results["make setup"] = sandbox.Result{ExitCode: 1, Output: "step output\n"}
+		deny(f, "make setup")
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assert.Equal(t, "setup", res.FailedStep)
+		assert.Equal(t, 1, strings.Count(res.Output, "registry.example.test"))
+		assert.Contains(t, res.Output, "cdn.example.test")
+	})
+
+	t.Run("a passing step adds nothing", func(t *testing.T) {
+		f := newFake()
+		deny(f, "make setup")
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assert.NotContains(t, res.Output, "example.test")
+	})
+
+	t.Run("a host denied before the step is not named", func(t *testing.T) {
+		f := newFake()
+		f.results["make setup"] = sandbox.Result{ExitCode: 1, Output: "step output\n"}
+		f.onRun = func(name string) {
+			if name == "mise install" {
+				f.send(sidecar.Line{Type: "denied", Host: "earlier.example.test"})
+			}
+		}
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assert.NotContains(t, res.Output, "earlier.example.test")
+	})
 }

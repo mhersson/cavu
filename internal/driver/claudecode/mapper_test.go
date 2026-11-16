@@ -2,7 +2,6 @@ package claudecode
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -18,7 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mhersson/cavu/internal/driver"
-	"github.com/mhersson/cavu/internal/redact"
 )
 
 func readFixture(t *testing.T, path string) []byte {
@@ -32,12 +30,12 @@ func readFixture(t *testing.T, path string) []byte {
 
 // replayData feeds data through a mapper line by line and finishes it with the
 // given exit code.
-func replayData(t *testing.T, data []byte, secrets []string, exit int) ([]driver.Event, driver.Result) {
+func replayData(t *testing.T, data []byte, exit int) ([]driver.Event, driver.Result) {
 	t.Helper()
 
 	var evs []driver.Event
 
-	m := newMapper(secrets, func(ev driver.Event) { evs = append(evs, ev) })
+	m := newMapper(func(ev driver.Event) { evs = append(evs, ev) })
 
 	for line := range bytes.Lines(data) {
 		if line = bytes.TrimSpace(line); len(line) > 0 && m.feed(line) {
@@ -51,7 +49,7 @@ func replayData(t *testing.T, data []byte, secrets []string, exit int) ([]driver
 func replay(t *testing.T, path string, exit int) ([]driver.Event, driver.Result) {
 	t.Helper()
 
-	return replayData(t, readFixture(t, path), nil, exit)
+	return replayData(t, readFixture(t, path), exit)
 }
 
 func kinds(evs []driver.Event) []string {
@@ -181,34 +179,39 @@ func TestMapperAuthFailureOutranksSubtype(t *testing.T) {
 	assert.NotEmpty(t, res.Detail)
 }
 
-func TestMapperRejectedRateLimit(t *testing.T) {
-	evs, res := replay(t, "synthetic/rejected.jsonl", 0)
+func TestMapperRejectedRateLimitDoesNotStop(t *testing.T) {
+	evs, res := replay(t, "synthetic/rejected.jsonl", 1)
 
-	assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
-	assert.True(t, res.IsError)
-	require.NotNil(t, res.RateLimit)
-	assert.Equal(t, "seven_day", res.RateLimit.Window)
-	assert.Equal(t, "rejected", res.RateLimit.Status)
-	assert.True(t, res.RateLimit.ResetsAt.Equal(time.Unix(1794510000, 0)))
+	assert.Equal(t, driver.ReasonDone, res.Reason, "the result line decides")
+	assert.False(t, res.IsError)
 	assert.Contains(t, kinds(evs), driver.KindRateLimit)
-	assert.Equal(t, []driver.Usage{{Model: "claude-haiku-5-5", Input: 2, Output: 4, CacheRead: 11382, CacheWrite: 6379}}, res.Usage, "the usage streamed so far")
+
+	var rl *driver.RateLimit
+
+	for _, ev := range ofKind(evs, driver.KindRateLimit) {
+		rl = ev.RateLimit
+	}
+
+	require.NotNil(t, rl)
+	assert.Equal(t, "rejected", rl.Status)
+	assert.Equal(t, "seven_day", rl.Window)
 }
 
-func TestMapperRejectedHaltsFeeding(t *testing.T) {
+func TestMapperRejectedEventKeepsFeeding(t *testing.T) {
 	var got int
 
-	m := newMapper(nil, func(driver.Event) { got++ })
+	m := newMapper(func(driver.Event) { got++ })
 
-	assert.True(t, m.feed([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}`)))
+	assert.False(t, m.feed([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}`)))
 
 	before := got
 
-	assert.True(t, m.feed([]byte(`{"type":"system","subtype":"init","session_id":"s"}`)))
-	assert.Equal(t, before, got, "lines after a usage limit are ignored")
+	assert.False(t, m.feed([]byte(`{"type":"system","subtype":"init","session_id":"s"}`)))
+	assert.Equal(t, before+1, got, "lines after a rejected event are still mapped")
 }
 
 func TestMapperStopsAtResult(t *testing.T) {
-	m := newMapper(nil, func(driver.Event) {})
+	m := newMapper(func(driver.Event) {})
 
 	assert.False(t, m.feed([]byte(`{"type":"system","subtype":"init","session_id":"s"}`)))
 	assert.True(t, m.feed(resultLine(t, nil)))
@@ -216,21 +219,11 @@ func TestMapperStopsAtResult(t *testing.T) {
 	assert.Equal(t, driver.ReasonDone, m.finish(0, "").Reason)
 }
 
-func TestMapperBudgetAndTurnStops(t *testing.T) {
-	for _, tc := range []struct {
-		path, reason string
-	}{
-		{"synthetic/max_turns.jsonl", driver.ReasonMaxTurns},
-		{"synthetic/max_budget_end_turn.jsonl", driver.ReasonMaxBudget},
-		{"synthetic/max_budget_tool_use.jsonl", driver.ReasonMaxBudget},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			_, res := replay(t, tc.path, 1)
+func TestMapperTurnStops(t *testing.T) {
+	_, res := replay(t, "synthetic/max_turns.jsonl", 1)
 
-			assert.Equal(t, tc.reason, res.Reason)
-			assert.True(t, res.IsError)
-		})
-	}
+	assert.Equal(t, driver.ReasonMaxTurns, res.Reason)
+	assert.True(t, res.IsError)
 }
 
 func TestMapperNoResultIsNeverSuccess(t *testing.T) {
@@ -250,12 +243,11 @@ func TestMapperNoResultIsNeverSuccess(t *testing.T) {
 }
 
 func TestMapperDetailIsStderrTail(t *testing.T) {
-	m := newMapper([]string{"hunter2hunter2"}, func(driver.Event) {})
-	res := m.finish(2, "boom hunter2hunter2\n")
+	m := newMapper(func(driver.Event) {})
+	res := m.finish(2, "boom\n")
 
 	assert.Equal(t, driver.ReasonCrashed, res.Reason)
 	assert.Contains(t, res.Detail, "boom")
-	assert.NotContains(t, res.Detail, "hunter2hunter2")
 }
 
 func TestMapperResultOutranksExitCode(t *testing.T) {
@@ -397,7 +389,7 @@ func TestMapperTotalsPreferThisProcess(t *testing.T) {
 		},
 	}
 
-	evs, res := replayData(t, append([]byte(init+"\n"), resultLine(t, fields)...), nil, 0)
+	evs, res := replayData(t, append([]byte(init+"\n"), resultLine(t, fields)...), 0)
 
 	assert.Equal(t, []driver.Usage{{Model: "m1", Input: 10, Output: 5, CostEstimateUSD: 0.5}}, res.Usage)
 	assert.InDelta(t, 0.5, res.CostEstimateUSD, 1e-12)
@@ -407,7 +399,7 @@ func TestMapperTotalsPreferThisProcess(t *testing.T) {
 	t.Run("falls back to modelUsage and the total cost", func(t *testing.T) {
 		delete(fields, "model_usage_since_last_result")
 
-		_, res := replayData(t, append([]byte(init+"\n"), resultLine(t, fields)...), nil, 0)
+		_, res := replayData(t, append([]byte(init+"\n"), resultLine(t, fields)...), 0)
 
 		assert.Equal(t, []driver.Usage{{Model: "m1", Input: 100, Output: 50, CostEstimateUSD: 9.0}}, res.Usage)
 		assert.InDelta(t, 9.0, res.CostEstimateUSD, 1e-12)
@@ -418,7 +410,7 @@ func TestMapperTotalsPreferThisProcess(t *testing.T) {
 			"usage": map[string]any{"input_tokens": 7, "output_tokens": 3}, "total_cost_usd": 0.25,
 		})
 
-		_, res := replayData(t, append([]byte(init+"\n"), line...), nil, 0)
+		_, res := replayData(t, append([]byte(init+"\n"), line...), 0)
 
 		assert.Equal(t, []driver.Usage{{Model: "m1", Input: 7, Output: 3, CostEstimateUSD: 0.25}}, res.Usage,
 			"the one row carries the whole cost")
@@ -439,8 +431,8 @@ func TestMapperIgnoresUndecodableLines(t *testing.T) {
 	noise := []byte("not json\n\"a string\"\n[1,2]\n{\"type\":\"assistant\",\"message\":\"text\"}\n" +
 		`{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"y"}]}}` + "\n")
 
-	want, wantRes := replayData(t, data, nil, 0)
-	got, gotRes := replayData(t, append(noise, data...), nil, 0)
+	want, wantRes := replayData(t, data, 0)
+	got, gotRes := replayData(t, append(noise, data...), 0)
 
 	assert.Equal(t, want, got)
 	assert.Equal(t, wantRes, gotRes)
@@ -452,7 +444,7 @@ func TestLineTooLong(t *testing.T) {
 	data := append(append(long, '\n'), readFixture(t, "real/t1.jsonl")...)
 
 	want, wantRes := replay(t, "real/t1.jsonl", 0)
-	got, gotRes := replayData(t, data, nil, 0)
+	got, gotRes := replayData(t, data, 0)
 
 	assert.Equal(t, want, got)
 	assert.Equal(t, wantRes, gotRes)
@@ -464,12 +456,12 @@ func TestStructuredOutput(t *testing.T) {
 
 	line := `{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":` + out + "}\n"
 
-	_, res := replayData(t, []byte(line), nil, 0)
+	_, res := replayData(t, []byte(line), 0)
 
 	assert.Equal(t, driver.ReasonDone, res.Reason)
 	assert.True(t, bytes.Equal([]byte(out), res.Structured), "copied byte for byte")
 
-	_, res = replayData(t, resultLine(t, nil), nil, 0)
+	_, res = replayData(t, resultLine(t, nil), 0)
 	assert.Nil(t, res.Structured)
 }
 
@@ -488,7 +480,7 @@ func TestMapperEndpointFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, res := replayData(t, resultLine(t, map[string]any{
 				"is_error": true, "api_error_status": tc.status, "result": tc.text, "terminal_reason": "api_error",
-			}), nil, 1)
+			}), 1)
 
 			assert.Equal(t, tc.reason, res.Reason)
 			assert.True(t, res.IsError)
@@ -498,7 +490,7 @@ func TestMapperEndpointFailures(t *testing.T) {
 	}
 
 	t.Run("retry line", func(t *testing.T) {
-		evs, _ := replayData(t, []byte(`{"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":1000,"error_status":529,"error":"server_error"}`+"\n"), nil, 1)
+		evs, _ := replayData(t, []byte(`{"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":1000,"error_status":529,"error":"server_error"}`+"\n"), 1)
 
 		retries := ofKind(evs, driver.KindRetry)
 		require.Len(t, retries, 1)
@@ -506,7 +498,7 @@ func TestMapperEndpointFailures(t *testing.T) {
 	})
 
 	t.Run("retry without a status", func(t *testing.T) {
-		evs, _ := replayData(t, []byte(`{"type":"system","subtype":"api_retry","attempt":1,"max_retries":3,"error_status":null,"error":"unknown"}`+"\n"), nil, 1)
+		evs, _ := replayData(t, []byte(`{"type":"system","subtype":"api_retry","attempt":1,"max_retries":3,"error_status":null,"error":"unknown"}`+"\n"), 1)
 
 		require.Len(t, evs, 1)
 		assert.Zero(t, evs[0].Retry.Status)
@@ -514,21 +506,19 @@ func TestMapperEndpointFailures(t *testing.T) {
 }
 
 func TestMapperUsageLimitFromResult(t *testing.T) {
-	for _, tc := range []struct{ text, window string }{
-		{"You've hit your weekly limit - resets Friday", "seven_day"},
-		{"You've hit your 5-hour limit", "five_hour"},
-		{"You've hit your something new", ""},
-		{"Your usage limit was reached", ""},
+	for _, text := range []string{
+		"You've hit your weekly limit - resets Friday",
+		"You've hit your something new",
+		"Your usage limit was reached",
 	} {
-		t.Run(tc.text, func(t *testing.T) {
+		t.Run(text, func(t *testing.T) {
 			_, res := replayData(t, resultLine(t, map[string]any{
-				"is_error": true, "api_error_status": 429, "result": tc.text,
-			}), nil, 1)
+				"is_error": true, "api_error_status": 429, "result": text,
+			}), 1)
 
 			assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
-			require.NotNil(t, res.RateLimit)
-			assert.Equal(t, tc.window, res.RateLimit.Window)
-			assert.True(t, res.RateLimit.ResetsAt.IsZero())
+			assert.True(t, res.IsError)
+			assert.Nil(t, res.RateLimit, "no rate-limit event came")
 		})
 	}
 }
@@ -548,7 +538,7 @@ func TestMapperErrorReasons(t *testing.T) {
 		{"not logged in", map[string]any{"is_error": true, "result": "Not logged in · Please run /login"}, driver.ReasonAuth, "Not logged in"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, res := replayData(t, resultLine(t, tc.fields), nil, 1)
+			_, res := replayData(t, resultLine(t, tc.fields), 1)
 
 			assert.Equal(t, tc.reason, res.Reason)
 			assert.True(t, res.IsError)
@@ -561,88 +551,10 @@ func TestMapperErrorReasons(t *testing.T) {
 func TestMapperAuthenticationFailedAssistant(t *testing.T) {
 	data := []byte(`{"type":"assistant","error":"authentication_failed","message":{"id":"m1","model":"<synthetic>","content":[{"type":"text","text":"Not logged in"}]}}` + "\n")
 
-	_, res := replayData(t, data, nil, 1)
+	_, res := replayData(t, data, 1)
 
 	assert.Equal(t, driver.ReasonAuth, res.Reason)
 	assert.True(t, res.IsError)
-}
-
-func TestMaskAppliesToEveryString(t *testing.T) {
-	const token = "tok-SECRET-0123456789"
-
-	lines := []string{
-		`{"type":"system","subtype":"init","session_id":"sess-` + token + `","model":"m-` + token + `","capabilities":["c-` + token + `"]}`,
-		`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed-` + token + `","rateLimitType":"w-` + token + `"}}`,
-		`{"type":"system","subtype":"api_retry","attempt":1,"max_retries":2,"error":"e-` + token + `"}`,
-		`{"type":"assistant","message":{"id":"msg1","model":"m-` + token + `","content":[` +
-			`{"type":"text","text":"said ` + token + `"},` +
-			`{"type":"tool_use","id":"id-` + token + `","name":"n-` + token + `","input":{"k":"` + token + `"}}],"usage":{"input_tokens":1}}}`,
-		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"id-` + token + `","content":"` + token + `"}]}}`,
-		string(resultLine(t, map[string]any{
-			"result": "answer " + token, "session_id": "sess-" + token,
-			"structured_output": map[string]any{"k": token},
-			"modelUsage":        map[string]any{"m-" + token: map[string]any{"inputTokens": 5}},
-		})),
-	}
-
-	evs, res := replayData(t, []byte(strings.Join(lines, "\n")), []string{token}, 0)
-
-	require.NotEmpty(t, evs)
-
-	for _, ev := range evs {
-		b, err := json.Marshal(ev)
-		require.NoError(t, err)
-		assert.NotContains(t, string(b), token, ev.Kind)
-	}
-
-	b, err := json.Marshal(res)
-	require.NoError(t, err)
-	assert.NotContains(t, string(b), token)
-	assert.Contains(t, string(b), redact.New(token)(token), "the masks mark where the token was")
-}
-
-func TestMaskCoversEncodedForms(t *testing.T) {
-	const token = "tok-SECRET-0123456789"
-
-	encoded := base64.StdEncoding.EncodeToString([]byte(token))
-	line := `{"type":"assistant","message":{"id":"m1","model":"x","content":[{"type":"text","text":"env ` + encoded + `"}]}}`
-
-	evs, _ := replayData(t, []byte(line+"\n"), []string{token}, 1)
-
-	texts := ofKind(evs, driver.KindText)
-	require.Len(t, texts, 1)
-	assert.NotContains(t, texts[0].Text, encoded)
-	assert.Contains(t, texts[0].Text, "env")
-}
-
-func TestMaskCoversNoResultAndLimits(t *testing.T) {
-	const token = "tok-SECRET-0123456789"
-
-	m := newMapper([]string{token}, func(driver.Event) {})
-	m.feed([]byte(`{"type":"assistant","message":{"id":"m1","model":"x","content":[{"type":"text","text":"` + token + `"}]}}`))
-	m.feed([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"` + token + `"}}`))
-
-	b, err := json.Marshal(m.finish(1, token))
-	require.NoError(t, err)
-	assert.NotContains(t, string(b), token)
-}
-
-func TestMaskOrdersLongerSecretsFirst(t *testing.T) {
-	const short, long = "abcdefgh", "abcdefgh-ijkl"
-
-	m := newMapper([]string{short, "", long}, func(driver.Event) {})
-	marker := redact.New(short)(short)
-
-	assert.Equal(t, marker+" "+marker, m.mask(long+" "+short))
-	assert.Equal(t, "plain", newMapper(nil, func(driver.Event) {}).mask("plain"))
-}
-
-func TestMaskJSONKeepsResultValid(t *testing.T) {
-	// A mask that breaks the JSON it is given.
-	mask := func(s string) string { return s[1:] }
-
-	assert.True(t, json.Valid(maskJSON(mask, json.RawMessage(`{"a":"b"}`))))
-	assert.Equal(t, json.RawMessage(nil), maskJSON(mask, nil))
 }
 
 func dropLines(data []byte, markers ...string) []byte {
@@ -659,7 +571,7 @@ func dropLines(data []byte, markers ...string) []byte {
 
 func TestMapperUnknownTerminalReason(t *testing.T) {
 	t1 := readFixture(t, "real/t1.jsonl")
-	want, wantRes := replayData(t, t1, nil, 0)
+	want, wantRes := replayData(t, t1, 0)
 
 	for name, data := range map[string][]byte{
 		"absent":  bytes.ReplaceAll(t1, []byte(`"terminal_reason":"completed",`), nil),
@@ -668,7 +580,7 @@ func TestMapperUnknownTerminalReason(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			require.NotEqual(t, t1, data)
 
-			got, gotRes := replayData(t, data, nil, 0)
+			got, gotRes := replayData(t, data, 0)
 			assert.Equal(t, want, got)
 			assert.Equal(t, wantRes, gotRes)
 		})
@@ -690,7 +602,7 @@ func TestMapperErrorResult(t *testing.T) {
 		data := bytes.Replace(readFixture(t, "real/t1.jsonl"), []byte(`"is_error":false`), []byte(`"is_error":true`), 1)
 		require.NotEqual(t, readFixture(t, "real/t1.jsonl"), data)
 
-		evs, res := replayData(t, data, nil, 0)
+		evs, res := replayData(t, data, 0)
 
 		assert.NotEqual(t, driver.ReasonDone, res.Reason)
 		assert.True(t, res.IsError)
@@ -723,7 +635,7 @@ func TestMapperCallClosesOnNextCall(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			evs, res := replayData(t, tc.data, nil, 0)
+			evs, res := replayData(t, tc.data, 0)
 
 			assert.Equal(t, tc.want, kinds(evs))
 			assert.Equal(t, tc.call, *ofKind(evs, driver.KindUsage)[0].Usage)
@@ -732,17 +644,16 @@ func TestMapperCallClosesOnNextCall(t *testing.T) {
 	}
 }
 
-func TestMapperUsageLimitResultIgnoresAllowedWindow(t *testing.T) {
-	// The five_hour window was fine; the weekly one stopped the run.
-	allowed := `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794510000,"rateLimitType":"five_hour"}}` + "\n"
-	data := append([]byte(allowed), resultLine(t, map[string]any{
+func TestMapperUsageLimitResultCarriesLastEvent(t *testing.T) {
+	event := `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794510000,"rateLimitType":"seven_day"}}` + "\n"
+	data := append([]byte(event), resultLine(t, map[string]any{
 		"is_error": true, "api_error_status": 429, "result": "You've hit your weekly limit",
 	})...)
 
-	_, res := replayData(t, data, nil, 1)
+	_, res := replayData(t, data, 1)
 
 	assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
 	require.NotNil(t, res.RateLimit)
 	assert.Equal(t, "seven_day", res.RateLimit.Window)
-	assert.True(t, res.RateLimit.ResetsAt.IsZero(), "the allowed window's reset must not be reported")
+	assert.True(t, res.RateLimit.ResetsAt.Equal(time.Unix(1794510000, 0)))
 }
