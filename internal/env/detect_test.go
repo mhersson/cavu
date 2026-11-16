@@ -249,8 +249,6 @@ func TestDetect(t *testing.T) {
 			overrides: map[string]string{"node": "22.1.0"},
 			wantTools: []Tool{{"node", "22.1.0"}}, wantEco: []string{"node"},
 		},
-		{name: "override empty name", overrides: map[string]string{"": "1"}, wantErrHas: "override"},
-		{name: "override empty version", overrides: map[string]string{"go": ""}, wantErrHas: "override"},
 		{
 			name: "sorted and ecosystems sorted",
 			files: map[string]string{
@@ -363,4 +361,20 @@ func TestDetectNonUTF8IsAnError(t *testing.T) {
 	got, err := Detect(nil, map[string]string{"g\xffo": "1\xff"})
 	require.NoError(t, err)
 	assert.Len(t, got.Tools, 1)
+}
+
+func TestDetectRejectsEmptyOverrides(t *testing.T) {
+	t.Parallel()
+
+	for name, overrides := range map[string]map[string]string{
+		"empty name":    {"": "1"},
+		"empty version": {"go": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := Detect(nil, overrides)
+			require.Error(t, err)
+		})
+	}
 }
