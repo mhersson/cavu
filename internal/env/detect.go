@@ -5,6 +5,7 @@
 package env
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,6 +72,8 @@ func Detect(files map[string][]byte, overrides map[string]string) (Detection, er
 
 	r := &reader{}
 
+	files = stripBOMs(files)
+
 	own, err := r.ownVersions(files)
 	if err != nil {
 		return Detection{}, err
@@ -114,6 +117,16 @@ func Detect(files map[string][]byte, overrides map[string]string) (Detection, er
 	slices.Sort(r.ignored)
 
 	return Detection{Tools: tools, Ecosystems: ecosystems, Ignored: slices.Compact(r.ignored)}, nil
+}
+
+// stripBOMs returns files without a leading UTF-8 byte order mark on any of them.
+func stripBOMs(files map[string][]byte) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for name, b := range files {
+		out[name] = bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
+	}
+
+	return out
 }
 
 // reader collects the entries it declines to read.
