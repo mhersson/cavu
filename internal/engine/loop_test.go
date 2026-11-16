@@ -69,6 +69,7 @@ type call struct {
 	work   engine.WorkRequest
 	remove bool
 	title  string
+	ref    engine.RunRef
 }
 
 func (c call) String() string {
@@ -163,8 +164,8 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, title strin
 	return pop(&r.exports, exportOK)
 }
 
-func (r *fakeRunner) Release(ctx context.Context, c engine.RunConfig, removeVolumes bool) error {
-	r.begin(call{method: "release", runID: c.RunID, remove: removeVolumes})
+func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
+	r.begin(call{method: "release", runID: ref.RunID, remove: removeVolumes, ref: ref})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -493,6 +494,9 @@ func TestLoopHappyPath(t *testing.T) {
 	}
 
 	assert.Equal(t, map[int64]string{runID: engine.RunExported}, h.spy.ended())
+	assert.Equal(t, engine.RunRef{
+		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: runID, ProjectID: h.task.ProjectID,
+	}, h.runner.callsOf("release")[0].ref)
 
 	assert.Equal(t, work.SessionID, h.spy.row(runID).SessionID, "the run row keeps the session id")
 
@@ -1401,6 +1405,8 @@ func TestLoopAnswerReachesTheAgent(t *testing.T) {
 	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
 }
 
+// A stop needs no run config: a broken setting neither keeps a person's cancel
+// out of the record nor keeps the run from being released.
 func TestLoopStopsWithoutConfig(t *testing.T) {
 	h := newHarness(t)
 	r := h.seed(
@@ -1413,29 +1419,16 @@ func TestLoopStopsWithoutConfig(t *testing.T) {
 	require.NoError(t, h.store.SetSetting(t.Context(), "model_work", ""))
 
 	status, err := h.run(t.Context())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "model_work")
+	require.NoError(t, err)
 	assert.Equal(t, engine.StatusCancelled, status)
 	assert.Equal(t, engine.StopCancelled, h.lastStop().Reason)
 
 	ends := h.eventsOf(engine.RunEnded)
 	require.Len(t, ends, 1)
 	assert.Equal(t, engine.StopCancelled, payloadOf[engine.RunEndedPayload](t, ends[0]).Outcome)
-	assert.Empty(t, h.runner.trace())
-	assert.Empty(t, h.spy.ended(), "the row stays open for repair")
-
-	status, err = h.run(t.Context())
-	require.Error(t, err, "repair cannot release while the setting is missing")
-	assert.Contains(t, err.Error(), "model_work")
-	assert.Equal(t, engine.StatusCancelled, status, "the loop still decides")
-	assert.Empty(t, h.runner.trace())
-	assert.Empty(t, h.spy.ended())
-
-	require.NoError(t, h.store.SetSetting(t.Context(), "model_work", "model-a"))
-
-	status, err = h.run(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, engine.StatusCancelled, status)
 	assert.Equal(t, []string{"release/remove"}, h.runner.trace())
+	assert.Equal(t, engine.RunRef{
+		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: r.ID, ProjectID: h.task.ProjectID,
+	}, h.runner.calls[0].ref)
 	assert.Equal(t, map[int64]string{r.ID: engine.StopCancelled}, h.spy.ended())
 }

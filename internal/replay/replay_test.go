@@ -71,7 +71,7 @@ func (r *fakeRunner) Export(_ context.Context, c engine.RunConfig, _ string) (en
 	return engine.ExportResult{HeadCommit: "head", DiffPath: fmt.Sprintf("diff-%d.patch", c.TaskID), FilesChanged: 1}, nil
 }
 
-func (r *fakeRunner) Release(context.Context, engine.RunConfig, bool) error { return nil }
+func (r *fakeRunner) Release(context.Context, engine.RunRef, bool) error { return nil }
 
 type env struct {
 	store   *store.Store

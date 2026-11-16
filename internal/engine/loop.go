@@ -256,15 +256,7 @@ func (p *pass) repair(ctx context.Context) error {
 			return nil
 		case done:
 			// The run ended but was never released.
-			o, oerr := p.open(ctx, t, r)
-			if oerr != nil {
-				// The row stays open, so the next repair releases it once the config builds.
-				p.hold(oerr)
-
-				return nil
-			}
-
-			err = p.free(ctx, o, true, outcome)
+			err = p.free(ctx, t, r, true, outcome)
 		default:
 			err = p.endRun(ctx, r, RunAbandoned)
 		}
@@ -313,7 +305,7 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 			return err
 		}
 
-		return p.release(ctx, v.Task, v.run, true, RunExported)
+		return p.free(ctx, v.Task, v.run, true, RunExported)
 	}
 
 	row := v.run
@@ -388,7 +380,12 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 
 	// A prepare redone after a crash may find a partial clone; start it from empty volumes.
 	if v.Facts.Pending == string(KindPrepare) {
-		if err := p.Runner.Release(ctx, o.cfg, true); err != nil {
+		ref, err := p.ref(ctx, o.task, o.row)
+		if err != nil {
+			return err
+		}
+
+		if err := p.Runner.Release(ctx, ref, true); err != nil {
 			return p.fault(ctx, o, err)
 		}
 	}
@@ -686,33 +683,36 @@ func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *st
 		return nil
 	}
 
-	return p.release(ctx, t, *run, ends, sp.Reason)
+	return p.free(ctx, t, *run, ends, sp.Reason)
 }
 
-// release frees a run whose stop or end is recorded. Without a config it holds
-// the error: a run that ended keeps its row open for repair, and any other
-// run keeps its containers until the next action uses them.
-func (p *pass) release(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
-	o, err := p.open(ctx, t, row)
+// ref names a run for Release from the task, the row, the loop's image and the
+// instance id, so a broken setting or secret cannot keep a run's containers.
+func (p *pass) ref(ctx context.Context, t store.Task, row store.Run) (RunRef, error) {
+	set, err := p.Store.Settings(ctx)
 	if err != nil {
-		p.hold(err)
-
-		return nil
+		return RunRef{}, fmt.Errorf("task %d: release run %d: %w", p.taskID, row.ID, err)
 	}
 
-	return p.free(ctx, o, end, outcome)
+	return RunRef{InstanceID: set["instance_id"], Image: p.Image, TaskID: t.ID, RunID: row.ID, ProjectID: t.ProjectID}, nil
 }
 
-// free stops the run's containers, removing its volumes and ending its row
-// when the run ends. A Release error is held so the row is still ended.
-func (p *pass) free(ctx context.Context, o openRun, end bool, outcome string) error {
-	relErr := p.Runner.Release(ctx, o.cfg, end)
+// free stops a run's containers once its stop or end is recorded, removing its
+// volumes and ending its row when the run ends. A Release error is held so the
+// row is still ended.
+func (p *pass) free(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
+	ref, err := p.ref(ctx, t, row)
+	if err != nil {
+		return err
+	}
+
+	relErr := p.Runner.Release(ctx, ref, end)
 	if relErr != nil {
-		relErr = fmt.Errorf("task %d: release run %d: %w", p.taskID, o.row.ID, relErr)
+		relErr = fmt.Errorf("task %d: release run %d: %w", p.taskID, row.ID, relErr)
 	}
 
 	if end {
-		if err := p.endRun(ctx, o.row, outcome); err != nil {
+		if err := p.endRun(ctx, row, outcome); err != nil {
 			return errors.Join(err, relErr)
 		}
 	}

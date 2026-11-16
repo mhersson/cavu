@@ -39,6 +39,15 @@ type RunConfig struct {
 	ArtifactDir string
 }
 
+// RunRef names a run's containers and volumes. It holds no secret and no
+// setting but the instance id, so a release never waits on one that can no
+// longer be read. Image is the loop's own, never a setting: a runner needs it
+// even to remove a run's containers.
+type RunRef struct {
+	InstanceID, Image        string
+	TaskID, RunID, ProjectID int64
+}
+
 // Runner carries out a run's actions where a container runtime exists.
 type Runner interface {
 	// Prepare starts from empty run volumes: clone, toolchains, setup, baseline
@@ -56,7 +65,7 @@ type Runner interface {
 	// Export is safe to repeat for the same run.
 	Export(ctx context.Context, c RunConfig, title string) (ExportResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
-	Release(ctx context.Context, c RunConfig, removeVolumes bool) error
+	Release(ctx context.Context, ref RunRef, removeVolumes bool) error
 }
 
 // PrepareResult is what preparing a run found. A failed step is a result, not an error.
