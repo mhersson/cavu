@@ -2,7 +2,7 @@
 
 This file lists the removable parts of CAVU: code that makes up for a weakness of today's models and sits behind a switch, so it can be deleted when models no longer need it. Every removable part has an entry here, landed with its code, naming its switch, what the switch turns on, the assumption the part rests on, and the replay comparison that would retire it. The `internal/replay` package runs the comparisons; no command runs it yet.
 
-It also lists what the Claude Code adapter assumes of the pinned Claude Code version. Those entries have no switch: they change when the pinned version changes, and name the check against a new release that would change or retire them, to be run by a conformance suite that is not built yet.
+It also lists what the Claude Code adapter assumes of the pinned Claude Code version. Those entries have no switch: they change when the pinned version changes, and name the check against a new release that would change or retire them, to be run by `make test-conformance`, whose tests run the pinned version through the adapter but do not yet check each of these assumptions.
 
 ## continuations
 
