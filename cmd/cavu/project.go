@@ -286,13 +286,13 @@ func projectList(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	fmt.Fprintln(w, "NAME\tREPOSITORY\tBASE\tVERIFY\tBASELINE")
 
 	for _, p := range ps {
-		verify, baseline := p.VerifyCommand, "none"
+		verify, baseline := "none", "none"
 
 		switch {
 		case p.VerifyWaived:
 			verify = "waived"
-		case verify == "":
-			verify = "none"
+		case p.VerifyCommand != "":
+			verify = p.VerifyCommand
 		}
 
 		if b := p.Baseline; b != nil {
