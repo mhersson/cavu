@@ -3,6 +3,11 @@
 Stream-json fixtures recorded with Claude Code 2.1.322. `TestFixturesCarryNoToken`
 scans every file here for credential shapes.
 
+The recordings are kept as recorded, including characters this repository's own
+text avoids: `synthetic/max_budget_end_turn.jsonl`,
+`synthetic/max_budget_tool_use.jsonl`, `synthetic/max_turns.jsonl` and
+`synthetic/parallel.jsonl` contain the long dash character in recorded CLI output.
+
 - `real/` - CLI output recorded on 2026-11-11 (see below for the one edit).
 - `synthetic/` - shapes the recorded runs do not cover, derived from a real
   fixture or captured against a mock Messages API.
