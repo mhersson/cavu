@@ -681,6 +681,29 @@ func TestStageCancelled(t *testing.T) {
 	requireNoSession(t, f)
 }
 
+// prepare checks the paths and the base commit itself before it composes a
+// command, whatever called it.
+func TestPrepareChecksPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*driver.Spec)
+	}{
+		{"config dir /", func(s *driver.Spec) { s.ConfigDir = "/" }},
+		{"config dir is home", func(s *driver.Spec) { s.ConfigDir = s.Home }},
+		{"config dir two levels below home", func(s *driver.Spec) { s.ConfigDir = s.Home + "/nested/.claude-cavu" }},
+		{"dir is the config dir", func(s *driver.Spec) { s.Dir = s.ConfigDir }},
+		{"option as base commit", func(s *driver.Spec) { s.BaseCommit = "--output=/tmp/x" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+			tc.mutate(&f.spec)
+
+			require.Error(t, f.d.prepare(t.Context(), f.target, f.spec))
+			assert.Empty(t, f.target.started(), "prepare started a command")
+		})
+	}
+}
+
 // Without a base commit nothing is staged, but the config dir is cleared all
 // the same.
 func TestClearWithoutBaseCommit(t *testing.T) {

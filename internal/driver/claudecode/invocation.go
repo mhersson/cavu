@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/driver"
@@ -74,17 +75,6 @@ func validate(s driver.Spec) error {
 		return errors.New("claudecode: key mode without a base URL")
 	case s.Model == "":
 		return errors.New("claudecode: no model")
-	// Every session clears the config dir, so these hold before any command
-	// is composed; an empty value would also override the image's and lose
-	// the transcript.
-	case !cleanAbs(s.Home) || s.Home == "/":
-		return fmt.Errorf("claudecode: home %q is not an absolute, clean path below /", s.Home)
-	case !cleanAbs(s.ConfigDir) || !strings.HasPrefix(s.ConfigDir, s.Home+"/"):
-		return fmt.Errorf("claudecode: config dir %q is not a clean path below the home %q", s.ConfigDir, s.Home)
-	case s.Dir != "" && !cleanAbs(s.Dir):
-		return fmt.Errorf("claudecode: dir %q is not an absolute, clean path", s.Dir)
-	case s.Dir == s.ConfigDir || strings.HasPrefix(s.Dir, s.ConfigDir+"/"):
-		return fmt.Errorf("claudecode: the config dir %q holds the dir %q", s.ConfigDir, s.Dir)
 	case s.Prompt == "":
 		return errors.New("claudecode: no prompt")
 	case s.MaxTurns < 1:
@@ -95,6 +85,33 @@ func validate(s driver.Spec) error {
 		return fmt.Errorf("claudecode: session id %q is not a UUID", cmp.Or(s.SessionID, s.Resume))
 	case s.Effort != "" && !slices.Contains(effortLevels, s.Effort):
 		return fmt.Errorf("claudecode: effort %q is not one of %v", s.Effort, effortLevels)
+	}
+
+	return validatePaths(s)
+}
+
+// validatePaths checks what the staging composes its commands from: the
+// paths, which the clear deletes in, and the base commit. prepare checks
+// them again before it composes any. An empty home or config dir would also
+// override the image's and lose the transcript.
+func validatePaths(s driver.Spec) error {
+	for _, p := range []string{s.Home, s.ConfigDir, s.Dir} {
+		if strings.ContainsFunc(p, unicode.IsControl) {
+			return fmt.Errorf("claudecode: path %q holds a control character", p)
+		}
+	}
+
+	switch {
+	case !cleanAbs(s.Home) || s.Home == "/":
+		return fmt.Errorf("claudecode: home %q is not an absolute, clean path below /", s.Home)
+	// Directly below the home, so no component between the two can be a
+	// symlink the agent planted: the home's parent is not the agent's.
+	case !cleanAbs(s.ConfigDir) || path.Dir(s.ConfigDir) != s.Home:
+		return fmt.Errorf("claudecode: config dir %q is not a clean path directly below the home %q", s.ConfigDir, s.Home)
+	case s.Dir != "" && !cleanAbs(s.Dir):
+		return fmt.Errorf("claudecode: dir %q is not an absolute, clean path", s.Dir)
+	case s.Dir == s.ConfigDir || strings.HasPrefix(s.Dir, s.ConfigDir+"/"):
+		return fmt.Errorf("claudecode: the config dir %q holds the dir %q", s.ConfigDir, s.Dir)
 	case s.BaseCommit != "" && !commitPattern.MatchString(s.BaseCommit):
 		return fmt.Errorf("claudecode: base commit %q is not a full commit id", s.BaseCommit)
 	case s.BaseCommit != "" && s.Dir == "":

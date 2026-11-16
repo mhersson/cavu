@@ -166,6 +166,10 @@ func (m memoryFile) render() ([]byte, error) {
 // commit, stages its instruction files there, all inside the target: the
 // clear, the reads and the write are separate commands.
 func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) error {
+	if err := validatePaths(s); err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, stageTimeout)
 	defer cancel()
 
