@@ -35,9 +35,9 @@ const (
 
 	linkTimeout = time.Minute
 
-	// parentElsewhere is the link script's exit status when a link's parent
-	// resolves elsewhere; its other failures exit 2.
-	parentElsewhere = 1
+	// elsewhere is a guarded script's exit status when a directory it would
+	// change resolves elsewhere; its other failures exit 2.
+	elsewhere = 1
 )
 
 // linkScript makes each link, given as its parent, its name and its target,
@@ -47,7 +47,7 @@ var linkScript = proc.SandboxOnly(`while [ "$#" -ge 3 ]; do
 	mkdir -p -- "$1" && cd -P -- "$1" || exit 2
 	if [ "$(pwd -P)" != "$1" ]; then
 		printf 'cavu: %s resolves to %s; nothing deleted in it\n' "$1" "$(pwd -P)" >&2
-		exit ` + strconv.Itoa(parentElsewhere) + `
+		exit ` + strconv.Itoa(elsewhere) + `
 	fi
 	rm -rf -- "./$2" && ln -s -- "$3" "./$2" || exit 2
 	shift 3
@@ -55,11 +55,10 @@ done
 [ "$#" -eq 0 ] || exit 2`)
 
 var (
-	errLinkPath = errors.New("runner: a home link must be a clean absolute path strictly under " + home +
-		" and its target a clean absolute path under " + cache)
-	errLinkRefused = errors.New("runner: the link step refused to run: the image lacks the sandbox marker " +
-		proc.SandboxMarker + "; `cavu image build` builds an image with the marker")
-	errLinkParent = errors.New("runner: link the agent's home: a link's parent resolves elsewhere, and nothing in it was deleted")
+	errOutOfBounds  = errors.New("runner: a guarded step's path is not a clean absolute path strictly under its root")
+	errNotInSandbox = errors.New("the image lacks the sandbox marker " + proc.SandboxMarker +
+		", so nothing ran; `cavu image build` builds an image with the marker")
+	errElsewhere = errors.New("a directory resolves elsewhere, and nothing in it was changed")
 )
 
 // proxyEnv sends a command's egress through the bridge, the one way out of
@@ -305,23 +304,7 @@ func linkHome(ctx context.Context, a container, links map[string]string) error {
 		return err
 	}
 
-	res, err := a.Run(ctx, cmd, linkTimeout)
-	if err != nil {
-		return err
-	}
-
-	if !res.TimedOut {
-		switch res.ExitCode {
-		case 0:
-			return nil
-		case proc.NotInSandbox:
-			return errLinkRefused
-		case parentElsewhere:
-			return fmt.Errorf("%w: %s", errLinkParent, strings.TrimSpace(res.Output))
-		}
-	}
-
-	return fmt.Errorf("runner: link the agent's home: %s", strings.TrimSpace(res.Output))
+	return homeStep(ctx, a, "link the agent's home", cmd, linkTimeout)
 }
 
 // linkCommand refuses every link unless each is strictly under the home and
@@ -331,8 +314,8 @@ func linkCommand(links map[string]string) (proc.Command, error) {
 
 	for _, link := range slices.Sorted(maps.Keys(links)) {
 		target := links[link]
-		if !under(link, home) || !under(target, cache) {
-			return proc.Command{}, fmt.Errorf("%w: %q to %q", errLinkPath, link, target)
+		if err := errors.Join(within(link, home), within(target, cache)); err != nil {
+			return proc.Command{}, err
 		}
 
 		argv = append(argv, path.Dir(link), path.Base(link), target)
@@ -341,9 +324,47 @@ func linkCommand(links map[string]string) (proc.Command, error) {
 	return proc.Command{Argv: argv}, nil
 }
 
-// under reports whether p is a clean absolute path strictly under dir.
-func under(p, dir string) bool {
-	return path.IsAbs(p) && path.Clean(p) == p && strings.HasPrefix(p, dir+"/")
+// homeStep runs a guarded step on the agent phase's home, where every failure
+// is a fault: the home is the task's, and only removing it mends it.
+func homeStep(ctx context.Context, a container, what string, cmd proc.Command, timeout time.Duration) error {
+	res, err := runGuarded(ctx, a, cmd, timeout)
+	if err == nil && (res.ExitCode != 0 || res.TimedOut) {
+		err = errors.New(strings.TrimSpace(output(res, timeout)))
+	}
+
+	if err != nil {
+		return fmt.Errorf("runner: %s: %w", what, err)
+	}
+
+	return nil
+}
+
+// runGuarded runs a script proc.SandboxOnly wraps, which exits elsewhere when
+// a directory it would change resolves elsewhere. Those two refusals are
+// errors; any other failure comes back in the result.
+func runGuarded(ctx context.Context, c container, cmd proc.Command, timeout time.Duration) (sandbox.Result, error) {
+	res, err := c.Run(ctx, cmd, timeout)
+	if err != nil || res.TimedOut {
+		return res, err
+	}
+
+	switch res.ExitCode {
+	case proc.NotInSandbox:
+		return res, errNotInSandbox
+	case elsewhere:
+		return res, fmt.Errorf("%w: %s", errElsewhere, strings.TrimSpace(res.Output))
+	}
+
+	return res, nil
+}
+
+// within is nil when p is a clean absolute path strictly under root.
+func within(p, root string) error {
+	if path.IsAbs(p) && path.Clean(p) == p && strings.HasPrefix(p, root+"/") {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %q is not strictly under %s", errOutOfBounds, p, root)
 }
 
 // Release stops the run's containers and, when removeVolumes is set, removes

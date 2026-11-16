@@ -246,10 +246,10 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 			res  sandbox.Result
 			want error
 		}{
-			{name: "outside a sandbox", res: sandbox.Result{ExitCode: proc.NotInSandbox}, want: errLinkRefused},
-			{name: "a parent elsewhere", res: sandbox.Result{ExitCode: parentElsewhere}, want: errLinkParent},
+			{name: "outside a sandbox", res: sandbox.Result{ExitCode: proc.NotInSandbox}, want: errNotInSandbox},
+			{name: "a parent elsewhere", res: sandbox.Result{ExitCode: elsewhere}, want: errElsewhere},
 			{name: "another failure", res: sandbox.Result{ExitCode: 2, Output: "ln: Permission denied\n"}},
-			{name: "a timeout", res: sandbox.Result{ExitCode: parentElsewhere, TimedOut: true}},
+			{name: "a timeout", res: sandbox.Result{ExitCode: elsewhere, TimedOut: true}},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
 				f := newFake()
@@ -263,7 +263,7 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 				require.Error(t, err)
 				assert.False(t, r.state(c.RunID).agentUp())
 
-				for _, sentinel := range []error{errLinkRefused, errLinkParent} {
+				for _, sentinel := range []error{errNotInSandbox, errElsewhere} {
 					if sentinel == tt.want {
 						require.ErrorIs(t, err, sentinel)
 					} else {
@@ -306,18 +306,18 @@ func TestLinkHomeRefusesPathsOutOfBounds(t *testing.T) {
 			links := map[string]string{tt.link: tt.target}
 
 			cmd, err := linkCommand(links)
-			require.ErrorIs(t, err, errLinkPath)
+			require.ErrorIs(t, err, errOutOfBounds)
 			assert.Empty(t, cmd.Argv, "nothing is composed")
 
 			f := newFake()
 			err = linkHome(t.Context(), fakeContainer{f: f, phase: sandbox.PhaseAgent}, links)
-			require.ErrorIs(t, err, errLinkPath)
+			require.ErrorIs(t, err, errOutOfBounds)
 			assert.Empty(t, f.calls(), "nothing runs")
 
 			links[home+"/.cache/other/bin"] = cache + "/other/bin"
 
 			_, err = linkCommand(links)
-			require.ErrorIs(t, err, errLinkPath, "a valid link does not let an invalid one through")
+			require.ErrorIs(t, err, errOutOfBounds, "a valid link does not let an invalid one through")
 		})
 	}
 }
