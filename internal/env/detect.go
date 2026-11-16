@@ -150,13 +150,15 @@ func (r *reader) take(out map[string]string, file, name, version string) error {
 		return fmt.Errorf("%s: a tool name or version is not valid UTF-8", file)
 	}
 
-	if strings.Contains(name, ":") || strings.HasPrefix(version, "path:") || strings.HasPrefix(version, "ref:") {
+	trimmedName, trimmedVersion := strings.TrimSpace(name), strings.TrimSpace(version)
+
+	if strings.Contains(trimmedName, ":") || strings.HasPrefix(trimmedVersion, "path:") || strings.HasPrefix(trimmedVersion, "ref:") {
 		r.ignored = append(r.ignored, file+": "+name+" "+version)
 
 		return nil
 	}
 
-	out[normaliseTool(name)] = version
+	out[normaliseTool(trimmedName)] = trimmedVersion
 
 	return nil
 }

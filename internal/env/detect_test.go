@@ -305,7 +305,7 @@ func TestDetectIgnoresBackendsAndPaths(t *testing.T) {
 
 	files := map[string][]byte{
 		".tool-versions": []byte("npm:prettier 3.0.0\nasdf:https://example.test/plugin 1.0\nzig path:/x\nbun ref:main\n"),
-		"mise.toml":      []byte("[tools]\n\"cargo:ripgrep\" = \"14\"\nlocal = \"path:/y\"\n"),
+		"mise.toml":      []byte("[tools]\n\"cargo:ripgrep\" = \"14\"\nlocal = \"path:/y\"\nsp = \" path:/x\"\ntbl = { version = \" ref:main\" }\n"),
 	}
 	got, err := Detect(files, nil)
 	require.NoError(t, err)
@@ -317,6 +317,8 @@ func TestDetectIgnoresBackendsAndPaths(t *testing.T) {
 		".tool-versions: zig path:/x",
 		"mise.toml: cargo:ripgrep 14",
 		"mise.toml: local path:/y",
+		"mise.toml: sp  path:/x",
+		"mise.toml: tbl  ref:main",
 	}, got.Ignored)
 
 	overrides := map[string]string{"npm:prettier": "3.0.0", "zig": "path:/x", "bun": "ref:main"}
