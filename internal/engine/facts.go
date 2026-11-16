@@ -17,10 +17,10 @@ type Facts struct {
 	PrepareFailure             *PrepareFailure
 	Pending                    string       // an action claimed and not finished: "", "prepare", "work", "verify", "export"
 	SessionID                  string       // of the open run, "" before the first session
-	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action came after it, or while a newer session is pending
+	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action other than a sandbox retry came after it, or while a newer session is pending
 	Verify                     string       // result for the newest ended session; "" while a session or a verify is pending
 	Exported                   bool
-	Resumed                    *Resume // a human retry or answer after a stop, not yet followed by a finished session or prepare, or by a new run when it came from environment or sandbox
+	Resumed                    *Resume // a human retry or answer after a stop, other than a sandbox retry, not yet followed by a finished session or prepare, or by a new run when it came from environment
 	LastVerifyOutput           string  // of the newest verify_ended, for the next fix prompt
 	Continuations, VerifyFixes int     // session starts marked automatic, per mode, since the last human action
 }
@@ -74,14 +74,20 @@ func (f *Facts) apply(e store.Event) {
 		f.resume(decode[HumanAnsweredPayload](e.Payload).Text)
 		f.humanAction()
 	case HumanRetried:
-		f.resume("")
-		f.humanAction()
+		// A sandbox stop is a fault that cut an action short, not a session's
+		// result: its retry is no resume and keeps the session, so Decide redoes that action.
+		if f.stoppedFor(StopSandbox) {
+			f.clearStop()
+		} else {
+			f.resume("")
+			f.humanAction()
+		}
 	case HumanCancelled:
 		f.Cancelled = true
 		f.humanAction()
 	case RunStarted:
-		// The new run is what a resume from environment or sandbox asked for.
-		if f.resumedFrom(StopEnvironment) || f.resumedFrom(StopSandbox) {
+		// The new run is what a resume from environment asked for.
+		if f.resumedFrom(StopEnvironment) {
 			f.Resumed = nil
 		}
 
@@ -144,7 +150,14 @@ func (f *Facts) apply(e store.Event) {
 // Hiding the session before a person's action keeps Decide from stopping again
 // on the result the person just acted on.
 func (f *Facts) humanAction() {
-	f.OpenStop, f.Session = nil, nil
+	f.clearStop()
+	f.Session = nil
+}
+
+// clearStop closes the open stop and restarts the caps' count, which runs from
+// the last human action.
+func (f *Facts) clearStop() {
+	f.OpenStop = nil
 	f.Continuations, f.VerifyFixes = 0, 0
 }
 

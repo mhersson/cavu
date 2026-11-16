@@ -1131,9 +1131,10 @@ func TestLoopRepairsRunRows(t *testing.T) {
 
 	t.Run("the walk ends every stale row", func(t *testing.T) {
 		h := newHarness(t)
-		faulted := h.seed(ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
-			ev(engine.Stopped, `{"reason":"sandbox","explanation":"The runner failed.","action":"retry"}`),
-			ev(engine.RunEnded, `{"outcome":"sandbox"}`))
+		failed := h.seed(ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+			ev(engine.PrepareFailed, `{"step":"setup","output":"exit 1"}`),
+			ev(engine.Stopped, `{"reason":"environment","explanation":"Setup failed.","action":"retry"}`),
+			ev(engine.RunEnded, `{"outcome":"environment"}`))
 		h.add(0, engine.HumanRetried, "user", "")
 
 		stray := h.seed()
@@ -1142,10 +1143,10 @@ func TestLoopRepairsRunRows(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, engine.StatusInReview, status)
 		assert.Equal(t, append([]string{"release/remove"}, happyTrace...), h.runner.trace())
-		assert.Equal(t, faulted.ID, h.runner.calls[0].runID)
+		assert.Equal(t, failed.ID, h.runner.calls[0].runID)
 
 		ended := h.spy.ended()
-		assert.Equal(t, engine.StopSandbox, ended[faulted.ID])
+		assert.Equal(t, engine.StopEnvironment, ended[failed.ID])
 		assert.Equal(t, engine.RunAbandoned, ended[stray.ID])
 
 		var reasons []string
@@ -1170,25 +1171,25 @@ func TestLoopRunnerFaultStops(t *testing.T) {
 		{
 			name:       "prepare",
 			script:     func(r *fakeRunner) { r.prepares = []step[engine.PrepareResult]{{err: daemon}} },
-			trace:      []string{"prepare", "release/remove"},
+			trace:      []string{"prepare", "release/keep"},
 			explainHas: daemon.Error(),
 		},
 		{
 			name:       "work",
 			script:     func(r *fakeRunner) { r.works = []step[engine.WorkResult]{{err: daemon}} },
-			trace:      []string{"prepare", "work/start", "release/remove"},
+			trace:      []string{"prepare", "work/start", "release/keep"},
 			explainHas: daemon.Error(),
 		},
 		{
 			name:       "verify",
 			script:     func(r *fakeRunner) { r.verifies = []step[engine.VerifyResult]{{err: daemon}} },
-			trace:      []string{"prepare", "work/start", "verify", "release/remove"},
+			trace:      []string{"prepare", "work/start", "verify", "release/keep"},
 			explainHas: daemon.Error(),
 		},
 		{
 			name:       "export",
 			script:     func(r *fakeRunner) { r.exports = []step[engine.ExportResult]{{err: daemon}} },
-			trace:      []string{"prepare", "work/start", "verify", "export", "release/remove"},
+			trace:      []string{"prepare", "work/start", "verify", "export", "release/keep"},
 			explainHas: daemon.Error(),
 		},
 		{
@@ -1196,12 +1197,12 @@ func TestLoopRunnerFaultStops(t *testing.T) {
 			script: func(r *fakeRunner) {
 				r.verifies = []step[engine.VerifyResult]{{res: engine.VerifyResult{Command: "make test"}}}
 			},
-			trace: []string{"prepare", "work/start", "verify", "release/remove"},
+			trace: []string{"prepare", "work/start", "verify", "release/keep"},
 		},
 		{
 			name:       "prepare, then a failed release",
 			script:     func(r *fakeRunner) { r.prepares = []step[engine.PrepareResult]{{err: daemon}} },
-			trace:      []string{"prepare", "release/remove"},
+			trace:      []string{"prepare", "release/keep"},
 			explainHas: daemon.Error(),
 			releaseErr: errors.New("volume busy"),
 		},
@@ -1231,14 +1232,105 @@ func TestLoopRunnerFaultStops(t *testing.T) {
 				assert.Contains(t, stop.Explanation, tt.explainHas)
 			}
 
-			runID := h.runner.callsOf("prepare")[0].runID
-			assert.Equal(t, map[int64]string{runID: engine.StopSandbox}, h.spy.ended())
-
-			ends := h.eventsOf(engine.RunEnded)
-			require.Len(t, ends, 1)
-			assert.Equal(t, engine.StopSandbox, payloadOf[engine.RunEndedPayload](t, ends[0]).Outcome)
+			assert.Empty(t, h.eventsOf(engine.RunEnded))
+			assert.Empty(t, h.spy.ended(), "the run keeps its volumes and stays open")
 		})
 	}
+}
+
+// A retry after a runner fault redoes the action the fault cut on the same run
+// and its volumes; a cancel ends that run and removes them.
+func TestLoopRetryAfterRunnerFault(t *testing.T) {
+	daemon := errors.New("the container daemon is unreachable")
+
+	tests := []struct {
+		name   string
+		script func(r *fakeRunner)
+		next   []string // the runner calls after the retry
+	}{
+		{
+			name:   "prepare",
+			script: func(r *fakeRunner) { r.prepares = []step[engine.PrepareResult]{{err: daemon}} },
+			next:   []string{"prepare", "work/start", "verify", "export", "release/remove"},
+		},
+		{
+			name:   "session",
+			script: func(r *fakeRunner) { r.works = []step[engine.WorkResult]{{err: daemon}} },
+			next:   []string{"work/continue", "verify", "export", "release/remove"},
+		},
+		{
+			name:   "verify",
+			script: func(r *fakeRunner) { r.verifies = []step[engine.VerifyResult]{{err: daemon}} },
+			next:   []string{"verify", "export", "release/remove"},
+		},
+		{
+			name:   "export",
+			script: func(r *fakeRunner) { r.exports = []step[engine.ExportResult]{{err: daemon}} },
+			next:   []string{"export", "release/remove"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			tt.script(h.runner)
+
+			_, err := h.run(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+
+			before := len(h.runner.calls)
+			h.add(0, engine.HumanRetried, "user", "")
+
+			status, err := h.run(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, engine.StatusInReview, status)
+			assert.Equal(t, tt.next, h.runner.trace()[before:])
+
+			runID := h.runner.calls[0].runID
+			for _, c := range h.runner.calls {
+				assert.Equal(t, runID, c.runID, "%s runs on the first run", c)
+			}
+
+			assert.Equal(t, 1, h.spy.created(), "no second run row")
+			assert.Equal(t, map[int64]string{runID: engine.RunExported}, h.spy.ended())
+
+			works := h.runner.callsOf("work")
+			for _, w := range works[1:] {
+				assert.True(t, w.work.Resume)
+				assert.Equal(t, works[0].work.SessionID, w.work.SessionID)
+			}
+
+			for _, e := range h.runner.callsOf("export") {
+				assert.Equal(t, workDone.HeadCommit, e.commit)
+			}
+		})
+	}
+
+	t.Run("a cancel ends the run and removes its volumes", func(t *testing.T) {
+		h := newHarness(t)
+		h.runner.works = []step[engine.WorkResult]{{err: daemon}}
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		require.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+
+		before := len(h.runner.calls)
+		h.add(0, engine.HumanCancelled, "user", "")
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusCancelled, status)
+		require.Equal(t, []string{"release/remove"}, h.runner.trace()[before:])
+
+		runID := h.runner.calls[0].runID
+		assert.Equal(t, runID, h.runner.calls[before].runID)
+		assert.Equal(t, map[int64]string{runID: engine.StopCancelled}, h.spy.ended())
+
+		ends := h.eventsOf(engine.RunEnded)
+		require.Len(t, ends, 1)
+		assert.Equal(t, engine.StopCancelled, payloadOf[engine.RunEndedPayload](t, ends[0]).Outcome)
+	})
 }
 
 func TestLoopClaimConflict(t *testing.T) {
@@ -1406,7 +1498,7 @@ func TestLoopRecordsProgress(t *testing.T) {
 		{name: "after a result", status: engine.StatusInReview, trace: happyTrace, resultT: engine.SessionEnded},
 		{
 			name: "after a runner fault", works: []step[engine.WorkResult]{{err: errors.New("the container exited")}},
-			status: engine.StatusBlocked, trace: []string{"prepare", "work/start", "release/remove"}, resultT: engine.Stopped,
+			status: engine.StatusBlocked, trace: []string{"prepare", "work/start", "release/keep"}, resultT: engine.Stopped,
 		},
 	}
 

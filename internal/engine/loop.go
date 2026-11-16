@@ -691,7 +691,8 @@ func stopPayload(a Action) StoppedPayload {
 // the run. run is nil when no run is open. A stop that is a runner call's
 // result passes expectLast -1 and is recorded even after ctx ends.
 func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *store.Run, sp StoppedPayload) error {
-	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment || sp.Reason == StopSandbox
+	// A sandbox stop keeps the run, so a retry redoes the cut action on its volumes.
+	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment
 	drafts := []draft{{Stopped, actorEngine, sp}}
 
 	var runID int64
