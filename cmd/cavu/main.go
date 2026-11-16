@@ -56,6 +56,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		usage(stdout)
+
+		return 0
+	}
+
 	cmd, ok := commands[args[0]]
 	if !ok {
 		fmt.Fprintf(stderr, "cavu: unknown command %q\n\n", args[0])

@@ -57,6 +57,21 @@ func TestNoArguments(t *testing.T) {
 	}
 }
 
+func TestHelpExitsZero(t *testing.T) {
+	for _, arg := range []string{"help", "-h", "--help"} {
+		t.Run(arg, func(t *testing.T) {
+			code, stdout, stderr := runCavu(arg)
+
+			assert.Equal(t, 0, code)
+			assert.Empty(t, stderr)
+
+			for name := range commands {
+				assert.Contains(t, stdout, name)
+			}
+		})
+	}
+}
+
 func TestInternalVerbListedAndDispatched(t *testing.T) {
 	register(t, "hidden", true, func(_ context.Context, _ []string, _ io.Reader, stdout, _ io.Writer) error {
 		_, err := io.WriteString(stdout, "ran\n")
