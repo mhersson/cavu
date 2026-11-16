@@ -97,9 +97,10 @@ cd -P -- "$d" || exit 1
 find . -mindepth 1 -maxdepth 1 ! -name ` + keptEntry + ` -exec rm -rf -- {} +`
 
 // writeScript unpacks the tar stream on its stdin into the config dir $1,
-// under the same rules as clearScript.
+// under the same rules as clearScript, and says why when it refuses.
 const writeScript = `d=$1
-mkdir -p -- "$d" && cd -P -- "$d" && [ "$(pwd -P)" = "$d" ] || exit 1
+mkdir -p -- "$d" && cd -P -- "$d" || exit 1
+[ "$(pwd -P)" = "$d" ] || { echo "cavu: the config dir resolves elsewhere; nothing written" >&2; exit 1; }
 exec tar -x -f -`
 
 // errNotInSandbox is a clear or write that proc.SandboxOnly refused: the agent
