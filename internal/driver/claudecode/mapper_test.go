@@ -414,11 +414,15 @@ func TestMapperTotalsPreferThisProcess(t *testing.T) {
 	})
 
 	t.Run("falls back to result.usage under the init model", func(t *testing.T) {
-		line := resultLine(t, map[string]any{"usage": map[string]any{"input_tokens": 7, "output_tokens": 3}})
+		line := resultLine(t, map[string]any{
+			"usage": map[string]any{"input_tokens": 7, "output_tokens": 3}, "total_cost_usd": 0.25,
+		})
 
 		_, res := replayData(t, append([]byte(init+"\n"), line...), nil, 0)
 
-		assert.Equal(t, []driver.Usage{{Model: "m1", Input: 7, Output: 3}}, res.Usage)
+		assert.Equal(t, []driver.Usage{{Model: "m1", Input: 7, Output: 3, CostEstimateUSD: 0.25}}, res.Usage,
+			"the one row carries the whole cost")
+		assert.InDelta(t, 0.25, res.CostEstimateUSD, 1e-12)
 	})
 }
 

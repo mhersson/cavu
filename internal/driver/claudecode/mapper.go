@@ -539,12 +539,13 @@ func (m *mapper) onResult(l streamLine) {
 	}
 
 	// A run whose result carries no per-model usage still reports its totals
-	// once, under the model init named.
+	// and its cost once, under the model init named.
 	if len(perModel) == 0 && m.model != "" {
 		perModel = map[string]modelUsage{m.model: {
 			InputTokens: deref(l.Usage.InputTokens), OutputTokens: deref(l.Usage.OutputTokens),
 			CacheReadInputTokens: deref(l.Usage.CacheReadInputTokens), CacheCreationInputTokens: deref(l.Usage.CacheCreationInputTokens),
 		}}
+		m.costs[m.model] = cost
 	}
 
 	// Calls Claude Code made without streaming them (compaction, for one) show
