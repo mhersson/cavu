@@ -162,6 +162,19 @@ func TestAgentSeedsCargoDownloads(t *testing.T) {
 	}
 }
 
+// The scripts of what the agent installs for its user, such as pip's console
+// scripts, come after every other directory on its PATH, so none shadows a
+// tool the verify gate runs.
+func TestAgentPathEndsWithTheUserScripts(t *testing.T) {
+	t.Parallel()
+
+	for _, ecosystems := range [][]string{nil, allEcosystems} {
+		agent := envMap(t, AgentEnv(ecosystems, "/home/agent"))["PATH"]
+		setup := envMap(t, SetupEnv(ecosystems))["PATH"]
+		assert.Equal(t, setup+":/home/agent/.local/bin", agent, ecosystems)
+	}
+}
+
 // A tool missing in the agent phase stays missing: an install there would
 // write under the read-only cache and record a failed install in the home.
 func TestMiseInstallsNothingInTheAgentPhase(t *testing.T) {

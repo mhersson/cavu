@@ -85,6 +85,8 @@ func AgentEnv(ecosystems []string, home string) []string {
 	m := common()
 	cacheVars(m, ecosystems, agentRoot(home))
 	m["MISE_AUTO_INSTALL"] = "false"
+	// Last, so a script the agent installs for its user shadows no tool.
+	m["PATH"] = defaultPath + ":" + path.Join(home, ".local/bin")
 
 	for _, e := range ecosystems {
 		if e == "go" {
