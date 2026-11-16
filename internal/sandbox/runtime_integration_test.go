@@ -605,6 +605,10 @@ func TestVolumesAndListing(t *testing.T) {
 
 	require.Error(t, r.VolumeRemove(t.Context(), vol), "removing a volume in use")
 
+	info, err := r.Inspect(t.Context(), name)
+	require.NoError(t, err)
+	assert.True(t, info.Running, "removing a volume stopped or removed its container")
+
 	containers, volumes, err := r.List(t.Context(), "cavu.test="+testRun)
 	require.NoError(t, err)
 	assert.Contains(t, containers, name)

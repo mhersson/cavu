@@ -543,7 +543,7 @@ func (r Runtime) VolumeCreate(ctx context.Context, name string, labels map[strin
 }
 
 // VolumeRemove removes named volumes; an absent name is not an error, one in
-// use is.
+// use is, and it never removes a container.
 func (r Runtime) VolumeRemove(ctx context.Context, names ...string) error {
 	for _, n := range names {
 		if err := checkVolume(n); err != nil {
@@ -561,7 +561,8 @@ func (r Runtime) VolumeRemove(ctx context.Context, names ...string) error {
 	}
 
 	if !podman {
-		// Docker's --force skips absent names and still refuses one in use.
+		// Docker's --force skips absent names and still refuses a volume a
+		// container holds, running or stopped.
 		if err := r.run(ctx, call{args: append([]string{"volume", "rm", "--force"}, names...)}); err != nil {
 			return fmt.Errorf("remove volumes: %w", err)
 		}
