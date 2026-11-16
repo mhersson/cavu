@@ -31,7 +31,7 @@ func TestPrepareOrder(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, fullOrder, f.calls())
 	assert.Equal(t, engine.PrepareResult{
-		BaseCommit: baseCommit, Tools: []string{"go@1.25.0"}, Baseline: engine.ResultPassed,
+		BaseCommit: baseCommit, Tools: []string{"go@1.25.0"}, Ecosystems: []string{"go"}, Baseline: engine.ResultPassed,
 	}, res)
 
 	assert.Equal(t, env.MiseConfig([]env.Tool{{Name: "go", Version: "1.25.0"}}), f.copied[env.MiseConfigFile])

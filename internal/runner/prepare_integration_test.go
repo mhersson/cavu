@@ -82,6 +82,7 @@ func TestPrepareGoRepository(t *testing.T) {
 	require.Empty(t, res.FailedStep, res.Output)
 	assert.Equal(t, head, res.BaseCommit)
 	assert.Equal(t, []string{"go@" + goVersion}, res.Tools)
+	assert.Equal(t, []string{"go"}, res.Ecosystems)
 	assert.Equal(t, engine.ResultPassed, res.Baseline)
 
 	agent := r.state(c.RunID).agent
@@ -103,6 +104,25 @@ func TestPrepareGoRepository(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, res.FailedStep, res.Output)
 	assert.Equal(t, "reused", res.Baseline)
+
+	// A process that restarted brings the agent phase up from the config's
+	// ecosystems and verifies with the toolchain the prepare installed.
+	restarted := New(rt, claudecode.New())
+	restarted.labels = sandboxtest.Labels()
+	c.Ecosystems = res.Ecosystems
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+
+		assert.NoError(t, restarted.Release(ctx, refOf(c), true))
+	})
+
+	require.NoError(t, restarted.ensureUp(t.Context(), c))
+
+	vr, err := runVerify(t.Context(), restarted.state(c.RunID), c)
+	require.NoError(t, err)
+	assert.Equal(t, engine.ResultPassed, vr.Result, vr.Output)
 
 	t.Logf("%s: cold prepare %s, warm prepare %s", rt.Kind, cold.Round(time.Millisecond), warm.Round(time.Millisecond))
 }

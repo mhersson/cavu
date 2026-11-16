@@ -27,26 +27,37 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 		assert.Equal(t, fullOrder, f.calls(), "the agent phase the prepare left up is used")
 	})
 
+	// A fresh runner on the same sandbox is a process that restarted: the
+	// ecosystems come from the config, never from the workspace, whose files
+	// here say go.
 	t.Run("after a restart", func(t *testing.T) {
-		f := newFake()
-		c := testConfig()
-		c.Repo.BaseCommit = baseCommit
-		r := f.runner()
+		for _, tt := range []struct {
+			ecosystems, hosts []string
+		}{
+			{ecosystems: []string{"node"}, hosts: []string{"registry.example", "registry.npmjs.org"}},
+			{ecosystems: nil, hosts: []string{"registry.example"}},
+		} {
+			f := newFake()
+			c := testConfig()
+			c.Ecosystems = tt.ecosystems
+			r := f.runner()
 
-		for range 2 {
-			err := r.ensureUp(t.Context(), c)
+			for range 2 {
+				require.NoError(t, r.ensureUp(t.Context(), c))
+			}
+
+			assert.Equal(t, []string{"volumes", "up/agent"}, f.calls())
+			assert.Empty(t, f.reads, "nothing is read from the workspace")
+
+			agent := f.requests(sandbox.PhaseAgent)
+			require.Len(t, agent, 1)
+			assert.Equal(t, tt.hosts, agent[0].AllowHosts)
+			require.NotNil(t, agent[0].Model)
+
+			_, err := runVerify(t.Context(), r.state(c.RunID), c)
 			require.NoError(t, err)
+			assert.Equal(t, agentEnv(tt.ecosystems), f.run(t, "make test").cmd.Env, "the agent phase's environment follows them too")
 		}
-
-		assert.Equal(t, []string{"volumes", "up/agent", "read", "up/agent"}, f.calls())
-		assert.Equal(t, []string{baseCommit}, f.reads, "detection reads the files at the base commit")
-
-		agent := f.requests(sandbox.PhaseAgent)
-		require.Len(t, agent, 2)
-		assert.Empty(t, agent[0].AllowHosts, "nothing is reachable while the files are read")
-		assert.Nil(t, agent[0].Model)
-		assert.Equal(t, []string{"proxy.golang.org", "registry.example", "sum.golang.org"}, agent[1].AllowHosts)
-		require.NotNil(t, agent[1].Model)
 	})
 
 	t.Run("after the sidecar ended", func(t *testing.T) {
@@ -69,24 +80,6 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 
 		second := f.requests(sandbox.PhaseAgent)[1].Model.StandIn
 		assert.NotEqual(t, first, second, "each start of the agent phase has its own stand-in")
-	})
-
-	t.Run("without a base commit", func(t *testing.T) {
-		f := newFake()
-		r := f.runner()
-
-		err := r.ensureUp(t.Context(), testConfig())
-		require.Error(t, err)
-
-		c := testConfig()
-		c.Repo.BaseCommit = baseCommit
-
-		err = r.ensureUp(t.Context(), c)
-		require.NoError(t, err)
-
-		agent := f.requests(sandbox.PhaseAgent)
-		require.Len(t, agent, 3, "the phase the read came up in does not count as up")
-		assert.NotEmpty(t, agent[2].AllowHosts)
 	})
 }
 
@@ -119,13 +112,11 @@ func TestRelease(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, r.Release(t.Context(), ref, false))
 
-		c := testConfig()
-		c.Repo.BaseCommit = baseCommit
-
-		err = r.ensureUp(t.Context(), c)
-		require.NoError(t, err)
-		assert.Equal(t, append(fullOrder, "down", "up/agent"), f.calls(), "a release that keeps the volumes keeps what detection found")
+		require.NoError(t, r.ensureUp(t.Context(), testConfig()))
+		assert.Equal(t, append(fullOrder, "down", "up/agent"), f.calls())
 		assert.Len(t, f.opened, 1)
+		assert.Equal(t, f.requests(sandbox.PhaseAgent)[0].AllowHosts, f.requests(sandbox.PhaseAgent)[1].AllowHosts,
+			"a release that keeps the volumes keeps what detection found")
 
 		require.NoError(t, r.Release(t.Context(), ref, true))
 		require.NoError(t, r.Release(t.Context(), ref, true))

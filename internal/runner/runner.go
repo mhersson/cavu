@@ -93,7 +93,6 @@ func openSandbox(o sandbox.Options) (sandboxer, error) {
 type run struct {
 	sb         sandboxer
 	agent      container // the agent phase while it is up
-	detected   bool      // ecosystems holds what detection found
 	ecosystems []string
 	standIn    string // the agent phase's stand-in token in key mode
 
@@ -144,8 +143,8 @@ func (st *run) begin(ctx context.Context) (context.Context, func() error) {
 	}
 }
 
-// up brings phase up with p. The agent phase counts as up only once the
-// caller sets agent, after an Up with the agent's allowlist.
+// up brings phase up with p. The agent phase counts as up once the caller
+// sets agent.
 func (st *run) up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest) (container, error) {
 	st.agent = nil
 
@@ -211,8 +210,9 @@ func refOf(c engine.RunConfig) engine.RunRef {
 }
 
 // ensureUp brings the run's agent phase up unless it is up already. After a
-// restart of this process it opens the run's sandbox and detects again from
-// the root files at the base commit, as the prepare did.
+// restart of this process it opens the run's sandbox and takes the ecosystems
+// from c, which carries what the prepare detected: once an agent has run, the
+// workspace, its .git included, is the agent's and is never read for them.
 func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 	st := r.state(c.RunID)
 	if st == nil {
@@ -224,29 +224,12 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		if err := st.sb.EnsureVolumes(ctx); err != nil {
 			return err
 		}
+
+		st.ecosystems = c.Ecosystems
 	}
 
 	if st.agentUp() {
 		return nil
-	}
-
-	if !st.detected {
-		a, err := st.up(ctx, sandbox.PhaseAgent, sidecar.ProxyRequest{CABundle: string(c.CABundle)})
-		if err != nil {
-			return err
-		}
-
-		files, err := readFiles(ctx, a, c.Repo.BaseCommit)
-		if err != nil {
-			return err
-		}
-
-		det, err := env.Detect(files, c.Setup.ToolOverrides)
-		if err != nil {
-			return err
-		}
-
-		st.ecosystems, st.detected = det.Ecosystems, true
 	}
 
 	req := sidecar.ProxyRequest{

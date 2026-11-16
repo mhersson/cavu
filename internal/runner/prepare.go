@@ -115,7 +115,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return failure(res, failed), err
 	}
 
-	res.Tools, res.IgnoredTools = make([]string, len(det.Tools)), det.Ignored
+	res.Tools, res.IgnoredTools, res.Ecosystems = make([]string, len(det.Tools)), det.Ignored, det.Ecosystems
 	for i, t := range det.Tools {
 		res.Tools[i] = t.Name + "@" + t.Version
 	}
@@ -158,7 +158,7 @@ func (p *preparation) detect(ctx context.Context, base string) (env.Detection, *
 		return env.Detection{}, &stepFailure{stepToolchain, err.Error()}, nil
 	}
 
-	p.st.ecosystems, p.st.detected = det.Ecosystems, true
+	p.st.ecosystems = det.Ecosystems
 
 	return det, nil, nil
 }
