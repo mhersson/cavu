@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/mhersson/cavu/internal/proc"
 )
 
 const (
@@ -43,7 +45,7 @@ type call struct {
 func run(ctx context.Context, c call) ([]byte, error) {
 	cmd := c.command(ctx)
 	out := &bytes.Buffer{}
-	stderr := &cappedBuffer{limit: stderrLimit}
+	stderr := proc.NewBuffer(stderrLimit)
 	cmd.Stdout = out
 	cmd.Stderr = stderr
 
@@ -112,19 +114,3 @@ func firstLine(b []byte) string {
 
 	return ": " + strings.TrimSpace(line)
 }
-
-// cappedBuffer keeps at most limit bytes and drops the rest.
-type cappedBuffer struct {
-	buf   bytes.Buffer
-	limit int
-}
-
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if room := b.limit - b.buf.Len(); room > 0 {
-		b.buf.Write(p[:min(len(p), room)])
-	}
-
-	return len(p), nil
-}
-
-func (b *cappedBuffer) Bytes() []byte { return b.buf.Bytes() }

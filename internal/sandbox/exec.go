@@ -198,7 +198,7 @@ func (p *execProcess) Stop(grace time.Duration) error {
 
 	cancel()
 
-	if ce, ok := errors.AsType[*clientError](signalErr); ok && ce.code == stopRefused {
+	if e, ok := errors.AsType[*proc.ExitError](signalErr); ok && e.Code == stopRefused {
 		signalErr = fmt.Errorf("%w: %s", errSignalRefused, p.pidFile)
 	}
 

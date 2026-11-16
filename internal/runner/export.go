@@ -69,7 +69,7 @@ func (r *Runner) Export(ctx context.Context, c engine.RunConfig, commit string) 
 // never the sidecar, which shares the hand-off volume. A file over the bound
 // is a problem, not an error.
 func copyOut(ctx context.Context, a container, file string) ([]byte, string, error) {
-	b := &boundedBuffer{limit: maxArtifact, over: errArtifactTooLarge}
+	b := &boundedBuffer{}
 
 	err := a.CopyOut(ctx, file, b)
 	if errors.Is(err, errArtifactTooLarge) {
@@ -77,6 +77,18 @@ func copyOut(ctx context.Context, a container, file string) ([]byte, string, err
 	}
 
 	return b.buf.Bytes(), "", err
+}
+
+// boundedBuffer fails a write that would take it past maxArtifact, which
+// stops CopyOut's client at once rather than reading the rest.
+type boundedBuffer struct{ buf bytes.Buffer }
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len()+len(p) > maxArtifact {
+		return 0, errArtifactTooLarge
+	}
+
+	return b.buf.Write(p)
 }
 
 // changedFiles counts a git diff's file headers: no other line of a diff

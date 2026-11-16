@@ -3,7 +3,6 @@ package runner
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"maps"
 	"slices"
@@ -323,9 +322,7 @@ func (c fakeContainer) Start(_ context.Context, cmd proc.Command) (proc.Process,
 	c.f.mu.Unlock()
 
 	if cmd.Stdout != nil {
-		if _, err := cmd.Stdout.Write(frame(files)); err != nil {
-			return fakeProcess{err: fmt.Errorf("copy stdout: %w", err)}, nil
-		}
+		_, _ = cmd.Stdout.Write(frame(files))
 	}
 
 	return fakeProcess{code: code}, nil
@@ -396,10 +393,7 @@ func frame(files map[string]string) []byte {
 	return []byte(b.String())
 }
 
-type fakeProcess struct {
-	code int
-	err  error
-}
+type fakeProcess struct{ code int }
 
 func (fakeProcess) Stdin() io.WriteCloser { return nopCloser{} }
 
@@ -412,7 +406,7 @@ func (fakeProcess) Lines() <-chan []byte {
 
 func (fakeProcess) StderrTail() string       { return "" }
 func (fakeProcess) Stop(time.Duration) error { return nil }
-func (p fakeProcess) Wait() (int, error)     { return p.code, p.err }
+func (p fakeProcess) Wait() (int, error)     { return p.code, nil }
 
 type nopCloser struct{}
 

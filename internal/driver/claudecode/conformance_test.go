@@ -711,7 +711,7 @@ func TestConfigDirSymlinkRefused(t *testing.T) {
 
 			_, err = b.try(conformanceDriver(), s)
 
-			var ee *exitError
+			var ee *proc.ExitError
 			require.ErrorAs(t, err, &ee, "the clear did not refuse")
 			require.NotErrorIs(t, err, errNotInSandbox)
 			assert.Empty(t, b.mock.Requests(), "a session started")

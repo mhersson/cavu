@@ -19,7 +19,6 @@ import (
 const (
 	maxFilesSize = 8 << 20
 	filesTimeout = time.Minute
-	stopGrace    = 2 * time.Second
 )
 
 // errFilesTooLarge is a repository whose root files the read takes are too
@@ -72,49 +71,19 @@ func readFiles(ctx context.Context, c container, commit string) (map[string][]by
 	ctx, cancel := context.WithTimeout(ctx, filesTimeout)
 	defer cancel()
 
-	out := &boundedBuffer{limit: maxFilesSize, over: errFilesTooLarge}
+	out := proc.NewBuffer(maxFilesSize)
 
 	argv := append([]string{"bash", "-c", readScript, "bash", commit}, filePatterns()...)
 
-	p, err := c.Start(ctx, proc.Command{Argv: argv, Stdout: out})
-	if err != nil {
+	if err := proc.Run(ctx, c, proc.Command{Argv: argv, Stdout: out}, nil); err != nil {
 		return nil, fmt.Errorf("read the root files: %w", err)
 	}
 
-	_ = p.Stdin().Close()
-
-	type exit struct {
-		code int
-		err  error
-	}
-
-	done := make(chan exit, 1)
-
-	go func() {
-		code, err := p.Wait()
-		done <- exit{code, err}
-	}()
-
-	var e exit
-
-	select {
-	case e = <-done:
-	case <-ctx.Done():
-		_ = p.Stop(stopGrace)
-
-		return nil, fmt.Errorf("read the root files: %w", ctx.Err())
-	}
-
-	switch {
-	case errors.Is(e.err, errFilesTooLarge):
+	if out.Dropped() {
 		return nil, errFilesTooLarge
-	case e.err != nil:
-		return nil, fmt.Errorf("read the root files: %w", e.err)
-	case e.code != 0:
-		return nil, fmt.Errorf("read the root files: exit %d: %s", e.code, strings.TrimSpace(p.StderrTail()))
 	}
 
-	return parseFiles(out.buf.Bytes())
+	return parseFiles(out.Bytes())
 }
 
 // parseFiles reads what readScript prints.
@@ -135,19 +104,4 @@ func parseFiles(b []byte) (map[string][]byte, error) {
 	}
 
 	return files, nil
-}
-
-// boundedBuffer fails with over a write that would take it past limit.
-type boundedBuffer struct {
-	buf   bytes.Buffer
-	limit int
-	over  error
-}
-
-func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if b.buf.Len()+len(p) > b.limit {
-		return 0, b.over
-	}
-
-	return b.buf.Write(p)
 }

@@ -364,7 +364,7 @@ read:
 		}
 	}
 
-	code, err := waitContext(ctx, p)
+	code, err := proc.Wait(ctx, p)
 	if err != nil {
 		return "", fmt.Errorf("sandbox: clone: %w", err)
 	}
