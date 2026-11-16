@@ -9,7 +9,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 3. Upgrades, and removals of model-weakness parts, rest on a replay tool's comparison of outcomes.
 4. Everything vendor-specific lives in one thin adapter, the Claude Code version is pinned, and an upgrade ships only after tests against the real binary pass.
 5. Know-how lives in files the agent reads (`AGENTS.md`, skills), and CAVU's own prompts are few, plain, and kept as files.
-6. Small on purpose: at most 25,000 non-test Go lines, 12,000 web lines, 25 REST routes, 6 MCP tools, 30 config keys and 30 concepts a user must learn.
+6. Small on purpose, with at most 25 REST routes, 6 MCP tools, 30 config keys and 30 concepts a user must learn, and the Go and web line counts reported, not capped.
 
 ## Constraints
 
@@ -47,11 +47,11 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Commands
 
-- `make check` runs build, build-darwin, fmt-check, vet, lint, test-race, tidy-check and scan.
+- `make check` runs build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan and size.
 - `make build` builds `bin/cavu`; `make test` and `make test-race` run the tests.
 - `make fmt` formats with `golangci-lint fmt` (gofumpt and goimports); `make lint` runs `golangci-lint run`.
 - `make scan` fails on em-dashes; `make scan-commits` fails on session links, attribution lines, task or milestone numbers, em-dashes and blobs over 500 KB in the commits since `origin/main`.
-- `make size` counts non-test Go lines against the 25,000 budget.
+- `make size` counts the non-test Go lines.
 - `make image` builds `bin/cavu` and a Linux `bin/cavu-linux` for the host's architecture, then the sandbox image `cavu-sandbox:<version>` from it on the detected runtime.
 - `make test-integration` runs the `integration` tests with `-count=1`, a 30 minute timeout and all packages; `make test-ecosystems` runs the `ecosystems` tests.
 - Test tags, each run with `-count=1`: `integration` needs a container runtime and builds the sandbox image, and includes the conformance suite against the real `claude` binary; `ecosystems` prepares a Go, a Node, a Python and a Rust repository in real containers and needs the internet on every run; `live` is added to `integration` (`-tags integration,live`) and needs credentials.

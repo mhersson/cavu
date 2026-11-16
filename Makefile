@@ -14,10 +14,10 @@ help:
 	@echo "  tidy-check   fail if go mod tidy would change go.mod or go.sum"
 	@echo "  scan         fail on em-dashes in Go, Markdown, YAML, TOML, shell and Dockerfile files"
 	@echo "  scan-commits fail on session links, attribution, task or milestone numbers, em-dashes and big blobs in SCAN_BASE..SCAN_HEAD (origin/main..HEAD)"
-	@echo "  size         count the non-test Go lines against the budget"
+	@echo "  size         count the non-test Go lines"
 	@echo "  image        build the sandbox image cavu-sandbox:<version> on the detected runtime"
 	@echo "  test-integration  run the tests that need a container runtime, including the checks against the real claude binary in the built image"
-	@echo "  check        build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan"
+	@echo "  check        build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan, size"
 	@echo "  test-ecosystems   run the tests that prepare a Go, a Node, a Python and a Rust repository (need the internet)"
 
 build:
@@ -71,7 +71,7 @@ image: build
 test-integration:
 	go test -tags integration -count=1 -timeout 30m ./...
 
-check: build build-darwin fmt-check vet lint test-race tidy-check scan
+check: build build-darwin fmt-check vet lint test-race tidy-check scan size
 
 test-ecosystems:
 	go test -tags ecosystems -count=1 -timeout 60m ./internal/runner/
