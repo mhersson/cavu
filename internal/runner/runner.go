@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,15 +29,29 @@ const (
 	bridgeURL = "http://127.0.0.1:3128"
 	loopback  = "localhost,127.0.0.1,::1"
 	home      = "/home/agent"
+	cache     = "/cache"
 	workspace = "/workspace"
 	modeKey   = "key"
 
 	linkTimeout = time.Minute
 )
 
-// linkScript makes each link given as a path and its target, replacing what
-// is at the path: the home is the agent's to change.
-const linkScript = `while [ "$#" -gt 1 ]; do mkdir -p "$(dirname "$1")" && rm -rf "$1" && ln -s "$2" "$1" || exit 1; shift 2; done`
+// linkScript makes each link, given as its parent, its name and its target,
+// replacing what is there: the home is the agent's to change. It deletes only
+// by name, in a parent whose real path is the one linkCommand validated.
+var linkScript = proc.SandboxOnly(`while [ "$#" -ge 3 ]; do
+	mkdir -p -- "$1" && cd -P -- "$1" || exit 1
+	[ "$(pwd -P)" = "$1" ] || exit ` + strconv.Itoa(proc.NotInSandbox) + `
+	rm -rf -- "./$2" && ln -s -- "$3" "./$2" || exit 1
+	shift 3
+done`)
+
+var (
+	errLinkPath = errors.New("runner: a home link must be a clean absolute path strictly under " + home +
+		" and its target a clean absolute path under " + cache)
+	errLinkRefused = errors.New("runner: the link step refused to run: the image lacks the sandbox marker " +
+		proc.SandboxMarker + " or the home is not where it should be; `cavu image build` builds an image with the marker")
+)
 
 // proxyEnv sends a command's egress through the bridge, the one way out of
 // either phase, and keeps loopback traffic off it.
@@ -260,7 +276,7 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		return err
 	}
 
-	if err := linkHome(ctx, a, st.ecosystems); err != nil {
+	if err := linkHome(ctx, a, env.AgentLinks(st.ecosystems, home)); err != nil {
 		return err
 	}
 
@@ -269,16 +285,24 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 	return nil
 }
 
-// linkHome makes the links the agent phase's layout needs in the home.
-func linkHome(ctx context.Context, a container, ecosystems []string) error {
-	links := env.AgentLinks(ecosystems, home)
+// linkHome makes links, path to target, in the agent phase's home.
+func linkHome(ctx context.Context, a container, links map[string]string) error {
 	if len(links) == 0 {
 		return nil
 	}
 
-	res, err := a.Run(ctx, linkCommand(links), linkTimeout)
+	cmd, err := linkCommand(links)
 	if err != nil {
 		return err
+	}
+
+	res, err := a.Run(ctx, cmd, linkTimeout)
+	if err != nil {
+		return err
+	}
+
+	if res.ExitCode == proc.NotInSandbox {
+		return errLinkRefused
 	}
 
 	if res.ExitCode != 0 || res.TimedOut {
@@ -288,13 +312,26 @@ func linkHome(ctx context.Context, a container, ecosystems []string) error {
 	return nil
 }
 
-func linkCommand(links map[string]string) proc.Command {
+// linkCommand refuses every link unless each is strictly under the home and
+// each target under the cache, so the script can never delete elsewhere.
+func linkCommand(links map[string]string) (proc.Command, error) {
 	argv := []string{"sh", "-c", linkScript, "sh"}
-	for _, p := range slices.Sorted(maps.Keys(links)) {
-		argv = append(argv, p, links[p])
+
+	for _, link := range slices.Sorted(maps.Keys(links)) {
+		target := links[link]
+		if !under(link, home) || !under(target, cache) {
+			return proc.Command{}, fmt.Errorf("%w: %q to %q", errLinkPath, link, target)
+		}
+
+		argv = append(argv, path.Dir(link), path.Base(link), target)
 	}
 
-	return proc.Command{Argv: argv}
+	return proc.Command{Argv: argv}, nil
+}
+
+// under reports whether p is a clean absolute path strictly under dir.
+func under(p, dir string) bool {
+	return path.IsAbs(p) && path.Clean(p) == p && strings.HasPrefix(p, dir+"/")
 }
 
 // Release stops the run's containers and, when removeVolumes is set, removes

@@ -3,7 +3,9 @@ package runner
 import (
 	"errors"
 	"maps"
+	"path"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
+	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/sandbox"
 )
 
@@ -176,7 +179,10 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 	links := env.AgentLinks([]string{"rust"}, home)
 	require.NotEmpty(t, links)
 
-	link := stepName(linkCommand(links).Argv)
+	cmd, err := linkCommand(links)
+	require.NoError(t, err)
+
+	link := stepName(cmd.Argv)
 
 	t.Run("in a prepare", func(t *testing.T) {
 		f := newFake()
@@ -194,12 +200,13 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 
 		argv := f.run(t, link).cmd.Argv
 
-		var pairs []string
+		want := []string{"sh", "-c", linkScript, "sh"}
 		for _, p := range slices.Sorted(maps.Keys(links)) {
-			pairs = append(pairs, p, links[p])
+			want = append(want, path.Dir(p), path.Base(p), links[p])
 		}
 
-		assert.Equal(t, pairs, argv[len(argv)-len(pairs):], "each link goes as its path and its target")
+		assert.Equal(t, want, argv, "each link goes as its parent, its name and its target")
+		assert.True(t, strings.HasPrefix(argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox")
 	})
 
 	t.Run("after a restart", func(t *testing.T) {
@@ -210,7 +217,9 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 
 		f.results[link] = sandbox.Result{ExitCode: 1, Output: "ln: Permission denied\n"}
 
-		require.Error(t, r.ensureUp(t.Context(), c))
+		err := r.ensureUp(t.Context(), c)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, errLinkRefused)
 
 		delete(f.results, link)
 
@@ -230,4 +239,61 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		require.NoError(t, r.ensureUp(t.Context(), c))
 		assert.Equal(t, []string{"volumes", "up/agent"}, f.calls())
 	})
+
+	t.Run("refused outside a sandbox", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+		c := testConfig()
+		c.Ecosystems = []string{"rust"}
+
+		f.results[link] = sandbox.Result{ExitCode: proc.NotInSandbox}
+
+		require.ErrorIs(t, r.ensureUp(t.Context(), c), errLinkRefused)
+		assert.False(t, r.state(c.RunID).agentUp())
+	})
+}
+
+// A link outside the home or a target outside the cache stops the step before
+// a command is composed, and nothing runs.
+func TestLinkHomeRefusesPathsOutOfBounds(t *testing.T) {
+	const (
+		link   = home + "/.cache/cargo/bin"
+		target = cache + "/cargo/bin"
+	)
+
+	for _, tt := range []struct {
+		name         string
+		link, target string
+	}{
+		{name: "relative link", link: ".cache/cargo/bin", target: target},
+		{name: "empty link", link: "", target: target},
+		{name: "link climbing out of the home", link: home + "/../../etc/cargo", target: target},
+		{name: "link climbing within the home", link: home + "/.cache/../.cache/cargo/bin", target: target},
+		{name: "link with a trailing slash", link: link + "/", target: target},
+		{name: "the home itself", link: home, target: target},
+		{name: "the home with a trailing slash", link: home + "/", target: target},
+		{name: "link outside the home", link: "/etc/cargo/bin", target: target},
+		{name: "link in a sibling of the home", link: home + "2/bin", target: target},
+		{name: "relative target", link: link, target: "cache/cargo/bin"},
+		{name: "target climbing out of the cache", link: link, target: cache + "/../etc"},
+		{name: "target outside the cache", link: link, target: "/etc/passwd"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			links := map[string]string{tt.link: tt.target}
+
+			cmd, err := linkCommand(links)
+			require.ErrorIs(t, err, errLinkPath)
+			assert.Empty(t, cmd.Argv, "nothing is composed")
+
+			f := newFake()
+			err = linkHome(t.Context(), fakeContainer{f: f, phase: sandbox.PhaseAgent}, links)
+			require.ErrorIs(t, err, errLinkPath)
+			assert.Empty(t, f.calls(), "nothing runs")
+
+			links[home+"/.cache/other/bin"] = cache + "/other/bin"
+
+			_, err = linkCommand(links)
+			require.ErrorIs(t, err, errLinkPath, "a valid link does not let an invalid one through")
+		})
+	}
 }
