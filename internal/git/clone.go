@@ -23,7 +23,7 @@ var commitRE = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 // stored anywhere under MirrorDir or WorkspaceDir.
 type CloneSpec struct {
 	URL, Token, BaseBranch, Commit, Branch string // Commit "" = tip of BaseBranch
-	MirrorDir, WorkspaceDir                string
+	MirrorDir, WorkspaceDir                string // absolute
 	CABundle                               string // PEM, optional
 	Name, Email                            string // commit identity set in the workspace
 }
@@ -48,8 +48,12 @@ func Clone(ctx context.Context, s CloneSpec) (string, error) {
 		allowed += ":file"
 	}
 
+	// No call inherits the caller's working directory, which could be any
+	// repository. The directories that hold the mirror and the workspace exist
+	// before git creates them, and a refused spec must leave no mirror behind.
 	if _, err := os.Stat(filepath.Join(s.MirrorDir, "HEAD")); err != nil {
-		if _, err := run(ctx, call{args: []string{"init", "--bare", "--quiet", "--", s.MirrorDir}, noHooks: true}); err != nil {
+		initMirror := call{dir: filepath.Dir(s.MirrorDir), args: []string{"init", "--bare", "--quiet", "--", s.MirrorDir}, noHooks: true}
+		if _, err := run(ctx, initMirror); err != nil {
 			return "", fmt.Errorf("create mirror: %w", err)
 		}
 	}
@@ -76,15 +80,18 @@ func Clone(ctx context.Context, s CloneSpec) (string, error) {
 
 	base := strings.TrimSpace(string(out))
 
-	steps := [][]string{
-		{"clone", "--quiet", "--no-hardlinks", "--no-checkout", "--", s.MirrorDir, s.WorkspaceDir},
-		{"-C", s.WorkspaceDir, "checkout", "--quiet", "--detach", base},
-		{"-C", s.WorkspaceDir, "remote", "remove", "origin"},
-		{"-C", s.WorkspaceDir, "config", "user.name", s.Name},
-		{"-C", s.WorkspaceDir, "config", "user.email", s.Email},
+	ws := s.WorkspaceDir
+
+	steps := []call{
+		{dir: filepath.Dir(ws), args: []string{"clone", "--quiet", "--no-hardlinks", "--no-checkout", "--", s.MirrorDir, ws}},
+		{dir: ws, args: []string{"checkout", "--quiet", "--detach", base}},
+		{dir: ws, args: []string{"remote", "remove", "origin"}},
+		{dir: ws, args: []string{"config", "user.name", s.Name}},
+		{dir: ws, args: []string{"config", "user.email", s.Email}},
 	}
-	for _, args := range steps {
-		if _, err := run(ctx, call{args: args, noHooks: true}); err != nil {
+	for _, c := range steps {
+		c.noHooks = true
+		if _, err := run(ctx, c); err != nil {
 			return "", fmt.Errorf("clone workspace: %w", err)
 		}
 	}
@@ -117,8 +124,8 @@ func freshBranch(ctx context.Context, ws, branch string) error {
 }
 
 // validate refuses an input that could act as a git option or smuggle a
-// control character, before any git command that touches the network runs. It
-// names the field and never echoes the value.
+// control character, and a relative directory, before any git command that
+// touches the network runs. It names the field and never echoes the value.
 func validate(ctx context.Context, s CloneSpec) error {
 	for _, f := range []struct{ name, v string }{
 		{"url", s.URL},
@@ -147,7 +154,7 @@ func validate(ctx context.Context, s CloneSpec) error {
 	}
 
 	for _, f := range []struct{ name, v string }{{"base branch", s.BaseBranch}, {"branch", s.Branch}} {
-		out, err := run(ctx, call{args: []string{"check-ref-format", "--branch", f.v}, read: true})
+		out, err := run(ctx, call{dir: filepath.Dir(s.MirrorDir), args: []string{"check-ref-format", "--branch", f.v}, read: true})
 		if err != nil || strings.TrimSpace(string(out)) != f.v {
 			return fmt.Errorf("%s: not a valid branch name", f.name)
 		}

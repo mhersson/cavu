@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -67,11 +68,11 @@ func (r *fakeRunner) Verify(context.Context, engine.RunConfig) (engine.VerifyRes
 	return res, nil
 }
 
-func (r *fakeRunner) Export(_ context.Context, c engine.RunConfig, _ string) (engine.ExportResult, error) {
-	return engine.ExportResult{HeadCommit: "head", DiffPath: fmt.Sprintf("diff-%d.patch", c.TaskID), FilesChanged: 1}, nil
+func (r *fakeRunner) Export(_ context.Context, c engine.RunConfig, _, _ string) (engine.ExportResult, error) {
+	return engine.ExportResult{HeadCommit: "head", Diff: fmt.Appendf(nil, "diff of task %d", c.TaskID), FilesChanged: 1}, nil
 }
 
-func (r *fakeRunner) Release(context.Context, engine.RunConfig, bool) error { return nil }
+func (r *fakeRunner) Release(context.Context, engine.RunRef, bool) error { return nil }
 
 type env struct {
 	store   *store.Store
@@ -306,7 +307,10 @@ func TestReplayRecordsItems(t *testing.T) {
 	assert.Equal(t, 4, got.Turns)
 	assert.Equal(t, int64(145), got.Tokens)
 	assert.InDelta(t, 0.75, got.CostEstimateUSD, 1e-9)
-	assert.Equal(t, fmt.Sprintf("diff-%d.patch", sh.ID), got.DiffPath)
+
+	diff, err := os.ReadFile(got.DiffPath)
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("diff of task %d", sh.ID), string(diff), "the item points at the shadow task's diff")
 
 	evs, err := e.store.Events(t.Context(), sh.ID, 0, 0)
 	require.NoError(t, err)

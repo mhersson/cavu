@@ -7,9 +7,9 @@ import (
 
 // toolchainHosts serve mise and the toolchains; only the setup phase reaches them.
 var toolchainHosts = []string{
-	"api.github.com", "dl.google.com", "github.com", "go.dev", "mise.jdx.dev",
+	"api.github.com", "dl.google.com", "github.com", "go.dev", "mise-versions.jdx.dev", "mise.jdx.dev",
 	"nodejs.org", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
-	"static.rust-lang.org",
+	"sh.rustup.rs", "static.rust-lang.org",
 }
 
 // registryHosts are the package registries of each ecosystem; both phases reach them.

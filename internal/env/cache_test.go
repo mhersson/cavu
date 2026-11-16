@@ -114,3 +114,73 @@ func TestRustupHomeIsSharedInBothPhases(t *testing.T) {
 		assert.NotContains(t, envMap(t, e), "RUSTUP_HOME", name)
 	}
 }
+
+// The setup phase reaches mise's versions host, which must not learn what a
+// project downloads.
+func TestMiseReportsNoDownloads(t *testing.T) {
+	t.Parallel()
+
+	for name, e := range map[string][]string{"setup": SetupEnv(nil), "agent": AgentEnv(nil, "/home/agent")} {
+		assert.Equal(t, "false", envMap(t, e)["MISE_USE_VERSIONS_HOST_TRACK"], name)
+	}
+}
+
+// mise finds Rust's binaries under CARGO_HOME and hands every command that
+// CARGO_HOME, so the agent's writable one links to the binaries the setup
+// phase installed in the cache.
+func TestAgentLinksCargoBinaries(t *testing.T) {
+	t.Parallel()
+
+	agent := envMap(t, AgentEnv([]string{"rust"}, "/home/agent"))
+	setup := envMap(t, SetupEnv([]string{"rust"}))
+
+	assert.Equal(t, map[string]string{agent["CARGO_HOME"] + "/bin": setup["CARGO_HOME"] + "/bin"},
+		AgentLinks([]string{"rust"}, "/home/agent"))
+
+	for _, ecosystems := range [][]string{nil, {"go", "node", "python"}} {
+		assert.Empty(t, AgentLinks(ecosystems, "/home/agent"), ecosystems)
+	}
+}
+
+// The agent's Cargo home gets what the setup phase's fetch downloaded into the
+// cache's: the registry index, the crate archives and the git databases.
+func TestAgentSeedsCargoDownloads(t *testing.T) {
+	t.Parallel()
+
+	agent := envMap(t, AgentEnv([]string{"rust"}, "/home/agent"))["CARGO_HOME"]
+	setup := envMap(t, SetupEnv([]string{"rust"}))["CARGO_HOME"]
+
+	want := map[string]string{}
+	for _, dir := range []string{"registry/index", "registry/cache", "git/db"} {
+		want[agent+"/"+dir] = setup + "/" + dir
+	}
+
+	assert.Equal(t, want, AgentSeeds([]string{"rust"}, "/home/agent"))
+
+	for _, ecosystems := range [][]string{nil, {"go", "node", "python"}} {
+		assert.Empty(t, AgentSeeds(ecosystems, "/home/agent"), ecosystems)
+	}
+}
+
+// The scripts of what the agent installs for its user, such as pip's console
+// scripts, come after every other directory on its PATH, so none shadows a
+// tool the verify gate runs.
+func TestAgentPathEndsWithTheUserScripts(t *testing.T) {
+	t.Parallel()
+
+	for _, ecosystems := range [][]string{nil, allEcosystems} {
+		agent := envMap(t, AgentEnv(ecosystems, "/home/agent"))["PATH"]
+		setup := envMap(t, SetupEnv(ecosystems))["PATH"]
+		assert.Equal(t, setup+":/home/agent/.local/bin", agent, ecosystems)
+	}
+}
+
+// A tool missing in the agent phase stays missing: an install there would
+// write under the read-only cache and record a failed install in the home.
+func TestMiseInstallsNothingInTheAgentPhase(t *testing.T) {
+	t.Parallel()
+
+	for _, ecosystems := range [][]string{nil, allEcosystems} {
+		assert.Equal(t, "false", envMap(t, AgentEnv(ecosystems, "/home/agent"))["MISE_AUTO_INSTALL"], ecosystems)
+	}
+}

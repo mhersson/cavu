@@ -49,14 +49,18 @@ func randomID(t *testing.T) int64 {
 	return n.Int64() + 1
 }
 
+// instancePrefix starts every container and volume name of the instance.
+func instancePrefix(instance string) string { return "cavu-" + instance[:8] + "-" }
+
 // schemeName is a name from the documented scheme, for checking what the
 // runtime lists.
 func schemeName(instance, kind string, id int64) string {
-	return "cavu-" + instance[:8] + "-" + kind + "-" + strconv.FormatInt(id, 10)
+	return instancePrefix(instance) + kind + "-" + strconv.FormatInt(id, 10)
 }
 
-// removeInstanceAfter removes every container and volume of the instance
-// after the test; the instance id is random, so they are this test's own.
+// removeInstanceAfter removes, after the test, every container and volume
+// that carries both the instance's label and its name prefix; the instance id
+// is random, so they are this test's own.
 func removeInstanceAfter(t *testing.T, r sandbox.Runtime, instance string) {
 	t.Helper()
 
@@ -66,12 +70,32 @@ func removeInstanceAfter(t *testing.T, r sandbox.Runtime, instance string) {
 			return err
 		}
 
-		if err := r.Remove(ctx, containers...); err != nil {
+		if err := r.Remove(ctx, ownNames(t, instance, containers)...); err != nil {
 			return err
 		}
 
-		return r.VolumeRemove(ctx, volumes...)
+		return r.VolumeRemove(ctx, ownNames(t, instance, volumes)...)
 	})
+}
+
+// ownNames keeps the names that carry the instance's prefix, so a runtime
+// that ignored the label filter cannot hand the cleanup someone else's.
+func ownNames(t *testing.T, instance string, names []string) []string {
+	t.Helper()
+
+	var own []string
+
+	for _, n := range names {
+		if !strings.HasPrefix(n, instancePrefix(instance)) {
+			t.Errorf("the filter cavu.instance=%s listed %q, which lacks the instance prefix; left in place", instance, n)
+
+			continue
+		}
+
+		own = append(own, n)
+	}
+
+	return own
 }
 
 func openSandbox(t *testing.T, r sandbox.Runtime, image, instance string, run, task, project int64) *sandbox.Sandbox {

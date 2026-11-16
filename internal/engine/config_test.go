@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"testing"
 	"time"
 
@@ -18,10 +17,9 @@ import (
 )
 
 type configFixture struct {
-	task    store.Task
-	run     store.Run
-	dataDir string
-	caPath  string
+	task   store.Task
+	run    store.Run
+	caPath string
 }
 
 type configCase struct {
@@ -58,8 +56,6 @@ func TestBuildRunConfig(t *testing.T) {
 				want.Identity.Name, want.Identity.Email = "CAVU Bot", "bot@example.com"
 				want.CABundle = []byte("-----BEGIN CERTIFICATE-----\n")
 				want.Task.Title, want.Task.Body = "Fix the login page", "It fails on submit."
-				want.ArtifactDir = filepath.Join(fx.dataDir, "artifacts",
-					strconv.FormatInt(fx.task.ID, 10), strconv.FormatInt(fx.run.ID, 10))
 
 				assert.Equal(t, want, got)
 			},
@@ -162,7 +158,7 @@ func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture)
 	v, err := auth.NewVault(s, bytes.Repeat([]byte{9}, auth.MasterKeyLen))
 	require.NoError(t, err)
 
-	fx := configFixture{dataDir: filepath.Join(dir, "data"), caPath: filepath.Join(dir, "ca.pem")}
+	fx := configFixture{caPath: filepath.Join(dir, "ca.pem")}
 	require.NoError(t, os.WriteFile(fx.caPath, []byte("-----BEGIN CERTIFICATE-----\n"), 0o600))
 
 	settings := map[string]string{
@@ -211,5 +207,5 @@ func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture)
 	fx.run, err = s.CreateRun(ctx, store.Run{TaskID: fx.task.ID, Reason: "initial"})
 	require.NoError(t, err)
 
-	return &engine.Loop{Store: s, Vault: v, Runner: &fakeRunner{}, Now: func() time.Time { return now }, DataDir: fx.dataDir, Image: "cavu-sandbox:test"}, fx
+	return &engine.Loop{Store: s, Vault: v, Runner: &fakeRunner{}, Now: func() time.Time { return now }, Image: "cavu-sandbox:test"}, fx
 }

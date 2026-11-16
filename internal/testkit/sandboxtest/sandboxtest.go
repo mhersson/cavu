@@ -69,6 +69,7 @@ var built struct {
 	mu     sync.Mutex
 	images map[string]*image
 	bin    string
+	binDir string // the directory os.MkdirTemp returned for bin; the only one Cleanup removes
 	binErr error
 	binOne sync.Once
 }
@@ -99,8 +100,8 @@ func Cleanup() {
 		}
 	}
 
-	if built.bin != "" {
-		_ = os.RemoveAll(filepath.Dir(built.bin))
+	if built.binDir != "" {
+		_ = os.RemoveAll(built.binDir)
 	}
 }
 
@@ -116,6 +117,10 @@ func CavuBinary(t *testing.T) string {
 
 			return
 		}
+
+		built.mu.Lock()
+		built.binDir = dir
+		built.mu.Unlock()
 
 		root, err := exec.CommandContext(context.Background(), "go", "list", "-m", "-f", "{{.Dir}}").Output()
 		if err != nil {

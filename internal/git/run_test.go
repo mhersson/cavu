@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -111,13 +110,7 @@ while [ $i -lt 300 ]; do
 done
 wait`)
 
-	t.Cleanup(func() {
-		if raw, err := os.ReadFile(logPath + ".pgid"); err == nil {
-			if pgid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			}
-		}
-	})
+	t.Cleanup(func() { killGroupIn(t, logPath+".pgid") })
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

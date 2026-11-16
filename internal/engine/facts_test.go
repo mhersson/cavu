@@ -28,7 +28,7 @@ func preparedRun(more ...store.Event) []store.Event {
 
 var (
 	firstSession = ev(engine.SessionStarted, `{"mode":"start","session_id":"s1"}`)
-	doneChanged  = ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","summary":"Fixed it."}`)
+	doneChanged  = ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","summary":"Fixed it.","head_commit":"def456"}`)
 	unfinished   = ev(engine.SessionEnded, `{"outcome":"unfinished"}`)
 	autoContinue = ev(engine.SessionStarted, `{"mode":"continue","session_id":"s1","resume":true,"automatic":true}`)
 	autoFix      = ev(engine.SessionStarted, `{"mode":"fix_verify","session_id":"s1","resume":true,"automatic":true}`)
@@ -37,7 +37,7 @@ var (
 	verifyFailed = ev(engine.VerifyEnded, `{"result":"failed","command":"make test","exit_code":2,"output":"FAIL TestLogin","duration_ms":900}`)
 	verifyPassed = ev(engine.VerifyEnded, `{"result":"passed","command":"make test","exit_code":0}`)
 	retried      = ev(engine.HumanRetried, "")
-	doneFact     = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it."}
+	doneFact     = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", HeadCommit: "def456"}
 )
 
 // verifyStop ends with a verify_failed stop after one automatic continuation and one automatic fix.
@@ -164,6 +164,40 @@ func TestReduce(t *testing.T) {
 				ev(engine.Exported, `{"head_commit":"def456","diff_path":"diff.patch","bundle_path":"task.bundle","files_changed":2}`),
 				ev(engine.RunEnded, `{"outcome":"exported"}`)),
 			want: engine.Facts{Started: true, Exported: true},
+		},
+		{
+			name: "the ecosystems of the prepare",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go","node"]}`),
+			},
+			want: engine.Facts{Started: true, RunOpen: true, Prepared: true, Ecosystems: []string{"go", "node"}},
+		},
+		{
+			name: "a redone prepare forgets them",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.PrepareStarted, ""),
+			},
+			want: engine.Facts{Started: true, RunOpen: true, Pending: "prepare"},
+		},
+		{
+			name: "a later run's prepare replaces them",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.RunEnded, `{"outcome":"sandbox"}`),
+				ev(engine.RunStarted, `{"reason":"retry"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["rust"]}`),
+			},
+			want: engine.Facts{Started: true, RunOpen: true, Prepared: true, Ecosystems: []string{"rust"}},
+		},
+		{
+			name: "a closed run forgets them",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.RunEnded, `{"outcome":"cancelled"}`),
+			},
+			want: engine.Facts{Started: true},
 		},
 		{
 			name:   "a session end that does not decode",

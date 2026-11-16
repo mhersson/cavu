@@ -2,7 +2,7 @@
 
 This file lists the removable parts of CAVU: code that makes up for a weakness of today's models and sits behind a switch, so it can be deleted when models no longer need it. Every removable part has an entry here, landed with its code, naming its switch, what the switch turns on, the assumption the part rests on, and the replay comparison that would retire it. The `internal/replay` package runs the comparisons; no command runs it yet.
 
-It also lists what the Claude Code adapter assumes of the pinned Claude Code version. Those entries have no switch: they change when the pinned version changes, and name the check against a new release that would change or retire them, to be run by a conformance suite that is not built yet.
+It also lists what the Claude Code adapter assumes of the pinned Claude Code version. Those entries have no switch: they change when the pinned version changes, and name the check against a new release that would change or retire them, to be run by `make test-conformance`, whose tests run the pinned version through the adapter but do not yet check each of these assumptions.
 
 ## continuations
 
@@ -17,6 +17,13 @@ It also lists what the Claude Code adapter assumes of the pinned Claude Code ver
 - What it turns on: when the verify command fails or times out, the engine resumes the same session in fix mode with the verify output, at most 2 rounds since the last human action on the task. With the switch off, the task stops as `verify_failed`.
 - Assumption: a second attempt after a failed verify usually succeeds.
 - Comparison to retire it: replay the same reference set with the switch off. Retire the part when the verify pass rate and the turns used are no worse than with it on.
+
+## web_tools
+
+- Switch: `web_tools`, set per project and overridden by a task's overrides, which is how the `internal/replay` package sets it. Off by default.
+- What it turns on: the agent's web tools. With the switch off, the Claude Code adapter disallows `WebFetch` and `WebSearch` and sets `CLAUDE_CODE_DISABLE_WEB_FETCH=1`, so a session can neither fetch a page nor search the web.
+- Assumption: fetched content is an injection and exfiltration channel: current models can follow instructions planted in a page they read, and a request they send can carry the repository's content out.
+- Comparison to retire it: replay the same reference set with the switch on, with tasks whose fetched pages carry planted instructions. Retire the part when no session follows a planted instruction or sends the repository's content out, and the verify pass rate is no worse than with it off.
 
 ## The pinned flag set of the Claude Code adapter
 

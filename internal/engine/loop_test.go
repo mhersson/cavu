@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -69,6 +71,9 @@ type call struct {
 	work   engine.WorkRequest
 	remove bool
 	title  string
+	commit string // the commit an export was given
+	ref    engine.RunRef
+	eco    []string // the config's ecosystems
 }
 
 func (c call) String() string {
@@ -102,11 +107,13 @@ type fakeRunner struct {
 var (
 	preparedOK = engine.PrepareResult{BaseCommit: "base123", Tools: []string{"go"}, Baseline: "passed"}
 	workDone   = engine.WorkResult{
-		Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", Turns: 3,
+		Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", Turns: 3, HeadCommit: "head456",
 		Usage: []store.Usage{{Source: "agent", Model: "model-a", Input: 10, Output: 5}},
 	}
 	verifyOK = engine.VerifyResult{Result: engine.ResultPassed, Command: "make test", Output: "ok"}
-	exportOK = engine.ExportResult{HeadCommit: "head456", DiffPath: "diff.patch", BundlePath: "task.bundle", FilesChanged: 1}
+	exportOK = engine.ExportResult{
+		HeadCommit: "head456", Diff: []byte("diff --git a/x b/x\n"), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 1,
+	}
 )
 
 func (r *fakeRunner) begin(c call) {
@@ -121,7 +128,7 @@ func (r *fakeRunner) begin(c call) {
 }
 
 func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
-	r.begin(call{method: "prepare", runID: c.RunID})
+	r.begin(call{method: "prepare", runID: c.RunID, eco: c.Ecosystems})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -130,7 +137,7 @@ func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.Pr
 }
 
 func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
-	r.begin(call{method: "work", runID: c.RunID, work: w})
+	r.begin(call{method: "work", runID: c.RunID, work: w, eco: c.Ecosystems})
 
 	var wg sync.WaitGroup
 	for _, p := range r.progress {
@@ -146,7 +153,7 @@ func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.Work
 }
 
 func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyResult, error) {
-	r.begin(call{method: "verify", runID: c.RunID})
+	r.begin(call{method: "verify", runID: c.RunID, eco: c.Ecosystems})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -154,8 +161,8 @@ func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.Ver
 	return pop(&r.verifies, verifyOK)
 }
 
-func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, title string) (engine.ExportResult, error) {
-	r.begin(call{method: "export", runID: c.RunID, title: title})
+func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, title, commit string) (engine.ExportResult, error) {
+	r.begin(call{method: "export", runID: c.RunID, title: title, commit: commit, eco: c.Ecosystems})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -163,8 +170,8 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, title strin
 	return pop(&r.exports, exportOK)
 }
 
-func (r *fakeRunner) Release(ctx context.Context, c engine.RunConfig, removeVolumes bool) error {
-	r.begin(call{method: "release", runID: c.RunID, remove: removeVolumes})
+func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
+	r.begin(call{method: "release", runID: ref.RunID, remove: removeVolumes, ref: ref})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -493,6 +500,9 @@ func TestLoopHappyPath(t *testing.T) {
 	}
 
 	assert.Equal(t, map[int64]string{runID: engine.RunExported}, h.spy.ended())
+	assert.Equal(t, engine.RunRef{
+		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: runID, ProjectID: h.task.ProjectID,
+	}, h.runner.callsOf("release")[0].ref)
 
 	assert.Equal(t, work.SessionID, h.spy.row(runID).SessionID, "the run row keeps the session id")
 
@@ -702,6 +712,195 @@ func TestLoopRecordsResultAfterCtxEnds(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, usage, 1)
 		assert.Equal(t, int64(10), usage[0].Input)
+	})
+}
+
+func TestLoopRecordsIgnoredTools(t *testing.T) {
+	h := newHarness(t)
+
+	res := engine.PrepareResult{
+		BaseCommit: "base123", Tools: []string{"go@1.25.0"}, Baseline: engine.ResultPassed,
+		IgnoredTools: []string{".tool-versions: ubi:owner/tool 1.0"},
+	}
+	h.runner.prepares = []step[engine.PrepareResult]{{res: res}}
+
+	_, err := h.run(t.Context())
+	require.NoError(t, err)
+
+	prepared := h.eventsOf(engine.Prepared)
+	require.Len(t, prepared, 1)
+	assert.Equal(t, engine.PreparedPayload{
+		BaseCommit: res.BaseCommit, Tools: res.Tools, Baseline: res.Baseline, IgnoredTools: res.IgnoredTools,
+	}, payloadOf[engine.PreparedPayload](t, prepared[0]))
+}
+
+// The ecosystems a prepare detected reach every later action of its run, also
+// after a restart; the prepare itself gets none.
+func TestLoopCarriesEcosystems(t *testing.T) {
+	t.Run("from the prepare", func(t *testing.T) {
+		h := newHarness(t)
+
+		res := preparedOK
+		res.Ecosystems = []string{"go", "node"}
+		h.runner.prepares = []step[engine.PrepareResult]{{res: res}}
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, happyTrace, h.runner.trace())
+
+		prepared := h.eventsOf(engine.Prepared)
+		require.Len(t, prepared, 1)
+		assert.Equal(t, res.Ecosystems, payloadOf[engine.PreparedPayload](t, prepared[0]).Ecosystems)
+
+		for _, c := range h.runner.calls {
+			switch c.method {
+			case "prepare":
+				assert.Nil(t, c.eco)
+			case "work", "verify", "export":
+				assert.Equal(t, res.Ecosystems, c.eco, c.String())
+			}
+		}
+	})
+
+	t.Run("after a restart", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(
+			ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+			ev(engine.Prepared, `{"base_commit":"base123","ecosystems":["rust"]}`),
+			ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
+		)
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, []string{"work/continue", "verify", "export", "release/remove"}, h.runner.trace())
+
+		for _, c := range h.runner.calls {
+			if c.method != "release" {
+				assert.Equal(t, []string{"rust"}, c.eco, c.String())
+			}
+		}
+	})
+}
+
+// The export takes the commit the newest ended session froze, also after a restart.
+func TestLoopExportsFrozenCommit(t *testing.T) {
+	t.Run("the newest session's", func(t *testing.T) {
+		h := newHarness(t)
+
+		first, fix := workDone, workDone
+		first.HeadCommit, fix.HeadCommit = "frozen1", "frozen2"
+		h.runner.works = []step[engine.WorkResult]{{res: first}, {res: fix}}
+		h.runner.verifies = []step[engine.VerifyResult]{{res: engine.VerifyResult{Result: engine.ResultFailed, Command: "make test"}}}
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, []string{"prepare", "work/start", "verify", "work/fix_verify", "verify", "export", "release/remove"},
+			h.runner.trace())
+
+		ended := h.eventsOf(engine.SessionEnded)
+		require.Len(t, ended, 2)
+		assert.Equal(t, "frozen1", payloadOf[engine.SessionEndedPayload](t, ended[0]).HeadCommit)
+		assert.Equal(t, "frozen2", payloadOf[engine.SessionEndedPayload](t, ended[1]).HeadCommit)
+		assert.Equal(t, "frozen2", h.runner.callsOf("export")[0].commit)
+	})
+
+	t.Run("after a restart", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(
+			ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`),
+			ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
+			ev(engine.SessionEnded, `{"outcome":"done","changed":true,"head_commit":"frozen3"}`),
+			ev(engine.VerifyStarted, ""), ev(engine.VerifyEnded, `{"result":"passed"}`),
+		)
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, []string{"export", "release/remove"}, h.runner.trace())
+		assert.Equal(t, "frozen3", h.runner.callsOf("export")[0].commit)
+	})
+}
+
+func artifactDir(h *harness, runID int64) string {
+	return filepath.Join(h.loop.DataDir, "artifacts", strconv.FormatInt(h.task.ID, 10), strconv.FormatInt(runID, 10))
+}
+
+// assertArtifacts checks that dir holds exactly the export's two files, private, with want's content.
+func assertArtifacts(t *testing.T, dir string, want engine.ExportResult) {
+	t.Helper()
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	got := map[string][]byte{}
+
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		require.NoError(t, err)
+
+		got[e.Name()] = data
+
+		info, err := e.Info()
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), e.Name())
+	}
+
+	assert.Equal(t, map[string][]byte{"diff.patch": want.Diff, "task.bundle": want.Bundle}, got)
+}
+
+// The loop writes the export's diff and bundle under the data directory and
+// records their paths; a write that fails leaves the export to be redone.
+func TestLoopWritesArtifacts(t *testing.T) {
+	t.Run("written and recorded", func(t *testing.T) {
+		h := newHarness(t)
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+
+		exported := h.eventsOf(engine.Exported)
+		require.Len(t, exported, 1)
+
+		dir := artifactDir(h, exported[0].RunID)
+		assert.Equal(t, engine.ExportedPayload{
+			HeadCommit: "head456", DiffPath: filepath.Join(dir, "diff.patch"), BundlePath: filepath.Join(dir, "task.bundle"),
+			FilesChanged: 1,
+		}, payloadOf[engine.ExportedPayload](t, exported[0]))
+		assertArtifacts(t, dir, exportOK)
+	})
+
+	t.Run("a failed write is redone and replaces the files", func(t *testing.T) {
+		h := newHarness(t)
+
+		long := exportOK
+		long.Diff = bytes.Repeat([]byte("x"), 4096)
+		h.runner.exports = []step[engine.ExportResult]{{res: long}}
+
+		// A directory where the bundle goes fails its rename.
+		var blocker string
+
+		h.runner.onCall = func(c call) {
+			if c.method == "export" && blocker == "" {
+				blocker = filepath.Join(artifactDir(h, c.runID), "task.bundle")
+				require.NoError(t, os.MkdirAll(blocker, 0o700))
+			}
+		}
+
+		_, err := h.run(t.Context())
+		require.Error(t, err)
+		assert.Empty(t, h.eventsOf(engine.Exported))
+		assert.Empty(t, h.eventsOf(engine.Stopped))
+
+		require.NoError(t, os.Remove(blocker))
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+
+		assert.Equal(t, []string{"prepare", "work/start", "verify", "export", "export", "release/remove"}, h.runner.trace())
+		assertArtifacts(t, artifactDir(h, h.runner.callsOf("export")[1].runID), exportOK)
 	})
 }
 
@@ -1401,6 +1600,8 @@ func TestLoopAnswerReachesTheAgent(t *testing.T) {
 	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
 }
 
+// A stop needs no run config: a broken setting neither keeps a person's cancel
+// out of the record nor keeps the run from being released.
 func TestLoopStopsWithoutConfig(t *testing.T) {
 	h := newHarness(t)
 	r := h.seed(
@@ -1413,29 +1614,16 @@ func TestLoopStopsWithoutConfig(t *testing.T) {
 	require.NoError(t, h.store.SetSetting(t.Context(), "model_work", ""))
 
 	status, err := h.run(t.Context())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "model_work")
+	require.NoError(t, err)
 	assert.Equal(t, engine.StatusCancelled, status)
 	assert.Equal(t, engine.StopCancelled, h.lastStop().Reason)
 
 	ends := h.eventsOf(engine.RunEnded)
 	require.Len(t, ends, 1)
 	assert.Equal(t, engine.StopCancelled, payloadOf[engine.RunEndedPayload](t, ends[0]).Outcome)
-	assert.Empty(t, h.runner.trace())
-	assert.Empty(t, h.spy.ended(), "the row stays open for repair")
-
-	status, err = h.run(t.Context())
-	require.Error(t, err, "repair cannot release while the setting is missing")
-	assert.Contains(t, err.Error(), "model_work")
-	assert.Equal(t, engine.StatusCancelled, status, "the loop still decides")
-	assert.Empty(t, h.runner.trace())
-	assert.Empty(t, h.spy.ended())
-
-	require.NoError(t, h.store.SetSetting(t.Context(), "model_work", "model-a"))
-
-	status, err = h.run(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, engine.StatusCancelled, status)
 	assert.Equal(t, []string{"release/remove"}, h.runner.trace())
+	assert.Equal(t, engine.RunRef{
+		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: r.ID, ProjectID: h.task.ProjectID,
+	}, h.runner.calls[0].ref)
 	assert.Equal(t, map[int64]string{r.ID: engine.StopCancelled}, h.spy.ended())
 }

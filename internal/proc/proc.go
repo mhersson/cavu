@@ -2,7 +2,8 @@
 
 // Package proc runs a command as a supervised process: stdout as lines or
 // copied whole, a bounded stderr tail, an exit code, and a stop that reaches
-// the whole process group.
+// the whole process group. It also holds the guard that keeps a shell script
+// from running outside a sandbox container.
 package proc
 
 import (

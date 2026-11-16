@@ -58,10 +58,13 @@ RUN set -eux; \
     mise --version
 
 # A fresh named volume takes its ownership from the image's directory, and is
-# root-owned without one.
+# root-owned without one. /etc/cavu/sandbox is checked by deleting scripts so
+# they do nothing outside a sandbox container.
 RUN useradd --uid 1000 --user-group --home-dir /home/agent --create-home --shell /bin/bash agent \
     && mkdir -p /workspace /handoff /cache /mirror \
-    && chown 1000:1000 /workspace /handoff /cache /mirror /home/agent
+    && chown 1000:1000 /workspace /handoff /cache /mirror /home/agent \
+    && install -d -o root -g root -m 0755 /etc/cavu \
+    && install -o root -g root -m 0444 /dev/null /etc/cavu/sandbox
 
 COPY cavu /usr/local/bin/cavu
 

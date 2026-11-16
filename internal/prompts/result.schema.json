@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {"type": "string", "enum": ["done", "blocked", "failed"]},
+    "title": {"type": "string", "description": "One line that names the change."},
+    "summary": {"type": "string", "description": "What you changed and why, for the person who reviews it."},
+    "assumptions": {"type": "array", "items": {"type": "string"}, "description": "The design choices you made without asking."},
+    "questions": {"type": "array", "items": {"type": "string"}, "description": "What you need answered to go on."}
+  },
+  "required": ["status"],
+  "if": {"properties": {"status": {"const": "blocked"}}},
+  "then": {"required": ["questions"], "properties": {"questions": {"minItems": 1}}}
+}

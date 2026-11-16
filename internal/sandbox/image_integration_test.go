@@ -206,3 +206,16 @@ func TestImageBuilds(t *testing.T) {
 
 	require.Error(t, bare.CopyOut(t.Context(), "/etc/os-release", &sink))
 }
+
+func TestImageCarriesSandboxMarker(t *testing.T) {
+	r := sandboxtest.Runtime(t)
+	image := sandboxImage(t, r, nil)
+
+	out, err := sandboxtest.RunInImage(t, r, image, "sh", "-c", proc.SandboxOnly("echo payload-ran"))
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "payload-ran")
+
+	// The rm and the test share one container, so the test sees what the rm left.
+	out, err = sandboxtest.RunInImage(t, r, image, "sh", "-c", `rm -f "$1" 2>/dev/null; test -f "$1"`, "sh", proc.SandboxMarker)
+	require.NoError(t, err, out)
+}

@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -256,15 +259,7 @@ func (p *pass) repair(ctx context.Context) error {
 			return nil
 		case done:
 			// The run ended but was never released.
-			o, oerr := p.open(ctx, t, r)
-			if oerr != nil {
-				// The row stays open, so the next repair releases it once the config builds.
-				p.hold(oerr)
-
-				return nil
-			}
-
-			err = p.free(ctx, o, true, outcome)
+			err = p.free(ctx, t, r, true, outcome)
 		default:
 			err = p.endRun(ctx, r, RunAbandoned)
 		}
@@ -313,7 +308,7 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 			return err
 		}
 
-		return p.release(ctx, v.Task, v.run, true, RunExported)
+		return p.free(ctx, v.Task, v.run, true, RunExported)
 	}
 
 	row := v.run
@@ -335,9 +330,15 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		return p.abandon(ctx, a, row, err)
 	}
 
-	switch a.Kind {
-	case KindPrepare:
+	if a.Kind == KindPrepare {
 		return p.prepare(ctx, v, a, o)
+	}
+
+	// From the record, so a runner that restarted never reads the workspace
+	// an agent may have changed to learn them again.
+	o.cfg.Ecosystems = v.Facts.Ecosystems
+
+	switch a.Kind {
 	case KindWork:
 		return p.work(ctx, v, a, o)
 	case KindVerify:
@@ -388,7 +389,12 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 
 	// A prepare redone after a crash may find a partial clone; start it from empty volumes.
 	if v.Facts.Pending == string(KindPrepare) {
-		if err := p.Runner.Release(ctx, o.cfg, true); err != nil {
+		ref, err := p.ref(ctx, o.task, o.row)
+		if err != nil {
+			return err
+		}
+
+		if err := p.Runner.Release(ctx, ref, true); err != nil {
 			return p.fault(ctx, o, err)
 		}
 	}
@@ -415,7 +421,8 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 	}
 
 	return p.result(ctx, o, nil, draft{Prepared, actorRunner, PreparedPayload{
-		BaseCommit: res.BaseCommit, Tools: res.Tools, Baseline: res.Baseline,
+		BaseCommit: res.BaseCommit, Tools: res.Tools, IgnoredTools: res.IgnoredTools, Ecosystems: res.Ecosystems,
+		Baseline: res.Baseline,
 	}})
 }
 
@@ -479,7 +486,7 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 	if err := p.result(ctx, o, usage, draft{SessionEnded, actorRunner, SessionEndedPayload{
 		Outcome: res.Outcome, Title: res.Title, Summary: res.Summary, Assumptions: res.Assumptions,
 		Questions: res.Questions, Changed: res.Changed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD,
-		ResetsAt: res.ResetsAt, Detail: res.Detail,
+		ResetsAt: res.ResetsAt, Detail: res.Detail, HeadCommit: res.HeadCommit,
 	}}); err != nil {
 		return err
 	}
@@ -609,8 +616,11 @@ func (p *pass) verify(ctx context.Context, v view, a Action, o openRun) error {
 }
 
 func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
+	// Decide exports only after an ended session, so Session is set.
+	s := v.Facts.Session
+
 	title := v.Task.Title
-	if s := v.Facts.Session; s != nil && s.Title != "" {
+	if s.Title != "" {
 		title = s.Title
 	}
 
@@ -618,7 +628,7 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 		return err
 	}
 
-	res, err := p.Runner.Export(ctx, o.cfg, title)
+	res, err := p.Runner.Export(ctx, o.cfg, title, s.HeadCommit)
 	if err != nil {
 		return p.fault(ctx, o, err)
 	}
@@ -630,9 +640,34 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 		})
 	}
 
+	// A failed write is not a stop: the claim stays pending and the next RunTask exports again.
+	dir := filepath.Join(p.DataDir, "artifacts", strconv.FormatInt(p.taskID, 10), strconv.FormatInt(o.row.ID, 10))
+
+	diff, err := writeArtifact(dir, "diff.patch", res.Diff)
+	if err != nil {
+		return fmt.Errorf("task %d: export: %w", p.taskID, err)
+	}
+
+	bundle, err := writeArtifact(dir, "task.bundle", res.Bundle)
+	if err != nil {
+		return fmt.Errorf("task %d: export: %w", p.taskID, err)
+	}
+
 	return p.result(ctx, o, nil, draft{Exported, actorRunner, ExportedPayload{
-		HeadCommit: res.HeadCommit, DiffPath: res.DiffPath, BundlePath: res.BundlePath, FilesChanged: res.FilesChanged,
+		HeadCommit: res.HeadCommit, DiffPath: diff, BundlePath: bundle, FilesChanged: res.FilesChanged,
 	}})
+}
+
+// writeArtifact writes data to dir/name, replacing a file a repeated export
+// left, and returns the file's path.
+func writeArtifact(dir, name string, data []byte) (string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+
+	path := filepath.Join(dir, name)
+
+	return path, os.WriteFile(path, data, 0o600)
 }
 
 // fault records a runner error as a sandbox stop. While ctx is done the error
@@ -686,33 +721,36 @@ func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *st
 		return nil
 	}
 
-	return p.release(ctx, t, *run, ends, sp.Reason)
+	return p.free(ctx, t, *run, ends, sp.Reason)
 }
 
-// release frees a run whose stop or end is recorded. Without a config it holds
-// the error: a run that ended keeps its row open for repair, and any other
-// run keeps its containers until the next action uses them.
-func (p *pass) release(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
-	o, err := p.open(ctx, t, row)
+// ref names a run for Release from the task, the row, the loop's image and the
+// instance id, so a broken setting or secret cannot keep a run's containers.
+func (p *pass) ref(ctx context.Context, t store.Task, row store.Run) (RunRef, error) {
+	set, err := p.Store.Settings(ctx)
 	if err != nil {
-		p.hold(err)
-
-		return nil
+		return RunRef{}, fmt.Errorf("task %d: release run %d: %w", p.taskID, row.ID, err)
 	}
 
-	return p.free(ctx, o, end, outcome)
+	return RunRef{InstanceID: set["instance_id"], Image: p.Image, TaskID: t.ID, RunID: row.ID, ProjectID: t.ProjectID}, nil
 }
 
-// free stops the run's containers, removing its volumes and ending its row
-// when the run ends. A Release error is held so the row is still ended.
-func (p *pass) free(ctx context.Context, o openRun, end bool, outcome string) error {
-	relErr := p.Runner.Release(ctx, o.cfg, end)
+// free stops a run's containers once its stop or end is recorded, removing its
+// volumes and ending its row when the run ends. A Release error is held so the
+// row is still ended.
+func (p *pass) free(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
+	ref, err := p.ref(ctx, t, row)
+	if err != nil {
+		return err
+	}
+
+	relErr := p.Runner.Release(ctx, ref, end)
 	if relErr != nil {
-		relErr = fmt.Errorf("task %d: release run %d: %w", p.taskID, o.row.ID, relErr)
+		relErr = fmt.Errorf("task %d: release run %d: %w", p.taskID, row.ID, relErr)
 	}
 
 	if end {
-		if err := p.endRun(ctx, o.row, outcome); err != nil {
+		if err := p.endRun(ctx, row, outcome); err != nil {
 			return errors.Join(err, relErr)
 		}
 	}

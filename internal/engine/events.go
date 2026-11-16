@@ -76,9 +76,11 @@ type (
 	}
 
 	PreparedPayload struct {
-		BaseCommit string   `json:"base_commit"`
-		Tools      []string `json:"tools"`
-		Baseline   string   `json:"baseline"` // result of the verify on the base commit
+		BaseCommit   string   `json:"base_commit"`
+		Tools        []string `json:"tools"`
+		IgnoredTools []string `json:"ignored_tools,omitempty"` // repository entries detection declined to install
+		Ecosystems   []string `json:"ecosystems,omitempty"`
+		Baseline     string   `json:"baseline"` // result of the verify on the base commit
 	}
 
 	PrepareFailedPayload struct {
@@ -120,6 +122,7 @@ type (
 		Assumptions     []string  `json:"assumptions"`
 		Questions       []string  `json:"questions"`
 		Changed         bool      `json:"changed"`
+		HeadCommit      string    `json:"head_commit,omitempty"`
 		Turns           int       `json:"turns"`
 		CostEstimateUSD float64   `json:"cost_estimate_usd"`
 		ResetsAt        time.Time `json:"resets_at,omitzero"`

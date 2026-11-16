@@ -34,7 +34,7 @@ func spec(t *testing.T, url string) CloneSpec {
 func withMainMirror(t *testing.T, s CloneSpec) {
 	t.Helper()
 
-	gitrepo.Git(t, "", "init", "--bare", "--quiet", "-b", "main", s.MirrorDir)
+	gitrepo.Git(t, filepath.Dir(s.MirrorDir), "init", "--bare", "--quiet", "-b", "main", s.MirrorDir)
 }
 
 func TestCloneFromMirror(t *testing.T) {
@@ -152,6 +152,69 @@ func TestCABundleAddsToSystemRoots(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(got), strings.TrimSpace(string(system)))
 	assert.Contains(t, string(got), strings.TrimSpace(ca))
+}
+
+// Every git call runs in a directory the clone owns or in the one that holds
+// it, never in the caller's working directory.
+func TestCloneRunsGitInItsOwnDirectories(t *testing.T) {
+	t.Parallel()
+
+	up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
+	ctx, calls := wrapGit(t, `pwd -P >> "$LOG.dirs"`)
+	s := spec(t, "file://"+up)
+
+	_, err := Clone(ctx, s)
+	require.NoError(t, err)
+
+	root, err := filepath.EvalSymlinks(filepath.Dir(s.MirrorDir))
+	require.NoError(t, err)
+
+	mirror, ws := filepath.Join(root, filepath.Base(s.MirrorDir)), filepath.Join(root, filepath.Base(s.WorkspaceDir))
+	want := map[string]string{"check-ref-format": root, "init": root, "clone": root, "fetch": mirror, "rev-parse": mirror}
+
+	log, err := os.ReadFile(calls)
+	require.NoError(t, err)
+
+	dirs, err := os.ReadFile(calls + ".dirs")
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
+	got := strings.Split(strings.TrimSpace(string(dirs)), "\n")
+	require.Len(t, got, len(lines))
+
+	ran := map[string]bool{}
+
+	for i, line := range lines {
+		sub := subcommand(line)
+		ran[sub] = true
+
+		dir, ok := want[sub]
+		if !ok {
+			dir = ws
+		}
+
+		assert.Equal(t, dir, got[i], line)
+	}
+
+	for _, sub := range []string{"check-ref-format", "init", "clone"} {
+		assert.True(t, ran[sub], sub)
+	}
+}
+
+// subcommand returns the git subcommand of a line of the wrapper's log.
+func subcommand(line string) string {
+	fields := strings.Fields(line)
+	for i := 0; i < len(fields); i++ {
+		if fields[i] == "-c" {
+			i++
+
+			continue
+		}
+
+		return fields[i]
+	}
+
+	return ""
 }
 
 func TestMirrorUpdates(t *testing.T) {

@@ -63,3 +63,14 @@ func TestHostsAreFresh(t *testing.T) {
 
 	assert.NotEqual(t, "changed", SetupHosts(nil)[0])
 }
+
+// mise lists versions through its versions host and installs Rust with
+// rustup's installer: toolchain hosts, so the agent phase never reaches them.
+func TestToolchainHostsServeMiseAndRustup(t *testing.T) {
+	t.Parallel()
+
+	for _, h := range []string{"mise-versions.jdx.dev", "sh.rustup.rs"} {
+		assert.Contains(t, SetupHosts(nil), h)
+		assert.NotContains(t, AgentHosts(allEcosystems), h)
+	}
+}

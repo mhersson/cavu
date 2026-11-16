@@ -26,14 +26,24 @@ const execSlack = 10 * time.Second
 // stopScript waits for the pid file, sends TERM to the command's process
 // group, then KILL if the group outlives the grace ($2 in tenths of a second).
 // Busybox's kill takes no "--", so the group goes as a bare negative pid.
+// Unless the file holds a decimal pid above 1 that is not the script's own, it
+// exits stopRefused and signals nothing, since kill -TERM -1 reaches every
+// process.
 const stopScript = `f=$1 n=$2
 while [ ! -s "$f" ] && [ "$n" -gt 0 ]; do sleep 0.1; n=$((n - 1)); done
 [ -s "$f" ] || exit 3
-pg=-$(cat "$f")
+p=$(cat "$f")
+case $p in ''|*[!0-9]*|0*|1|"$$") exit 4;; esac
+pg=-$p
 kill -TERM "$pg" 2>/dev/null || exit 0
 while [ "$n" -gt 0 ] && kill -0 "$pg" 2>/dev/null; do sleep 0.1; n=$((n - 1)); done
 kill -KILL "$pg" 2>/dev/null
 exit 0`
+
+// stopRefused is the stop script's status for a pid file it will not signal.
+const stopRefused = 4
+
+var errSignalRefused = errors.New("the pid file names no process group that may be signalled; none was")
 
 // Container is a running container; it is a proc.Target.
 type Container struct {
@@ -191,6 +201,10 @@ func (p *execProcess) Stop(grace time.Duration) error {
 	signalErr := p.c.r.run(ctx, call{args: []string{"exec", p.c.name, "sh", "-c", stopScript, "sh", p.pidFile, tenths}})
 
 	cancel()
+
+	if ce, ok := errors.AsType[*clientError](signalErr); ok && ce.code == stopRefused {
+		signalErr = fmt.Errorf("%w: %s", errSignalRefused, p.pidFile)
+	}
 
 	if !p.clientKilled {
 		timer := time.NewTimer(killGrace)

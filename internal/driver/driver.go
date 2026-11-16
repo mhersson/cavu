@@ -37,6 +37,9 @@ const (
 // Driver runs one agent session on a Target.
 type Driver interface {
 	Probe(ctx context.Context, t proc.Target) (version string, err error)
+	// Hosts returns the hosts the agent's own traffic reaches in the given auth
+	// mode ("subscription" or "key"), for the agent phase's egress allowlist.
+	Hosts(mode string) []string
 	// Run starts or resumes one session and blocks until it ends. Cancelling
 	// ctx interrupts it. Every event reaches sink in order.
 	Run(ctx context.Context, t proc.Target, s Spec, sink func(Event)) (Result, error)
@@ -60,6 +63,7 @@ type Spec struct {
 	Instructions  string // appended to the system prompt; never in argv
 	OutputSchema  json.RawMessage
 	Dir           string
+	BaseCommit    string // the commit the repository's instruction files are taken from; empty takes none
 	Home          string
 	ConfigDir     string
 	Env           []string // extra environment: proxy variables, CA path, toolchain paths

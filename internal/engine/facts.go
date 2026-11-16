@@ -12,7 +12,8 @@ type Facts struct {
 	Started, Cancelled         bool
 	OpenStop                   *StopFact // newest stop with no human action and no session start after it
 	RunOpen                    bool
-	Prepared                   bool // in the open run
+	Prepared                   bool     // in the open run
+	Ecosystems                 []string // of the open run's prepare, which Work, Verify and Export run with
 	PrepareFailure             *PrepareFailure
 	Pending                    string       // an action claimed and not finished: "", "prepare", "work", "verify", "export"
 	SessionID                  string       // of the open run, "" before the first session
@@ -40,6 +41,7 @@ type SessionFact struct {
 	Outcome                string
 	Changed                bool
 	Title, Summary, Detail string
+	HeadCommit             string // the commit the session froze, which an export takes
 	Questions              []string
 	ResetsAt               time.Time
 }
@@ -90,12 +92,13 @@ func (f *Facts) apply(e store.Event) {
 		f.RunOpen = false
 	case PrepareStarted:
 		if f.RunOpen {
-			f.Pending, f.Prepared, f.PrepareFailure = string(KindPrepare), false, nil
+			f.Pending, f.Prepared, f.PrepareFailure, f.Ecosystems = string(KindPrepare), false, nil, nil
 		}
 	case Prepared:
 		f.Resumed = nil
 		if f.RunOpen {
 			f.Pending, f.Prepared = "", true
+			f.Ecosystems = decode[PreparedPayload](e.Payload).Ecosystems
 		}
 	case PrepareFailed:
 		f.Resumed = nil
@@ -112,7 +115,7 @@ func (f *Facts) apply(e store.Event) {
 			f.Pending, f.Verify = "", ""
 			f.Session = &SessionFact{
 				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary,
-				Detail: p.Detail, Questions: p.Questions, ResetsAt: p.ResetsAt,
+				Detail: p.Detail, HeadCommit: p.HeadCommit, Questions: p.Questions, ResetsAt: p.ResetsAt,
 			}
 		}
 	case VerifyStarted:
@@ -174,7 +177,7 @@ func (f *Facts) sessionStarted(p SessionStartedPayload) {
 }
 
 func (f *Facts) resetRun() {
-	f.Prepared, f.PrepareFailure, f.Pending = false, nil, ""
+	f.Prepared, f.PrepareFailure, f.Pending, f.Ecosystems = false, nil, "", nil
 	f.SessionID, f.Session, f.Verify, f.LastVerifyOutput = "", nil, "", ""
 }
 

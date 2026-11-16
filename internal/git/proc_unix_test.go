@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/mhersson/cavu/internal/testkit/gitrepo"
@@ -29,9 +28,11 @@ func TestCancelledRefWriteLeavesNoLock(t *testing.T) {
 	gitrepo.Git(t, root, "pack-refs", "--all")
 
 	// git runs the hook with "prepared" once it holds the transaction's locks.
-	started := filepath.Join(t.TempDir(), "started")
-	writeExecutable(t, filepath.Join(root, ".git", "hooks", "reference-transaction"),
-		"#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\n: > '"+started+"'\nexec sleep 30\n")
+	// Its arguments are git's, so it writes its marker next to itself, from $0.
+	hooks := filepath.Join(root, ".git", "hooks")
+	started := filepath.Join(hooks, "started")
+	writeExecutable(t, filepath.Join(hooks, "reference-transaction"),
+		"#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\n: > \"${0%/*}/started\"\nexec sleep 30\n")
 
 	_, err := run(cancelWhenWritten(t, started), call{
 		dir:  root,
@@ -64,7 +65,7 @@ wait`)
 	}
 
 	pid := readPID(t, logPath+".pid")
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	t.Cleanup(func() { killProcess(t, pid) })
 
 	eventually(t, "the child that ignores SIGTERM to die", func() bool { return !alive(pid) })
 }
@@ -84,13 +85,7 @@ while [ $i -lt 300 ]; do
 done
 wait`)
 
-	t.Cleanup(func() {
-		if raw, err := os.ReadFile(logPath + ".pgid"); err == nil {
-			if pgid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			}
-		}
-	})
+	t.Cleanup(func() { killGroupIn(t, logPath+".pgid") })
 
 	// The first child's pid lands while the wrapper is still forking.
 	ctx := context.WithValue(cancelWhenWritten(t, logPath+".pids"), gitPathKey{}, script)
