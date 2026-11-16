@@ -183,15 +183,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.Unmarshal(raw, &body)
 
-	n := s.record(r, body)
+	messages := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/messages")
+	countTokens := strings.HasSuffix(r.URL.Path, "/count_tokens")
+	n, step, hold := s.record(r, body, messages && !countTokens && body.Stream)
 
-	if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/messages") {
+	if !messages {
 		http.NotFound(w, r)
 
 		return
 	}
 
-	if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+	if countTokens {
 		writeJSON(w, http.StatusOK, map[string]any{"input_tokens": 10})
 
 		return
@@ -213,8 +215,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-
-	step, hold := s.next()
 
 	if hold != nil {
 		select {
@@ -243,8 +243,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.stream(w, n, model, step, tool)
 }
 
-// record logs r and returns its 1-based number.
-func (s *Server) record(r *http.Request, body requestBody) int {
+// record logs r and returns its 1-based number. For a model call it also takes
+// the next step, or done after the last, and the oldest pending hold, under the
+// same lock, so log order, message ids, steps and holds always pair.
+func (s *Server) record(r *http.Request, body requestBody, modelCall bool) (int, Step, chan struct{}) {
 	req := Request{
 		Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(),
 		Model: body.Model, System: systemText(body.System), Messages: body.Messages,
@@ -258,15 +260,11 @@ func (s *Server) record(r *http.Request, body requestBody) int {
 	defer s.mu.Unlock()
 
 	s.requests = append(s.requests, req)
+	n := len(s.requests)
 
-	return len(s.requests)
-}
-
-// next consumes the next step, or answers done after the last, and takes the
-// oldest pending hold.
-func (s *Server) next() (Step, chan struct{}) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if !modelCall {
+		return n, Step{}, nil
+	}
 
 	step := Step{Text: "done"}
 	if len(s.steps) > 0 {
@@ -278,7 +276,7 @@ func (s *Server) next() (Step, chan struct{}) {
 		hold, s.holds = s.holds[0], s.holds[1:]
 	}
 
-	return step, hold
+	return n, step, hold
 }
 
 func (s *Server) id(kind string, n int) string {
