@@ -149,6 +149,18 @@ func (f verbFlags) open(ctx context.Context) (*app, error) {
 	return openApp(ctx, dir)
 }
 
+// isTerminal reports whether r is a character device, as a terminal is.
+func isTerminal(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	if !ok {
+		return false
+	}
+
+	info, err := f.Stat()
+
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
 func dataDir(flagValue string) (string, error) {
 	if flagValue != "" {
 		return flagValue, nil
