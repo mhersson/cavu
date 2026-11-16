@@ -21,9 +21,7 @@ func EncryptSecret(key, plaintext []byte) ([]byte, error) {
 	}
 
 	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("auth: generate nonce: %w", err)
-	}
+	_, _ = rand.Read(nonce) // never returns an error
 
 	return gcm.Seal(nonce, nonce, plaintext, nil), nil
 }

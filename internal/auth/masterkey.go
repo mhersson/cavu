@@ -76,9 +76,7 @@ func LoadOrCreateMasterKey(path string) (key []byte, created bool, err error) {
 // the file first, that key wins so data sealed under it stays readable.
 func createMasterKey(path string) ([]byte, bool, error) {
 	fresh := make([]byte, MasterKeyLen)
-	if _, err := rand.Read(fresh); err != nil {
-		return nil, false, fmt.Errorf("auth: generate master key: %w", err)
-	}
+	_, _ = rand.Read(fresh) // never returns an error
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, false, fmt.Errorf("auth: master key dir: %w", err)
