@@ -18,7 +18,7 @@ import (
 
 // fakeScript stands in for the runtime client. Each call records its argv,
 // its environment names, its HOME, file descriptor 3 (when open) and stdin,
-// then prints the canned stdout and exits with the canned code.
+// then prints the canned stdout and stderr and exits with the canned code.
 const fakeScript = `#!/bin/sh
 d='@DIR@'
 n=$(mktemp -d "$d/call.XXXXXX") || exit 99
@@ -29,6 +29,7 @@ if { true <&3; } 2>/dev/null; then cat <&3 > "$n/fd3"; fi
 cat > "$n/stdin"
 [ -f "$d/sleep" ] && sleep 30
 [ -f "$d/stdout" ] && cat "$d/stdout"
+[ -f "$d/stderr" ] && cat "$d/stderr" >&2
 exit "$(cat "$d/exit" 2>/dev/null || echo 0)"
 `
 

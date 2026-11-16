@@ -380,6 +380,18 @@ func TestCommandNeedsPidDir(t *testing.T) {
 	assert.Error(t, c.CopyOut(t.Context(), "/tmp/ran", io.Discard), "the command ran")
 }
 
+func TestRunOnRemovedContainer(t *testing.T) {
+	t.Parallel()
+
+	r := testRuntime(t)
+	name, c := startContainer(t, r)
+	require.NoError(t, r.Remove(t.Context(), name))
+
+	res := run(t, c, "true")
+	assert.NotEqual(t, 0, res.ExitCode)
+	assert.NotEmpty(t, res.Output)
+}
+
 func TestNoNetwork(t *testing.T) {
 	t.Parallel()
 

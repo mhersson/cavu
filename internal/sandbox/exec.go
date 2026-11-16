@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strconv"
@@ -189,9 +190,11 @@ type Result struct {
 	TimedOut bool
 }
 
-// Run runs a command to its end with combined output capped at 64 KiB (head and
-// tail kept). At the timeout it kills the command inside the container. The
-// error is for a command that could not be started, read or stopped.
+// Run runs a command to its end. Output is the command's stdout and stderr
+// together, then anything the runtime client itself reported, capped at
+// 64 KiB (head and tail kept). At the timeout it kills the command inside the
+// container. The error is for a command that could not be started, read or
+// stopped.
 func (c Container) Run(ctx context.Context, cmd proc.Command, timeout time.Duration) (Result, error) {
 	out := proc.NewCapture(proc.CaptureCap)
 	cmd.Stdout = out
@@ -226,6 +229,10 @@ func (c Container) Run(ctx context.Context, cmd proc.Command, timeout time.Durat
 	if err != nil {
 		return Result{}, fmt.Errorf("run in %s: %w", c.name, err)
 	}
+
+	// The wrapper sends all the command's output to stdout, so the client's
+	// stderr is the runtime's own reason for a failed exec.
+	_, _ = io.WriteString(out, p.StderrTail())
 
 	res.ExitCode = code
 	res.Output = out.String()

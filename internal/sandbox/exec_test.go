@@ -1,7 +1,9 @@
 package sandbox
 
 import (
+	"bytes"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,4 +70,32 @@ func TestRunReportsExitAndOutput(t *testing.T) {
 	res, err := r.Container("cavu-agent-r1").Run(t.Context(), proc.Command{Argv: []string{"make", "test"}}, time.Minute)
 	require.NoError(t, err)
 	assert.Equal(t, Result{ExitCode: 7, Output: "hello\n"}, res)
+}
+
+func TestRunOutputHoldsClientStderr(t *testing.T) {
+	const fromClient = "client-stderr-marker\n"
+
+	t.Run("after the command's output", func(t *testing.T) {
+		r, f := fakeRuntime(t, "docker")
+		f.set(t, "stdout", []byte("partial\n"))
+		f.set(t, "stderr", []byte(fromClient))
+		f.set(t, "exit", []byte("125"))
+
+		res, err := r.Container("cavu-agent-r1").Run(t.Context(), proc.Command{Argv: []string{"make", "test"}}, time.Minute)
+		require.NoError(t, err)
+		assert.Equal(t, Result{ExitCode: 125, Output: "partial\n" + fromClient}, res)
+	})
+
+	t.Run("within the cap", func(t *testing.T) {
+		r, f := fakeRuntime(t, "docker")
+		f.set(t, "stdout", bytes.Repeat([]byte("line\n"), 40000))
+		f.set(t, "stderr", []byte(fromClient))
+		f.set(t, "exit", []byte("1"))
+
+		res, err := r.Container("cavu-agent-r1").Run(t.Context(), proc.Command{Argv: []string{"make", "test"}}, time.Minute)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, len(res.Output), proc.CaptureCap)
+		assert.True(t, strings.HasPrefix(res.Output, "line\n"))
+		assert.True(t, strings.HasSuffix(res.Output, "line\n"+fromClient))
+	})
 }
