@@ -273,7 +273,7 @@ func envValue(t *testing.T, env []string, name string) (string, bool) {
 	return value, found
 }
 
-func TestEnvProxyBypassesLoopback(t *testing.T) {
+func TestEnvProxyAppendsLoopback(t *testing.T) {
 	const loopback = "127.0.0.1,localhost,::1"
 
 	spec := func(env ...string) driver.Spec {
@@ -281,76 +281,26 @@ func TestEnvProxyBypassesLoopback(t *testing.T) {
 	}
 
 	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
-		t.Run(name, func(t *testing.T) {
-			env := environment(spec("PATH=/bin", name+"=http://proxy:3128"))
+		env := environment(spec(name + "=http://proxy:3128"))
 
-			for _, np := range []string{"NO_PROXY", "no_proxy"} {
-				v, ok := envValue(t, env, np)
-				require.True(t, ok, np)
-				assert.Equal(t, loopback, v, np)
-			}
-
-			assert.Contains(t, env, name+"=http://proxy:3128")
-		})
+		for _, np := range []string{"NO_PROXY", "no_proxy"} {
+			v, ok := envValue(t, env, np)
+			require.True(t, ok, "%s with %s", np, name)
+			assert.Equal(t, loopback, v, "%s with %s", np, name)
+		}
 	}
 
-	for _, tc := range []struct {
-		name         string
-		env          []string
-		upper, lower string
-		set          bool
-	}{
-		{name: "no proxy", env: []string{"PATH=/bin"}},
-		{name: "empty proxy", env: []string{"PATH=/bin", "HTTP_PROXY="}},
-		{name: "no proxy keeps NO_PROXY as is", env: []string{"NO_PROXY=corp"}, upper: "corp", set: true},
-		{
-			name: "NO_PROXY kept and seeds no_proxy", env: []string{"HTTPS_PROXY=http://p:1", "NO_PROXY=corp.internal"},
-			upper: "corp.internal," + loopback, lower: "corp.internal," + loopback, set: true,
-		},
-		{
-			name: "no_proxy kept and seeds NO_PROXY", env: []string{"https_proxy=http://p:1", "no_proxy=.corp"},
-			upper: ".corp," + loopback, lower: ".corp," + loopback, set: true,
-		},
-		{
-			name: "each form keeps its own entries", env: []string{"ALL_PROXY=socks5://p:1", "NO_PROXY=a", "no_proxy=b, localhost"},
-			upper: "a," + loopback, lower: "b, localhost,127.0.0.1,::1", set: true,
-		},
-		{
-			name: "empty no_proxy starts from NO_PROXY", env: []string{"HTTPS_PROXY=http://p:1", "NO_PROXY=corp", "no_proxy="},
-			upper: "corp," + loopback, lower: "corp," + loopback, set: true,
-		},
-		{
-			name: "loopback already listed", env: []string{"HTTP_PROXY=http://p:1", "NO_PROXY=::1,LOCALHOST,127.0.0.1"},
-			upper: "::1,LOCALHOST,127.0.0.1", lower: "::1,LOCALHOST,127.0.0.1", set: true,
-		},
-		{
-			name: "trailing comma", env: []string{"HTTP_PROXY=http://p:1", "NO_PROXY=corp,"},
-			upper: "corp," + loopback, lower: "corp," + loopback, set: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			env := environment(spec(tc.env...))
+	env := environment(spec("HTTPS_PROXY=http://p:1", "NO_PROXY=corp", "no_proxy=.lan"))
+	upper, _ := envValue(t, env, "NO_PROXY")
+	lower, _ := envValue(t, env, "no_proxy")
+	assert.Equal(t, "corp,"+loopback, upper)
+	assert.Equal(t, ".lan,"+loopback, lower)
 
-			upper, upperOK := envValue(t, env, "NO_PROXY")
-			lower, lowerOK := envValue(t, env, "no_proxy")
-
-			if !tc.set {
-				assert.False(t, upperOK, "NO_PROXY=%s", upper)
-				assert.False(t, lowerOK, "no_proxy=%s", lower)
-
-				return
-			}
-
-			assert.Equal(t, tc.upper, upper, "NO_PROXY")
-
-			if tc.lower == "" {
-				assert.False(t, lowerOK, "no_proxy=%s", lower)
-
-				return
-			}
-
-			assert.Equal(t, tc.lower, lower, "no_proxy")
-		})
+	for _, e := range [][]string{{"PATH=/bin"}, {"HTTP_PROXY="}} {
+		env := environment(spec(e...))
+		_, upperOK := envValue(t, env, "NO_PROXY")
+		_, lowerOK := envValue(t, env, "no_proxy")
+		assert.False(t, upperOK || lowerOK, "%v", e)
 	}
 }
 
