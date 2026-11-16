@@ -73,7 +73,7 @@ func scanProject(sc scanner) (Project, error) {
 		p.Baseline = &Baseline{
 			Commit: bCommit.String,
 			Passed: bPassed.Bool,
-			At:     fromMillis(bAt.Int64),
+			At:     time.UnixMilli(bAt.Int64),
 			Output: bOutput.String,
 		}
 	}
@@ -96,7 +96,7 @@ func projectArgs(p Project) ([]any, error) {
 
 	var bCommit, bOutput, bPassed, bAt any
 	if b := p.Baseline; b != nil {
-		bCommit, bPassed, bAt, bOutput = b.Commit, b.Passed, toMillis(b.At), b.Output
+		bCommit, bPassed, bAt, bOutput = b.Commit, b.Passed, b.At.UnixMilli(), b.Output
 	}
 
 	return []any{

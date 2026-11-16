@@ -38,7 +38,7 @@ func scanTask(sc scanner) (Task, error) {
 		return Task{}, fmt.Errorf("decode task %d: %w", t.ID, err)
 	}
 
-	t.CreatedAt = fromMillis(created)
+	t.CreatedAt = time.UnixMilli(created)
 
 	return t, nil
 }
@@ -57,7 +57,7 @@ func (s *Store) CreateTask(ctx context.Context, t Task) (Task, error) {
 	res, err := s.db.ExecContext(ctx, `INSERT INTO tasks (project_id, title, body, requester,
 		base_commit, reference, replay_id, overrides, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ProjectID, t.Title, t.Body, t.Requester, t.BaseCommit, t.Reference, t.ReplayID,
-		string(overrides), toMillis(t.CreatedAt))
+		string(overrides), t.CreatedAt.UnixMilli())
 	if err != nil {
 		return Task{}, fmt.Errorf("create task: %w", err)
 	}

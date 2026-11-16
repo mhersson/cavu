@@ -92,18 +92,16 @@ func TestAppendWritesUsageInSameTransaction(t *testing.T) {
 	ctx := context.Background()
 	task := seedTask(t, s)
 
-	events := []Event{
-		{Type: "ok", Actor: "engine", Payload: []byte(`{}`)},
-		{Type: "bad", Actor: "engine", Payload: []byte(`not json`)},
-	}
+	events := []Event{{Type: "ok", Actor: "engine", Payload: []byte(`{}`)}}
 	usage := []Usage{{Source: "proxy", Model: "m", Input: 1}}
 
-	_, err := s.Append(ctx, task.ID, -1, events, usage)
+	// A usage row naming a run that does not exist fails after the event insert.
+	_, err := s.Append(ctx, task.ID, -1, events, []Usage{{RunID: 9999, Source: "proxy", Model: "m", Input: 1}})
 	require.Error(t, err)
 	require.Zero(t, countRows(t, s, "events"))
 	require.Zero(t, countRows(t, s, "usage"))
 
-	last, err := s.Append(ctx, task.ID, -1, events[:1], usage)
+	last, err := s.Append(ctx, task.ID, -1, events, usage)
 	require.NoError(t, err)
 
 	var eventID int64

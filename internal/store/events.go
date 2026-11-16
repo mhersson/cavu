@@ -50,10 +50,6 @@ func (s *Store) Append(ctx context.Context, taskID, expectLast int64, events []E
 			payload = json.RawMessage("null")
 		}
 
-		if !json.Valid(payload) {
-			return 0, fmt.Errorf("append: event %q payload is not valid JSON", e.Type)
-		}
-
 		at := e.At
 		if at.IsZero() {
 			at = time.Now()
@@ -61,7 +57,7 @@ func (s *Store) Append(ctx context.Context, taskID, expectLast int64, events []E
 
 		res, err := tx.ExecContext(ctx, `INSERT INTO events (task_id, run_id, at, type, actor, payload)
 			VALUES (?, ?, ?, ?, ?, ?)`,
-			taskID, nullableID(e.RunID), toMillis(at), e.Type, e.Actor, string(payload))
+			taskID, nullableID(e.RunID), at.UnixMilli(), e.Type, e.Actor, string(payload))
 		if err != nil {
 			return 0, fmt.Errorf("append: insert event: %w", err)
 		}
@@ -124,7 +120,7 @@ func (s *Store) Events(ctx context.Context, taskID, afterID int64, limit int) ([
 			e.RunID = *runID
 		}
 
-		e.At = fromMillis(at)
+		e.At = time.UnixMilli(at)
 		e.Payload = json.RawMessage(payload)
 		out = append(out, e)
 	}
