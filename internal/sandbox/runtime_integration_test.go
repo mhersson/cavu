@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -112,6 +113,33 @@ func requireNoProcess(t *testing.T, c Container, args string) {
 
 		return true
 	}, 3*time.Second, 100*time.Millisecond, "%q is still running", args)
+}
+
+// TestDetectPodmanBehindDocker puts a docker that is the real Podman first on
+// PATH, as the podman-docker shim script and as a symlink.
+func TestDetectPodmanBehindDocker(t *testing.T) {
+	podman, err := exec.LookPath("podman")
+	if err != nil {
+		t.Skip("podman is not installed")
+	}
+
+	shim := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(shim, "docker"),
+		[]byte("#!/bin/sh\necho 'Emulate Docker CLI using podman.' >&2\nexec '"+podman+"' \"$@\"\n"), 0o700))
+
+	link := t.TempDir()
+	require.NoError(t, os.Symlink(podman, filepath.Join(link, "docker")))
+
+	for name, dir := range map[string]string{"shim": shim, "symlink": link} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			r, err := Detect(t.Context(), "")
+			require.NoError(t, err)
+			assert.Equal(t, filepath.Join(dir, "docker"), r.Bin)
+			assert.Equal(t, "podman", r.Kind)
+		})
+	}
 }
 
 func TestExecStreamsLines(t *testing.T) {
@@ -488,7 +516,7 @@ func TestHostConfigNeverReachesContainer(t *testing.T) {
 	}
 
 	injected := canary
-	if !r.podman() {
+	if r.Kind == "docker" {
 		injected = proxyHost
 	}
 

@@ -48,15 +48,26 @@ var proxyNames = []string{
 	"http_proxy", "https_proxy", "ftp_proxy", "no_proxy", "all_proxy",
 }
 
-// Runtime is a container runtime client binary.
+// Runtime is a container runtime client binary. Kind is what the binary says
+// it is, never what it is called: a docker on PATH can be a shim that runs
+// Podman.
 type Runtime struct {
-	Bin    string // the docker or podman client, by name or path
+	Bin    string // a name on PATH or a path
+	Kind   string // "docker" or "podman", from the output of `<bin> --version`
 	Remote bool   // a Podman client that talks to a service
 }
 
+var (
+	dockerVersionLine = regexp.MustCompile(`^Docker version \S+, build \S+$`)
+	// Podman names itself after argv[0], so behind a docker symlink it says
+	// "docker version ...".
+	podmanVersionLine = regexp.MustCompile(`^(\S+) version [0-9]\S*$`)
+)
+
 // Detect finds the runtime client on PATH: preferred when set, otherwise
-// docker, then podman. A docker is chosen without being called; a podman is
-// asked once whether it is remote.
+// docker, then podman. It asks the binary for its version, a local call that
+// contacts no daemon, to set Kind, and asks a Podman once whether it is
+// remote. Output that is neither Docker's nor Podman's is an error.
 func Detect(ctx context.Context, preferred string) (Runtime, error) {
 	names := []string{"docker", "podman"}
 
@@ -75,7 +86,17 @@ func Detect(ctx context.Context, preferred string) (Runtime, error) {
 		}
 
 		r := Runtime{Bin: bin}
-		if !r.podman() {
+
+		version, err := r.output(ctx, "--version")
+		if err != nil {
+			return Runtime{}, fmt.Errorf("%s --version: %w", bin, err)
+		}
+
+		if r.Kind, err = kindOf(bin, version); err != nil {
+			return Runtime{}, err
+		}
+
+		if r.Kind == "docker" {
 			return r, nil
 		}
 
@@ -94,7 +115,36 @@ func Detect(ctx context.Context, preferred string) (Runtime, error) {
 	return Runtime{}, fmt.Errorf("no container runtime: %s not found on PATH", strings.Join(names, " or "))
 }
 
-func (r Runtime) podman() bool { return filepath.Base(r.Bin) == "podman" }
+// kindOf reads the first line `--version` printed on stdout.
+func kindOf(bin string, version []byte) (string, error) {
+	line, _, _ := strings.Cut(strings.TrimSpace(string(version)), "\n")
+
+	if dockerVersionLine.MatchString(line) {
+		return "docker", nil
+	}
+
+	if m := podmanVersionLine.FindStringSubmatch(line); m != nil && (m[1] == "podman" || m[1] == filepath.Base(bin)) {
+		return "podman", nil
+	}
+
+	if len(line) > 80 {
+		line = line[:80] + "..."
+	}
+
+	return "", fmt.Errorf("%s is neither Docker nor Podman: --version printed %q", bin, line)
+}
+
+// podman refuses a Kind that is neither, rather than read it as Docker.
+func (r Runtime) podman() (bool, error) {
+	switch r.Kind {
+	case "docker":
+		return false, nil
+	case "podman":
+		return true, nil
+	}
+
+	return false, fmt.Errorf("runtime %s: unknown kind %q, want docker or podman", r.Bin, r.Kind)
+}
 
 // ContainerSpec is one container to run.
 type ContainerSpec struct {
@@ -344,9 +394,14 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 		args = append(args, "--interactive")
 	}
 
+	podman, err := r.podman()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// Host-side client configuration must not put variables into a container.
 	switch {
-	case !r.podman():
+	case !podman:
 		// An empty value set here keeps the config's proxies out.
 		for _, n := range proxyNames {
 			args = append(args, "--env="+n+"=")
@@ -461,9 +516,14 @@ func (r Runtime) VolumeCreate(ctx context.Context, name string, labels map[strin
 		return err
 	}
 
+	podman, err := r.podman()
+	if err != nil {
+		return err
+	}
+
 	args := []string{"volume", "create"}
 
-	if r.podman() {
+	if podman {
 		// Docker returns an existing volume; Podman fails unless told not to.
 		args = append(args, "--ignore")
 	}
@@ -495,7 +555,12 @@ func (r Runtime) VolumeRemove(ctx context.Context, names ...string) error {
 		return nil
 	}
 
-	if !r.podman() {
+	podman, err := r.podman()
+	if err != nil {
+		return err
+	}
+
+	if !podman {
 		// Docker's --force skips absent names and still refuses one in use.
 		if err := r.run(ctx, call{args: append([]string{"volume", "rm", "--force"}, names...)}); err != nil {
 			return fmt.Errorf("remove volumes: %w", err)
