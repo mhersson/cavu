@@ -2,7 +2,7 @@
 
 CAVU stands for "Containerized Agents, Verified, Unattended". In aviation the same letters mean "ceiling and visibility unlimited".
 
-CAVU is a self-hosted tool that runs a coding agent fully unattended. A task goes in, a pull request comes out, and a person merges it. The agent runs inside a container, its credentials stay outside it, and a run only counts as successful when a verify command, run by CAVU itself, passes.
+CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended. A task goes in, a pull request comes out, and a person merges it. The agent is to run inside a container, API keys and forge tokens stay outside it, and a run only counts as successful when a verify command, run by CAVU itself, passes.
 
 ## Status
 
