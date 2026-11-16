@@ -551,8 +551,10 @@ func TestHostConfigNeverReachesContainer(t *testing.T) {
 	info, err := r.Inspect(t.Context(), name)
 	require.NoError(t, err)
 
-	// Inspect invents no name and misses none but the two Docker sets on the
-	// process without recording them.
+	// Inspect invents no name and misses none, but for the two Docker sets on
+	// the process without recording them.
+	unrecorded := func(n string) bool { return r.Kind == "docker" && (n == "HOME" || n == "HOSTNAME") }
+
 	for _, n := range info.EnvNames {
 		_, ok := mainEnv[n]
 		assert.True(t, ok, "Inspect lists %s, which the container does not have", n)
@@ -560,7 +562,7 @@ func TestHostConfigNeverReachesContainer(t *testing.T) {
 
 	for n := range mainEnv {
 		if !slices.Contains(info.EnvNames, n) {
-			assert.True(t, n == "HOME" || n == "HOSTNAME", "Inspect misses %s", n)
+			assert.True(t, unrecorded(n), "Inspect misses %s", n)
 		}
 	}
 
