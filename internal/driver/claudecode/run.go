@@ -25,9 +25,9 @@ func (c claudeCode) Run(ctx context.Context, t proc.Target, s driver.Spec, sink 
 		return driver.Result{}, err
 	}
 
-	m := newMapper([]string{s.Auth.Token}, sink)
+	m := newMapper(sink)
 	interrupted := func() driver.Result {
-		return driver.Result{Reason: driver.ReasonInterrupted, IsError: true, Detail: m.mask(interruption(ctx))}
+		return driver.Result{Reason: driver.ReasonInterrupted, IsError: true, Detail: interruption(ctx)}
 	}
 
 	if ctx.Err() == nil {
@@ -57,7 +57,7 @@ func (c claudeCode) Run(ctx context.Context, t proc.Target, s driver.Spec, sink 
 		return driver.Result{}, fmt.Errorf("claudecode: start: %w", err)
 	}
 
-	r := &session{p: p, m: m, secret: s.Auth.Token, mode: s.Auth.Mode, resume: s.Resume != "", grace: c.grace}
+	r := &session{p: p, m: m, mode: s.Auth.Mode, resume: s.Resume != "", grace: c.grace}
 
 	return r.supervise(ctx, c.gateTimeout, inv.prompt), nil
 }
@@ -71,7 +71,6 @@ func interruption(ctx context.Context) string {
 type session struct {
 	p      proc.Process
 	m      *mapper
-	secret string
 	mode   string
 	resume bool
 	grace  time.Duration
@@ -150,7 +149,7 @@ func (r *session) ended(ctx context.Context) driver.Result {
 	code := r.end(ctx, r.m.sawResult)
 	tail := r.p.StderrTail()
 
-	detail := stderrDetail(tail, r.secret)
+	detail := stderrDetail(tail)
 	if r.waitErr != nil {
 		detail = strings.TrimSpace(detail + "\n" + r.waitErr.Error())
 	}
@@ -169,14 +168,14 @@ func (r *session) ended(ctx context.Context) driver.Result {
 func (r *session) abort(reason, why string) driver.Result {
 	code := r.end(context.Background(), false)
 
-	tail := stderrDetail(r.p.StderrTail(), r.secret)
+	tail := stderrDetail(r.p.StderrTail())
 	res := r.m.finish(code, tail)
 
 	if tail != "" {
 		why += "; stderr: " + tail
 	}
 
-	res.Reason, res.IsError, res.Detail = reason, true, r.m.mask(why)
+	res.Reason, res.IsError, res.Detail = reason, true, why
 
 	return res
 }
@@ -265,21 +264,8 @@ func initResponse(line []byte, id string) (account json.RawMessage, failure stri
 	return l.Response.Response.Account, "", true
 }
 
-// minFragment is the shortest end of a secret stderrDetail drops; a shorter
-// one is no credential, and stripping it would cut ordinary text.
-const minFragment = 8
-
-// stderrDetail drops a leading proper suffix of secret, which a tail cut at a
-// byte count can open with and the mask cannot see. Whether the tail was cut
-// is unknown, so an uncut one that opens that way loses those bytes too.
-func stderrDetail(tail, secret string) string {
-	for n := len(secret) - 1; n >= minFragment; n-- {
-		if strings.HasPrefix(tail, secret[len(secret)-n:]) {
-			tail = tail[n:]
-
-			break
-		}
-	}
-
+// stderrDetail cleans a stderr tail, which is cut at a byte count and can open
+// inside a character.
+func stderrDetail(tail string) string {
 	return strings.TrimSpace(strings.ToValidUTF8(tail, ""))
 }

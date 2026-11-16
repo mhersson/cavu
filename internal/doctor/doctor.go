@@ -136,7 +136,7 @@ func Run(ctx context.Context, d Deps) []Check {
 
 	r.step(ctx, "forge", r.forge, "image", "settings")
 
-	mask := redact.New(d.Credential, d.ForgeToken)
+	mask := redact.New(d.Credential, d.ForgeToken, r.standIn)
 	for i := range r.checks {
 		r.checks[i].Detail, r.checks[i].Fix = mask(r.checks[i].Detail), mask(r.checks[i].Fix)
 	}

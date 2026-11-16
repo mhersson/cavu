@@ -119,5 +119,5 @@ type Result struct {
 	CostEstimateUSD float64
 	Usage           []Usage // totals per model, sorted by model
 	RateLimit       *RateLimit
-	Detail          string // masked: the stderr tail, or the error text with the upstream status when known
+	Detail          string // the stderr tail, or the error text with the upstream status when known
 }

@@ -155,18 +155,19 @@ func prompt(c engine.RunConfig, mode, detail string) (string, error) {
 	return prompts.Render(prompts.Work, prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body})
 }
 
-// event forwards what a person follows a session by.
+// event forwards what a person follows a session by. Every string is masked:
+// the driver masks nothing.
 func (s *session) event(ev driver.Event) {
 	switch ev.Kind {
 	case driver.KindText:
 		s.progress(engine.Progress{Type: engine.AgentText, Payload: engine.AgentTextPayload{Text: s.mask(ev.Text)}})
 	case driver.KindToolUse:
 		s.progress(engine.Progress{Type: engine.AgentTool, Payload: engine.AgentToolPayload{
-			Name: ev.ToolName, Summary: s.mask(string(ev.ToolInput)),
+			Name: s.mask(ev.ToolName), Summary: s.mask(string(ev.ToolInput)),
 		}})
 	case driver.KindRateLimit:
 		s.progress(engine.Progress{Type: engine.RateLimit, Payload: engine.RateLimitPayload{
-			Window: ev.RateLimit.Window, Status: ev.RateLimit.Status, ResetsAt: ev.RateLimit.ResetsAt,
+			Window: s.mask(ev.RateLimit.Window), Status: s.mask(ev.RateLimit.Status), ResetsAt: ev.RateLimit.ResetsAt,
 		}})
 	}
 }
@@ -269,9 +270,10 @@ func (s *session) usage(totals []driver.Usage) []store.Usage {
 	var rows []store.Usage
 
 	if s.c.Endpoint.Mode != modeKey {
+		// The engine masks event payloads, not usage rows.
 		for _, u := range totals {
 			rows = append(rows, store.Usage{
-				Source: "agent", Model: u.Model, Input: u.Input, Output: u.Output,
+				Source: "agent", Model: s.mask(u.Model), Input: u.Input, Output: u.Output,
 				CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, CostEstimateUSD: u.CostEstimateUSD,
 			})
 		}

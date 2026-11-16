@@ -230,13 +230,21 @@ func (st *run) watching(watch func(sidecar.Line)) {
 func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, do func(context.Context, *run, func(string) string) (T, error)) (T, error) {
 	var zero T
 
-	mask := masker(c)
+	err := r.ensureUp(ctx, c)
 
-	if err := r.ensureUp(ctx, c); err != nil {
+	// Read after ensureUp, which makes key mode's stand-in: no vault holds it.
+	st := r.state(c.RunID)
+
+	var standIn string
+	if st != nil {
+		standIn = st.standIn
+	}
+
+	mask := masker(c, standIn)
+	if err != nil {
 		return zero, maskErr(err, mask)
 	}
 
-	st := r.state(c.RunID)
 	ctx, end := st.begin(ctx)
 
 	res, err := do(ctx, st, mask)
@@ -440,9 +448,9 @@ func allowlist(lists ...[]string) []string {
 	return slices.Compact(out)
 }
 
-// masker masks the secrets of a run's configuration.
-func masker(c engine.RunConfig) func(string) string {
-	secrets := []string{c.Endpoint.Credential, c.Repo.Token}
+// masker masks the secrets of a run's configuration and the extra ones.
+func masker(c engine.RunConfig, extra ...string) func(string) string {
+	secrets := append([]string{c.Endpoint.Credential, c.Repo.Token}, extra...)
 	for _, v := range c.Setup.Secrets {
 		secrets = append(secrets, v)
 	}

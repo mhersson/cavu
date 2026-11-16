@@ -167,4 +167,4 @@ and `CAVU_LIVE_MODEL` (default `claude-haiku-5-5`) adjust them.
 | A rejected `rate_limit_event`, whether a session that gets one goes on, and the text and the `result` line of a usage limit actually reached, per window, and whether the newer texts (`You've reached your`, `You're out of usage credits`) end a run too | a subscription run at an exhausted window; no live check reaches one on purpose |
 | Cache reads through a real gateway | `TestLiveGatewayCacheReads`: the sidecar's meter must count cache reads on the second of two turns |
 | Whether `--max-budget-usd` stops a subscription run | `TestLiveBudgetFlagUnderSubscription` logs the outcome; a finding, not a gate |
-| A tail of stderr cut inside a base64 form of the token keeps a fragment `stderrDetail` does not drop | not reachable: no check saw a token on stderr in any form |
+| A tail of stderr cut inside the token, or a form of it, keeps a fragment no mask can recognise | not reachable: no check saw a token on stderr in any form |

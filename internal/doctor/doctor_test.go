@@ -355,6 +355,32 @@ func TestDoctorEndpointAuthFailure(t *testing.T) {
 	}
 }
 
+// echoDriver fails each session with a detail that repeats the token it holds.
+type echoDriver struct{ *fakeDriver }
+
+func (echoDriver) Run(_ context.Context, _ proc.Target, s driver.Spec, _ func(driver.Event)) (driver.Result, error) {
+	return driver.Result{Reason: driver.ReasonAuth, IsError: true, Detail: s.Auth.Token}, nil
+}
+
+// In key mode the session holds the doctor's stand-in, which only the
+// doctor's mask knows.
+func TestDoctorMasksTheStandIn(t *testing.T) {
+	d, h, drv := green(t, "key")
+	d.Driver = echoDriver{drv}
+
+	checks := Run(t.Context(), d)
+	require.False(t, byName(t, checks)["endpoint"].OK)
+
+	require.Len(t, h.ups, 1)
+	standIn := h.ups[0].Model.StandIn
+	require.NotEmpty(t, standIn)
+
+	for _, c := range checks {
+		assert.NotContains(t, c.Detail, standIn)
+		assert.NotContains(t, c.Fix, standIn)
+	}
+}
+
 func TestDoctorEndpointWarnsWithoutCacheReads(t *testing.T) {
 	d, _, drv := green(t, "key")
 	drv.results[1].Usage = []driver.Usage{{Model: "model-a", Input: 900}}

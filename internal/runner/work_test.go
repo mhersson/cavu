@@ -431,3 +431,71 @@ func TestWorkOutputIsRedacted(t *testing.T) {
 	assertMasked(t, string(raw))
 	assertMasked(t, strings.Join(progress, "\n"))
 }
+
+// echoAgent repeats the token its session holds in every text it hands back,
+// as an agent that read its own environment would.
+type echoAgent struct {
+	fakeDriver
+
+	fail  bool
+	token string
+}
+
+func (d *echoAgent) Run(_ context.Context, _ proc.Target, s driver.Spec, sink func(driver.Event)) (driver.Result, error) {
+	d.token = s.Auth.Token
+
+	sink(driver.Event{Kind: driver.KindText, Text: d.token})
+	sink(driver.Event{Kind: driver.KindToolUse, ToolName: d.token, ToolInput: json.RawMessage(`"` + d.token + `"`)})
+	sink(driver.Event{Kind: driver.KindRateLimit, RateLimit: &driver.RateLimit{Window: d.token, Status: d.token}})
+
+	if d.fail {
+		return driver.Result{}, errors.New(d.token)
+	}
+
+	return driver.Result{Reason: driver.ReasonCrashed, IsError: true, Detail: d.token, Usage: []driver.Usage{{Model: d.token, Input: 1}}}, nil
+}
+
+// The runner's mask is the one that knows the token the agent holds; in key
+// mode that is the run's stand-in, which no vault holds.
+func TestWorkMasksTheAgentsToken(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		fail       bool
+	}{
+		{"key mode, a result", "key", false},
+		{"key mode, an error from the driver", "key", true},
+		{"subscription mode, a result", "subscription", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := workConfig()
+			c.Endpoint.Mode = tc.mode
+			d := &echoAgent{fail: tc.fail}
+			r := newFake().runner()
+			r.driver = d
+
+			var out []string
+
+			res, err := r.Work(t.Context(), c, startWork, func(p engine.Progress) {
+				raw, _ := json.Marshal(p.Payload)
+				out = append(out, string(raw))
+			})
+			require.Len(t, out, 3, "the text, the tool use and the rate limit")
+
+			if tc.fail {
+				require.Error(t, err)
+				out = append(out, err.Error())
+			} else {
+				require.NoError(t, err)
+				assert.NotEmpty(t, res.Detail)
+
+				raw, err := json.Marshal(res)
+				require.NoError(t, err)
+
+				out = append(out, string(raw))
+			}
+
+			require.NotEmpty(t, d.token)
+			assert.NotContains(t, strings.Join(out, "\n"), d.token)
+		})
+	}
+}
