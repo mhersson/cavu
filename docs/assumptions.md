@@ -2,7 +2,7 @@
 
 This file lists the removable parts of CAVU: code that makes up for a weakness of today's models and sits behind a switch, so it can be deleted when models no longer need it. Every removable part has an entry here, landed with its code, naming its switch, what the switch turns on, the assumption the part rests on, and the replay comparison that would retire it. The `internal/replay` package runs the comparisons; no command runs it yet.
 
-It also lists what the Claude Code adapter assumes of the pinned Claude Code version. Those entries have no switch: they change when the pinned version changes, and name the check against a new release that would change or retire them, run by the conformance suite (`make test-conformance`).
+It also lists what the Claude Code adapter assumes of the pinned Claude Code version. Those entries have no switch: they change when the pinned version changes, and name the check against a new release that would change or retire them, run by the conformance suite (`make test-integration`).
 
 ## continuations
 
@@ -51,11 +51,11 @@ It also lists what the Claude Code adapter assumes of the pinned Claude Code ver
 
 ## Unknown on 2.1.325
 
-What a mock cannot settle. Each live check (`live_test.go`, tags `conformance` and `live`) skips unless its variables are set, and never runs in CI:
+What a mock cannot settle. Each live check (`live_test.go`, tags `integration` and `live`) skips unless its variables are set, and never runs in CI:
 
 ```bash
-CAVU_LIVE_SUBSCRIPTION_TOKEN=... go test -tags conformance,live -count=1 -run 'TestLive' ./internal/driver/claudecode/
-CAVU_LIVE_ENDPOINT_URL=... CAVU_LIVE_ENDPOINT_KEY=... go test -tags conformance,live -count=1 -run 'TestLiveGateway' ./internal/driver/claudecode/
+CAVU_LIVE_SUBSCRIPTION_TOKEN=... go test -tags integration,live -count=1 -run 'TestLive' ./internal/driver/claudecode/
+CAVU_LIVE_ENDPOINT_URL=... CAVU_LIVE_ENDPOINT_KEY=... go test -tags integration,live -count=1 -run 'TestLiveGateway' ./internal/driver/claudecode/
 ```
 
 `CAVU_LIVE_ENDPOINT_AUTH_HEADER` (`bearer` or `x-api-key`, default `x-api-key`) and `CAVU_LIVE_MODEL` (default `claude-haiku-5-5`) adjust them.

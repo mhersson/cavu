@@ -1,4 +1,4 @@
-//go:build conformance && live
+//go:build integration && live
 
 package claudecode
 

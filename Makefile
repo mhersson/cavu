@@ -1,4 +1,4 @@
-.PHONY: help build build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-conformance test-ecosystems
+.PHONY: help build build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-ecosystems
 
 help:
 	@echo "Targets:"
@@ -7,7 +7,7 @@ help:
 	@echo "  build-darwin cross-compile everything for darwin"
 	@echo "  test         run the tests"
 	@echo "  test-race    run the tests with the race detector"
-	@echo "  vet          go vet, with and without the integration, conformance and live tags"
+	@echo "  vet          go vet, with and without the integration and live tags"
 	@echo "  lint         golangci-lint run"
 	@echo "  fmt          format the code with golangci-lint fmt"
 	@echo "  fmt-check    fail and show the diff if formatting is needed"
@@ -16,8 +16,7 @@ help:
 	@echo "  scan-commits fail on session links, attribution, task or milestone numbers, em-dashes and big blobs in SCAN_BASE..SCAN_HEAD (origin/main..HEAD)"
 	@echo "  size         count the non-test Go lines against the budget"
 	@echo "  image        build the sandbox image cavu-sandbox:<version> on the detected runtime"
-	@echo "  test-integration  run the tests that need a container runtime"
-	@echo "  test-conformance  run the tests that need the image and the real claude binary"
+	@echo "  test-integration  run the tests that need a container runtime, including the checks against the real claude binary in the built image"
 	@echo "  check        build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan"
 	@echo "  test-ecosystems   run the tests that prepare a Go, a Node, a Python and a Rust repository (need the internet)"
 
@@ -35,7 +34,7 @@ test-race:
 
 vet:
 	go vet ./...
-	go vet -tags integration,conformance,live ./...
+	go vet -tags integration,live ./...
 
 lint:
 	golangci-lint run
@@ -71,9 +70,6 @@ image: build
 # Above the 20 minutes a cold image build may take.
 test-integration:
 	go test -tags integration -count=1 -timeout 30m ./...
-
-test-conformance:
-	go test -tags conformance -count=1 -timeout 30m ./...
 
 check: build build-darwin fmt-check vet lint test-race tidy-check scan
 

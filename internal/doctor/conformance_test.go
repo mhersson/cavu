@@ -1,4 +1,4 @@
-//go:build conformance
+//go:build integration
 
 package doctor
 
