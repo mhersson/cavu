@@ -43,7 +43,6 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-// run dispatches args to a verb and returns the exit code.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

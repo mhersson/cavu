@@ -10,8 +10,8 @@ on:
 permissions:
   contents: read
 
-# One run per ref. A newer pull-request run cancels the older one; push and
-# workflow_dispatch runs finish.
+# One run per ref. A newer pull-request run cancels the older one; a running
+# push or workflow_dispatch run finishes and a pending one is replaced.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

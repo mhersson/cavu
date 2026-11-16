@@ -68,8 +68,8 @@ linters:
     - linters: [gosec]
       text: "G115|G204|G301|G302|G306|G404"
       path: "_test\\.go$"
-    # noctx in tests: git and socket helpers use exec.Command, net.Listen and
-    # net.Dial, which end with the test and need no cancellation.
+    # noctx in tests: helpers may call exec.Command, net.Listen and net.Dial
+    # without a context; they end with the test.
     - linters: [noctx]
       path: "_test\\.go$"
     # unused parameters in test fakes that must match a callback signature.
