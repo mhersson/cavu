@@ -73,26 +73,16 @@ func render(m map[string]string) []string {
 	return out
 }
 
-// AgentEnv returns the agent phase's environment. The mise toolchains come
-// read-only from the project cache through MISE_DATA_DIR and the shims, and
-// mise installs nothing there: its data is read-only and the toolchain hosts
-// are out of reach. What the setup phase fetched reaches it per ecosystem:
+// The mise toolchains come read-only from the project cache, and mise installs
+// nothing: the toolchain hosts are out of reach.
 //
-//   - Go: the module downloads, through the file proxy first in GOPROXY.
-//   - Node: the packages the setup command installed in the workspace's
-//     node_modules.
-//   - Python: the packages the setup command installed, read-only in the
-//     cache's interpreter. Every task of the project shares them and they
-//     pile up across prepares, so a requirement the project drops stays
-//     importable. A project that wants its own makes a virtual environment
-//     in the workspace in its setup command, in a directory its .gitignore
-//     covers so no commit takes it.
-//   - Rust: the toolchain through RUSTUP_HOME, Cargo's binaries through
-//     AgentLinks and its downloads through AgentSeeds.
-//
-// Each ecosystem's caches are under home, and a package the agent adds comes
-// from the registries in AgentHosts; pip installs it into the user site,
-// whose scripts come last on PATH.
+//   - Python: the packages the setup command installed are read-only in the
+//     cache's interpreter and shared by every task of the project. They pile
+//     up across prepares, so a requirement the project drops stays importable;
+//     a project that wants its own makes a virtual environment in the setup
+//     command, in a directory its .gitignore covers so no commit takes it.
+//   - Rust: Cargo's binaries come through AgentLinks and its downloads through
+//     AgentSeeds.
 func AgentEnv(ecosystems []string, home string) []string {
 	m := common()
 	cacheVars(m, ecosystems, agentRoot(home))

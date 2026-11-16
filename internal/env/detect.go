@@ -55,17 +55,17 @@ type Detection struct {
 	Ignored    []string // repository entries that were not read, as written, for a person to see
 }
 
-// Detect computes the tool list and the ecosystems present. overrides replace
-// or add versions. A file that cannot be parsed is an error naming the file.
-// For one tool the precedence is: override, .tool-versions, mise.toml [tools],
-// the tool's own file, then the floating default.
+// Detect computes the tool list and the ecosystems present. A file that cannot
+// be parsed is an error naming the file. For one tool the precedence is:
+// override, .tool-versions, mise.toml [tools], the tool's own file, then the
+// floating default.
 // From repository files it reads only plain registry names (no ":") and
 // versions without a "path:" or "ref:" prefix: a backend or a path named by
 // the repository could run code in the setup container. Such entries go to
 // Ignored and shadow nothing. Overrides are the operator's and are exempt.
 // A resolved tool named go, node, python or rust also adds that ecosystem, so a
-// monorepo with the version file at its root and the manifest below still gets
-// the caches and hosts; such an ecosystem never adds a default.
+// monorepo with the version file at its root still gets the caches and hosts;
+// such an ecosystem never adds a default.
 func Detect(files map[string][]byte, overrides map[string]string) (Detection, error) {
 	for name, version := range overrides {
 		if name == "" || version == "" {

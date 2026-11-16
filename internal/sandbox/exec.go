@@ -169,15 +169,14 @@ func (p *execProcess) Wait() (int, error) {
 }
 
 // Stop signals the command's process group inside the container, TERM and
-// then KILL after grace, waiting at most grace for the pid file. It returns
-// nil once the command has ended. Otherwise it ends the client and reports
-// that the command may run on until the container is removed.
+// then KILL after grace. It returns nil once the command has ended. Otherwise
+// it ends the client and reports that the command may run on until the
+// container is removed.
 //
-// Only a client that ended cleanly speaks for the command. After a client
-// that died (proc's line cap kills it) the stop exec's answer decides; with
-// the group gone it ends at once. After a client that a Stop had to kill, the
-// exec still runs, but Stop reports that the command may run on whatever it
-// answers.
+// Only a client that ended cleanly speaks for the command. After one that died
+// (proc's line cap kills it) the stop exec's answer decides. After one that a
+// Stop had to kill, Stop reports that the command may run on whatever the
+// exec answers.
 func (p *execProcess) Stop(grace time.Duration) error {
 	p.stopMu.Lock()
 	defer p.stopMu.Unlock()
