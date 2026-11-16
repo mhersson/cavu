@@ -47,7 +47,8 @@ func (c Config) overrides() map[string]string {
 }
 
 // Run runs a shadow of every reference task under c, one after another, and
-// records an item for each. A stop is an outcome; only a RunTask error ends it.
+// records an item for each. A stop is an item's outcome; any error, from RunTask
+// or the store, ends the replay, which then stays unended and is never a comparison base.
 func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, out io.Writer) (store.Replay, error) {
 	all, err := s.Tasks(ctx, false)
 	if err != nil {
@@ -84,6 +85,13 @@ func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, out io.W
 		fmt.Fprintf(out, "task %d (%s): verify %q, stop %q, %d turns, %d tokens\n",
 			src.ID, src.Title, item.Verify, item.Stop, item.Turns, item.Tokens)
 	}
+
+	at := l.Now()
+	if err := s.EndReplay(ctx, r.ID, at); err != nil {
+		return r, fmt.Errorf("replay: %w", err)
+	}
+
+	r.EndedAt = &at
 
 	return r, nil
 }

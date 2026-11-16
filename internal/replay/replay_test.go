@@ -21,12 +21,11 @@ import (
 
 // fakeRunner answers from queues, then with a success, and records what it saw.
 type fakeRunner struct {
-	mu        sync.Mutex
-	configs   []engine.RunConfig
-	modes     []string
-	works     []engine.WorkResult
-	verifies  []engine.VerifyResult
-	prepareEr error
+	mu       sync.Mutex
+	configs  []engine.RunConfig
+	modes    []string
+	works    []engine.WorkResult
+	verifies []engine.VerifyResult
 }
 
 func (r *fakeRunner) Prepare(_ context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
@@ -35,7 +34,7 @@ func (r *fakeRunner) Prepare(_ context.Context, c engine.RunConfig) (engine.Prep
 
 	r.configs = append(r.configs, c)
 
-	return engine.PrepareResult{BaseCommit: c.Repo.BaseCommit, Baseline: "passed"}, r.prepareEr
+	return engine.PrepareResult{BaseCommit: c.Repo.BaseCommit, Baseline: "passed"}, nil
 }
 
 func (r *fakeRunner) Work(_ context.Context, _ engine.RunConfig, w engine.WorkRequest, _ func(engine.Progress)) (engine.WorkResult, error) {
@@ -186,6 +185,12 @@ func TestReplayRunsEveryReferenceTask(t *testing.T) {
 	shadows := e.shadows(t)
 	require.Len(t, shadows, 2)
 	assert.Equal(t, 2, strings.Count(out, "\n"), "one progress line per item")
+	require.NotNil(t, r.EndedAt)
+
+	prev, ok, err := e.store.PreviousReplay(t.Context(), r.ID+1)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, r.ID, prev.ID)
 
 	for i, src := range []store.Task{a, b} {
 		sh := shadows[i]
@@ -438,4 +443,9 @@ func TestReplayRunErrorEndsTheReplay(t *testing.T) {
 	assert.Equal(t, first.ID, items[0].SourceTaskID)
 	assert.Len(t, e.shadows(t), 2, "the failed shadow stays, the third source never starts")
 	assert.Equal(t, 1, strings.Count(out.String(), "\n"))
+	assert.Nil(t, r.EndedAt)
+
+	_, ok, err := e.store.PreviousReplay(t.Context(), r.ID+1)
+	require.NoError(t, err)
+	assert.False(t, ok, "a cut-off replay is not a comparison base")
 }

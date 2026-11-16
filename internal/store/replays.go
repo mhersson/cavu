@@ -10,12 +10,14 @@ import (
 )
 
 // Replay is one run of the reference set under a named configuration. Config
-// holds the task overrides every shadow task of the replay carries.
+// holds the task overrides every shadow task of the replay carries. EndedAt is
+// nil until the replay has recorded every item.
 type Replay struct {
 	ID        int64
 	Name      string
 	Config    map[string]string
 	StartedAt time.Time
+	EndedAt   *time.Time
 }
 
 // ReplayItem is the outcome of one source task's shadow task within a replay.
@@ -42,8 +44,8 @@ func (s *Store) CreateReplay(ctx context.Context, r Replay) (Replay, error) {
 		return Replay{}, fmt.Errorf("encode replay: %w", err)
 	}
 
-	res, err := s.db.ExecContext(ctx, `INSERT INTO replays (name, config, started_at) VALUES (?, ?, ?)`,
-		r.Name, string(config), toMillis(r.StartedAt))
+	res, err := s.db.ExecContext(ctx, `INSERT INTO replays (name, config, started_at, ended_at) VALUES (?, ?, ?, ?)`,
+		r.Name, string(config), toMillis(r.StartedAt), endedArg(r.EndedAt))
 	if err != nil {
 		return Replay{}, fmt.Errorf("create replay: %w", err)
 	}
@@ -54,6 +56,16 @@ func (s *Store) CreateReplay(ctx context.Context, r Replay) (Replay, error) {
 	}
 
 	return r, nil
+}
+
+// EndReplay marks the replay with id as ended at at, or returns ErrNotFound.
+func (s *Store) EndReplay(ctx context.Context, id int64, at time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE replays SET ended_at = ? WHERE id = ?`, toMillis(at), id)
+	if err != nil {
+		return fmt.Errorf("end replay: %w", err)
+	}
+
+	return rowsAffectedOrNotFound(res)
 }
 
 // PutReplayItem inserts i, replacing the row for the same replay and source task.
@@ -99,16 +111,18 @@ func (s *Store) ReplayItems(ctx context.Context, replayID int64) ([]ReplayItem, 
 	return out, rows.Err()
 }
 
-// PreviousReplay returns the newest replay with an id below before; false when none.
+// PreviousReplay returns the newest ended replay with an id below before, so a
+// cut-off replay is never a comparison base; false when none.
 func (s *Store) PreviousReplay(ctx context.Context, before int64) (Replay, bool, error) {
 	var (
 		r       Replay
 		config  string
 		started int64
+		ended   sql.NullInt64
 	)
 
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, config, started_at FROM replays
-		WHERE id < ? ORDER BY id DESC LIMIT 1`, before).Scan(&r.ID, &r.Name, &config, &started)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, config, started_at, ended_at FROM replays
+		WHERE id < ? AND ended_at IS NOT NULL ORDER BY id DESC LIMIT 1`, before).Scan(&r.ID, &r.Name, &config, &started, &ended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Replay{}, false, nil
 	}
@@ -122,6 +136,11 @@ func (s *Store) PreviousReplay(ctx context.Context, before int64) (Replay, bool,
 	}
 
 	r.StartedAt = fromMillis(started)
+
+	if ended.Valid {
+		t := fromMillis(ended.Int64)
+		r.EndedAt = &t
+	}
 
 	return r, true, nil
 }

@@ -31,6 +31,7 @@ func TestReplayRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotZero(t, r.ID)
 	require.False(t, r.StartedAt.IsZero())
+	require.Nil(t, r.EndedAt)
 
 	item := ReplayItem{
 		ReplayID: r.ID, SourceTaskID: src.ID, TaskID: shadow.ID, Verify: "passed", Stop: "question",
@@ -48,6 +49,27 @@ func TestReplayRoundTrip(t *testing.T) {
 	got, err = s.ReplayItems(ctx, r.ID)
 	require.NoError(t, err)
 	require.Equal(t, []ReplayItem{item}, got)
+}
+
+func TestEndReplay(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+
+	require.ErrorIs(t, s.EndReplay(ctx, 99, time.Now()), ErrNotFound)
+
+	r, err := s.CreateReplay(ctx, Replay{Name: "x"})
+	require.NoError(t, err)
+
+	at := time.UnixMilli(1_700_000_000_000)
+	require.NoError(t, s.EndReplay(ctx, r.ID, at))
+
+	got, ok, err := s.PreviousReplay(ctx, r.ID+1)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, got.EndedAt)
+	require.True(t, at.Equal(*got.EndedAt))
 }
 
 func TestReplayItemsOrderedBySource(t *testing.T) {
@@ -84,8 +106,13 @@ func TestPreviousReplay(t *testing.T) {
 
 	first, err := s.CreateReplay(ctx, Replay{Name: "first", Config: map[string]string{"model_work": "m"}})
 	require.NoError(t, err)
+	require.NoError(t, s.EndReplay(ctx, first.ID, time.Now()))
 
 	second, err := s.CreateReplay(ctx, Replay{Name: "second"})
+	require.NoError(t, err)
+	require.NoError(t, s.EndReplay(ctx, second.ID, time.Now()))
+
+	cutOff, err := s.CreateReplay(ctx, Replay{Name: "cut off"})
 	require.NoError(t, err)
 
 	_, ok, err = s.PreviousReplay(ctx, first.ID)
@@ -98,10 +125,10 @@ func TestPreviousReplay(t *testing.T) {
 	require.Equal(t, first.ID, got.ID)
 	require.Equal(t, first.Config, got.Config)
 
-	got, ok, err = s.PreviousReplay(ctx, second.ID+1)
+	got, ok, err = s.PreviousReplay(ctx, cutOff.ID+1)
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, second.ID, got.ID)
+	require.Equal(t, second.ID, got.ID, "an unended replay is skipped")
 }
 
 func TestMigrationTwoOnExistingDatabase(t *testing.T) {

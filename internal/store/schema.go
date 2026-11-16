@@ -92,7 +92,8 @@ CREATE TABLE replays (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	name       TEXT NOT NULL,
 	config     TEXT NOT NULL,
-	started_at INTEGER NOT NULL
+	started_at INTEGER NOT NULL,
+	ended_at   INTEGER
 );
 
 CREATE TABLE replay_items (
