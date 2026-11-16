@@ -1,0 +1,157 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// Event is one immutable fact in a task's history.
+type Event struct {
+	ID, TaskID, RunID int64 // RunID 0 = none
+	At                time.Time
+	Type, Actor       string // actor: user, engine, runner, agent
+	Payload           json.RawMessage
+}
+
+// Usage is token and cost accounting for one source and model within a run.
+type Usage struct {
+	RunID                                int64
+	Source                               string // "proxy" or "agent"
+	Model                                string
+	Input, Output, CacheRead, CacheWrite int64
+	CostEstimateUSD                      float64
+}
+
+// Append adds events and usage rows in one transaction. expectLast is the id of
+// the task's newest event the caller saw; -1 skips the check. A mismatch
+// returns ErrConflict and writes nothing. Returns the id of the last event
+// written, or the task's newest event id when none were.
+func (s *Store) Append(ctx context.Context, taskID, expectLast int64, events []Event, usage []Usage) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("append: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var last int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM events WHERE task_id = ?`, taskID).Scan(&last); err != nil {
+		return 0, fmt.Errorf("append: newest event: %w", err)
+	}
+
+	if expectLast >= 0 && expectLast != last {
+		return 0, fmt.Errorf("task %d newest event is %d, caller saw %d: %w", taskID, last, expectLast, ErrConflict)
+	}
+
+	for _, e := range events {
+		payload := e.Payload
+		if len(payload) == 0 {
+			payload = json.RawMessage("null")
+		}
+
+		if !json.Valid(payload) {
+			return 0, fmt.Errorf("append: event %q payload is not valid JSON", e.Type)
+		}
+
+		at := e.At
+		if at.IsZero() {
+			at = time.Now()
+		}
+
+		res, err := tx.ExecContext(ctx, `INSERT INTO events (task_id, run_id, at, type, actor, payload)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			taskID, nullableID(e.RunID), toMillis(at), e.Type, e.Actor, string(payload))
+		if err != nil {
+			return 0, fmt.Errorf("append: insert event: %w", err)
+		}
+
+		if last, err = res.LastInsertId(); err != nil {
+			return 0, fmt.Errorf("append: %w", err)
+		}
+	}
+
+	var eventID any
+	if len(events) > 0 {
+		eventID = last
+	}
+
+	for _, u := range usage {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO usage (task_id, run_id, event_id, source, model,
+			input, output, cache_read, cache_write, cost_estimate_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			taskID, nullableID(u.RunID), eventID, u.Source, u.Model,
+			u.Input, u.Output, u.CacheRead, u.CacheWrite, u.CostEstimateUSD); err != nil {
+			return 0, fmt.Errorf("append: insert usage: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("append: commit: %w", err)
+	}
+
+	return last, nil
+}
+
+// Events returns the task's events with id greater than afterID, oldest first.
+// limit 0 returns all.
+func (s *Store) Events(ctx context.Context, taskID, afterID int64, limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = -1
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT id, task_id, run_id, at, type, actor, payload
+		FROM events WHERE task_id = ? AND id > ? ORDER BY id LIMIT ?`, taskID, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list events: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Event
+
+	for rows.Next() {
+		var (
+			e       Event
+			runID   *int64
+			at      int64
+			payload string
+		)
+
+		if err := rows.Scan(&e.ID, &e.TaskID, &runID, &at, &e.Type, &e.Actor, &payload); err != nil {
+			return nil, fmt.Errorf("list events: %w", err)
+		}
+
+		if runID != nil {
+			e.RunID = *runID
+		}
+
+		e.At = fromMillis(at)
+		e.Payload = json.RawMessage(payload)
+		out = append(out, e)
+	}
+
+	return out, rows.Err()
+}
+
+// UsageTotals returns the task's usage summed per source and model. RunID is zero.
+func (s *Store) UsageTotals(ctx context.Context, taskID int64) ([]Usage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT source, model, SUM(input), SUM(output),
+		SUM(cache_read), SUM(cache_write), SUM(cost_estimate_usd)
+		FROM usage WHERE task_id = ? GROUP BY source, model ORDER BY source, model`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("usage totals: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Usage
+
+	for rows.Next() {
+		var u Usage
+		if err := rows.Scan(&u.Source, &u.Model, &u.Input, &u.Output, &u.CacheRead, &u.CacheWrite, &u.CostEstimateUSD); err != nil {
+			return nil, fmt.Errorf("usage totals: %w", err)
+		}
+
+		out = append(out, u)
+	}
+
+	return out, rows.Err()
+}

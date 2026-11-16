@@ -1,0 +1,198 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// Baseline is the result of an environment check on a project.
+type Baseline struct {
+	Commit string
+	Passed bool
+	At     time.Time
+	Output string
+}
+
+// Project is a repository CAVU works on, with its commands and policy.
+type Project struct {
+	ID                          int64
+	Name, RepoURL, BaseBranch   string
+	SetupCommand, VerifyCommand string
+	VerifyWaived                bool
+	ToolOverrides               map[string]string // tool name -> version
+	EgressHosts                 []string
+	Env                         map[string]string
+	SecretVars                  []string // variable names; values live in secrets as project.<name>.<VAR>
+	Switches                    map[string]bool
+	Baseline                    *Baseline // nil until an environment check ran
+}
+
+const projectColumns = `id, name, repo_url, base_branch, setup_command, verify_command,
+	verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches,
+	baseline_commit, baseline_passed, baseline_at, baseline_output`
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanProject(sc scanner) (Project, error) {
+	var (
+		p                                  Project
+		tools, egress, env, secretVars, sw string
+		bCommit, bOutput                   sql.NullString
+		bPassed                            sql.NullBool
+		bAt                                sql.NullInt64
+	)
+
+	if err := sc.Scan(&p.ID, &p.Name, &p.RepoURL, &p.BaseBranch, &p.SetupCommand, &p.VerifyCommand,
+		&p.VerifyWaived, &tools, &egress, &env, &secretVars, &sw,
+		&bCommit, &bPassed, &bAt, &bOutput); err != nil {
+		return Project{}, err
+	}
+
+	for _, f := range []struct {
+		src string
+		dst any
+	}{
+		{tools, &p.ToolOverrides},
+		{egress, &p.EgressHosts},
+		{env, &p.Env},
+		{secretVars, &p.SecretVars},
+		{sw, &p.Switches},
+	} {
+		if err := json.Unmarshal([]byte(f.src), f.dst); err != nil {
+			return Project{}, fmt.Errorf("decode project %d: %w", p.ID, err)
+		}
+	}
+
+	if bAt.Valid {
+		p.Baseline = &Baseline{
+			Commit: bCommit.String,
+			Passed: bPassed.Bool,
+			At:     fromMillis(bAt.Int64),
+			Output: bOutput.String,
+		}
+	}
+
+	return p, nil
+}
+
+// projectArgs returns the column values in the order of the insert statement.
+func projectArgs(p Project) ([]any, error) {
+	var enc [5]string
+
+	for i, v := range []any{p.ToolOverrides, p.EgressHosts, p.Env, p.SecretVars, p.Switches} {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("encode project: %w", err)
+		}
+
+		enc[i] = string(b)
+	}
+
+	var bCommit, bOutput, bPassed, bAt any
+	if b := p.Baseline; b != nil {
+		bCommit, bPassed, bAt, bOutput = b.Commit, b.Passed, toMillis(b.At), b.Output
+	}
+
+	return []any{
+		p.Name, p.RepoURL, p.BaseBranch, p.SetupCommand, p.VerifyCommand, p.VerifyWaived,
+		enc[0], enc[1], enc[2], enc[3], enc[4],
+		bCommit, bPassed, bAt, bOutput,
+	}, nil
+}
+
+// CreateProject inserts p and returns it with its id. A duplicate name returns ErrConflict.
+func (s *Store) CreateProject(ctx context.Context, p Project) (Project, error) {
+	args, err := projectArgs(p)
+	if err != nil {
+		return Project{}, err
+	}
+
+	res, err := s.db.ExecContext(ctx, `INSERT INTO projects (name, repo_url, base_branch,
+		setup_command, verify_command, verify_waived, tool_overrides, egress_hosts, env,
+		secret_vars, switches, baseline_commit, baseline_passed, baseline_at, baseline_output)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return Project{}, fmt.Errorf("project name %q: %w", p.Name, ErrConflict)
+		}
+
+		return Project{}, fmt.Errorf("create project: %w", err)
+	}
+
+	p.ID, err = res.LastInsertId()
+	if err != nil {
+		return Project{}, fmt.Errorf("create project: %w", err)
+	}
+
+	return p, nil
+}
+
+// UpdateProject rewrites the project with p.ID. A missing id returns ErrNotFound
+// and a duplicate name returns ErrConflict.
+func (s *Store) UpdateProject(ctx context.Context, p Project) error {
+	args, err := projectArgs(p)
+	if err != nil {
+		return err
+	}
+
+	res, err := s.db.ExecContext(ctx, `UPDATE projects SET name = ?, repo_url = ?, base_branch = ?,
+		setup_command = ?, verify_command = ?, verify_waived = ?, tool_overrides = ?,
+		egress_hosts = ?, env = ?, secret_vars = ?, switches = ?, baseline_commit = ?,
+		baseline_passed = ?, baseline_at = ?, baseline_output = ? WHERE id = ?`, append(args, p.ID)...)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("project name %q: %w", p.Name, ErrConflict)
+		}
+
+		return fmt.Errorf("update project: %w", err)
+	}
+
+	return rowsAffectedOrNotFound(res)
+}
+
+func (s *Store) projectWhere(ctx context.Context, where string, arg any) (Project, error) {
+	p, err := scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE `+where+` = ?`, arg))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Project{}, ErrNotFound
+	}
+
+	return p, err
+}
+
+// Project returns the project with id, or ErrNotFound.
+func (s *Store) Project(ctx context.Context, id int64) (Project, error) {
+	return s.projectWhere(ctx, "id", id)
+}
+
+// ProjectByName returns the project called name, or ErrNotFound.
+func (s *Store) ProjectByName(ctx context.Context, name string) (Project, error) {
+	return s.projectWhere(ctx, "name", name)
+}
+
+// Projects returns every project ordered by name.
+func (s *Store) Projects(ctx context.Context) ([]Project, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+projectColumns+` FROM projects ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Project
+
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		out = append(out, p)
+	}
+
+	return out, rows.Err()
+}
