@@ -3,7 +3,6 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -162,38 +161,18 @@ func TestModelRouteOnlyMessagesPaths(t *testing.T) {
 	assert.Empty(t, rec.all())
 }
 
-type modelErrors struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func (m *modelErrors) add(status int, kind string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.calls = append(m.calls, fmt.Sprintf("%d:%s", status, kind))
-}
-
-func (m *modelErrors) all() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return append([]string(nil), m.calls...)
-}
-
 func TestModelRoutePassesUpstreamErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		status     int
 		retryAfter string
 		body       string
-		kind       string
 	}{
-		{"401", 401, "", `{"error":{"message":"bad key"}}`, kindAuth},
-		{"403", 403, "", `{"error":{"message":"nope"}}`, kindAuth},
-		{"429", 429, "30", `{"error":{"message":"slow down"}}`, kindRateLimit},
-		{"500", 500, "", `{"error":{"message":"oops"}}`, kindUpstream},
-		{"529", 529, "", `{"type":"error","error":{"type":"overloaded_error"}}`, kindUpstream},
+		{"401", 401, "", `{"error":{"message":"bad key"}}`},
+		{"403", 403, "", `{"error":{"message":"nope"}}`},
+		{"429", 429, "30", `{"error":{"message":"slow down"}}`},
+		{"500", 500, "", `{"error":{"message":"oops"}}`},
+		{"529", 529, "", `{"type":"error","error":{"type":"overloaded_error"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			up := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -205,9 +184,7 @@ func TestModelRoutePassesUpstreamErrors(t *testing.T) {
 				_, _ = io.WriteString(w, tc.body)
 			}))
 
-			var errs modelErrors
-
-			p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer), OnModelError: errs.add})
+			p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer)})
 
 			resp := post(t, p.URL, "/v1/messages", authBearer, strings.NewReader("{}"))
 			out, err := io.ReadAll(resp.Body)
@@ -216,26 +193,11 @@ func TestModelRoutePassesUpstreamErrors(t *testing.T) {
 			assert.Equal(t, tc.status, resp.StatusCode)
 			assert.Equal(t, tc.body, string(out))
 			assert.Equal(t, tc.retryAfter, resp.Header.Get("Retry-After"))
-			assert.Equal(t, []string{fmt.Sprintf("%d:%s", tc.status, tc.kind)}, errs.all())
 		})
 	}
 }
 
-func TestModelRouteClientErrorIsNotReported(t *testing.T) {
-	up := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-	}))
-
-	var errs modelErrors
-
-	p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer), OnModelError: errs.add})
-
-	resp := post(t, p.URL, "/v1/messages", authBearer, strings.NewReader("{}"))
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.Empty(t, errs.all())
-}
-
-func TestModelRouteStreamCutIsTransport(t *testing.T) {
+func TestModelRouteStreamCutKeepsBytesSent(t *testing.T) {
 	const sent = "event: message_start\ndata: {\"type\":\"mess"
 
 	up := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -246,9 +208,7 @@ func TestModelRouteStreamCutIsTransport(t *testing.T) {
 		panic(http.ErrAbortHandler)
 	}))
 
-	var errs modelErrors
-
-	p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer), OnModelError: errs.add})
+	p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer)})
 
 	resp := post(t, p.URL, "/v1/messages", authBearer, strings.NewReader("{}"))
 	out, err := io.ReadAll(resp.Body)
@@ -256,22 +216,17 @@ func TestModelRouteStreamCutIsTransport(t *testing.T) {
 
 	assert.Equal(t, sent, string(out))
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Eventually(t, func() bool { return len(errs.all()) == 1 }, 2*time.Second, 10*time.Millisecond)
-	assert.Equal(t, "200:transport", errs.all()[0])
 }
 
-func TestModelRouteDialFailureIsTransport(t *testing.T) {
+func TestModelRouteDialFailureIsBadGateway(t *testing.T) {
 	up := httptest.NewServer(http.NotFoundHandler())
 	base := up.URL
 	up.Close()
 
-	var errs modelErrors
-
-	p := startProxy(t, Config{Model: modelRoute(base, authBearer), OnModelError: errs.add})
+	p := startProxy(t, Config{Model: modelRoute(base, authBearer)})
 
 	resp := post(t, p.URL, "/v1/messages", authBearer, strings.NewReader("{}"))
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
-	assert.Equal(t, []string{"502:transport"}, errs.all())
 }
 
 func TestSSEFlush(t *testing.T) {
@@ -491,9 +446,7 @@ func TestClientHangupCancelsUpstream(t *testing.T) {
 		}
 	}))
 
-	var errs modelErrors
-
-	p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer), OnModelError: errs.add})
+	p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer)})
 	t.Cleanup(hold.open)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -517,8 +470,6 @@ func TestClientHangupCancelsUpstream(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "upstream request not cancelled after client hangup")
 	}
-
-	assert.Empty(t, errs.all(), "a client hangup is not a model error")
 }
 
 func TestModelRouteAsksForIdentity(t *testing.T) {

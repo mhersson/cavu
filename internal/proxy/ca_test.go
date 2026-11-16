@@ -72,20 +72,16 @@ func TestCABundle(t *testing.T) {
 		name   string
 		bundle []byte
 		status int
-		errs   []string
 	}{
-		{"bundle holds the CA", caPEM, http.StatusOK, nil},
-		{"no bundle", nil, http.StatusBadGateway, []string{"502:transport"}},
-		{"bundle holds another CA", otherPEM, http.StatusBadGateway, []string{"502:transport"}},
+		{"bundle holds the CA", caPEM, http.StatusOK},
+		{"no bundle", nil, http.StatusBadGateway},
+		{"bundle holds another CA", otherPEM, http.StatusBadGateway},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var errs modelErrors
-
-			p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer), CABundle: tc.bundle, OnModelError: errs.add})
+			p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer), CABundle: tc.bundle})
 
 			resp := post(t, p.URL, "/v1/messages", authBearer, strings.NewReader("{}"))
 			assert.Equal(t, tc.status, resp.StatusCode)
-			assert.Equal(t, tc.errs, errs.all())
 		})
 	}
 }
@@ -112,13 +108,10 @@ func TestCredentialNeverInErrors(t *testing.T) {
 
 	tlsUp, _ := newTLSUpstream(t, http.NotFoundHandler())
 
-	var (
-		errsMu modelErrors
-		sb     strings.Builder
-	)
+	var sb strings.Builder
 
 	for _, base := range []string{deadURL, cut.URL, tlsUp.URL} {
-		p := startProxy(t, Config{Model: modelRoute(base, authBearer), OnModelError: errsMu.add})
+		p := startProxy(t, Config{Model: modelRoute(base, authBearer)})
 
 		resp := post(t, p.URL, "/v1/messages", authBearer, strings.NewReader("{}"))
 		b, _ := io.ReadAll(resp.Body)
@@ -131,7 +124,6 @@ func TestCredentialNeverInErrors(t *testing.T) {
 		}
 	}
 
-	sb.WriteString(strings.Join(errsMu.all(), ""))
 	sb.WriteString(logs.String())
 
 	assert.NotContains(t, sb.String(), realKey)

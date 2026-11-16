@@ -184,7 +184,7 @@ func TestMeterSkipsOversizedLines(t *testing.T) {
 	assert.EqualValues(t, 3, u.Output)
 }
 
-func TestMeterReportsUnmetered(t *testing.T) {
+func TestMeterSkipsEncodedBody(t *testing.T) {
 	gz := []byte{0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x01, 0x02, 0x03}
 
 	up := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -193,12 +193,9 @@ func TestMeterReportsUnmetered(t *testing.T) {
 		_, _ = w.Write(gz)
 	}))
 
-	var (
-		u    usages
-		errs modelErrors
-	)
+	var u usages
 
-	p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer), OnUsage: u.add, OnModelError: errs.add})
+	p := startProxy(t, Config{Model: modelRoute(up.URL, authBearer), OnUsage: u.add})
 
 	// An explicit Accept-Encoding stops the test client from decoding the body.
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, p.URL+"/v1/messages", strings.NewReader("{}"))
@@ -216,6 +213,5 @@ func TestMeterReportsUnmetered(t *testing.T) {
 
 	assert.Equal(t, gz, out)
 	assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
-	assert.Equal(t, []string{"200:unmetered"}, errs.all())
 	assert.Empty(t, u.all())
 }

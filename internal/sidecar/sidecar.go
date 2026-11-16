@@ -84,12 +84,11 @@ func runProxy(ctx context.Context, out *writer, stdin io.Reader, p *ProxyRequest
 	}
 
 	h, err := proxy.New(proxy.Config{
-		AllowHosts:   p.AllowHosts,
-		Model:        p.Model,
-		CABundle:     []byte(p.CABundle),
-		OnDenied:     func(host string) { out.write(Line{Type: "denied", Host: host}) },
-		OnUsage:      func(u proxy.Usage) { out.write(Line{Type: "usage", Usage: &u}) },
-		OnModelError: func(status int, kind string) { out.write(Line{Type: "model_error", Status: status, Kind: kind}) },
+		AllowHosts: p.AllowHosts,
+		Model:      p.Model,
+		CABundle:   []byte(p.CABundle),
+		OnDenied:   func(host string) { out.write(Line{Type: "denied", Host: host}) },
+		OnUsage:    func(u proxy.Usage) { out.write(Line{Type: "usage", Usage: &u}) },
 	})
 	if err != nil {
 		return fmt.Errorf("proxy: %w", err)

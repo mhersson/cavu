@@ -331,38 +331,6 @@ func TestProxyOpDrainsInFlightResponsesBeforeReturning(t *testing.T) {
 	assert.JSONEq(t, `{"model":"m1","usage":{"input_tokens":3,"output_tokens":5}}`, string(<-body))
 }
 
-func TestProxyOpModelErrorLine(t *testing.T) {
-	t.Parallel()
-
-	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
-	}))
-	t.Cleanup(model.Close)
-
-	sock := filepath.Join(shortDir(t), "p.sock")
-	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{
-		Socket: sock,
-		Model:  &proxy.ModelRoute{BaseURL: model.URL, Credential: "real", AuthHeader: "bearer", StandIn: "stand-in"},
-	}})
-	run.stdout.waitFor(t, "ready")
-
-	c := unixClient(sock, false)
-
-	req, err := http.NewRequest(http.MethodPost, "http://model.invalid/v1/messages", strings.NewReader(`{}`))
-	require.NoError(t, err)
-
-	req.Header.Set("Authorization", "Bearer stand-in")
-
-	resp, err := c.Do(req)
-	require.NoError(t, err)
-
-	_ = resp.Body.Close()
-
-	l := run.stdout.waitFor(t, "model_error")
-	assert.Equal(t, http.StatusTooManyRequests, l.Status)
-	assert.Equal(t, "rate_limit", l.Kind)
-}
-
 func gitServer(t *testing.T, up string) (url, ca, repo string) {
 	t.Helper()
 

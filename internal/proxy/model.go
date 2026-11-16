@@ -128,28 +128,7 @@ func (m *modelHandler) rewrite(pr *httputil.ProxyRequest) {
 }
 
 func (m *modelHandler) modifyResponse(res *http.Response) error {
-	reported := false
-
-	switch s := res.StatusCode; {
-	case s == http.StatusUnauthorized || s == http.StatusForbidden:
-		m.h.modelError(s, kindAuth)
-
-		reported = true
-	case s == http.StatusTooManyRequests:
-		m.h.modelError(s, kindRateLimit)
-
-		reported = true
-	case s >= 500:
-		m.h.modelError(s, kindUpstream)
-
-		reported = true
-	}
-
-	if res.StatusCode < 400 && encoded(res) {
-		m.h.modelError(res.StatusCode, kindUnmetered)
-	}
-
-	res.Body = newMeterBody(res, m.h, reported)
+	res.Body = newMeterBody(res, m.h)
 
 	return nil
 }
@@ -159,6 +138,5 @@ func (m *modelHandler) upstreamError(w http.ResponseWriter, _ *http.Request, err
 		return
 	}
 
-	m.h.modelError(http.StatusBadGateway, kindTransport)
 	http.Error(w, "model endpoint unavailable", http.StatusBadGateway)
 }

@@ -33,11 +33,6 @@ type Config struct {
 	OnDenied func(hostPort string)
 	// OnUsage is called once per metered model response, after it ends.
 	OnUsage func(Usage)
-	// OnModelError is called with the status the client saw (the upstream
-	// status for an error response) and a kind: auth, rate_limit, upstream,
-	// transport or unmetered (the response arrived content-encoded, so its usage
-	// was not read).
-	OnModelError func(status int, kind string)
 }
 
 // ModelRoute is the real model endpoint and the credential only the proxy holds.
@@ -60,14 +55,6 @@ type Usage struct {
 	CacheRead  int64
 	CacheWrite int64
 }
-
-const (
-	kindAuth      = "auth"
-	kindRateLimit = "rate_limit"
-	kindUpstream  = "upstream"
-	kindTransport = "transport"
-	kindUnmetered = "unmetered"
-)
 
 type handler struct {
 	// lookup replaces DNS for the egress dialer; tests only.
@@ -164,11 +151,5 @@ func (h *handler) denied(hostPort string) {
 func (h *handler) usage(u Usage) {
 	if h.cfg.OnUsage != nil {
 		h.cfg.OnUsage(u)
-	}
-}
-
-func (h *handler) modelError(status int, kind string) {
-	if h.cfg.OnModelError != nil {
-		h.cfg.OnModelError(status, kind)
 	}
 }

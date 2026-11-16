@@ -27,11 +27,9 @@ type CloneRequest struct {
 
 // Line is one JSON line on standard output.
 type Line struct {
-	Type   string       // "ready", "denied", "usage", "model_error", "cloned", "error"
+	Type   string       // "ready", "denied", "usage", "cloned", "error"
 	Host   string       `json:",omitempty"`
 	Usage  *proxy.Usage `json:",omitempty"`
-	Status int          `json:",omitempty"`
-	Kind   string       `json:",omitempty"`
 	Commit string       `json:",omitempty"` // cloned: the base commit
 	Error  string       `json:",omitempty"`
 }
