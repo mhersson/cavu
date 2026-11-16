@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -63,6 +65,73 @@ func wrapGit(t *testing.T, extraShell string) (ctx context.Context, logPath stri
 	script, logPath := writeGitWrapper(t, extraShell)
 
 	return context.WithValue(context.Background(), gitPathKey{}, script), logPath
+}
+
+var errRefusedSignal = errors.New("refused to signal")
+
+// signalable refuses a pid or pgid read from a file unless it is above 1 and
+// neither this process nor its group: as a group, 1 reaches every process the
+// user owns and 0 this test's own group.
+func signalable(id int) error {
+	if id <= 1 || id == os.Getpid() || id == syscall.Getpgrp() {
+		return fmt.Errorf("%w: %d", errRefusedSignal, id)
+	}
+
+	return nil
+}
+
+// killProcess sends SIGKILL to pid, read from a file, or fails the test
+// without a signal when signalable refuses it.
+func killProcess(t *testing.T, pid int) {
+	t.Helper()
+
+	if err := signalable(pid); err != nil {
+		t.Error(err)
+
+		return
+	}
+
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+}
+
+// killGroupIn sends SIGKILL to the process group whose id the file at path
+// holds, if it holds one, or fails the test without a signal when signalable
+// refuses it.
+func killGroupIn(t *testing.T, path string) {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	pgid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return
+	}
+
+	if err := signalable(pgid); err != nil {
+		t.Error(err)
+
+		return
+	}
+
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+}
+
+func TestSignalableRefusesUnsafeIDs(t *testing.T) {
+	t.Parallel()
+
+	for _, id := range []int{-1, 0, 1, os.Getpid(), syscall.Getpgrp()} {
+		if err := signalable(id); !errors.Is(err, errRefusedSignal) {
+			t.Errorf("signalable(%d) = %v, want a refusal", id, err)
+		}
+	}
+
+	// No pid reaches 1<<22, the largest pid_max Linux allows.
+	if err := signalable(1 << 22); err != nil {
+		t.Errorf("signalable(1<<22) = %v, want nil", err)
+	}
 }
 
 // alive reports whether pid is a running process (a zombie is not).
