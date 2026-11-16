@@ -255,9 +255,14 @@ func TestOpenRefusesBadInstanceID(t *testing.T) {
 		"leading dash":    func(o *Options) { o.InstanceID = "-123456789abcdef" },
 		"trailing space":  func(o *Options) { o.InstanceID = instanceA[:15] + " " },
 		"zero run":        func(o *Options) { o.RunID = 0 },
+		"zero task":       func(o *Options) { o.TaskID = 0 },
 		"negative task":   func(o *Options) { o.TaskID = -1 },
 		"zero project":    func(o *Options) { o.ProjectID = 0 },
 		"negative run id": func(o *Options) { o.RunID = -7 },
+		"zero run and task, zero project": func(o *Options) {
+			o.RunID, o.TaskID, o.ProjectID = 0, 0, 0
+		},
+		"zero run, negative task": func(o *Options) { o.RunID, o.TaskID = 0, -1 },
 	}
 
 	for name, mutate := range cases {
@@ -279,6 +284,20 @@ func TestOpenRefusesBadInstanceID(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, f.calls(t), "the runtime was called")
 	})
+}
+
+// Run id 0 with task id 0 is the environment check's sandbox.
+func TestOpenAcceptsTheEnvironmentCheck(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+	o := goodOptions(r)
+	o.RunID, o.TaskID = 0, 0
+
+	s, err := Open(o)
+	require.NoError(t, err)
+	assert.Empty(t, f.calls(t), "the runtime was called")
+	assert.Equal(t, "cavu-01234567-workspace-0", s.name("workspace"))
+	assert.Equal(t, "cavu-01234567-home-0", s.name("home"))
+	assert.Equal(t, "cavu-01234567-cache-3", s.name("cache"))
 }
 
 func TestOpenRefusesBadOptions(t *testing.T) {

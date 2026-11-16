@@ -119,8 +119,10 @@ func Open(o Options) (*Sandbox, error) {
 		return nil, errors.New("sandbox: instance id: want 16 lower-case hex characters")
 	}
 
-	if o.RunID < 1 || o.TaskID < 1 || o.ProjectID < 1 {
-		return nil, errors.New("sandbox: run, task and project ids must be positive")
+	// Run id 0 with task id 0 is reserved for a project's environment check.
+	check := o.RunID == 0 && o.TaskID == 0
+	if !check && (o.RunID < 1 || o.TaskID < 1) || o.ProjectID < 1 {
+		return nil, errors.New("sandbox: run and task ids must be positive, or both 0, and the project id positive")
 	}
 
 	if err := checkArg("image", o.Image); err != nil {
