@@ -70,7 +70,6 @@ type call struct {
 	runID  int64
 	work   engine.WorkRequest
 	remove bool
-	title  string
 	commit string // the commit an export was given
 	ref    engine.RunRef
 	eco    []string // the config's ecosystems
@@ -161,8 +160,8 @@ func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.Ver
 	return pop(&r.verifies, verifyOK)
 }
 
-func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, title, commit string) (engine.ExportResult, error) {
-	r.begin(call{method: "export", runID: c.RunID, title: title, commit: commit, eco: c.Ecosystems})
+func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit string) (engine.ExportResult, error) {
+	r.begin(call{method: "export", runID: c.RunID, commit: commit, eco: c.Ecosystems})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -493,7 +492,6 @@ func TestLoopHappyPath(t *testing.T) {
 	assert.Regexp(t, uuidV4, work.SessionID)
 	assert.False(t, work.Resume)
 	assert.Equal(t, work.SessionID, payloadOf[engine.SessionStartedPayload](t, evs[3]).SessionID)
-	assert.Equal(t, "Fix login", h.runner.callsOf("export")[0].title, "the session's title names the export")
 
 	for _, c := range h.runner.calls {
 		assert.Equal(t, runID, c.runID, "%s runs on the run", c)
@@ -574,7 +572,7 @@ func TestLoopRedoesInterruptedAction(t *testing.T) {
 		{
 			name:   "a prepare started and not prepared",
 			events: []store.Event{ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, "")},
-			starts: []string{"release/remove", "prepare"},
+			starts: []string{"prepare"},
 		},
 		{
 			name: "a verify started and not ended",
@@ -713,6 +711,45 @@ func TestLoopRecordsResultAfterCtxEnds(t *testing.T) {
 		require.Len(t, usage, 1)
 		assert.Equal(t, int64(10), usage[0].Input)
 	})
+}
+
+// A baseline the prepare verified is kept on the project for the next task at that commit.
+func TestLoopStoresPassedBaseline(t *testing.T) {
+	tests := []struct {
+		baseline string
+		stored   bool
+	}{
+		{engine.ResultPassed, true},
+		{"reused", false},
+		{"waived", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.baseline, func(t *testing.T) {
+			h := newHarness(t)
+
+			res := preparedOK
+			res.Baseline = tt.baseline
+			h.runner.prepares = []step[engine.PrepareResult]{{res: res}}
+
+			_, err := h.run(t.Context())
+			require.NoError(t, err)
+
+			p, err := h.store.Project(t.Context(), h.task.ProjectID)
+			require.NoError(t, err)
+
+			if !tt.stored {
+				assert.Nil(t, p.Baseline)
+
+				return
+			}
+
+			require.NotNil(t, p.Baseline)
+			assert.Equal(t, "base123", p.Baseline.Commit)
+			assert.True(t, p.Baseline.Passed)
+			assert.False(t, p.Baseline.At.IsZero())
+		})
+	}
 }
 
 func TestLoopRecordsIgnoredTools(t *testing.T) {

@@ -66,7 +66,7 @@ type Runner interface {
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
 	// Export exports commit, the work a session froze, never the working tree.
 	// It is safe to repeat for the same run.
-	Export(ctx context.Context, c RunConfig, title, commit string) (ExportResult, error)
+	Export(ctx context.Context, c RunConfig, commit string) (ExportResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
 	Release(ctx context.Context, ref RunRef, removeVolumes bool) error
 }
@@ -97,7 +97,6 @@ type Progress struct {
 
 // WorkResult is how a session ended.
 type WorkResult struct {
-	SessionID              string // the id the agent reported; the engine's own id stays authoritative
 	Outcome                string
 	Title, Summary         string
 	Detail                 string // the upstream status or error text for endpoint, usage_limit and crashed

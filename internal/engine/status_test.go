@@ -22,7 +22,7 @@ func TestStatusOf(t *testing.T) {
 		},
 		{"stopped", engine.Facts{Started: true, RunOpen: true, OpenStop: &engine.StopFact{Reason: engine.StopQuestion}}, engine.StatusBlocked},
 		{"exported", engine.Facts{Started: true, Exported: true}, engine.StatusInReview},
-		{"running", engine.Facts{Started: true, RunOpen: true, Pending: "work"}, engine.StatusRunning},
+		{"running", engine.Facts{Started: true, RunOpen: true}, engine.StatusRunning},
 	}
 
 	for _, tc := range tests {

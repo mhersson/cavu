@@ -120,12 +120,12 @@ func TestReduce(t *testing.T) {
 		{
 			name:   "a session started and not ended",
 			events: preparedRun(firstSession),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, Pending: "work", SessionID: "s1"},
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1"},
 		},
 		{
 			name:   "a session start with no session id",
 			events: preparedRun(firstSession, unfinished, ev(engine.SessionStarted, `{"mode":"continue","automatic":true}`)),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, Pending: "work", SessionID: "s1", Continuations: 1},
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Continuations: 1},
 		},
 		{
 			name:   "an answer after a question",
@@ -185,7 +185,7 @@ func TestReduce(t *testing.T) {
 				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
 				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.PrepareStarted, ""),
 			},
-			want: engine.Facts{Started: true, RunOpen: true, Pending: "prepare"},
+			want: engine.Facts{Started: true, RunOpen: true},
 		},
 		{
 			name: "a later run's prepare replaces them",
@@ -224,7 +224,7 @@ func TestReduce(t *testing.T) {
 	}
 }
 
-func TestReducePendingAndCounting(t *testing.T) {
+func TestReduceCounting(t *testing.T) {
 	resets := time.Date(2030, 1, 1, 13, 0, 0, 0, time.UTC)
 	usageLimit := preparedRun(firstSession, unfinished, autoContinue,
 		ev(engine.SessionEnded, `{"outcome":"usage_limit","resets_at":"2030-01-01T13:00:00Z"}`),
@@ -246,7 +246,6 @@ func TestReducePendingAndCounting(t *testing.T) {
 
 		assert.Nil(t, f.OpenStop)
 		assert.Equal(t, 1, f.Continuations)
-		assert.Equal(t, "work", f.Pending)
 	})
 
 	t.Run("only automatic fix sessions count", func(t *testing.T) {
@@ -265,7 +264,6 @@ func TestReducePendingAndCounting(t *testing.T) {
 
 		assert.Nil(t, f.Session)
 		assert.Empty(t, f.Verify)
-		assert.Equal(t, "work", f.Pending)
 		assert.Equal(t, 2, f.VerifyFixes)
 
 		got := engine.Decide(snap(f))
@@ -284,7 +282,6 @@ func TestReducePendingAndCounting(t *testing.T) {
 
 		assert.True(t, f.RunOpen)
 		assert.False(t, f.Prepared)
-		assert.Equal(t, "prepare", f.Pending)
 		assert.Nil(t, f.Resumed)
 
 		got := engine.Decide(snap(f))

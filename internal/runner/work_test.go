@@ -68,7 +68,7 @@ func TestWorkMapsResults(t *testing.T) {
 	})
 	doneResult := driver.Result{Reason: driver.ReasonDone, SessionID: "agent-id", Turns: 7, CostEstimateUSD: 0.5, Structured: done}
 	doneWork := engine.WorkResult{
-		SessionID: "agent-id", Outcome: engine.OutcomeDone, Title: "Fix the login form", Summary: "Trimmed the password.",
+		Outcome: engine.OutcomeDone, Title: "Fix the login form", Summary: "Trimmed the password.",
 		Assumptions: []string{"Spaces are typos."}, Turns: 7, CostEstimateUSD: 0.5,
 	}
 

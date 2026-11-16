@@ -189,7 +189,7 @@ func (s *session) line(l sidecar.Line) {
 
 // result maps how the session ended.
 func (s *session) result(dr driver.Result) engine.WorkResult {
-	res := engine.WorkResult{SessionID: dr.SessionID, Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, Detail: s.mask(dr.Detail)}
+	res := engine.WorkResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, Detail: s.mask(dr.Detail)}
 
 	switch dr.Reason {
 	case driver.ReasonUsageLimit:

@@ -17,7 +17,6 @@ type Caps struct{ Continuations, VerifyFixes int }
 // Snapshot is a task at one moment, as Decide sees it.
 type Snapshot struct {
 	Task        store.Task
-	Project     store.Project
 	Facts       Facts
 	Now         time.Time
 	Switches    Switches
