@@ -13,7 +13,7 @@ import (
 
 // A ref write cancelled while git holds its locks leaves none behind: git
 // removes them on SIGTERM but not on SIGKILL, and a packed-refs.lock left in
-// the user's repository fails their own git until they delete it.
+// a mirror or workspace volume fails every later fetch into it.
 func TestCancelledRefWriteLeavesNoLock(t *testing.T) {
 	t.Parallel()
 
