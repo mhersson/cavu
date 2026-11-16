@@ -476,8 +476,8 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 	}
 
 	for _, t := range s.Tmpfs {
-		// Options after a colon could drop the runtime's noexec, nosuid and
-		// nodev defaults.
+		// Options after a colon could drop the runtime's nosuid and nodev
+		// defaults, and Docker's noexec.
 		if !path.IsAbs(t) || strings.ContainsAny(t, ":,\n\r") {
 			return nil, nil, fmt.Errorf("tmpfs %q: want an absolute path without options", t)
 		}

@@ -36,6 +36,7 @@ var (
 // fakeContainer is what the fake runtime reports for a phase container.
 type fakeContainer struct {
 	network string
+	stopped bool
 	env     []string
 	mounts  []MountInfo
 }
@@ -60,7 +61,7 @@ func (c fakeContainer) inspect(t *testing.T) []byte {
 	}
 
 	b, err := json.Marshal([]map[string]any{{
-		"State":      map[string]any{"Running": true},
+		"State":      map[string]any{"Running": !c.stopped},
 		"HostConfig": map[string]any{"NetworkMode": c.network, "Tmpfs": tmpfs},
 		"Config":     map[string]any{"Env": c.env},
 		"Mounts":     mounts,
@@ -80,7 +81,6 @@ func reported(s *Sandbox, phase Phase) fakeContainer {
 			{Type: "volume", Source: s.name("handoff"), Target: "/handoff"},
 			{Type: "volume", Source: s.name("cache"), Target: "/cache"},
 			{Type: "tmpfs", Target: "/run/cavu"},
-			{Type: "tmpfs", Target: "/tmp"},
 		},
 	}
 
@@ -173,6 +173,18 @@ func mountFlags(argv []string) []string {
 
 	for _, a := range argv {
 		if strings.HasPrefix(a, "--mount=") {
+			out = append(out, a)
+		}
+	}
+
+	return out
+}
+
+func tmpfsFlags(argv []string) []string {
+	var out []string
+
+	for _, a := range argv {
+		if strings.HasPrefix(a, "--tmpfs") {
 			out = append(out, a)
 		}
 	}
@@ -433,8 +445,6 @@ func TestAgentPhaseMountsCacheReadOnly(t *testing.T) {
 	assert.Subset(t, agent.argv, []string{
 		"--detach",
 		"--network=none",
-		"--tmpfs=/run/cavu",
-		"--tmpfs=/tmp",
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
 		"--init",
@@ -451,6 +461,7 @@ func TestAgentPhaseMountsCacheReadOnly(t *testing.T) {
 		volumeMount(s.name("cache"), "/cache") + ",readonly",
 		volumeMount(s.name("home"), "/home/agent"),
 	}, mountFlags(agent.argv))
+	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(agent.argv), "only the pid directory is a noexec tmpfs")
 	assert.Equal(t, []string{"cavu-sandbox:test", "cavu", "bridge", "--listen", "127.0.0.1:3128", "--socket", "/handoff/proxy.sock"}, agent.argv[len(agent.argv)-7:])
 
 	side := onlyRun(t, f, s.name("sidecar"))
@@ -484,7 +495,8 @@ func TestSetupPhaseHasNoHomeMount(t *testing.T) {
 	assert.Equal(t, s.name("setup"), c.name)
 
 	setup := onlyRun(t, f, s.name("setup"))
-	assert.Subset(t, setup.argv, []string{"--detach", "--network=none", "--tmpfs=/run/cavu", "--tmpfs=/tmp", "--label=cavu.run=7"})
+	assert.Subset(t, setup.argv, []string{"--detach", "--network=none", "--label=cavu.run=7"})
+	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(setup.argv), "only the pid directory is a noexec tmpfs")
 	assert.ElementsMatch(t, []string{
 		volumeMount(s.name("workspace"), "/workspace"),
 		volumeMount(s.name("handoff"), "/handoff"),
@@ -629,6 +641,23 @@ func TestUpChecksNetworkNone(t *testing.T) {
 
 			_, err := s.Up(t.Context(), phase, sidecar.ProxyRequest{}, nil)
 			require.ErrorIs(t, err, ErrNotIsolated)
+			requireBothRemoved(t, f, s, phase)
+		})
+	}
+}
+
+func TestUpRefusesAStoppedPhaseContainer(t *testing.T) {
+	for _, phase := range []Phase{PhaseSetup, PhaseAgent} {
+		t.Run(string(phase), func(t *testing.T) {
+			s, f := ensured(t)
+
+			c := reported(s, phase)
+			c.stopped = true
+			setReported(t, f, s, phase, c)
+
+			_, err := s.Up(t.Context(), phase, sidecar.ProxyRequest{}, nil)
+			require.ErrorIs(t, err, ErrNotIsolated)
+			assert.Contains(t, err.Error(), s.name(string(phase)))
 			requireBothRemoved(t, f, s, phase)
 		})
 	}

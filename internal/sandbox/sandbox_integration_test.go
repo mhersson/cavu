@@ -185,6 +185,23 @@ func TestSandboxEgress(t *testing.T) {
 	assert.Equal(t, want, lines.all())
 }
 
+// TestPhaseRunsABinaryFromTmp runs a binary from /tmp, as go test does with the
+// test binaries it builds under TMPDIR.
+func TestPhaseRunsABinaryFromTmp(t *testing.T) {
+	t.Parallel()
+
+	r := sandboxtest.Runtime(t)
+	s := newSandbox(t, r, sandboxImage(t, r, nil))
+
+	for _, phase := range []sandbox.Phase{sandbox.PhaseSetup, sandbox.PhaseAgent} {
+		c, err := s.Up(t.Context(), phase, sidecar.ProxyRequest{}, nil)
+		require.NoError(t, err)
+
+		res := run(t, c, "sh", "-c", "cp /bin/true /tmp/true && /tmp/true")
+		assert.Equal(t, 0, res.ExitCode, "%s: %s", phase, res.Output)
+	}
+}
+
 func TestSandboxSurvivesDownUp(t *testing.T) {
 	t.Parallel()
 

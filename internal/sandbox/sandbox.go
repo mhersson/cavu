@@ -62,8 +62,8 @@ var (
 )
 
 var (
-	// ErrNotIsolated is a phase container whose network, mounts or
-	// environment are not what the sandbox started it with.
+	// ErrNotIsolated is a phase container that is not running, or whose
+	// network, mounts or environment are not what the sandbox started it with.
 	ErrNotIsolated = errors.New("sandbox: the container is not isolated")
 	// ErrSidecarDown is a sidecar that did not get ready, or a proxy the phase
 	// container cannot reach through the bridge.
@@ -234,7 +234,9 @@ func (s *Sandbox) phaseSpec(p Phase) ContainerSpec {
 			s.mount("handoff", "/handoff", false),
 			s.mount("cache", "/cache", agent),
 		},
-		Tmpfs:   []string{pidDir, "/tmp"},
+		// The image's /tmp stays: a tmpfs there would be noexec on Docker, and
+		// go test runs the binaries it builds from TMPDIR.
+		Tmpfs:   []string{pidDir},
 		Network: "none",
 	}
 
@@ -537,7 +539,7 @@ func (s *Sandbox) check(ctx context.Context) (Container, error) {
 	}
 
 	if !info.Running {
-		return Container{}, fmt.Errorf("sandbox: container %s is not running (exit %d)", spec.Name, info.ExitCode)
+		return Container{}, fmt.Errorf("%w: container %s is not running (exit %d)", ErrNotIsolated, spec.Name, info.ExitCode)
 	}
 
 	if err := checkMounts(spec, info.Mounts); err != nil {
