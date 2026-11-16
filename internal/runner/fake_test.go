@@ -91,6 +91,7 @@ type fakeSandbox struct {
 	onRun    func(name string) // runs as a command starts, before its answer
 	downErr  error
 	volErr   error
+	out      map[string][]byte // what CopyOut copies, by path
 }
 
 func newFake() *fakeSandbox {
@@ -243,6 +244,15 @@ func (f *fakeSandbox) Up(_ context.Context, phase sandbox.Phase, p sidecar.Proxy
 	return fakeContainer{f: f, phase: phase}, nil
 }
 
+func (f *fakeSandbox) Restart(context.Context) (container, error) {
+	f.record("restart")
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return fakeContainer{f: f, phase: f.phase}, nil
+}
+
 func (f *fakeSandbox) Down(context.Context) error {
 	f.record("down")
 
@@ -264,12 +274,15 @@ func (f *fakeSandbox) Destroy(_ context.Context, keepHome bool) error {
 }
 
 // fail sends the sidecar error line the sandbox sends when its sidecar ends.
-func (f *fakeSandbox) fail(text string) {
+func (f *fakeSandbox) fail(text string) { f.send(sidecar.Line{Type: "error", Error: text}) }
+
+// send delivers a sidecar line to the phase that is up.
+func (f *fakeSandbox) send(l sidecar.Line) {
 	f.mu.Lock()
 	lines := f.lines
 	f.mu.Unlock()
 
-	lines(sidecar.Line{Type: "error", Error: text})
+	lines(l)
 }
 
 func (f *fakeSandbox) requests(phase sandbox.Phase) []sidecar.ProxyRequest {
@@ -365,6 +378,18 @@ func (c fakeContainer) CopyIn(_ context.Context, files map[string][]byte) error 
 	return nil
 }
 
+func (c fakeContainer) CopyOut(_ context.Context, p string, w io.Writer) error {
+	c.f.record("copyout " + p)
+
+	c.f.mu.Lock()
+	data := c.f.out[p]
+	c.f.mu.Unlock()
+
+	_, err := w.Write(data)
+
+	return err
+}
+
 // frame encodes files the way the read command prints them.
 func frame(files map[string]string) []byte {
 	var b strings.Builder
@@ -398,6 +423,43 @@ type nopCloser struct{}
 
 func (nopCloser) Write(b []byte) (int, error) { return len(b), nil }
 func (nopCloser) Close() error                { return nil }
+
+// fakeAgent is a driver whose runs end with results in turn, the last
+// repeating, and that records each spec; during runs inside each run.
+type fakeAgent struct {
+	fakeDriver
+
+	mu      sync.Mutex
+	specs   []driver.Spec
+	results []driver.Result
+	err     error
+	during  func(ctx context.Context, sink func(driver.Event))
+}
+
+func (d *fakeAgent) Run(ctx context.Context, _ proc.Target, s driver.Spec, sink func(driver.Event)) (driver.Result, error) {
+	d.mu.Lock()
+	d.specs = append(d.specs, s)
+	n := len(d.specs)
+	d.mu.Unlock()
+
+	if d.during != nil {
+		d.during(ctx, sink)
+	}
+
+	if d.err != nil {
+		return driver.Result{}, d.err
+	}
+
+	return d.results[min(n, len(d.results))-1], nil
+}
+
+// workRunner returns a Runner whose every sandbox is f and whose agent is d.
+func (f *fakeSandbox) workRunner(d *fakeAgent) *Runner {
+	r := f.runner()
+	r.driver = d
+
+	return r
+}
 
 // fakeDriver names hosts per mode the way a driver does.
 type fakeDriver struct{}

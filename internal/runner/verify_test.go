@@ -1,0 +1,71 @@
+package runner
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mhersson/cavu/internal/driver"
+	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/sandbox"
+	"github.com/mhersson/cavu/internal/verify"
+)
+
+func TestVerifyWaived(t *testing.T) {
+	f := newFake()
+	c := workConfig()
+	c.Verify.Waived = true
+
+	res, err := f.runner().Verify(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, engine.VerifyResult{Result: engine.ResultWaived}, res)
+	assert.Empty(t, f.calls())
+}
+
+// The verify command runs as a command of its own in a restarted agent
+// container, so nothing the session left running sees it.
+func TestVerifyRunsOutsideTheSession(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		timeout, want time.Duration
+	}{
+		{name: "the configured timeout", timeout: 3 * time.Minute, want: 3 * time.Minute},
+		{name: "no timeout", want: verify.ClampTimeout(0)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+			f.results["make test"] = sandbox.Result{ExitCode: 2, Output: "FAIL\n"}
+			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}
+			c := workConfig()
+			c.Verify.Timeout = tt.timeout
+
+			res, err := f.workRunner(d).Verify(t.Context(), c)
+			require.NoError(t, err)
+			assert.Equal(t, engine.ResultFailed, res.Result)
+			assert.Equal(t, 2, res.ExitCode)
+			assert.Equal(t, "FAIL\n", res.Output)
+			assert.Equal(t, "make test", res.Command)
+
+			assert.Equal(t, []string{"volumes", "up/agent", "restart", "run/make test"}, f.calls())
+			assert.Empty(t, d.specs, "the driver runs nothing")
+
+			run := f.run(t, "make test")
+			assert.Equal(t, sandbox.PhaseAgent, run.phase)
+			assert.Equal(t, tt.want, run.timeout)
+			assert.Equal(t, verify.Argv("make test"), run.cmd.Argv)
+			assert.Equal(t, agentEnv([]string{"go"}), run.cmd.Env)
+			assert.Equal(t, workspace, run.cmd.Dir)
+		})
+	}
+}
+
+func TestVerifyOutputIsRedacted(t *testing.T) {
+	f := newFake()
+	f.results["make test"] = sandbox.Result{ExitCode: 1, Output: "token " + plantedSetup + " key " + plantedEndpoint + " forge " + plantedForge}
+
+	res, err := f.runner().Verify(t.Context(), workConfig())
+	require.NoError(t, err)
+	assertMasked(t, res.Output)
+}

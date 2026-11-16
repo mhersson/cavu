@@ -72,7 +72,7 @@ func readFiles(ctx context.Context, c container, commit string) (map[string][]by
 	ctx, cancel := context.WithTimeout(ctx, filesTimeout)
 	defer cancel()
 
-	out := &boundedBuffer{limit: maxFilesSize}
+	out := &boundedBuffer{limit: maxFilesSize, over: errFilesTooLarge}
 
 	argv := append([]string{"bash", "-c", readScript, "bash", commit}, filePatterns()...)
 
@@ -137,15 +137,16 @@ func parseFiles(b []byte) (map[string][]byte, error) {
 	return files, nil
 }
 
-// boundedBuffer fails a write that would take it past limit.
+// boundedBuffer fails with over a write that would take it past limit.
 type boundedBuffer struct {
 	buf   bytes.Buffer
 	limit int
+	over  error
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	if b.buf.Len()+len(p) > b.limit {
-		return 0, errFilesTooLarge
+		return 0, b.over
 	}
 
 	return b.buf.Write(p)

@@ -1,4 +1,4 @@
-//go:build integration || ecosystems
+//go:build integration || ecosystems || conformance
 
 package runner
 

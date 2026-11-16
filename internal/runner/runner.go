@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -69,6 +70,8 @@ type Runner struct {
 	runs map[int64]*run
 }
 
+var _ engine.Runner = (*Runner)(nil)
+
 // New returns a runner that runs sandboxes on rt and agents through d.
 func New(rt sandbox.Runtime, d driver.Driver) *Runner {
 	return &Runner{rt: rt, driver: d, open: openSandbox, runs: map[int64]*run{}}
@@ -79,6 +82,7 @@ type sandboxer interface {
 	EnsureVolumes(ctx context.Context) error
 	Clone(ctx context.Context, r sidecar.CloneRequest) (string, error)
 	Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error)
+	Restart(ctx context.Context) (container, error)
 	Down(ctx context.Context) error
 	Destroy(ctx context.Context, keepHome bool) error
 }
@@ -88,13 +92,23 @@ type container interface {
 	proc.Target
 	Run(ctx context.Context, cmd proc.Command, timeout time.Duration) (sandbox.Result, error)
 	CopyIn(ctx context.Context, files map[string][]byte) error
+	CopyOut(ctx context.Context, p string, w io.Writer) error
 }
 
-// realSandbox returns Up's container as a container.
+// realSandbox returns Up's and Restart's container as a container.
 type realSandbox struct{ *sandbox.Sandbox }
 
 func (s realSandbox) Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error) {
 	c, err := s.Sandbox.Up(ctx, phase, p, lines)
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
+}
+
+func (s realSandbox) Restart(ctx context.Context) (container, error) {
+	c, err := s.Sandbox.Restart(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -123,18 +137,24 @@ type run struct {
 	lost   bool       // the sidecar of the phase that is up has ended
 	fault  error      // the sidecar's error during the action in flight
 	cancel context.CancelCauseFunc
+	watch  func(sidecar.Line) // takes the other lines while a session runs
 }
 
 // lines takes the sidecar's lines. An error line means the phase lost its
 // egress: it ends the action in flight, and that action's call fails with it.
-// It never calls the sandbox, which would stall the sidecar's reader.
+// Other lines go to the running session's watch. It never calls the sandbox,
+// which would stall the sidecar's reader.
 func (st *run) lines(l sidecar.Line) {
-	if l.Type != "error" {
-		return
-	}
-
 	st.mu.Lock()
 	defer st.mu.Unlock()
+
+	if l.Type != "error" {
+		if st.watch != nil {
+			st.watch(l)
+		}
+
+		return
+	}
 
 	st.lost = true
 
@@ -164,6 +184,37 @@ func (st *run) begin(ctx context.Context) (context.Context, func() error) {
 
 		return fault
 	}
+}
+
+// watching hands the sidecar's lines other than errors to watch until
+// watching(nil); a line that arrives after that is dropped.
+func (st *run) watching(watch func(sidecar.Line)) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.watch = watch
+}
+
+// act brings the agent phase up and runs do as the run's action in flight,
+// with c's mask: a sidecar error during it fails the call. The error is masked.
+func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, do func(context.Context, *run, func(string) string) (T, error)) (T, error) {
+	var zero T
+
+	mask := masker(c)
+
+	if err := r.ensureUp(ctx, c); err != nil {
+		return zero, maskErr(err, mask)
+	}
+
+	st := r.state(c.RunID)
+	ctx, end := st.begin(ctx)
+
+	res, err := do(ctx, st, mask)
+	if fault := end(); fault != nil {
+		return zero, maskErr(fault, mask)
+	}
+
+	return res, maskErr(err, mask)
 }
 
 // up brings phase up with p. The agent phase counts as up once the caller
@@ -285,6 +336,11 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 	return nil
 }
 
+// scriptArgv runs script with args as its positional arguments.
+func scriptArgv(script string, args ...string) []string {
+	return append([]string{"sh", "-c", script, "sh"}, args...)
+}
+
 // homeStep runs script in the agent phase with each pair, a path in the home
 // and the cache path it comes from, as positional arguments.
 func homeStep(ctx context.Context, a container, script string, pairs map[string]string) error {
@@ -292,12 +348,12 @@ func homeStep(ctx context.Context, a container, script string, pairs map[string]
 		return nil
 	}
 
-	argv := []string{"sh", "-c", script, "sh"}
+	var args []string
 	for _, p := range slices.Sorted(maps.Keys(pairs)) {
-		argv = append(argv, p, pairs[p])
+		args = append(args, p, pairs[p])
 	}
 
-	res, err := a.Run(ctx, proc.Command{Argv: argv}, homeTimeout)
+	res, err := a.Run(ctx, proc.Command{Argv: scriptArgv(script, args...)}, homeTimeout)
 	if err != nil {
 		return err
 	}
