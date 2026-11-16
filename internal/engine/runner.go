@@ -37,6 +37,9 @@ type RunConfig struct {
 	CABundle    []byte
 	Task        struct{ Title, Body string }
 	ArtifactDir string
+	// Ecosystems are what the run's prepare detected, for Work, Verify and
+	// Export; never a setting, and empty for Prepare.
+	Ecosystems []string
 }
 
 // RunRef names a run's containers and volumes. It holds no secret and no
@@ -73,6 +76,7 @@ type PrepareResult struct {
 	BaseCommit   string
 	Tools        []string
 	IgnoredTools []string // repository tool entries detection declined to install, as written
+	Ecosystems   []string // detected at the base commit; later actions of the run get them back
 	Baseline     string   // passed, reused, waived, failed; a failed baseline sets FailedStep to "baseline"
 	FailedStep   string   // "", clone, toolchain, setup, baseline
 	Output       string

@@ -70,6 +70,7 @@ type call struct {
 	remove bool
 	title  string
 	ref    engine.RunRef
+	eco    []string // the config's ecosystems
 }
 
 func (c call) String() string {
@@ -122,7 +123,7 @@ func (r *fakeRunner) begin(c call) {
 }
 
 func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
-	r.begin(call{method: "prepare", runID: c.RunID})
+	r.begin(call{method: "prepare", runID: c.RunID, eco: c.Ecosystems})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -131,7 +132,7 @@ func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.Pr
 }
 
 func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
-	r.begin(call{method: "work", runID: c.RunID, work: w})
+	r.begin(call{method: "work", runID: c.RunID, work: w, eco: c.Ecosystems})
 
 	var wg sync.WaitGroup
 	for _, p := range r.progress {
@@ -147,7 +148,7 @@ func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.Work
 }
 
 func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyResult, error) {
-	r.begin(call{method: "verify", runID: c.RunID})
+	r.begin(call{method: "verify", runID: c.RunID, eco: c.Ecosystems})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -156,7 +157,7 @@ func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.Ver
 }
 
 func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, title string) (engine.ExportResult, error) {
-	r.begin(call{method: "export", runID: c.RunID, title: title})
+	r.begin(call{method: "export", runID: c.RunID, title: title, eco: c.Ecosystems})
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -726,6 +727,54 @@ func TestLoopRecordsIgnoredTools(t *testing.T) {
 	assert.Equal(t, engine.PreparedPayload{
 		BaseCommit: res.BaseCommit, Tools: res.Tools, Baseline: res.Baseline, IgnoredTools: res.IgnoredTools,
 	}, payloadOf[engine.PreparedPayload](t, prepared[0]))
+}
+
+// The ecosystems a prepare detected reach every later action of its run, also
+// after a restart; the prepare itself gets none.
+func TestLoopCarriesEcosystems(t *testing.T) {
+	t.Run("from the prepare", func(t *testing.T) {
+		h := newHarness(t)
+
+		res := preparedOK
+		res.Ecosystems = []string{"go", "node"}
+		h.runner.prepares = []step[engine.PrepareResult]{{res: res}}
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, happyTrace, h.runner.trace())
+
+		prepared := h.eventsOf(engine.Prepared)
+		require.Len(t, prepared, 1)
+		assert.Equal(t, res.Ecosystems, payloadOf[engine.PreparedPayload](t, prepared[0]).Ecosystems)
+
+		for _, c := range h.runner.calls {
+			switch c.method {
+			case "prepare":
+				assert.Nil(t, c.eco)
+			case "work", "verify", "export":
+				assert.Equal(t, res.Ecosystems, c.eco, c.String())
+			}
+		}
+	})
+
+	t.Run("after a restart", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(
+			ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+			ev(engine.Prepared, `{"base_commit":"base123","ecosystems":["rust"]}`),
+			ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
+		)
+
+		_, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, []string{"work/continue", "verify", "export", "release/remove"}, h.runner.trace())
+
+		for _, c := range h.runner.calls {
+			if c.method != "release" {
+				assert.Equal(t, []string{"rust"}, c.eco, c.String())
+			}
+		}
+	})
 }
 
 func TestLoopFailedBaselineStops(t *testing.T) {

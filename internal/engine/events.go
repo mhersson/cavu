@@ -79,7 +79,8 @@ type (
 		BaseCommit   string   `json:"base_commit"`
 		Tools        []string `json:"tools"`
 		IgnoredTools []string `json:"ignored_tools,omitempty"` // repository entries detection declined to install
-		Baseline     string   `json:"baseline"`                // result of the verify on the base commit
+		Ecosystems   []string `json:"ecosystems,omitempty"`
+		Baseline     string   `json:"baseline"` // result of the verify on the base commit
 	}
 
 	PrepareFailedPayload struct {

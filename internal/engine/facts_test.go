@@ -166,6 +166,40 @@ func TestReduce(t *testing.T) {
 			want: engine.Facts{Started: true, Exported: true},
 		},
 		{
+			name: "the ecosystems of the prepare",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go","node"]}`),
+			},
+			want: engine.Facts{Started: true, RunOpen: true, Prepared: true, Ecosystems: []string{"go", "node"}},
+		},
+		{
+			name: "a redone prepare forgets them",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.PrepareStarted, ""),
+			},
+			want: engine.Facts{Started: true, RunOpen: true, Pending: "prepare"},
+		},
+		{
+			name: "a later run's prepare replaces them",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.RunEnded, `{"outcome":"sandbox"}`),
+				ev(engine.RunStarted, `{"reason":"retry"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["rust"]}`),
+			},
+			want: engine.Facts{Started: true, RunOpen: true, Prepared: true, Ecosystems: []string{"rust"}},
+		},
+		{
+			name: "a closed run forgets them",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.RunEnded, `{"outcome":"cancelled"}`),
+			},
+			want: engine.Facts{Started: true},
+		},
+		{
 			name:   "a session end that does not decode",
 			events: preparedRun(firstSession, ev(engine.SessionEnded, `{"outcome":7,"changed":true}`)),
 			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: &engine.SessionFact{}},

@@ -327,9 +327,15 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		return p.abandon(ctx, a, row, err)
 	}
 
-	switch a.Kind {
-	case KindPrepare:
+	if a.Kind == KindPrepare {
 		return p.prepare(ctx, v, a, o)
+	}
+
+	// From the record, so a runner that restarted never reads the workspace
+	// an agent may have changed to learn them again.
+	o.cfg.Ecosystems = v.Facts.Ecosystems
+
+	switch a.Kind {
 	case KindWork:
 		return p.work(ctx, v, a, o)
 	case KindVerify:
@@ -412,7 +418,8 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 	}
 
 	return p.result(ctx, o, nil, draft{Prepared, actorRunner, PreparedPayload{
-		BaseCommit: res.BaseCommit, Tools: res.Tools, IgnoredTools: res.IgnoredTools, Baseline: res.Baseline,
+		BaseCommit: res.BaseCommit, Tools: res.Tools, IgnoredTools: res.IgnoredTools, Ecosystems: res.Ecosystems,
+		Baseline: res.Baseline,
 	}})
 }
 
