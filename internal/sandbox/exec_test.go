@@ -3,10 +3,13 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -195,6 +198,76 @@ func TestStopScriptWaitsForPidFile(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, "member"), "TERM did not reach the other member")
 }
 
+// recordKills goes before the stop script and replaces kill, a regular
+// builtin, with a function that only records its arguments in $3 and fails,
+// so no case can signal anything. With $4 set it first writes its own pid to
+// the pid file.
+const recordKills = `log=$3
+kill() { echo "$*" >> "$log"; return 1; }
+[ -z "$4" ] || echo $$ > "$1"
+`
+
+func TestStopScriptRefusesAPidFileThatNamesNoGroup(t *testing.T) {
+	run := func(t *testing.T, pid string, own bool) (code int, kills string) {
+		t.Helper()
+
+		dir := t.TempDir()
+		pidFile, log := filepath.Join(dir, "cmd.pid"), filepath.Join(dir, "kills")
+		argv := []string{"sh", "-c", recordKills + stopScript, "sh", pidFile, "1", log}
+
+		if own {
+			argv = append(argv, "own")
+		} else {
+			require.NoError(t, os.WriteFile(pidFile, []byte(pid), 0o600))
+		}
+
+		p, err := proc.Local{}.Start(t.Context(), proc.Command{Argv: argv, Env: os.Environ(), Dir: dir, Stdout: io.Discard})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = p.Stop(time.Second) })
+
+		code = waitFor(t, p, 10*time.Second)
+
+		b, err := os.ReadFile(log)
+		if errors.Is(err, fs.ErrNotExist) {
+			return code, ""
+		}
+
+		require.NoError(t, err)
+
+		return code, string(b)
+	}
+
+	// Every later case would signal for real if both its refusal and the
+	// replaced kill failed, so they run only once the replacement records.
+	require.True(t, t.Run("a pid above 1 reaches kill", func(t *testing.T) {
+		code, kills := run(t, "99999999\n", false)
+		assert.Equal(t, 0, code)
+		require.Equal(t, "-TERM -99999999\n", kills)
+	}))
+
+	for name, pid := range map[string]string{
+		"empty":          "\n",
+		"not a number":   "abc\n",
+		"zero":           "0\n",
+		"one":            "1\n",
+		"negative":       "-5\n",
+		"two numbers":    "1 2\n",
+		"a leading zero": "01\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, kills := run(t, pid, false)
+			assert.Equal(t, stopRefused, code)
+			assert.Empty(t, kills, "a refused pid reached kill")
+		})
+	}
+
+	t.Run("its own pid", func(t *testing.T) {
+		code, kills := run(t, "", true)
+		assert.Equal(t, stopRefused, code)
+		assert.Empty(t, kills, "its own group reached kill")
+	})
+}
+
 // stopExecs counts the calls that ran the stop script.
 func stopExecs(t *testing.T, f *fake) int {
 	t.Helper()
@@ -234,8 +307,19 @@ func TestStopAfterTheClientDied(t *testing.T) {
 	p := killed()
 
 	f.set(t, "exit", []byte("3"))
-	require.Error(t, p.Stop(time.Second), "the stop exec could not signal")
+
+	err := p.Stop(time.Second)
+	require.Error(t, err, "the stop exec could not signal")
+	require.NotErrorIs(t, err, errSignalRefused)
 	assert.Equal(t, 2, stopExecs(t, f))
+
+	f.set(t, "exit", []byte("0"))
+
+	p = killed()
+
+	f.set(t, "exit", []byte(strconv.Itoa(stopRefused)))
+	require.ErrorIs(t, p.Stop(time.Second), errSignalRefused)
+	assert.Equal(t, 3, stopExecs(t, f))
 }
 
 // TestStopThatHadToKillTheClient holds the command exec while the stop exec
