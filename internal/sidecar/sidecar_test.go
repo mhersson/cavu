@@ -169,7 +169,7 @@ func TestProxyOpServesOnSocket(t *testing.T) {
 	// A stale file from an earlier container is replaced.
 	require.NoError(t, os.WriteFile(sock, nil, 0o600))
 
-	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{Socket: sock, AllowHosts: []string{upstream.Listener.Addr().String()}}})
+	run := start(t, Request{Proxy: &ProxyRequest{Socket: sock, AllowHosts: []string{upstream.Listener.Addr().String()}}})
 	run.stdout.waitFor(t, "ready")
 
 	info, err := os.Stat(sock)
@@ -211,7 +211,7 @@ func TestProxyOpUsageLines(t *testing.T) {
 	t.Cleanup(model.Close)
 
 	sock := filepath.Join(shortDir(t), "p.sock")
-	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{
+	run := start(t, Request{Proxy: &ProxyRequest{
 		Socket: sock,
 		Model:  &proxy.ModelRoute{BaseURL: model.URL, Credential: "real", AuthHeader: "x-api-key", StandIn: "stand-in"},
 	}})
@@ -268,7 +268,7 @@ func TestProxyOpDrainsInFlightResponsesBeforeReturning(t *testing.T) {
 	t.Cleanup(releaseOnce)
 
 	sock := filepath.Join(shortDir(t), "p.sock")
-	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{
+	run := start(t, Request{Proxy: &ProxyRequest{
 		Socket: sock,
 		Model:  &proxy.ModelRoute{BaseURL: model.URL, Credential: "real", AuthHeader: "x-api-key", StandIn: "stand-in"},
 	}})
@@ -352,7 +352,7 @@ func TestCloneOpWritesClonedLine(t *testing.T) {
 
 	var out syncBuffer
 
-	err := Run(context.Background(), encode(t, Request{Op: "clone", Clone: &CloneRequest{
+	err := Run(context.Background(), encode(t, Request{Clone: &CloneRequest{
 		URL: base + repo, Token: "tok", BaseBranch: "main", Branch: "cavu/x", CABundle: ca,
 		MirrorDir: filepath.Join(root, "mirror"), WorkspaceDir: filepath.Join(root, "ws"),
 		Name: "Cavu", Email: "cavu@example.com",
@@ -379,7 +379,7 @@ func TestErrorLineScrubsToken(t *testing.T) {
 
 		var out syncBuffer
 
-		err := Run(context.Background(), encode(t, Request{Op: "clone", Clone: &CloneRequest{
+		err := Run(context.Background(), encode(t, Request{Clone: &CloneRequest{
 			URL: target, Token: token, BaseBranch: "main", Branch: "cavu/x",
 			MirrorDir: filepath.Join(root, "mirror"), WorkspaceDir: filepath.Join(root, "ws"),
 			Name: "Cavu", Email: "cavu@example.com",
@@ -399,10 +399,10 @@ func TestErrorLineScrubsToken(t *testing.T) {
 	}
 }
 
-func TestUnknownOp(t *testing.T) {
+func TestRequestWithoutAnOp(t *testing.T) {
 	t.Parallel()
 
-	for _, in := range []io.Reader{encode(t, Request{Op: "frobnicate"}), encode(t, Request{Op: "clone"}), strings.NewReader("{not json")} {
+	for _, in := range []io.Reader{encode(t, Request{}), strings.NewReader("{not json")} {
 		var out syncBuffer
 
 		require.Error(t, Run(context.Background(), in, &out))

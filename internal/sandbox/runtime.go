@@ -15,7 +15,6 @@ import (
 	"maps"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -38,13 +37,10 @@ const (
 	killGrace = 2 * time.Second
 )
 
-var (
-	volumeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
-	envName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-)
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// proxyNames are the variables the Docker client fills in from the proxies
-// of its config.json on `run`, overriding an env-file value of the same name.
+// proxyNames are the variables the Docker client fills in on `run` from the
+// proxies of its config.json.
 var proxyNames = []string{
 	"HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "NO_PROXY", "ALL_PROXY",
 	"http_proxy", "https_proxy", "ftp_proxy", "no_proxy", "all_proxy",
@@ -161,31 +157,20 @@ func kindOf(bin string, version []byte) (string, error) {
 	return "", fmt.Errorf("%s is neither Docker nor Podman: --version printed %q", bin, line)
 }
 
-// podman refuses a Kind that is neither, rather than read it as Docker.
-func (r Runtime) podman() (bool, error) {
-	switch r.Kind {
-	case "docker":
-		return false, nil
-	case "podman":
-		return true, nil
-	}
-
-	return false, fmt.Errorf("runtime %s: unknown kind %q, want docker or podman", r.Bin, r.Kind)
-}
+func (r Runtime) podman() bool { return r.Kind == "podman" }
 
 // ContainerSpec is one container to run.
 type ContainerSpec struct {
 	Name, Image string
 	Argv        []string
-	Env         []string
 	Labels      map[string]string
 	Mounts      []Mount  // named volumes only
 	Tmpfs       []string // absolute paths, mounted with the runtime's default options
 	Network     string   // "none" or "bridge"
 	HostGateway bool     // host.docker.internal resolves to the host; bridge only
-	Hardened    bool     // cap-drop ALL, no-new-privileges, init, pids 2048, uid 1000, memory limit
-	MemoryMB    int
-	Stdin       bool // keep stdin open and attached (sidecar)
+	Hardened    bool     // cap-drop ALL, no-new-privileges, init, pids 2048, uid 1000
+	MemoryMB    int      // a memory limit when positive
+	Stdin       bool     // keep stdin open and attached (sidecar)
 }
 
 // Mount is a named volume at Path.
@@ -199,8 +184,6 @@ type Info struct {
 	Running, OOMKilled bool
 	Network            string
 	ExitCode           int
-	Labels             map[string]string
-	EnvNames           []string    // names of the container-level variables, never values
 	Mounts             []MountInfo // every mount the runtime reports, whatever added it
 }
 
@@ -226,7 +209,6 @@ func isClientError(err error) bool {
 // call is one client invocation run to its end.
 type call struct {
 	args   []string
-	feed   []byte
 	stdin  []byte
 	stdout io.Writer
 	stderr io.Writer // also receives stderr as it arrives
@@ -243,7 +225,6 @@ func (r Runtime) run(ctx context.Context, c call) error {
 	p, err := proc.Local{}.Start(ctx, proc.Command{
 		Argv:   append([]string{r.Bin}, c.args...),
 		Env:    os.Environ(),
-		Feed:   c.feed,
 		Stdout: stdout,
 		Stderr: c.stderr,
 	})
@@ -348,30 +329,6 @@ func checkArg(what, v string) error {
 	return nil
 }
 
-// checkVolume keeps a name from smuggling options into --mount, where a comma
-// or an = can turn a named volume into a host bind.
-func checkVolume(name string) error {
-	if !volumeName.MatchString(name) {
-		return fmt.Errorf("volume name %q: want %s", name, volumeName)
-	}
-
-	return nil
-}
-
-// checkMount also refuses a line break in the target: Docker reads --mount as
-// a CSV record.
-func checkMount(m Mount) error {
-	if err := checkVolume(m.Volume); err != nil {
-		return err
-	}
-
-	if !path.IsAbs(m.Path) || strings.ContainsAny(m.Path, ",\n\r") {
-		return fmt.Errorf("mount target %q: want an absolute path without a comma or line break", m.Path)
-	}
-
-	return nil
-}
-
 func labelArgs(labels map[string]string) ([]string, error) {
 	args := make([]string, 0, len(labels))
 
@@ -386,40 +343,8 @@ func labelArgs(labels map[string]string) ([]string, error) {
 	return args, nil
 }
 
-// runArgs validates s and renders its `run` arguments and env file.
-func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error) {
-	if err := checkArg("container name", s.Name); err != nil {
-		return nil, nil, err
-	}
-
-	if err := checkArg("image", s.Image); err != nil {
-		return nil, nil, err
-	}
-
-	if s.Network != "none" && s.Network != "bridge" {
-		return nil, nil, fmt.Errorf("network %q: want none or bridge", s.Network)
-	}
-
-	if s.HostGateway && s.Network != "bridge" {
-		return nil, nil, fmt.Errorf("host gateway on network %q: want bridge", s.Network)
-	}
-
-	if s.MemoryMB < 0 || s.Hardened && s.MemoryMB == 0 {
-		return nil, nil, fmt.Errorf("memory %d MB: a hardened container needs a positive limit", s.MemoryMB)
-	}
-
-	feed, err := envFile(s.Env)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	for _, kv := range s.Env {
-		name, _, _ := strings.Cut(kv, "=")
-		if slices.ContainsFunc(proxyNames, func(p string) bool { return strings.EqualFold(p, name) }) {
-			return nil, nil, fmt.Errorf("environment variable %s: a proxy variable goes to a container per exec, not at run", name)
-		}
-	}
-
+// runArgs renders s as `run` arguments.
+func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, error) {
 	// A pull would be a network request of CAVU's own; images are built locally.
 	args := []string{"run", "--pull=never", "--name=" + s.Name, "--network=" + s.Network}
 
@@ -431,14 +356,9 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 		args = append(args, "--interactive")
 	}
 
-	podman, err := r.podman()
-	if err != nil {
-		return nil, nil, err
-	}
-
 	// Host-side client configuration must not put variables into a container.
 	switch {
-	case !podman:
+	case !r.podman():
 		// An empty value set here keeps the config's proxies out.
 		for _, n := range proxyNames {
 			args = append(args, "--env="+n+"=")
@@ -453,7 +373,7 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 
 	labels, err := labelArgs(s.Labels)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	args = append(args, labels...)
@@ -463,10 +383,6 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 	}
 
 	for _, m := range s.Mounts {
-		if err := checkMount(m); err != nil {
-			return nil, nil, err
-		}
-
 		opt := "--mount=type=volume,source=" + m.Volume + ",target=" + m.Path
 		if m.ReadOnly {
 			opt += ",readonly"
@@ -476,12 +392,6 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 	}
 
 	for _, t := range s.Tmpfs {
-		// Options after a colon could drop the runtime's nosuid and nodev
-		// defaults, and Docker's noexec.
-		if !path.IsAbs(t) || strings.ContainsAny(t, ":,\n\r") {
-			return nil, nil, fmt.Errorf("tmpfs %q: want an absolute path without options", t)
-		}
-
 		args = append(args, "--tmpfs="+t)
 	}
 
@@ -493,23 +403,19 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 		args = append(args, "--memory="+strconv.Itoa(s.MemoryMB)+"m")
 	}
 
-	if len(feed) > 0 {
-		args = append(args, envFileArg)
-	}
-
 	args = append(args, s.Image)
 
-	return append(args, s.Argv...), feed, nil
+	return append(args, s.Argv...), nil
 }
 
 // Start runs the container detached.
 func (r Runtime) Start(ctx context.Context, s ContainerSpec) error {
-	args, feed, err := r.runArgs(s, true)
+	args, err := r.runArgs(s, true)
 	if err != nil {
 		return err
 	}
 
-	if err := r.run(ctx, call{args: args, feed: feed}); err != nil {
+	if err := r.run(ctx, call{args: args}); err != nil {
 		return fmt.Errorf("start container %s: %w", s.Name, err)
 	}
 
@@ -520,12 +426,12 @@ func (r Runtime) Start(ctx context.Context, s ContainerSpec) error {
 // the returned client. Stopping the client passes TERM on to the container's
 // main process; Remove is the backstop for one that outlives it.
 func (r Runtime) StartAttached(ctx context.Context, s ContainerSpec) (proc.Process, error) {
-	args, feed, err := r.runArgs(s, false)
+	args, err := r.runArgs(s, false)
 	if err != nil {
 		return nil, err
 	}
 
-	p, err := proc.Local{}.Start(ctx, proc.Command{Argv: append([]string{r.Bin}, args...), Env: os.Environ(), Feed: feed})
+	p, err := proc.Local{}.Start(ctx, proc.Command{Argv: append([]string{r.Bin}, args...), Env: os.Environ()})
 	if err != nil {
 		return nil, fmt.Errorf("start container %s: %w", s.Name, err)
 	}
@@ -535,12 +441,6 @@ func (r Runtime) StartAttached(ctx context.Context, s ContainerSpec) (proc.Proce
 
 // Remove force-removes containers; an absent name is not an error.
 func (r Runtime) Remove(ctx context.Context, names ...string) error {
-	for _, n := range names {
-		if err := checkArg("container name", n); err != nil {
-			return err
-		}
-	}
-
 	if len(names) == 0 {
 		return nil
 	}
@@ -555,18 +455,9 @@ func (r Runtime) Remove(ctx context.Context, names ...string) error {
 
 // VolumeCreate creates a named volume; an existing one is not an error.
 func (r Runtime) VolumeCreate(ctx context.Context, name string, labels map[string]string) error {
-	if err := checkVolume(name); err != nil {
-		return err
-	}
-
-	podman, err := r.podman()
-	if err != nil {
-		return err
-	}
-
 	args := []string{"volume", "create"}
 
-	if podman {
+	if r.podman() {
 		// Docker returns an existing volume; Podman fails unless told not to.
 		args = append(args, "--ignore")
 	}
@@ -588,22 +479,11 @@ func (r Runtime) VolumeCreate(ctx context.Context, name string, labels map[strin
 // VolumeRemove removes named volumes; an absent name is not an error, one in
 // use is, and it never removes a container.
 func (r Runtime) VolumeRemove(ctx context.Context, names ...string) error {
-	for _, n := range names {
-		if err := checkVolume(n); err != nil {
-			return err
-		}
-	}
-
 	if len(names) == 0 {
 		return nil
 	}
 
-	podman, err := r.podman()
-	if err != nil {
-		return err
-	}
-
-	if !podman {
+	if !r.podman() {
 		// Docker's --force skips absent names and still refuses a volume a
 		// container holds, running or stopped.
 		if err := r.run(ctx, call{args: append([]string{"volume", "rm", "--force"}, names...)}); err != nil {
@@ -634,10 +514,6 @@ func (r Runtime) VolumeRemove(ctx context.Context, names ...string) error {
 
 // VolumeLabels reads a volume's labels; an absent volume is an error.
 func (r Runtime) VolumeLabels(ctx context.Context, name string) (map[string]string, error) {
-	if err := checkVolume(name); err != nil {
-		return nil, err
-	}
-
 	out, err := r.output(ctx, "volume", "inspect", "--format={{json .Labels}}", name)
 	if err != nil {
 		return nil, fmt.Errorf("inspect volume %s: %w", name, err)
@@ -654,13 +530,8 @@ func (r Runtime) VolumeLabels(ctx context.Context, name string) (map[string]stri
 // MemoryMB is the memory the runtime reports for the machine its containers
 // run on, which on a VM-backed runtime is the VM.
 func (r Runtime) MemoryMB(ctx context.Context) (int, error) {
-	podman, err := r.podman()
-	if err != nil {
-		return 0, err
-	}
-
 	format := "--format={{.MemTotal}}"
-	if podman {
+	if r.podman() {
 		format = "--format={{.Host.MemTotal}}"
 	}
 
@@ -680,13 +551,8 @@ func (r Runtime) MemoryMB(ctx context.Context) (int, error) {
 // Version is the version the runtime's engine reports, so it also shows that
 // the engine answers.
 func (r Runtime) Version(ctx context.Context) (string, error) {
-	podman, err := r.podman()
-	if err != nil {
-		return "", err
-	}
-
 	format := "--format={{.ServerVersion}}"
-	if podman {
+	if r.podman() {
 		format = "--format={{.Version.Version}}"
 	}
 
@@ -700,10 +566,6 @@ func (r Runtime) Version(ctx context.Context) (string, error) {
 
 // Inspect reports a container's state.
 func (r Runtime) Inspect(ctx context.Context, name string) (Info, error) {
-	if err := checkArg("container name", name); err != nil {
-		return Info{}, err
-	}
-
 	out, err := r.output(ctx, "container", "inspect", name)
 	if err != nil {
 		return Info{}, fmt.Errorf("inspect container %s: %w", name, err)
@@ -717,10 +579,6 @@ func (r Runtime) Inspect(ctx context.Context, name string) (Info, error) {
 		HostConfig struct {
 			NetworkMode string
 			Tmpfs       map[string]string
-		}
-		Config struct {
-			Labels map[string]string
-			Env    []string
 		}
 		Mounts []inspectMount
 	}
@@ -740,28 +598,11 @@ func (r Runtime) Inspect(ctx context.Context, name string) (Info, error) {
 		OOMKilled: c.State.OOMKilled,
 		Network:   c.HostConfig.NetworkMode,
 		ExitCode:  c.State.ExitCode,
-		Labels:    c.Config.Labels,
-		EnvNames:  envNames(c.Config.Env),
 		Mounts:    mountInfos(c.Mounts, c.HostConfig.Tmpfs),
 	}, nil
 }
 
 type inspectMount struct{ Type, Name, Source, Destination string }
-
-// envNames keeps each name once; Docker lists a name twice when a later flag
-// overrides the env file.
-func envNames(env []string) []string {
-	var names []string
-
-	for _, kv := range env {
-		name, _, _ := strings.Cut(kv, "=")
-		names = append(names, name)
-	}
-
-	slices.Sort(names)
-
-	return slices.Compact(names)
-}
 
 // mountInfos merges the tmpfs mounts both runtimes list only under
 // HostConfig.Tmpfs, once per target.

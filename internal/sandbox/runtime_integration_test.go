@@ -192,74 +192,22 @@ func TestEnvRoundTrip(t *testing.T) {
 		env = append(env, k+"="+v)
 	}
 
-	parse := func(environ string) map[string]string {
-		got := map[string]string{}
+	_, c := startContainer(t, testRuntime(t))
 
-		for kv := range strings.SplitSeq(strings.TrimSuffix(environ, "\x00"), "\x00") {
-			k, v, _ := strings.Cut(kv, "=")
-			got[k] = v
-		}
+	var out bytes.Buffer
 
-		return got
+	p, err := c.Start(t.Context(), proc.Command{Argv: []string{"cat", "/proc/self/environ"}, Env: env, Stdout: &out})
+	require.NoError(t, err)
+	require.NoError(t, p.Stdin().Close())
+
+	code, err := p.Wait()
+	require.NoError(t, err)
+	require.Equal(t, 0, code, p.StderrTail())
+
+	got := environ(out.String())
+	for k, v := range values {
+		assert.Equal(t, v, got[k], k)
 	}
-
-	r := testRuntime(t)
-
-	t.Run("exec", func(t *testing.T) {
-		t.Parallel()
-
-		_, c := startContainer(t, r)
-
-		var out bytes.Buffer
-
-		p, err := c.Start(t.Context(), proc.Command{Argv: []string{"cat", "/proc/self/environ"}, Env: env, Stdout: &out})
-		require.NoError(t, err)
-		require.NoError(t, p.Stdin().Close())
-
-		code, err := p.Wait()
-		require.NoError(t, err)
-		require.Equal(t, 0, code, p.StderrTail())
-
-		got := parse(out.String())
-		for k, v := range values {
-			assert.Equal(t, v, got[k], k)
-		}
-	})
-
-	t.Run("run", func(t *testing.T) {
-		t.Parallel()
-
-		s := ContainerSpec{
-			Name:     uniqueName(),
-			Image:    testImage,
-			Argv:     []string{"cat", "/proc/self/environ"},
-			Env:      env,
-			Labels:   testLabels(),
-			Network:  "none",
-			Hardened: true,
-			MemoryMB: 64,
-		}
-
-		cleanup(t, func(ctx context.Context) error { return r.Remove(ctx, s.Name) })
-
-		p, err := r.StartAttached(t.Context(), s)
-		require.NoError(t, err)
-		require.NoError(t, p.Stdin().Close())
-
-		var lines []string
-		for l := range p.Lines() {
-			lines = append(lines, string(l))
-		}
-
-		code, err := p.Wait()
-		require.NoError(t, err)
-		require.Equal(t, 0, code, p.StderrTail())
-
-		got := parse(strings.Join(lines, "\n"))
-		for k, v := range values {
-			assert.Equal(t, v, got[k], k)
-		}
-	})
 }
 
 func TestRunKillsAtTimeout(t *testing.T) {
@@ -436,7 +384,6 @@ func TestNoNetwork(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "none", info.Network)
 	assert.True(t, info.Running)
-	assert.Equal(t, testRun, info.Labels["cavu.test"])
 }
 
 // environ parses a NUL-separated environment.
@@ -526,10 +473,7 @@ func TestHostConfigNeverReachesContainer(t *testing.T) {
 	}
 
 	vol := createVolume(t, r)
-	name, c := startContainer(t, r, func(s *ContainerSpec) {
-		s.Mounts = []Mount{{Volume: vol, Path: "/tmp"}}
-		s.Env = []string{"MINE=1"}
-	})
+	name, c := startContainer(t, r, func(s *ContainerSpec) { s.Mounts = []Mount{{Volume: vol, Path: "/tmp"}} })
 
 	mainEnv := environ(run(t, c, "cat", "/proc/1/environ").Output)
 	execEnv := environ(run(t, c, "cat", "/proc/self/environ").Output)
@@ -537,8 +481,6 @@ func TestHostConfigNeverReachesContainer(t *testing.T) {
 	// Failures name variables only: with a leak, the values would be the
 	// test process's own environment.
 	for label, env := range map[string]map[string]string{"main process": mainEnv, "exec": execEnv} {
-		assert.Equal(t, "1", env["MINE"], label)
-
 		_, hasCanary := env["CAVU_TEST_CANARY"]
 		assert.False(t, hasCanary, "%s has CAVU_TEST_CANARY", label)
 
@@ -551,22 +493,6 @@ func TestHostConfigNeverReachesContainer(t *testing.T) {
 
 	info, err := r.Inspect(t.Context(), name)
 	require.NoError(t, err)
-
-	// Inspect invents no name and misses none, but for the two Docker sets on
-	// the process without recording them.
-	unrecorded := func(n string) bool { return r.Kind == "docker" && (n == "HOME" || n == "HOSTNAME") }
-
-	for _, n := range info.EnvNames {
-		_, ok := mainEnv[n]
-		assert.True(t, ok, "Inspect lists %s, which the container does not have", n)
-	}
-
-	for n := range mainEnv {
-		if !slices.Contains(info.EnvNames, n) {
-			assert.True(t, unrecorded(n), "Inspect misses %s", n)
-		}
-	}
-
 	assert.Equal(t, []MountInfo{{Type: "tmpfs", Target: "/run/cavu"}, {Type: "volume", Source: vol, Target: "/tmp"}}, info.Mounts)
 }
 

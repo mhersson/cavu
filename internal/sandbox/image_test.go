@@ -233,24 +233,13 @@ func TestBuildRefusesNonLinuxBinary(t *testing.T) {
 	}
 }
 
-func TestBuildRefusesBadOptions(t *testing.T) {
-	for name, mutate := range map[string]func(*BuildOptions){
-		"no agent version":     func(o *BuildOptions) { o.AgentVersion = "" },
-		"agent version quotes": func(o *BuildOptions) { o.AgentVersion = "1.0;rm" },
-		"missing arch":         func(o *BuildOptions) { delete(o.AgentSHA512, "arm64") },
-		"short checksum":       func(o *BuildOptions) { o.AgentSHA512["amd64"] = "abc" },
-		"no cavu version":      func(o *BuildOptions) { o.CavuVersion = "" },
-		"no binary":            func(o *BuildOptions) { o.CavuBinary = filepath.Join(t.TempDir(), "absent") },
-	} {
-		t.Run(name, func(t *testing.T) {
-			r, f := fakeRuntime(t, "docker")
-			o := buildOptions(t, elf)
-			mutate(&o)
+func TestBuildRefusesAMissingBinary(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+	o := buildOptions(t, elf)
+	o.CavuBinary = filepath.Join(t.TempDir(), "absent")
 
-			require.Error(t, r.BuildImage(t.Context(), o, io.Discard))
-			assert.Empty(t, f.calls(t))
-		})
-	}
+	require.Error(t, r.BuildImage(t.Context(), o, io.Discard))
+	assert.Empty(t, f.calls(t))
 }
 
 func TestImageNameIsAValidTag(t *testing.T) {

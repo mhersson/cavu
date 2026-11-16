@@ -56,12 +56,12 @@ func Run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	var err error
 
 	switch {
-	case req.Op == "proxy" && req.Proxy != nil:
+	case req.Proxy != nil:
 		err = runProxy(ctx, out, rest, req.Proxy)
-	case req.Op == "clone" && req.Clone != nil:
+	case req.Clone != nil:
 		err = runClone(ctx, out, req.Clone)
 	default:
-		err = errors.New("request: unknown op or missing body")
+		err = errors.New("request: no proxy or clone body")
 	}
 
 	if err != nil {

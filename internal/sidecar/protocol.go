@@ -2,9 +2,9 @@ package sidecar
 
 import "github.com/mhersson/cavu/internal/proxy"
 
-// Request is the one JSON document on standard input.
+// Request is the one JSON document on standard input. The body that is set
+// names the op.
 type Request struct {
-	Op    string // "proxy" or "clone"
 	Proxy *ProxyRequest
 	Clone *CloneRequest
 }
