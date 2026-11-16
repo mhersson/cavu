@@ -86,14 +86,13 @@ git ls-tree -r -z --name-only "$1" | { grep -z -E '/(AGENTS|CLAUDE)\.md$' || [ $
 // container runs an image built before the marker.
 var errNotInSandbox = errors.New("the sandbox image lacks " + proc.SandboxMarker + "; rebuild it with cavu image build")
 
-// stageEnv keeps git to the stored objects: no replace objects, no hooks, no
-// global or system config and no fetch from a promisor remote. The
-// repository's own config and object store stay the agent's.
+// stageEnv keeps git to the stored objects: no replace objects, no global or
+// system config and no fetch from a promisor remote. The repository's own
+// config and object store stay the agent's.
 func stageEnv(s driver.Spec) []string {
 	return proc.BuildEnv(nil, nil, map[string]string{
 		"PATH": basePath, "HOME": s.Home, "LC_ALL": "C",
-		"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1",
-		"GIT_NO_LAZY_FETCH": "1", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": "/dev/null",
+		"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
 	})
 }
 
@@ -109,18 +108,19 @@ type memoryFile struct {
 	Nested   []string
 }
 
-// render returns nil for a file with nothing in it.
-func (m memoryFile) render() ([]byte, error) {
+// render returns nil for a file with nothing in it. The template and its data
+// are fixed, so only a broken template fails, which the unit tests catch.
+func (m memoryFile) render() []byte {
 	if len(m.Sections) == 0 && len(m.Nested) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	var b bytes.Buffer
 	if err := stagedTemplate.ExecuteTemplate(&b, "memory", m); err != nil {
-		return nil, fmt.Errorf("render the staged CLAUDE.md: %w", err)
+		panic(err)
 	}
 
-	return b.Bytes(), nil
+	return b.Bytes()
 }
 
 // prepare clears s.ConfigDir but for keptEntry and, when s names a base
@@ -178,11 +178,7 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 		return err
 	}
 
-	memory, err := m.render()
-	if err != nil {
-		return err
-	}
-
+	memory := m.render()
 	if memory == nil && len(trees) == 0 {
 		return nil
 	}

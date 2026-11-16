@@ -560,6 +560,28 @@ func TestStagingTakesBaseCommit(t *testing.T) {
 	assert.Empty(t, carriedBy(b.mock, written), "the working tree's CLAUDE.md reached a request")
 }
 
+// TestStagingFollowsRootLink: a root CLAUDE.md that links to AGENTS.md, a
+// common layout, puts AGENTS.md's content in the first model call once, and a
+// .claude/CLAUDE.md linking to another file, relative to its directory, puts
+// that file's content there.
+func TestStagingFollowsRootLink(t *testing.T) {
+	b := keyBox(t, mockapi.Step{Text: "done"})
+
+	s := b.spec()
+	s.BaseCommit = lastLine(t, b.sh("ln -sf AGENTS.md CLAUDE.md && ln -sf ../docs/imported.md .claude/CLAUDE.md && "+
+		"git add CLAUDE.md .claude/CLAUDE.md && git "+confIdentity+" commit -q -m link && git rev-parse HEAD"))
+	requireDone(t, b.run(conformanceDriver(), s))
+
+	calls := modelCalls(b.mock)
+	require.NotEmpty(t, calls)
+	assert.Equal(t, 1, bytes.Count(calls[0].Body, []byte(markerRootAgents)))
+	assert.True(t, carries(calls[0], markerImported), "the linked docs/imported.md is not in the first model call")
+
+	for _, m := range []string{markerRootClaude, markerDotClaude} {
+		assert.Empty(t, carriedBy(b.mock, m), "the content a link replaced reached a request")
+	}
+}
+
 // TestSkillsLoaded: a skill under .claude/skills reaches the request's skill
 // listing by its description.
 func TestSkillsLoaded(t *testing.T) {

@@ -156,13 +156,8 @@ func startedKinds(f *fakeRun) []string {
 }
 
 // rendered is the staged CLAUDE.md for m, as the template renders it.
-func rendered(t *testing.T, m memoryFile) string {
-	t.Helper()
-
-	b, err := m.render()
-	require.NoError(t, err)
-
-	return string(b)
+func rendered(m memoryFile) string {
+	return string(m.render())
 }
 
 func section(content string, names ...string) memorySection {
@@ -191,7 +186,7 @@ func TestStageInstructionFiles(t *testing.T) {
 	assert.Equal(t, []string{kindClear, kindListing, kindNested, kindBatch, kindWrite, "claude"}, startedKinds(f))
 
 	memory, unpack := requireWrite(t, f)
-	assert.Equal(t, rendered(t, memoryFile{
+	assert.Equal(t, rendered(memoryFile{
 		Sections: []memorySection{
 			section("root claude", "CLAUDE.md"), section("dot claude", ".claude/CLAUDE.md"), section("root agents", "AGENTS.md"),
 		},
@@ -223,7 +218,7 @@ func TestStageSymlinkedMemoryFiles(t *testing.T) {
 			})
 
 			memory, _ := requireWrite(t, f)
-			assert.Equal(t, rendered(t, memoryFile{Sections: tc.want}), memory)
+			assert.Equal(t, rendered(memoryFile{Sections: tc.want}), memory)
 		})
 	}
 }
@@ -257,12 +252,7 @@ func TestStageWrites(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			memory, unpack := requireWrite(t, stageFake(t, tc.tree))
 
-			want := ""
-			if len(tc.memory.Sections)+len(tc.memory.Nested) > 0 {
-				want = rendered(t, tc.memory)
-			}
-
-			assert.Equal(t, want, memory)
+			assert.Equal(t, rendered(tc.memory), memory)
 			assert.Equal(t, tc.unpack, unpack)
 		})
 	}
@@ -410,8 +400,8 @@ func TestSandboxedComposition(t *testing.T) {
 }
 
 // The git reads and the write take the base commit's stored objects only:
-// replace objects, hooks, lazy fetching and the global and system config are
-// off, and none carries Files.
+// replace objects, lazy fetching and the global and system config are off,
+// and none carries Files.
 func TestGitComposition(t *testing.T) {
 	f := stageFake(t, fakeTree{"CLAUDE.md": regular("root\n"), ".claude/rules/r.md": regular("rule\n")})
 
@@ -420,10 +410,7 @@ func TestGitComposition(t *testing.T) {
 
 	for _, c := range cmds {
 		assert.Equal(t, f.spec.Dir, c.Dir)
-		assert.Subset(t, c.Env, []string{
-			"GIT_NO_REPLACE_OBJECTS=1", "GIT_NO_LAZY_FETCH=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
-			"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
-		})
+		assert.Subset(t, c.Env, []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_NO_LAZY_FETCH=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"})
 		assert.Empty(t, c.Files)
 	}
 
@@ -435,11 +422,9 @@ func TestGitComposition(t *testing.T) {
 // TestMemoryFileRender checks what the staged CLAUDE.md carries and in which
 // order, never its fixed wording.
 func TestMemoryFileRender(t *testing.T) {
-	empty, err := memoryFile{}.render()
-	require.NoError(t, err)
-	assert.Nil(t, empty)
+	assert.Nil(t, memoryFile{}.render())
 
-	got := rendered(t, memoryFile{
+	got := rendered(memoryFile{
 		Sections: []memorySection{section("FIRST-CONTENT", "CLAUDE.md", "AGENTS.md"), section("SECOND-CONTENT", ".claude/CLAUDE.md")},
 		Nested:   []string{"web/AGENTS.md", "internal/api/CLAUDE.md"},
 	})
