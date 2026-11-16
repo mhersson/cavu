@@ -69,11 +69,6 @@ func TestDecryptSecret_TooShort(t *testing.T) {
 	assert.ErrorIs(t, err, auth.ErrDecrypt)
 }
 
-func TestEncryptSecret_BadKeyLength(t *testing.T) {
-	_, err := auth.EncryptSecret([]byte("short"), []byte("x"))
-	assert.Error(t, err)
-}
-
 func TestEncryptSecret_RejectsNon256BitKeys(t *testing.T) {
 	// aes.NewCipher accepts 16/24-byte keys (AES-128/192). The helpers must
 	// not silently downgrade - only 32 bytes (AES-256) is valid.
