@@ -55,6 +55,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 - `make image` builds `bin/cavu` and a Linux `bin/cavu-linux` for the host's architecture, then the sandbox image `cavu-sandbox:<version>` from it on the detected runtime.
 - `make test-integration` runs the `integration` tests (`-count=1`, a 30 minute timeout, all packages); `make test-conformance` runs the `conformance` tests of the Claude Code adapter.
 - Tests that need a container runtime carry the build tag `integration`; tests that need the built image and the real `claude` binary carry `conformance`. Run both with `-count=1`.
+- `make test-ecosystems` runs the `ecosystems` tests, which prepare a Go, a Node, a Python and a Rust repository in real containers and need the internet.
 
 ## Layout
 

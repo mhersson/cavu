@@ -1,4 +1,4 @@
-.PHONY: help build build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-conformance
+.PHONY: help build build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-conformance test-ecosystems
 
 help:
 	@echo "Targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  test-integration  run the tests that need a container runtime"
 	@echo "  test-conformance  run the tests that need the image and the real claude binary"
 	@echo "  check        build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan"
+	@echo "  test-ecosystems   run the tests that prepare a Go, a Node, a Python and a Rust repository (need the internet)"
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/cavu ./cmd/cavu
@@ -75,3 +76,6 @@ test-conformance:
 	go test -tags conformance -count=1 ./internal/driver/claudecode/
 
 check: build build-darwin fmt-check vet lint test-race tidy-check scan
+
+test-ecosystems:
+	go test -tags ecosystems -count=1 -timeout 60m ./internal/runner/

@@ -3,6 +3,7 @@ run:
   build-tags:
   - integration
   - conformance
+  - ecosystems
 linters:
   default: none
   enable:
