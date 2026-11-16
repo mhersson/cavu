@@ -15,8 +15,10 @@ import (
 
 // Command is one process to start on a Target.
 type Command struct {
-	Argv  []string
-	Env   []string // complete KEY=VALUE list
+	Argv []string
+	// Env is the complete KEY=VALUE list; in a container, the container's own
+	// environment is also visible to the command.
+	Env   []string
 	Dir   string
 	Files map[string][]byte // absolute path -> content, written 0600 before the start
 	Feed  []byte            // served to the child on file descriptor 3; Local only, a Container refuses it
