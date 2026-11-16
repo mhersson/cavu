@@ -103,6 +103,24 @@ func sumUsage(evs []driver.Event) []driver.Usage {
 	return out
 }
 
+// tokensOnly drops the per-model cost, which usage events never carry.
+func tokensOnly(u []driver.Usage) []driver.Usage {
+	out := slices.Clone(u)
+	for i := range out {
+		out[i].CostEstimateUSD = 0
+	}
+
+	return out
+}
+
+func requireNoEventCost(t *testing.T, evs []driver.Event) {
+	t.Helper()
+
+	for _, ev := range ofKind(evs, driver.KindUsage) {
+		require.Zero(t, ev.Usage.CostEstimateUSD, "a usage event carries a cost")
+	}
+}
+
 func sortedUsage(u []driver.Usage) []driver.Usage {
 	out := slices.Clone(u)
 	slices.SortFunc(out, func(a, b driver.Usage) int { return strings.Compare(a.Model, b.Model) })
@@ -147,7 +165,7 @@ func TestMapperBasicRun(t *testing.T) {
 	assert.Equal(t, started.SessionID, res.SessionID)
 	assert.Equal(t, 1, res.Turns)
 	assert.InDelta(t, 0.0013918200000000002, res.CostEstimateUSD, 1e-12)
-	assert.Equal(t, []driver.Usage{*evs[3].Usage}, res.Usage)
+	assert.Equal(t, []driver.Usage{*evs[3].Usage}, tokensOnly(res.Usage))
 	require.NotNil(t, res.RateLimit)
 	assert.Equal(t, "seven_day", res.RateLimit.Window)
 	assert.Empty(t, res.Detail)
@@ -264,8 +282,8 @@ func TestMapperToolEvents(t *testing.T) {
 	assert.Equal(t, use[0].ToolID, results[0].ToolID)
 	assert.False(t, results[0].ToolError)
 
-	assert.Equal(t, []driver.Usage{{Model: "claude-sonnet-5-5", Input: 4, Output: 125, CacheRead: 3844, CacheWrite: 3977}}, res.Usage)
-	assert.Equal(t, sumUsage(evs), res.Usage, "usage events add up to the totals")
+	assert.Equal(t, []driver.Usage{{Model: "claude-sonnet-5-5", Input: 4, Output: 125, CacheRead: 3844, CacheWrite: 3977}}, tokensOnly(res.Usage))
+	assert.Equal(t, sumUsage(evs), tokensOnly(res.Usage), "usage events add up to the totals")
 }
 
 func TestMapperToolErrorResult(t *testing.T) {
@@ -286,7 +304,7 @@ func TestMapperToolErrorResult(t *testing.T) {
 func TestMapperLivePartial(t *testing.T) {
 	evs, res := replay(t, "real/p4-partial-messages.jsonl", 0)
 
-	assert.Equal(t, []driver.Usage{{Model: "claude-haiku-5-5", Input: 2, Output: 4, CacheRead: 11382, CacheWrite: 6379}}, res.Usage)
+	assert.Equal(t, []driver.Usage{{Model: "claude-haiku-5-5", Input: 2, Output: 4, CacheRead: 11382, CacheWrite: 6379}}, tokensOnly(res.Usage))
 	assert.Len(t, ofKind(evs, driver.KindUsage), 1, "no remainder event")
 }
 
@@ -303,7 +321,7 @@ func TestMapperPartialAndParallelUsage(t *testing.T) {
 			evs, res := replay(t, tc.path, 0)
 
 			assert.Equal(t, driver.ReasonDone, res.Reason)
-			assert.Equal(t, []driver.Usage{tc.total}, res.Usage)
+			assert.Equal(t, []driver.Usage{tc.total}, tokensOnly(res.Usage))
 
 			// One event per call and none for a remainder: the streamed usage
 			// alone reaches the fixture's totals.
@@ -355,9 +373,13 @@ func TestMapperTwoModels(t *testing.T) {
 	assert.Equal(t, []driver.Usage{
 		{Model: "claude-haiku-5-5", Input: 350, Output: 12},
 		{Model: "claude-sonnet-5-5", Input: 4, Output: 125, CacheRead: 3844, CacheWrite: 3977},
-	}, res.Usage)
+	}, tokensOnly(res.Usage))
+	require.Len(t, res.Usage, 2)
+	assert.InDelta(t, 0.000041, res.Usage[0].CostEstimateUSD, 1e-12, "the haiku share")
+	assert.InDelta(t, 0.0175504, res.Usage[1].CostEstimateUSD, 1e-12, "the sonnet share")
 	assert.InDelta(t, 0.0175914, res.CostEstimateUSD, 1e-12)
-	assert.Equal(t, sortedUsage(sumUsage(evs)), res.Usage)
+	assert.Equal(t, sortedUsage(sumUsage(evs)), tokensOnly(res.Usage))
+	requireNoEventCost(t, evs)
 }
 
 func TestMapperTotalsPreferThisProcess(t *testing.T) {
@@ -375,16 +397,17 @@ func TestMapperTotalsPreferThisProcess(t *testing.T) {
 
 	evs, res := replayData(t, append([]byte(init+"\n"), resultLine(t, fields)...), nil, 0)
 
-	assert.Equal(t, []driver.Usage{{Model: "m1", Input: 10, Output: 5}}, res.Usage)
+	assert.Equal(t, []driver.Usage{{Model: "m1", Input: 10, Output: 5, CostEstimateUSD: 0.5}}, res.Usage)
 	assert.InDelta(t, 0.5, res.CostEstimateUSD, 1e-12)
-	assert.Equal(t, sumUsage(evs), res.Usage)
+	assert.Equal(t, sumUsage(evs), tokensOnly(res.Usage))
+	requireNoEventCost(t, evs)
 
 	t.Run("falls back to modelUsage and the total cost", func(t *testing.T) {
 		delete(fields, "model_usage_since_last_result")
 
 		_, res := replayData(t, append([]byte(init+"\n"), resultLine(t, fields)...), nil, 0)
 
-		assert.Equal(t, []driver.Usage{{Model: "m1", Input: 100, Output: 50}}, res.Usage)
+		assert.Equal(t, []driver.Usage{{Model: "m1", Input: 100, Output: 50, CostEstimateUSD: 9.0}}, res.Usage)
 		assert.InDelta(t, 9.0, res.CostEstimateUSD, 1e-12)
 	})
 
@@ -680,7 +703,7 @@ func TestMapperCallClosesOnNextCall(t *testing.T) {
 
 			assert.Equal(t, tc.want, kinds(evs))
 			assert.Equal(t, tc.call, *ofKind(evs, driver.KindUsage)[0].Usage)
-			assert.Equal(t, []driver.Usage{{Model: "claude-sonnet-5-5", Input: 4, Output: 125, CacheRead: 3844, CacheWrite: 3977}}, res.Usage)
+			assert.Equal(t, []driver.Usage{{Model: "claude-sonnet-5-5", Input: 4, Output: 125, CacheRead: 3844, CacheWrite: 3977}}, tokensOnly(res.Usage))
 		})
 	}
 }

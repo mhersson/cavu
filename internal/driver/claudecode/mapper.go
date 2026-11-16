@@ -133,6 +133,7 @@ type mapper struct {
 	calls  int
 
 	totals    map[string]tokenBuckets // per model: streamed calls plus the remainder the result adds
+	costs     map[string]float64      // per model, from the result
 	model     string                  // from init
 	sessionID string                  // from init
 	lastText  string
@@ -540,6 +541,7 @@ func (m *mapper) usageTotals() []driver.Usage {
 		if b := m.totals[model]; b != (tokenBuckets{}) {
 			out = append(out, driver.Usage{
 				Model: m.mask(model), Input: b.input, Output: b.output, CacheRead: b.cacheRead, CacheWrite: b.cacheWrite,
+				CostEstimateUSD: m.costs[model],
 			})
 		}
 	}
@@ -564,6 +566,11 @@ func (m *mapper) onResult(l streamLine) {
 	if perModel == nil {
 		perModel = l.ModelUsage
 		cost = l.TotalCostUSD
+	}
+
+	m.costs = map[string]float64{}
+	for model, u := range perModel {
+		m.costs[model] = u.CostUSD
 	}
 
 	// A run whose result carries no per-model usage still reports its totals

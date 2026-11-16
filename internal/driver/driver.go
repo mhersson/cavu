@@ -86,6 +86,9 @@ type Event struct {
 type Usage struct {
 	Model                                string
 	Input, Output, CacheRead, CacheWrite int64
+	// CostEstimateUSD is the model's share of Result.CostEstimateUSD in
+	// Result.Usage, and always zero in a usage event.
+	CostEstimateUSD float64
 }
 
 // RateLimit is the subscription's state for one window.
