@@ -51,7 +51,8 @@ var linkScript = proc.SandboxOnly(`while [ "$#" -ge 3 ]; do
 	fi
 	rm -rf -- "./$2" && ln -s -- "$3" "./$2" || exit 2
 	shift 3
-done`)
+done
+[ "$#" -eq 0 ] || exit 2`)
 
 var (
 	errLinkPath = errors.New("runner: a home link must be a clean absolute path strictly under " + home +
