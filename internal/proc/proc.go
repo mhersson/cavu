@@ -137,7 +137,14 @@ func start(c Command, limit int) (*process, error) {
 		p.readStdout(outR)
 	})
 
-	readers.Go(func() { _, _ = io.Copy(p.tail, errR) })
+	readers.Go(func() {
+		var w io.Writer = p.tail
+		if c.Stderr != nil {
+			w = io.MultiWriter(p.tail, &bestEffort{w: c.Stderr})
+		}
+
+		_, _ = io.Copy(w, errR)
+	})
 
 	go func() {
 		exitErr := cmd.Wait()
@@ -273,6 +280,23 @@ func (p *process) getReadErr() error {
 	defer p.readErrMu.Unlock()
 
 	return p.readErr
+}
+
+// bestEffort stops writing after the first failure and reports success, so a
+// broken copy never ends the tail beside it.
+type bestEffort struct {
+	w      io.Writer
+	failed bool
+}
+
+func (b *bestEffort) Write(data []byte) (int, error) {
+	if !b.failed {
+		if _, err := b.w.Write(data); err != nil {
+			b.failed = true
+		}
+	}
+
+	return len(data), nil
 }
 
 // copyStdout keeps draining after a failed write so the child never blocks

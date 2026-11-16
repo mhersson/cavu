@@ -201,6 +201,7 @@ type call struct {
 	feed   []byte
 	stdin  []byte
 	stdout io.Writer
+	stderr io.Writer // also receives stderr as it arrives
 }
 
 // run runs the client to its end; when ctx is done first it stops the client
@@ -216,6 +217,7 @@ func (r Runtime) run(ctx context.Context, c call) error {
 		Env:    os.Environ(),
 		Feed:   c.feed,
 		Stdout: stdout,
+		Stderr: c.stderr,
 	})
 	if err != nil {
 		return err

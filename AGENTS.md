@@ -52,6 +52,8 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 - `make fmt` formats with `golangci-lint fmt` (gofumpt and goimports); `make lint` runs `golangci-lint run`.
 - `make scan` fails on em-dashes; `make scan-commits` fails on session links, attribution lines, task or milestone numbers, em-dashes and blobs over 500 KB in the commits since `origin/main`.
 - `make size` counts non-test Go lines against the 25,000 budget.
+- `make image` builds `bin/cavu` and then the sandbox image `cavu-sandbox:<version>` on the detected runtime.
+- `make test-integration` runs the `integration` tests (`-count=1`, all packages); `make test-conformance` runs the `conformance` tests of the Claude Code adapter.
 - Tests that need a container runtime carry the build tag `integration`; tests that need the built image and the real `claude` binary carry `conformance`. Run both with `-count=1`.
 
 ## Layout

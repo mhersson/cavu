@@ -6,7 +6,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Status
 
-Pre-release. Today the `cavu` command builds and `cavu version` prints its version. Nothing else works yet.
+Pre-release. Today `cavu version` prints the version and `cavu image build` builds the sandbox image on Docker or Podman. Nothing else works yet.
 
 ## Licence
 

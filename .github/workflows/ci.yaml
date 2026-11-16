@@ -51,6 +51,24 @@ jobs:
       - name: make build vet test
         run: make build vet test
 
+  # The runner's Docker; the tests pull nothing themselves, so busybox is
+  # fetched here.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: pull the test image
+        run: docker pull docker.io/library/busybox:1.37
+
+      - name: make image test-integration
+        run: make image test-integration
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:
