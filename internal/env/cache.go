@@ -14,7 +14,7 @@ const (
 	caBundle     = "/etc/ssl/certs/ca-certificates.crt"
 )
 
-const defaultPath = cacheDir + "/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+const defaultPath = MiseDataDir + "/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // common is set in both phases. Trust variables make tools that ignore the
 // system store still trust the instance's CA. Pointing mise at an ignored
@@ -29,7 +29,7 @@ func common() map[string]string {
 		"PIP_CERT":                     caBundle,
 		"CARGO_HTTP_CAINFO":            caBundle,
 		"GIT_SSL_CAINFO":               caBundle,
-		"MISE_DATA_DIR":                cacheDir + "/mise",
+		"MISE_DATA_DIR":                MiseDataDir,
 		"MISE_GLOBAL_CONFIG_FILE":      MiseConfigFile,
 		"MISE_TRUSTED_CONFIG_PATHS":    "",
 		"MISE_IGNORED_CONFIG_PATHS":    workspaceDir,

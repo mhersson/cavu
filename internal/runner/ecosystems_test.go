@@ -100,14 +100,15 @@ var ecosystemFixtures = []ecosystemFixture{
 	{
 		name: "python",
 		files: map[string]string{
-			"requirements.txt": "six==1.17.0\n",
-			"test_eco.py": "import unittest\n\nimport six\n\n\n" +
-				"class SixTest(unittest.TestCase):\n    def test_string_types(self):\n        self.assertIsInstance(\"x\", six.string_types)\n",
+			"requirements.txt": "six==1.17.0\npytest==9.2.0\n",
+			"test_eco.py":      "import six\n\n\ndef test_string_types():\n    assert isinstance(\"x\", six.string_types)\n",
 		},
-		setup: "pip install -r requirements.txt", verify: "python -m unittest",
+		// pytest is a console script the setup command installs; pycodestyle
+		// is one the agent installs for its user.
+		setup: "pip install -r requirements.txt", verify: "pytest -q",
 		tools:        []string{"python@3"},
 		toolchainURL: "https://github.com/astral-sh/python-build-standalone/releases", version: "python --version",
-		add: "pip install iniconfig==2.0.0 && python -c 'import iniconfig'",
+		add: "pip install pycodestyle==2.15.0 && pycodestyle --version",
 	},
 	{
 		name: "rust",

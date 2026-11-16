@@ -14,15 +14,24 @@ import (
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
+	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/verify"
 )
 
+// reshimName is how the fake names the step that makes the tools' shims.
+var reshimName = stepName([]string{"sh", "-c", reshimScript, "sh", env.MiseDataDir})
+
 var fullOrder = []string{
 	"destroy/keep-home", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
-	"run/mise install", "run/make setup", "down", "up/agent", "run/make test",
+	"run/mise install", "run/make setup", "run/" + reshimName, "down", "up/agent", "run/make test",
+}
+
+// without is fullOrder without the given calls.
+func without(calls ...string) []string {
+	return slices.DeleteFunc(slices.Clone(fullOrder), func(s string) bool { return slices.Contains(calls, s) })
 }
 
 func TestPrepareOrder(t *testing.T) {
@@ -47,6 +56,30 @@ func TestPrepareOrder(t *testing.T) {
 	assert.Equal(t, 2*time.Minute, f.run(t, "make test").timeout)
 	assert.Equal(t, verify.Argv("make test"), f.run(t, "make test").cmd.Argv)
 	assert.Equal(t, []string{baseCommit}, f.reads, "the files are read once, at the base commit")
+}
+
+// After the setup command, mise makes the shims for what it added to a tool,
+// such as a console script pip installed, so both phases find its commands.
+func TestPrepareReshimsAfterTheSetupCommand(t *testing.T) {
+	f := newFake()
+
+	_, err := f.runner().Prepare(t.Context(), testConfig())
+	require.NoError(t, err)
+
+	run := f.run(t, reshimName)
+	assert.Equal(t, sandbox.PhaseSetup, run.phase)
+	assert.Equal(t, []string{"sh", "-c", reshimScript, "sh", env.MiseDataDir}, run.cmd.Argv, "the data directory goes as an argument")
+	assert.True(t, strings.HasPrefix(run.cmd.Argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox")
+}
+
+// A data directory outside the cache stops the step before a command is
+// composed.
+func TestReshimRefusesADataDirectoryOutOfBounds(t *testing.T) {
+	for _, dir := range []string{"", "cache/mise", "/cache", "/cache/", "/cache/mise/", "/cache/../etc", "/cache2/mise", "/etc/mise"} {
+		cmd, err := reshimCommand(dir, nil)
+		require.ErrorIs(t, err, errOutOfBounds, dir)
+		assert.Empty(t, cmd.Argv, "nothing is composed for %q", dir)
+	}
 }
 
 func TestPrepareStartsFromEmptyVolumes(t *testing.T) {
@@ -128,7 +161,7 @@ func TestPrepareEnvironments(t *testing.T) {
 		"NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1",
 	}
 
-	for _, name := range []string{"mise install", "make setup"} {
+	for _, name := range []string{"mise install", "make setup", reshimName} {
 		cmd := f.run(t, name).cmd
 		assert.Subset(t, cmd.Env, env.SetupEnv([]string{"go"}), name)
 		assert.Subset(t, cmd.Env, proxyVars, name)
@@ -152,11 +185,13 @@ func TestSetupSecretsOnlyInSetupPhase(t *testing.T) {
 
 	planted := []string{plantedSetup, plantedEndpoint, plantedForge}
 
-	mise := fmt.Sprint(f.run(t, "mise install").cmd)
-	assert.NotContains(t, mise, "APP_ENV")
+	for _, name := range []string{"mise install", reshimName} {
+		mise := fmt.Sprint(f.run(t, name).cmd)
+		assert.NotContains(t, mise, "APP_ENV", name)
 
-	for _, secret := range planted {
-		assert.NotContains(t, mise, secret)
+		for _, secret := range planted {
+			assert.NotContains(t, mise, secret, name)
+		}
 	}
 
 	for _, r := range f.runsIn(sandbox.PhaseAgent) {
@@ -233,7 +268,7 @@ func TestPrepareSkipsWhatIsNotThere(t *testing.T) {
 
 			_, err := f.runner().Prepare(t.Context(), c)
 			require.NoError(t, err)
-			assert.Equal(t, slices.DeleteFunc(slices.Clone(fullOrder), func(s string) bool { return s == "run/make setup" }), f.calls())
+			assert.Equal(t, without("run/make setup", "run/"+reshimName), f.calls(), "nothing was added to a tool")
 		})
 	}
 
@@ -244,7 +279,7 @@ func TestPrepareSkipsWhatIsNotThere(t *testing.T) {
 		res, err := f.runner().Prepare(t.Context(), testConfig())
 		require.NoError(t, err)
 		assert.Empty(t, res.Tools)
-		assert.Equal(t, slices.DeleteFunc(slices.Clone(fullOrder), func(s string) bool { return s == "run/mise install" }), f.calls())
+		assert.Equal(t, without("run/mise install", "run/"+reshimName), f.calls(), "no tool has shims")
 		assert.Equal(t, env.MiseConfig(nil), f.copied[env.MiseConfigFile], "a stale configuration is replaced")
 	})
 }
@@ -275,6 +310,8 @@ func TestPrepareStepFailures(t *testing.T) {
 		{name: "mise install timeout", script: func(f *fakeSandbox) { f.results["mise install"] = timedOut }, step: "toolchain", last: "run/mise install"},
 		{name: "setup exit 1", script: func(f *fakeSandbox) { f.results["make setup"] = failed }, step: "setup", last: "run/make setup"},
 		{name: "setup timeout", script: func(f *fakeSandbox) { f.results["make setup"] = timedOut }, step: "setup", last: "run/make setup"},
+		{name: "reshim exit 2", script: func(f *fakeSandbox) { f.results[reshimName] = sandbox.Result{ExitCode: 2, Output: "mise ERROR\n"} }, step: "setup", last: "run/" + reshimName},
+		{name: "reshim timeout", script: func(f *fakeSandbox) { f.results[reshimName] = timedOut }, step: "setup", last: "run/" + reshimName},
 		{name: "baseline exit 1", script: func(f *fakeSandbox) { f.results["make test"] = failed }, step: "baseline", last: "run/make test"},
 		{name: "baseline timeout", script: func(f *fakeSandbox) { f.results["make test"] = timedOut }, step: "baseline", last: "run/make test"},
 	}
@@ -343,6 +380,15 @@ func TestPrepareFaults(t *testing.T) {
 			f.runErrs["make setup"] = errors.New("environment entry at index 3: invalid variable name")
 		}},
 		{name: "a blank verify command", script: func(_ *fakeSandbox, c *engine.RunConfig) { c.Verify.Command = "  " }},
+		{name: "a reshim outside a sandbox", script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.results[reshimName] = sandbox.Result{ExitCode: proc.NotInSandbox}
+		}, is: errNotInSandbox},
+		{name: "a mise data directory that resolves elsewhere", script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.results[reshimName] = sandbox.Result{ExitCode: elsewhere, Output: "cavu: /cache/mise resolves to /tmp/x; no shim changed\n"}
+		}, is: errElsewhere},
+		{name: "a reshim that cannot start", script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.runErrs[reshimName] = errors.New("exec in cavu-setup: no such container")
+		}},
 	}
 
 	for _, tt := range tests {
