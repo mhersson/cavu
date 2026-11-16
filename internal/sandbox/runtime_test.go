@@ -28,10 +28,13 @@ import (
 // holds a call whose last argument it names for 30 seconds before any later
 // output, "out.<last argument>" is printed for that call only, and "linger"
 // keeps stdout open for 30 seconds after the output. It finds its own tools
-// when a test narrows PATH to fakes only.
+// when a test narrows PATH to fakes only. Its records and canned answers are
+// in logs beside it, found through the absolute path it was run by, so its
+// text holds no path.
 const fakeScript = `#!/bin/sh
 PATH=/usr/bin:/bin:$PATH
-d='@DIR@'
+case $0 in /*) ;; *) exit 99;; esac
+d=${0%/*}/logs
 w=0
 while ! mkdir "$d/lock" 2>/dev/null && [ "$w" -lt 500 ]; do sleep 0.01; w=$((w + 1)); done
 i=$(( $(cat "$d/seq" 2>/dev/null || echo 0) + 1 ))
@@ -91,7 +94,7 @@ func fakeRuntime(t *testing.T, name string) (Runtime, *fake) {
 	bin := filepath.Join(dir, name)
 	logs := filepath.Join(dir, "logs")
 	require.NoError(t, os.Mkdir(logs, 0o700))
-	require.NoError(t, os.WriteFile(bin, []byte(strings.ReplaceAll(fakeScript, "@DIR@", logs)), 0o700))
+	require.NoError(t, os.WriteFile(bin, []byte(fakeScript), 0o700))
 
 	return Runtime{Bin: bin, Kind: name}, &fake{dir: logs}
 }
