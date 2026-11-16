@@ -839,6 +839,39 @@ func TestLoopMasksBeforeCutting(t *testing.T) {
 	}
 }
 
+// A runner fault or export problem has no result event, so its stop keeps the whole redacted text.
+func TestLoopStopKeepsRunnerText(t *testing.T) {
+	const planted = "sk-ant-api03-plainsecretvalue"
+
+	text := "the container exited with " + planted + "\n" + strings.Repeat("日本語", 200)
+
+	tests := []struct {
+		name   string
+		script func(r *fakeRunner)
+	}{
+		{"a runner error", func(r *fakeRunner) { r.works = []step[engine.WorkResult]{{err: errors.New(text)}} }},
+		{"an export problem", func(r *fakeRunner) {
+			r.exports = []step[engine.ExportResult]{{res: engine.ExportResult{Problem: text}}}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			require.NoError(t, h.vault.Set(t.Context(), "endpoint_credential", planted))
+			tt.script(h.runner)
+
+			_, err := h.run(t.Context())
+			require.NoError(t, err)
+
+			stop := h.lastStop()
+			assert.LessOrEqual(t, len(stop.Explanation), 300)
+			assert.NotContains(t, stop.Explanation, "\n")
+			assert.Equal(t, strings.ReplaceAll(text, planted, "[redacted]"), stop.Detail)
+		})
+	}
+}
+
 func TestLoopRepairsRunRows(t *testing.T) {
 	exportedRun := []store.Event{
 		ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`),
