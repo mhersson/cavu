@@ -12,8 +12,8 @@ import (
 	"github.com/mhersson/cavu/internal/proc"
 )
 
-// noConversation is what the pinned release prints on stderr when --resume
-// names a session whose transcript is missing.
+// noConversation opens what the pinned release prints on stderr, after an
+// error result, when --resume names a session whose transcript is missing.
 const noConversation = "No conversation found"
 
 // Run starts or resumes one session as one claude process. The error is only
@@ -140,7 +140,7 @@ func (r *session) ended(ctx context.Context) driver.Result {
 
 	res := r.m.finish(code, detail)
 
-	if !r.m.sawResult && r.resume && strings.Contains(tail, noConversation) {
+	if r.resume && res.Reason == driver.ReasonCrashed && strings.Contains(tail, noConversation) {
 		res.Reason = driver.ReasonResumeRefused
 	}
 
