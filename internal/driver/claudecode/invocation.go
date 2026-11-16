@@ -87,7 +87,7 @@ func validate(s driver.Spec) error {
 }
 
 // newInvocation builds the process for s. Its files go under a fresh
-// directory of the run root; the prompt, the instructions and the token never
+// directory in c.runRoot; the prompt, the instructions and the token never
 // enter argv.
 func (c claudeCode) newInvocation(s driver.Spec) (invocation, error) {
 	if err := validate(s); err != nil {

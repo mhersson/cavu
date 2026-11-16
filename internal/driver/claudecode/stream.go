@@ -99,9 +99,9 @@ type rateLimitInfo struct {
 }
 
 // decodeLine reports false for a line that is not JSON; JSON that is not an
-// object decodes to an empty line. A known field
-// whose type changed is left zero instead of dropping the line, so a newer
-// release degrades rather than failing the run.
+// object decodes to an empty line. A known field whose type changed is left
+// zero instead of dropping the line, so a newer release degrades rather than
+// failing the run.
 func decodeLine(b []byte) (streamLine, bool) {
 	var l streamLine
 

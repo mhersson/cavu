@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	// runRoot holds one directory of files per run, on the sandbox's tmpfs.
+	// runRoot holds a fresh directory of files for each claude process, on the
+	// sandbox's tmpfs.
 	runRoot = "/run/cavu"
 	// gateTimeout bounds the wait for the answer to the initialize request;
 	// the prompt is written only after it.
