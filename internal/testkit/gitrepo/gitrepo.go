@@ -187,8 +187,9 @@ func Commit(t *testing.T, dir string, files map[string]string, msg string) strin
 func Bare(t *testing.T, from string) (url string) {
 	t.Helper()
 
-	dst := filepath.Join(t.TempDir(), "repo.git")
-	Git(t, "", "clone", "-q", "--bare", from, dst)
+	tmp := t.TempDir()
+	dst := filepath.Join(tmp, "repo.git")
+	Git(t, tmp, "clone", "-q", "--bare", from, dst)
 
 	return "file://" + dst
 }

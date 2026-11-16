@@ -34,7 +34,7 @@ func spec(t *testing.T, url string) CloneSpec {
 func withMainMirror(t *testing.T, s CloneSpec) {
 	t.Helper()
 
-	gitrepo.Git(t, "", "init", "--bare", "--quiet", "-b", "main", s.MirrorDir)
+	gitrepo.Git(t, filepath.Dir(s.MirrorDir), "init", "--bare", "--quiet", "-b", "main", s.MirrorDir)
 }
 
 func TestCloneFromMirror(t *testing.T) {
