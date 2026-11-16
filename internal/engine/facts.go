@@ -19,7 +19,7 @@ type Facts struct {
 	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action came after it, or while a newer session is pending
 	Verify                     string       // result for the newest ended session; "" while a session or a verify is pending
 	Exported                   bool
-	Resumed                    *Resume // a human retry or answer after a stop, not yet followed by a finished session or prepare
+	Resumed                    *Resume // a human retry or answer after a stop, not yet followed by a finished session or prepare, or by a new run when it came from environment or sandbox
 	LastVerifyOutput           string  // of the newest verify_ended, for the next fix prompt
 	Continuations, VerifyFixes int     // session starts marked automatic, per mode, since the last human action
 }
@@ -77,9 +77,17 @@ func (f *Facts) apply(e store.Event) {
 	case HumanCancelled:
 		f.Cancelled = true
 		f.humanAction()
-	case RunStarted, RunEnded:
+	case RunStarted:
+		// The new run is what a resume from environment or sandbox asked for.
+		if f.resumedFrom(StopEnvironment) || f.resumedFrom(StopSandbox) {
+			f.Resumed = nil
+		}
+
 		f.resetRun()
-		f.RunOpen = e.Type == RunStarted
+		f.RunOpen = true
+	case RunEnded:
+		f.resetRun()
+		f.RunOpen = false
 	case PrepareStarted:
 		if f.RunOpen {
 			f.Pending, f.Prepared, f.PrepareFailure = string(KindPrepare), false, nil

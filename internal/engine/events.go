@@ -71,9 +71,9 @@ type (
 	}
 
 	PreparedPayload struct {
-		BaseCommit string            `json:"base_commit"`
-		Tools      map[string]string `json:"tools"`    // tool name to version
-		Baseline   string            `json:"baseline"` // result of the verify on the base commit
+		BaseCommit string   `json:"base_commit"`
+		Tools      []string `json:"tools"`
+		Baseline   string   `json:"baseline"` // result of the verify on the base commit
 	}
 
 	PrepareFailedPayload struct {

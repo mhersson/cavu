@@ -22,7 +22,7 @@ func preparedRun(more ...store.Event) []store.Event {
 		ev(engine.TaskStarted, ""),
 		ev(engine.RunStarted, `{"reason":"initial"}`),
 		ev(engine.PrepareStarted, ""),
-		ev(engine.Prepared, `{"base_commit":"abc123","tools":{"go":"1.27.4"},"baseline":"passed"}`),
+		ev(engine.Prepared, `{"base_commit":"abc123","tools":["go","node"],"baseline":"passed"}`),
 	}, more...)
 }
 
@@ -228,6 +228,43 @@ func TestReducePendingAndCounting(t *testing.T) {
 		assert.Equal(t, work(engine.ModeContinue, false), got)
 	})
 
+	reprepares := []struct {
+		name    string
+		stopped []store.Event
+	}{
+		{
+			name: "environment",
+			stopped: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.PrepareFailed, `{"step":"setup","output":"exit 1"}`),
+				ev(engine.Stopped, `{"reason":"environment","explanation":"Setup failed.","action":"retry"}`),
+				ev(engine.RunEnded, `{"outcome":"environment"}`),
+			},
+		},
+		{
+			name: "sandbox",
+			stopped: preparedRun(firstSession,
+				ev(engine.Stopped, `{"reason":"sandbox","explanation":"The agent container died.","action":"retry"}`),
+				ev(engine.RunEnded, `{"outcome":"sandbox"}`)),
+		},
+	}
+
+	for _, tc := range reprepares {
+		t.Run("a crash during the new run's prepare after a retry from "+tc.name+" prepares that run", func(t *testing.T) {
+			events := append(slices.Clone(tc.stopped), retried, ev(engine.RunStarted, `{"reason":"retry"}`), ev(engine.PrepareStarted, ""))
+			f := engine.Reduce(events)
+
+			assert.True(t, f.RunOpen)
+			assert.False(t, f.Prepared)
+			assert.Equal(t, "prepare", f.Pending)
+			assert.Nil(t, f.Resumed)
+
+			got := engine.Decide(snap(f))
+			got.Why, got.Explain = "", ""
+			assert.Equal(t, engine.Action{Kind: engine.KindPrepare}, got)
+		})
+	}
+
 	crashes := []struct {
 		name   string
 		events []store.Event
@@ -237,16 +274,6 @@ func TestReducePendingAndCounting(t *testing.T) {
 			name:   "a pending prepare",
 			events: []store.Event{ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, "")},
 			want:   engine.Action{Kind: engine.KindPrepare},
-		},
-		{
-			name: "a pending prepare after a retry from environment",
-			events: []store.Event{
-				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
-				ev(engine.PrepareFailed, `{"step":"setup","output":"exit 1"}`),
-				ev(engine.Stopped, `{"reason":"environment","explanation":"Setup failed.","action":"retry"}`),
-				retried, ev(engine.RunStarted, `{"reason":"retry"}`), ev(engine.PrepareStarted, ""),
-			},
-			want: engine.Action{Kind: engine.KindPrepare, NewRun: true},
 		},
 		{name: "a pending first session", events: preparedRun(firstSession), want: work(engine.ModeContinue, false)},
 		{name: "a pending automatic continuation", events: preparedRun(firstSession, unfinished, autoContinue), want: work(engine.ModeContinue, false)},
