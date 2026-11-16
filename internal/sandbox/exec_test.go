@@ -262,3 +262,21 @@ func TestRunReportsAFailedStopAtTheTimeout(t *testing.T) {
 	require.Error(t, err, "the command may still run, so Run must not report a plain timeout")
 	assert.Equal(t, 1, stopExecs(t, f))
 }
+
+// TestStopAfterACleanEndSendsNothing pins the early return that keeps a late
+// Stop from signalling a pid the container may have reused.
+func TestStopAfterACleanEndSendsNothing(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+
+	p, err := r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"true"}})
+	require.NoError(t, err)
+	require.NoError(t, p.Stdin().Close())
+
+	code, err := p.Wait()
+	require.NoError(t, err)
+	require.Equal(t, 0, code)
+
+	require.NoError(t, p.Stop(time.Second))
+	require.NoError(t, p.Stop(time.Second))
+	assert.Equal(t, 0, stopExecs(t, f))
+}
