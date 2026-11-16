@@ -500,6 +500,7 @@ func TestDetect(t *testing.T) {
 			require.NoError(t, r.Start(t.Context(), goodSpec()))
 
 			var run []string
+
 			for _, c := range f.calls(t) {
 				if c.argv[0] == "run" {
 					run = c.argv
