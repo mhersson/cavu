@@ -72,7 +72,8 @@ type call struct {
 	remove bool
 	commit string // the commit an export was given
 	ref    engine.RunRef
-	eco    []string // the config's ecosystems
+	eco    []string         // the config's ecosystems
+	cfg    engine.RunConfig // a check's config
 }
 
 func (c call) String() string {
@@ -99,6 +100,7 @@ type fakeRunner struct {
 	verifies   []step[engine.VerifyResult]
 	exports    []step[engine.ExportResult]
 	releaseErr error
+	suggestion string            // every check's verify suggestion
 	progress   []engine.Progress // sent during every Work, each from its own goroutine
 	onCall     func(c call)      // runs as a call starts
 }
@@ -133,6 +135,18 @@ func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.Pr
 	defer r.mu.Unlock()
 
 	return pop(&r.prepares, preparedOK)
+}
+
+// CheckEnvironment answers from the prepare queue: a check is a prepare.
+func (r *fakeRunner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, string, error) {
+	r.begin(call{method: "check", runID: c.RunID, cfg: c})
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	res, err := pop(&r.prepares, preparedOK)
+
+	return res, r.suggestion, err
 }
 
 func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {

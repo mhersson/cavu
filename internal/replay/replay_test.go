@@ -74,6 +74,10 @@ func (r *fakeRunner) Export(_ context.Context, c engine.RunConfig, _ string) (en
 
 func (r *fakeRunner) Release(context.Context, engine.RunRef, bool) error { return nil }
 
+func (r *fakeRunner) CheckEnvironment(context.Context, engine.RunConfig) (engine.PrepareResult, string, error) {
+	return engine.PrepareResult{}, "", nil
+}
+
 type env struct {
 	store   *store.Store
 	loop    *engine.Loop
