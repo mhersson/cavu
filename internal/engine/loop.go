@@ -88,33 +88,32 @@ func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
 
 	p := &pass{Loop: l, taskID: taskID, mask: redact.New(secrets...)}
 
-	if err := p.repair(ctx); err != nil {
-		return "", err
-	}
-
 	var status Status
+
+	// Held errors never stop the loop; every return carries them.
+	done := func(err error) (Status, error) { return status, errors.Join(err, p.held) }
+
+	if err := p.repair(ctx); err != nil {
+		return done(err)
+	}
 
 	conflicts := 0
 
 	for range maxActions {
 		v, err := p.view(ctx)
 		if err != nil {
-			return status, err
+			return done(err)
 		}
 
 		status = StatusOf(v.Facts)
-		if p.held != nil {
-			return status, p.held
-		}
-
 		a := Decide(v.Snapshot)
 
 		switch a.Kind {
 		case KindNone:
-			return status, nil
+			return done(nil)
 		case KindWait:
-			if done, err := p.wait(ctx, a.Until); done {
-				return status, err
+			if stop, err := p.wait(ctx, a.Until); stop {
+				return done(err)
 			}
 
 			continue
@@ -123,20 +122,20 @@ func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
 		err = p.act(ctx, v, a)
 		if errors.Is(err, store.ErrConflict) {
 			if conflicts++; conflicts == maxConflicts {
-				return status, fmt.Errorf("task %d: %w after %d lost claims", taskID, ErrConflictCap, conflicts)
+				return done(fmt.Errorf("task %d: %w after %d lost claims", taskID, ErrConflictCap, conflicts))
 			}
 
 			continue
 		}
 
 		if err != nil {
-			return status, err
+			return done(err)
 		}
 
 		conflicts = 0
 	}
 
-	return status, fmt.Errorf("task %d: %w after %d actions", taskID, ErrActionCap, maxActions)
+	return done(fmt.Errorf("task %d: %w after %d actions", taskID, ErrActionCap, maxActions))
 }
 
 // pass is one RunTask call.
@@ -145,7 +144,7 @@ type pass struct {
 
 	taskID int64
 	mask   func(string) string
-	held   error // recorded after an action's result was written; returned at the next snapshot
+	held   error // an error that must not stop the loop, such as a failed Release
 }
 
 // view is a snapshot with what the loop needs beside it.
@@ -156,10 +155,11 @@ type view struct {
 	hadRun bool      // a run was started before
 }
 
-// openRun is a run row with the config its runner calls use.
+// openRun is a run row with the task and the config its runner calls use.
 type openRun struct {
-	row store.Run
-	cfg RunConfig
+	task store.Task
+	row  store.Run
+	cfg  RunConfig
 }
 
 // draft is an event before the loop stamps, encodes and masks it.
@@ -217,6 +217,11 @@ func (p *pass) view(ctx context.Context) (view, error) {
 // repair makes the run rows follow the events. It ends the newest open row
 // until that row is the run the events hold open, or no open row is left.
 func (p *pass) repair(ctx context.Context) error {
+	t, err := p.Store.Task(ctx, p.taskID)
+	if err != nil {
+		return fmt.Errorf("task %d: %w", p.taskID, err)
+	}
+
 	events, err := p.Store.Events(ctx, p.taskID, 0, 0)
 	if err != nil {
 		return fmt.Errorf("task %d: %w", p.taskID, err)
@@ -246,7 +251,15 @@ func (p *pass) repair(ctx context.Context) error {
 			return nil
 		case done:
 			// The process died between the run's end and its release.
-			err = p.releaseEnded(ctx, r, outcome)
+			o, oerr := p.open(ctx, t, r)
+			if oerr != nil {
+				// The row stays open, so the next repair releases it once the config builds.
+				p.hold(oerr)
+
+				return nil
+			}
+
+			err = p.free(ctx, o, true, outcome)
 		default:
 			err = p.endRun(ctx, r, RunAbandoned)
 		}
@@ -257,20 +270,6 @@ func (p *pass) repair(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("task %d: more than %d stale run rows", p.taskID, maxRepairs)
-}
-
-func (p *pass) releaseEnded(ctx context.Context, r store.Run, outcome string) error {
-	t, err := p.Store.Task(ctx, p.taskID)
-	if err != nil {
-		return fmt.Errorf("task %d: %w", p.taskID, err)
-	}
-
-	o, err := p.open(ctx, t, r)
-	if err != nil {
-		return err
-	}
-
-	return p.release(ctx, o, true, outcome)
 }
 
 // wait waits until the clock reaches until. It reports true when RunTask must
@@ -293,8 +292,23 @@ func (p *pass) wait(ctx context.Context, until time.Time) (bool, error) {
 }
 
 func (p *pass) act(ctx context.Context, v view, a Action) error {
-	if a.Kind == KindStop && !v.Facts.RunOpen {
-		return p.halt(ctx, v.LastEventID, nil, stopPayload(a))
+	// A stop or finish is claimed before its config is built, so a broken
+	// setting cannot keep a person's cancel out of the record.
+	switch a.Kind {
+	case KindStop:
+		var run *store.Run
+		if v.Facts.RunOpen {
+			run = &v.run
+		}
+
+		return p.halt(ctx, v.LastEventID, v.Task, run, stopPayload(a))
+	case KindFinish:
+		if err := p.write(ctx, v.LastEventID, v.run.ID, nil,
+			draft{RunEnded, actorEngine, RunEndedPayload{Outcome: RunExported, Why: a.Why}}); err != nil {
+			return err
+		}
+
+		return p.release(ctx, v.Task, v.run, true, RunExported)
 	}
 
 	row := v.run
@@ -325,14 +339,6 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		return p.verify(ctx, v, a, o)
 	case KindExport:
 		return p.export(ctx, v, a, o)
-	case KindFinish:
-		if err := p.claim(ctx, v, o, draft{RunEnded, actorEngine, RunEndedPayload{Outcome: RunExported, Why: a.Why}}); err != nil {
-			return err
-		}
-
-		return p.release(ctx, o, true, RunExported)
-	case KindStop:
-		return p.halt(ctx, v.LastEventID, &o, stopPayload(a))
 	}
 
 	return fmt.Errorf("task %d: no handler for action %q", p.taskID, a.Kind)
@@ -344,16 +350,21 @@ func (p *pass) open(ctx context.Context, t store.Task, row store.Run) (openRun, 
 		return openRun{}, fmt.Errorf("task %d: %w", p.taskID, err)
 	}
 
-	return openRun{row: row, cfg: cfg}, nil
+	return openRun{task: t, row: row, cfg: cfg}, nil
 }
 
 // abandon ends a new run row whose claim was never written, then returns cause.
+// A failed end replaces cause, so a lost claim is not retried over an open row.
 func (p *pass) abandon(ctx context.Context, a Action, row store.Run, cause error) error {
 	if !a.NewRun {
 		return cause
 	}
 
-	return errors.Join(cause, p.endRun(ctx, row, RunAbandoned))
+	if err := p.endRun(ctx, row, RunAbandoned); err != nil {
+		return fmt.Errorf("%w (abandoning after: %v)", err, cause)
+	}
+
+	return cause
 }
 
 func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
@@ -368,6 +379,13 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 		}
 
 		return err
+	}
+
+	// A prepare redone after a crash may find a partial clone; start it from empty volumes.
+	if v.Facts.Pending == string(KindPrepare) {
+		if err := p.Runner.Release(ctx, o.cfg, true); err != nil {
+			return p.fault(ctx, o, err)
+		}
 	}
 
 	res, err := p.Runner.Prepare(ctx, o.cfg)
@@ -433,7 +451,7 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 
 	add, stop := p.progress(ctx, o.row.ID)
 	res, err := p.Runner.Work(ctx, o.cfg, w, add)
-	progressErr := stop()
+	p.hold(stop())
 
 	if err != nil {
 		return p.fault(ctx, o, err)
@@ -451,10 +469,6 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 		ResetsAt: res.ResetsAt, Detail: res.Detail,
 	}}); err != nil {
 		return err
-	}
-
-	if progressErr != nil {
-		p.held = errors.Join(p.held, progressErr)
 	}
 
 	return nil
@@ -597,7 +611,7 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 	}
 
 	if res.Problem != "" {
-		return p.halt(ctx, -1, &o, StoppedPayload{
+		return p.halt(ctx, -1, o.task, &o.row, StoppedPayload{
 			Reason: StopAgentError, Explanation: lineOr(res.Problem, "Exporting the change failed."), Action: ClearRetry,
 		})
 	}
@@ -614,7 +628,7 @@ func (p *pass) fault(ctx context.Context, o openRun, cause error) error {
 		return err
 	}
 
-	return p.halt(ctx, -1, &o, StoppedPayload{
+	return p.halt(ctx, -1, o.task, &o.row, StoppedPayload{
 		Reason: StopSandbox, Explanation: lineOr("The runner failed: "+cause.Error(), "The runner failed."), Action: ClearRetry,
 	})
 }
@@ -624,15 +638,15 @@ func stopPayload(a Action) StoppedPayload {
 }
 
 // halt records a stop, with the run's end when the stop ends it, then releases
-// the run. o is nil when no run is open.
-func (p *pass) halt(ctx context.Context, expectLast int64, o *openRun, sp StoppedPayload) error {
+// the run. run is nil when no run is open.
+func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *store.Run, sp StoppedPayload) error {
 	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment || sp.Reason == StopSandbox
 	drafts := []draft{{Stopped, actorEngine, sp}}
 
 	var runID int64
 
-	if o != nil {
-		runID = o.row.ID
+	if run != nil {
+		runID = run.ID
 
 		if ends {
 			drafts = append(drafts, draft{RunEnded, actorEngine, RunEndedPayload{Outcome: sp.Reason}})
@@ -643,16 +657,30 @@ func (p *pass) halt(ctx context.Context, expectLast int64, o *openRun, sp Stoppe
 		return err
 	}
 
-	if o == nil {
+	if run == nil {
 		return nil
 	}
 
-	return p.release(ctx, *o, ends, sp.Reason)
+	return p.release(ctx, t, *run, ends, sp.Reason)
 }
 
-// release stops the run's containers, removing its volumes and ending its row
+// release frees a run whose stop or end is recorded. Without a config it holds
+// the error: a run that ended keeps its row open for repair, and any other
+// run keeps its containers until the next action uses them.
+func (p *pass) release(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
+	o, err := p.open(ctx, t, row)
+	if err != nil {
+		p.hold(err)
+
+		return nil
+	}
+
+	return p.free(ctx, o, end, outcome)
+}
+
+// free stops the run's containers, removing its volumes and ending its row
 // when the run ends. A Release error is held so the row is still ended.
-func (p *pass) release(ctx context.Context, o openRun, end bool, outcome string) error {
+func (p *pass) free(ctx context.Context, o openRun, end bool, outcome string) error {
 	relErr := p.Runner.Release(ctx, o.cfg, end)
 	if relErr != nil {
 		relErr = fmt.Errorf("task %d: release run %d: %w", p.taskID, o.row.ID, relErr)
@@ -664,11 +692,16 @@ func (p *pass) release(ctx context.Context, o openRun, end bool, outcome string)
 		}
 	}
 
-	if relErr != nil {
-		p.held = errors.Join(p.held, relErr)
-	}
+	p.hold(relErr)
 
 	return nil
+}
+
+// hold keeps an error RunTask returns without stopping for it.
+func (p *pass) hold(err error) {
+	if err != nil {
+		p.held = errors.Join(p.held, err)
+	}
 }
 
 func (p *pass) endRun(ctx context.Context, r store.Run, outcome string) error {

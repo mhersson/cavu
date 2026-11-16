@@ -45,8 +45,12 @@ type Runner interface {
 	// verify. Work, Verify and Export bring the run's containers up themselves
 	// when they are not running, so a restart needs no second prepare.
 	Prepare(ctx context.Context, c RunConfig) (PrepareResult, error)
+	// Work with Resume true may name a session the agent never started, when
+	// the process died between the claim and the start; the runner then starts
+	// it under that id. progress is never called after Work returns.
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
+	// Export is safe to repeat for the same run.
 	Export(ctx context.Context, c RunConfig, title string) (ExportResult, error)
 	Release(ctx context.Context, c RunConfig, removeVolumes bool) error
 }

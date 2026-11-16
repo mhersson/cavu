@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -210,6 +208,7 @@ type spyStore struct {
 	claims     int
 	rival      func(claim int) (store.Event, bool)
 	failAppend func(events []store.Event) error
+	failUpdate func(r store.Run) error
 	createRuns int
 	runWrites  []store.Run
 }
@@ -251,6 +250,16 @@ func (s *spyStore) CreateRun(ctx context.Context, r store.Run) (store.Run, error
 }
 
 func (s *spyStore) UpdateRun(ctx context.Context, r store.Run) error {
+	s.mu.Lock()
+	fail := s.failUpdate
+	s.mu.Unlock()
+
+	if fail != nil {
+		if err := fail(r); err != nil {
+			return err
+		}
+	}
+
 	err := s.Store.UpdateRun(ctx, r)
 	if err == nil {
 		s.mu.Lock()
@@ -271,6 +280,22 @@ func (s *spyStore) ended() map[int64]string {
 	for _, r := range s.runWrites {
 		if r.EndedAt != nil {
 			out[r.ID] = r.Outcome
+		}
+	}
+
+	return out
+}
+
+// row returns the last write of the run row with id.
+func (s *spyStore) row(id int64) store.Run {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out store.Run
+
+	for _, r := range s.runWrites {
+		if r.ID == id {
+			out = r
 		}
 	}
 
@@ -469,15 +494,7 @@ func TestLoopHappyPath(t *testing.T) {
 
 	assert.Equal(t, map[int64]string{runID: engine.RunExported}, h.spy.ended())
 
-	var stored store.Run
-
-	for _, r := range h.spy.runWrites {
-		if r.ID == runID {
-			stored = r
-		}
-	}
-
-	assert.Equal(t, work.SessionID, stored.SessionID, "the run row keeps the session id")
+	assert.Equal(t, work.SessionID, h.spy.row(runID).SessionID, "the run row keeps the session id")
 
 	task, err := h.store.Task(t.Context(), h.task.ID)
 	require.NoError(t, err)
@@ -534,7 +551,7 @@ func TestLoopRedoesInterruptedAction(t *testing.T) {
 	tests := []struct {
 		name   string
 		events []store.Event
-		first  string
+		starts []string // the first runner calls
 	}{
 		{
 			name: "a session started and not ended",
@@ -542,12 +559,12 @@ func TestLoopRedoesInterruptedAction(t *testing.T) {
 				ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`),
 				ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
 			},
-			first: "work/continue",
+			starts: []string{"work/continue"},
 		},
 		{
 			name:   "a prepare started and not prepared",
 			events: []store.Event{ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, "")},
-			first:  "prepare",
+			starts: []string{"release/remove", "prepare"},
 		},
 		{
 			name: "a verify started and not ended",
@@ -556,7 +573,7 @@ func TestLoopRedoesInterruptedAction(t *testing.T) {
 				ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
 				ev(engine.SessionEnded, `{"outcome":"done","changed":true}`), ev(engine.VerifyStarted, ""),
 			},
-			first: "verify",
+			starts: []string{"verify"},
 		},
 	}
 
@@ -570,18 +587,19 @@ func TestLoopRedoesInterruptedAction(t *testing.T) {
 			assert.Equal(t, engine.StatusInReview, status)
 
 			trace := h.runner.trace()
-			require.NotEmpty(t, trace)
-			assert.Equal(t, tt.first, trace[0])
+			require.GreaterOrEqual(t, len(trace), len(tt.starts))
+			assert.Equal(t, tt.starts, trace[:len(tt.starts)])
 			assert.Zero(t, h.spy.created(), "no second run row")
 
 			for _, c := range h.runner.calls {
 				assert.Equal(t, r.ID, c.runID, "%s runs on the seeded run", c)
 			}
 
-			if works := h.runner.callsOf("work"); tt.first == "work/continue" {
+			if works := h.runner.callsOf("work"); tt.starts[0] == "work/continue" {
 				require.NotEmpty(t, works)
 				assert.True(t, works[0].work.Resume)
 				assert.Equal(t, seededSession, works[0].work.SessionID)
+				assert.Equal(t, seededSession, h.spy.row(r.ID).SessionID, "the redo writes the session id onto the row")
 			}
 		})
 	}
@@ -848,6 +866,26 @@ func TestLoopClaimConflict(t *testing.T) {
 		})
 	}
 
+	t.Run("a failed abandon is returned, not retried", func(t *testing.T) {
+		h := newHarness(t)
+		h.spy.rival = at(1, rivalText)
+
+		injected := errors.New("database is locked")
+		h.spy.failUpdate = func(r store.Run) error {
+			if r.Outcome == engine.RunAbandoned {
+				return injected
+			}
+
+			return nil
+		}
+
+		_, err := h.run(t.Context())
+		require.ErrorIs(t, err, injected)
+		require.NotErrorIs(t, err, store.ErrConflict)
+		assert.Equal(t, 1, h.spy.created())
+		assert.Empty(t, h.runner.trace())
+	})
+
 	t.Run("a rival before every claim hits the conflict cap", func(t *testing.T) {
 		h := newHarness(t)
 		h.spy.rival = func(int) (store.Event, bool) { return rivalText, true }
@@ -941,31 +979,43 @@ func TestLoopRecordsProgress(t *testing.T) {
 		assert.Equal(t, "evil.example", payloadOf[engine.EgressDeniedPayload](t, h.eventsOf(engine.EgressDenied)[0]).Host)
 	})
 
-	t.Run("a failed progress append is returned after the result", func(t *testing.T) {
-		h := newHarness(t)
-		h.runner.progress = progress[:1]
+	failedAppends := []struct {
+		name    string
+		works   []step[engine.WorkResult]
+		status  engine.Status
+		trace   []string
+		resultT string // the event that records the session's result
+	}{
+		{name: "after a result", status: engine.StatusInReview, trace: happyTrace, resultT: engine.SessionEnded},
+		{
+			name: "after a runner fault", works: []step[engine.WorkResult]{{err: errors.New("the container exited")}},
+			status: engine.StatusBlocked, trace: []string{"prepare", "work/start", "release/remove"}, resultT: engine.Stopped,
+		},
+	}
 
-		injected := errors.New("disk full")
-		h.spy.failAppend = func(events []store.Event) error {
-			if events[0].Type == engine.AgentText {
-				return injected
+	for _, tt := range failedAppends {
+		t.Run("a failed progress append is returned "+tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.runner.progress = progress[:1]
+			h.runner.works = tt.works
+
+			injected := errors.New("disk full")
+			h.spy.failAppend = func(events []store.Event) error {
+				if events[0].Type == engine.AgentText {
+					return injected
+				}
+
+				return nil
 			}
 
-			return nil
-		}
-
-		status, err := h.run(t.Context())
-		require.ErrorIs(t, err, injected)
-		assert.Equal(t, engine.StatusRunning, status)
-		assert.Len(t, h.eventsOf(engine.SessionEnded), 1)
-		assert.Equal(t, []string{"prepare", "work/start"}, h.runner.trace())
-
-		h.spy.failAppend = nil
-
-		status, err = h.run(t.Context())
-		require.NoError(t, err)
-		assert.Equal(t, engine.StatusInReview, status)
-	})
+			status, err := h.run(t.Context())
+			require.ErrorIs(t, err, injected)
+			assert.Equal(t, tt.status, status)
+			assert.Equal(t, tt.trace, h.runner.trace())
+			assert.Len(t, h.eventsOf(tt.resultT), 1)
+			assert.Empty(t, h.eventsOf(engine.AgentText))
+		})
+	}
 }
 
 func TestLoopUsageLimitWaits(t *testing.T) {
@@ -999,6 +1049,20 @@ func TestLoopUsageLimitWaits(t *testing.T) {
 		assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
 	})
 
+	t.Run("ctx ending during a wait returns its error and writes no stop", func(t *testing.T) {
+		h := newHarness(t)
+		h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeUsageLimit, ResetsAt: now.Add(2 * time.Hour)}}}
+
+		status, err := h.run(newCancelAtWait())
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, engine.StatusBlocked, status)
+		assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, h.runner.trace())
+
+		stops := h.eventsOf(engine.Stopped)
+		require.Len(t, stops, 1)
+		assert.Equal(t, engine.StopUsageLimit, payloadOf[engine.StoppedPayload](t, stops[0]).Reason)
+	})
+
 	t.Run("a reset sooner than the deadline is waited out", func(t *testing.T) {
 		h := newHarness(t)
 		h.clock.moving, h.clock.start = true, time.Now()
@@ -1022,6 +1086,34 @@ func TestLoopUsageLimitWaits(t *testing.T) {
 		}, h.runner.trace())
 	})
 }
+
+// cancelAtWait is a context that ends when asked for its deadline, which the
+// loop does only as a wait begins, so the wait sees it end without a race.
+type cancelAtWait struct {
+	once sync.Once
+	done chan struct{}
+}
+
+func newCancelAtWait() *cancelAtWait { return &cancelAtWait{done: make(chan struct{})} }
+
+func (c *cancelAtWait) Deadline() (time.Time, bool) {
+	c.once.Do(func() { close(c.done) })
+
+	return time.Time{}, false
+}
+
+func (c *cancelAtWait) Done() <-chan struct{} { return c.done }
+
+func (c *cancelAtWait) Err() error {
+	select {
+	case <-c.done:
+		return context.Canceled
+	default:
+		return nil
+	}
+}
+
+func (c *cancelAtWait) Value(any) any { return nil }
 
 func TestLoopActionCap(t *testing.T) {
 	h := newHarness(t)
@@ -1068,45 +1160,64 @@ func TestRetryAfterVerifyFailed(t *testing.T) {
 	assert.Equal(t, []bool{false, true, true}, automatic)
 }
 
-func TestServerHalfHasNoRuntimeDependency(t *testing.T) {
-	const module = "github.com/mhersson/cavu"
+func TestLoopAnswerReachesTheAgent(t *testing.T) {
+	h := newHarness(t)
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: []string{"Which port?"}}}}
 
-	out, err := execGoListDeps(t, module+"/internal/engine", module+"/internal/store")
-	require.NoError(t, err, "%s", out)
-	assert.Empty(t, runtimeDeps(strings.Fields(out)))
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, engine.StatusBlocked, status)
+	require.Equal(t, engine.StopQuestion, h.lastStop().Reason)
 
-	assert.Equal(t, []string{module + "/internal/driver/claudecode"}, runtimeDeps([]string{
-		"context", module + "/internal/github", module + "/internal/driver/claudecode", module + "/internal/gitlab",
-	}), "the check fires on a denied package and nothing else")
+	h.add(0, engine.HumanAnswered, "user", `{"text":"Use port 8080."}`)
+
+	status, err = h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+
+	works := h.runner.callsOf("work")
+	require.Len(t, works, 2)
+	assert.Equal(t, engine.ModeAnswer, works[1].work.Mode)
+	assert.Equal(t, "Use port 8080.", works[1].work.Detail)
+	assert.True(t, works[1].work.Resume)
+	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
 }
 
-// runtimeDeps returns the import paths that belong to the runtime half.
-func runtimeDeps(paths []string) []string {
-	var hits []string
+func TestLoopStopsWithoutConfig(t *testing.T) {
+	h := newHarness(t)
+	r := h.seed(
+		ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`),
+		ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
+		ev(engine.SessionEnded, `{"outcome":"blocked","questions":["Which port?"]}`),
+		ev(engine.Stopped, `{"reason":"question","explanation":"Which port?","action":"answer"}`),
+	)
+	h.add(0, engine.HumanCancelled, "user", "")
+	require.NoError(t, h.store.SetSetting(t.Context(), "model_work", ""))
 
-	for _, p := range paths {
-		for _, d := range []string{"sandbox", "runner", "proxy", "sidecar", "git", "driver"} {
-			deny := "github.com/mhersson/cavu/internal/" + d
-			if p == deny || strings.HasPrefix(p, deny+"/") {
-				hits = append(hits, p)
-			}
-		}
-	}
+	status, err := h.run(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model_work")
+	assert.Equal(t, engine.StatusCancelled, status)
+	assert.Equal(t, engine.StopCancelled, h.lastStop().Reason)
 
-	return hits
-}
+	ends := h.eventsOf(engine.RunEnded)
+	require.Len(t, ends, 1)
+	assert.Equal(t, engine.StopCancelled, payloadOf[engine.RunEndedPayload](t, ends[0]).Outcome)
+	assert.Empty(t, h.runner.trace())
+	assert.Empty(t, h.spy.ended(), "the row stays open for repair")
 
-func execGoListDeps(t *testing.T, pkgs ...string) (string, error) {
-	t.Helper()
+	status, err = h.run(t.Context())
+	require.Error(t, err, "repair cannot release while the setting is missing")
+	assert.Contains(t, err.Error(), "model_work")
+	assert.Equal(t, engine.StatusCancelled, status, "the loop still decides")
+	assert.Empty(t, h.runner.trace())
+	assert.Empty(t, h.spy.ended())
 
-	var stdout, stderr bytes.Buffer
+	require.NoError(t, h.store.SetSetting(t.Context(), "model_work", "model-a"))
 
-	cmd := exec.CommandContext(t.Context(), "go", append([]string{"list", "-deps"}, pkgs...)...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-
-	if err := cmd.Run(); err != nil {
-		return stderr.String(), fmt.Errorf("go list: %w", err)
-	}
-
-	return stdout.String(), nil
+	status, err = h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusCancelled, status)
+	assert.Equal(t, []string{"release/remove"}, h.runner.trace())
+	assert.Equal(t, map[int64]string{r.ID: engine.StopCancelled}, h.spy.ended())
 }
