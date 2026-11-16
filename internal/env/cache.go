@@ -27,7 +27,7 @@ func common() map[string]string {
 		"CARGO_HTTP_CAINFO":         caBundle,
 		"GIT_SSL_CAINFO":            caBundle,
 		"MISE_DATA_DIR":             cacheDir + "/mise",
-		"MISE_GLOBAL_CONFIG_FILE":   cacheDir + "/mise/cavu.toml",
+		"MISE_GLOBAL_CONFIG_FILE":   MiseConfigFile,
 		"MISE_TRUSTED_CONFIG_PATHS": "",
 		"MISE_IGNORED_CONFIG_PATHS": workspaceDir,
 		"PATH":                      defaultPath,

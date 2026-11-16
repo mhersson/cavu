@@ -1,0 +1,347 @@
+// Package runner carries out a run's actions in the run's sandbox, over a
+// container runtime and an agent driver, for the engine.
+package runner
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/mhersson/cavu/internal/driver"
+	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/env"
+	"github.com/mhersson/cavu/internal/proc"
+	"github.com/mhersson/cavu/internal/proxy"
+	"github.com/mhersson/cavu/internal/redact"
+	"github.com/mhersson/cavu/internal/sandbox"
+	"github.com/mhersson/cavu/internal/sidecar"
+)
+
+const (
+	// bridgeURL is the sandbox's bridge to the proxy inside a phase container.
+	bridgeURL = "http://127.0.0.1:3128"
+	loopback  = "localhost,127.0.0.1,::1"
+	home      = "/home/agent"
+	workspace = "/workspace"
+	modeKey   = "key"
+)
+
+// proxyEnv sends a command's egress through the bridge, the one way out of
+// either phase, and keeps loopback traffic off it.
+var proxyEnv = []string{
+	"HTTP_PROXY=" + bridgeURL, "HTTPS_PROXY=" + bridgeURL, "http_proxy=" + bridgeURL, "https_proxy=" + bridgeURL,
+	"NO_PROXY=" + loopback, "no_proxy=" + loopback,
+}
+
+// Runner carries out the engine's actions over a container runtime.
+type Runner struct {
+	rt     sandbox.Runtime
+	driver driver.Driver
+	labels map[string]string // added to every container and volume; tests set it
+	open   func(sandbox.Options) (sandboxer, error)
+
+	mu   sync.Mutex
+	runs map[int64]*run
+}
+
+// New returns a runner that runs sandboxes on rt and agents through d.
+func New(rt sandbox.Runtime, d driver.Driver) *Runner {
+	return &Runner{rt: rt, driver: d, open: openSandbox, runs: map[int64]*run{}}
+}
+
+// sandboxer is the part of *sandbox.Sandbox the runner uses.
+type sandboxer interface {
+	EnsureVolumes(ctx context.Context) error
+	Clone(ctx context.Context, r sidecar.CloneRequest) (string, error)
+	Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error)
+	Down(ctx context.Context) error
+	Destroy(ctx context.Context, keepHome bool) error
+}
+
+// container is what the runner does in a running phase container.
+type container interface {
+	proc.Target
+	Run(ctx context.Context, cmd proc.Command, timeout time.Duration) (sandbox.Result, error)
+	CopyIn(ctx context.Context, files map[string][]byte) error
+}
+
+// realSandbox returns Up's container as a container.
+type realSandbox struct{ *sandbox.Sandbox }
+
+func (s realSandbox) Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error) {
+	c, err := s.Sandbox.Up(ctx, phase, p, lines)
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
+}
+
+func openSandbox(o sandbox.Options) (sandboxer, error) {
+	s, err := sandbox.Open(o)
+	if err != nil {
+		return nil, err
+	}
+
+	return realSandbox{s}, nil
+}
+
+// run is what the runner keeps of one run between calls. A sandbox is not
+// safe for concurrent use; the engine makes one call on a run at a time.
+type run struct {
+	sb         sandboxer
+	agent      container // the agent phase while it is up
+	detected   bool      // ecosystems holds what detection found
+	ecosystems []string
+	standIn    string // the agent phase's stand-in token in key mode
+
+	mu     sync.Mutex // guards the fields below, which the sidecar's reader sets
+	lost   bool       // the sidecar of the phase that is up has ended
+	fault  error      // the sidecar's error during the action in flight
+	cancel context.CancelCauseFunc
+}
+
+// lines takes the sidecar's lines. An error line means the phase lost its
+// egress: it ends the action in flight, and that action's call fails with it.
+// It never calls the sandbox, which would stall the sidecar's reader.
+func (st *run) lines(l sidecar.Line) {
+	if l.Type != "error" {
+		return
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.lost = true
+
+	if st.cancel != nil && st.fault == nil {
+		st.fault = errors.New(l.Error)
+		st.cancel(st.fault)
+	}
+}
+
+// begin starts an action on the run, whose ctx ends at a sidecar error; end
+// returns that error, if one came.
+func (st *run) begin(ctx context.Context) (context.Context, func() error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+
+	st.mu.Lock()
+	st.fault, st.cancel = nil, cancel
+	st.mu.Unlock()
+
+	return ctx, func() error {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+
+		fault := st.fault
+		st.fault, st.cancel = nil, nil
+
+		cancel(nil)
+
+		return fault
+	}
+}
+
+// up brings phase up with p. The agent phase counts as up only once the
+// caller sets agent, after an Up with the agent's allowlist.
+func (st *run) up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest) (container, error) {
+	st.agent = nil
+
+	// Cleared first: a sidecar that ends once Up has returned sets it again.
+	st.mu.Lock()
+	st.lost = false
+	st.mu.Unlock()
+
+	return st.sb.Up(ctx, phase, p, st.lines)
+}
+
+func (st *run) down(ctx context.Context) error {
+	st.agent = nil
+
+	return st.sb.Down(ctx)
+}
+
+func (st *run) agentUp() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	return st.agent != nil && !st.lost
+}
+
+func (r *Runner) state(runID int64) *run {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.runs[runID]
+}
+
+func (r *Runner) setState(runID int64, st *run) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if st == nil {
+		delete(r.runs, runID)
+
+		return
+	}
+
+	r.runs[runID] = st
+}
+
+// newState opens the run's sandbox and keeps it as the run's state.
+func (r *Runner) newState(ref engine.RunRef) (*run, error) {
+	sb, err := r.open(sandbox.Options{
+		Runtime: r.rt, Image: ref.Image, InstanceID: ref.InstanceID,
+		RunID: ref.RunID, TaskID: ref.TaskID, ProjectID: ref.ProjectID, Labels: r.labels,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	st := &run{sb: sb}
+	r.setState(ref.RunID, st)
+
+	return st, nil
+}
+
+func refOf(c engine.RunConfig) engine.RunRef {
+	return engine.RunRef{InstanceID: c.InstanceID, Image: c.Image, TaskID: c.TaskID, RunID: c.RunID, ProjectID: c.ProjectID}
+}
+
+// ensureUp brings the run's agent phase up unless it is up already. After a
+// restart of this process it opens the run's sandbox and detects again from
+// the root files at the base commit, as the prepare did.
+func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
+	st := r.state(c.RunID)
+	if st == nil {
+		var err error
+		if st, err = r.newState(refOf(c)); err != nil {
+			return err
+		}
+
+		if err := st.sb.EnsureVolumes(ctx); err != nil {
+			return err
+		}
+	}
+
+	if st.agentUp() {
+		return nil
+	}
+
+	if !st.detected {
+		a, err := st.up(ctx, sandbox.PhaseAgent, sidecar.ProxyRequest{CABundle: string(c.CABundle)})
+		if err != nil {
+			return err
+		}
+
+		files, err := readFiles(ctx, a, c.Repo.BaseCommit)
+		if err != nil {
+			return err
+		}
+
+		det, err := env.Detect(files, c.Setup.ToolOverrides)
+		if err != nil {
+			return err
+		}
+
+		st.ecosystems, st.detected = det.Ecosystems, true
+	}
+
+	req := sidecar.ProxyRequest{
+		AllowHosts: allowlist(env.AgentHosts(st.ecosystems), c.Setup.EgressHosts, r.driver.Hosts(c.Endpoint.Mode)),
+		CABundle:   string(c.CABundle),
+	}
+
+	st.standIn = ""
+
+	if c.Endpoint.Mode == modeKey {
+		standIn, err := proxy.NewStandIn()
+		if err != nil {
+			return err
+		}
+
+		st.standIn = standIn
+		req.Model = &proxy.ModelRoute{
+			BaseURL: c.Endpoint.URL, Credential: c.Endpoint.Credential, AuthHeader: c.Endpoint.AuthHeader, StandIn: standIn,
+		}
+	}
+
+	a, err := st.up(ctx, sandbox.PhaseAgent, req)
+	if err != nil {
+		return err
+	}
+
+	st.agent = a
+
+	return nil
+}
+
+// Release stops the run's containers and, when removeVolumes is set, removes
+// its run volumes and the task's home. It succeeds when nothing exists.
+func (r *Runner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
+	st := r.state(ref.RunID)
+	if st == nil {
+		var err error
+		if st, err = r.newState(ref); err != nil {
+			return err
+		}
+	}
+
+	if !removeVolumes {
+		return st.down(ctx)
+	}
+
+	r.setState(ref.RunID, nil)
+
+	return st.sb.Destroy(ctx, false)
+}
+
+// agentEnv is the one environment of the agent phase: the baseline verify,
+// the verify gate and the session run with it.
+func agentEnv(ecosystems []string) []string {
+	return append(env.AgentEnv(ecosystems, home), proxyEnv...)
+}
+
+func setupEnv(ecosystems []string) []string {
+	return append(env.SetupEnv(ecosystems), proxyEnv...)
+}
+
+func allowlist(lists ...[]string) []string {
+	var out []string
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+
+	slices.Sort(out)
+
+	return slices.Compact(out)
+}
+
+// masker masks the secrets of a run's configuration.
+func masker(c engine.RunConfig) func(string) string {
+	secrets := []string{c.Endpoint.Credential, c.Repo.Token}
+	for _, v := range c.Setup.Secrets {
+		secrets = append(secrets, v)
+	}
+
+	return redact.New(secrets...)
+}
+
+// maskedError masks the text of an error and keeps its chain.
+type maskedError struct {
+	err  error
+	text string
+}
+
+func (e *maskedError) Error() string { return e.text }
+func (e *maskedError) Unwrap() error { return e.err }
+
+func maskErr(err error, mask func(string) string) error {
+	if err == nil {
+		return nil
+	}
+
+	return &maskedError{err: err, text: mask(err.Error())}
+}

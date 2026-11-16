@@ -1,0 +1,483 @@
+package runner
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/env"
+	"github.com/mhersson/cavu/internal/proxy"
+	"github.com/mhersson/cavu/internal/sandbox"
+	"github.com/mhersson/cavu/internal/verify"
+)
+
+var fullOrder = []string{
+	"destroy/keep-home", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
+	"run/mise install", "run/make setup", "down", "up/agent", "run/make test",
+}
+
+func TestPrepareOrder(t *testing.T) {
+	f := newFake()
+
+	res, err := f.runner().Prepare(t.Context(), testConfig())
+	require.NoError(t, err)
+	assert.Equal(t, fullOrder, f.calls())
+	assert.Equal(t, engine.PrepareResult{
+		BaseCommit: baseCommit, Tools: []string{"go@1.25.0"}, Baseline: engine.ResultPassed,
+	}, res)
+
+	assert.Equal(t, env.MiseConfig([]env.Tool{{Name: "go", Version: "1.25.0"}}), f.copied[env.MiseConfigFile])
+	assert.Equal(t, 20*time.Minute, f.run(t, "mise install").timeout)
+	assert.Equal(t, 30*time.Minute, f.run(t, "make setup").timeout)
+	assert.Equal(t, 2*time.Minute, f.run(t, "make test").timeout)
+	assert.Equal(t, verify.Argv("make test"), f.run(t, "make test").cmd.Argv)
+	assert.Equal(t, []string{baseCommit}, f.reads, "the files are read once, at the base commit")
+}
+
+func TestPrepareStartsFromEmptyVolumes(t *testing.T) {
+	f := newFake()
+
+	_, err := f.runner().Prepare(t.Context(), testConfig())
+	require.NoError(t, err)
+
+	calls := f.calls()
+	assert.Equal(t, "destroy/keep-home", calls[0], "the run's volumes go first and the task's home stays")
+	assert.Equal(t, "volumes", calls[1])
+	assert.Equal(t, []sandbox.Options{{
+		Runtime: sandbox.Runtime{Bin: "docker", Kind: "docker"}, Image: "cavu-sandbox:test", InstanceID: "0123456789abcdef",
+		RunID: 7, TaskID: 5, ProjectID: 3,
+	}}, f.opened)
+}
+
+func TestPrepareAllowlists(t *testing.T) {
+	tests := []struct {
+		mode  string
+		agent []string
+		model bool
+	}{
+		{mode: "key", agent: []string{"proxy.golang.org", "registry.example", "sum.golang.org"}, model: true},
+		{mode: "subscription", agent: []string{"model.example", "proxy.golang.org", "registry.example", "sum.golang.org"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			f := newFake()
+			c := testConfig()
+			c.Endpoint.Mode = tt.mode
+
+			_, err := f.runner().Prepare(t.Context(), c)
+			require.NoError(t, err)
+
+			setup := f.requests(sandbox.PhaseSetup)
+			require.Len(t, setup, 2)
+			assert.Empty(t, setup[0].AllowHosts, "nothing is reachable while the files are read")
+			assert.Equal(t, sorted(append(env.SetupHosts([]string{"go"}), "registry.example")), setup[1].AllowHosts)
+
+			for _, req := range setup {
+				assert.Nil(t, req.Model, "the setup phase has no model route")
+				assert.Equal(t, string(c.CABundle), req.CABundle)
+			}
+
+			agent := f.requests(sandbox.PhaseAgent)
+			require.Len(t, agent, 1)
+			assert.Equal(t, tt.agent, agent[0].AllowHosts)
+			assert.Equal(t, string(c.CABundle), agent[0].CABundle)
+
+			if !tt.model {
+				assert.Nil(t, agent[0].Model)
+
+				return
+			}
+
+			require.NotNil(t, agent[0].Model)
+			assert.Len(t, agent[0].Model.StandIn, 64)
+			assert.Equal(t, proxy.ModelRoute{
+				BaseURL: c.Endpoint.URL, Credential: plantedEndpoint, AuthHeader: "bearer", StandIn: agent[0].Model.StandIn,
+			}, *agent[0].Model)
+		})
+	}
+}
+
+// Both phases reach their egress through the bridge: every command but the
+// read gets the proxy variables, and the agent phase gets the agent's
+// environment.
+func TestPrepareEnvironments(t *testing.T) {
+	f := newFake()
+
+	_, err := f.runner().Prepare(t.Context(), testConfig())
+	require.NoError(t, err)
+
+	proxyVars := []string{
+		"HTTP_PROXY=http://127.0.0.1:3128", "HTTPS_PROXY=http://127.0.0.1:3128",
+		"http_proxy=http://127.0.0.1:3128", "https_proxy=http://127.0.0.1:3128",
+		"NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1",
+	}
+
+	for _, name := range []string{"mise install", "make setup"} {
+		cmd := f.run(t, name).cmd
+		assert.Subset(t, cmd.Env, env.SetupEnv([]string{"go"}), name)
+		assert.Subset(t, cmd.Env, proxyVars, name)
+	}
+
+	verifyEnv := f.run(t, "make test").cmd.Env
+	assert.ElementsMatch(t, append(env.AgentEnv([]string{"go"}, "/home/agent"), proxyVars...), verifyEnv)
+	assert.Equal(t, "/workspace", f.run(t, "make test").cmd.Dir)
+	assert.Equal(t, "/workspace", f.run(t, "make setup").cmd.Dir)
+}
+
+func TestSetupSecretsOnlyInSetupPhase(t *testing.T) {
+	f := newFake()
+
+	_, err := f.runner().Prepare(t.Context(), testConfig())
+	require.NoError(t, err)
+
+	setup := f.run(t, "make setup").cmd.Env
+	assert.Contains(t, setup, "NPM_TOKEN="+plantedSetup)
+	assert.Contains(t, setup, "APP_ENV=test")
+
+	mise := fmt.Sprint(f.run(t, "mise install").cmd)
+	assert.NotContains(t, mise, plantedSetup)
+	assert.NotContains(t, mise, "APP_ENV")
+
+	for _, r := range f.runsIn(sandbox.PhaseAgent) {
+		assert.NotContains(t, fmt.Sprint(r.cmd), plantedSetup, r.name)
+		assert.NotContains(t, fmt.Sprint(r.cmd), "APP_ENV", r.name)
+	}
+
+	for _, req := range f.requests(sandbox.PhaseAgent) {
+		assert.NotContains(t, fmt.Sprint(req.AllowHosts, req.CABundle, req.Model), plantedSetup)
+	}
+}
+
+func TestPrepareReusesBaseline(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Verify.BaselinePassed, c.Verify.BaselineCommit = true, baseCommit
+
+	res, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, "reused", res.Baseline)
+	assert.Equal(t, fullOrder[:len(fullOrder)-1], f.calls(), "the agent phase comes up and the verify does not run")
+
+	t.Run("not on another commit", func(t *testing.T) {
+		f := newFake()
+		c.Verify.BaselineCommit = "fedcba9876543210fedcba9876543210fedcba98"
+
+		res, err := f.runner().Prepare(t.Context(), c)
+		require.NoError(t, err)
+		assert.Equal(t, engine.ResultPassed, res.Baseline)
+		assert.Equal(t, fullOrder, f.calls())
+	})
+
+	t.Run("not after a failed one", func(t *testing.T) {
+		f := newFake()
+		c.Verify.BaselinePassed, c.Verify.BaselineCommit = false, baseCommit
+
+		res, err := f.runner().Prepare(t.Context(), c)
+		require.NoError(t, err)
+		assert.Equal(t, engine.ResultPassed, res.Baseline)
+		assert.Equal(t, fullOrder, f.calls())
+	})
+}
+
+func TestPrepareWaived(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Verify.Waived, c.Verify.Command = true, ""
+
+	res, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, engine.ResultWaived, res.Baseline)
+	assert.Empty(t, res.FailedStep)
+	assert.Equal(t, fullOrder[:len(fullOrder)-1], f.calls())
+}
+
+func TestPrepareSkipsWhatIsNotThere(t *testing.T) {
+	for _, command := range []string{"", " \t"} {
+		t.Run(fmt.Sprintf("setup command %q", command), func(t *testing.T) {
+			f := newFake()
+			c := testConfig()
+			c.Setup.Command = command
+
+			_, err := f.runner().Prepare(t.Context(), c)
+			require.NoError(t, err)
+			assert.Equal(t, slices.DeleteFunc(slices.Clone(fullOrder), func(s string) bool { return s == "run/make setup" }), f.calls())
+		})
+	}
+
+	t.Run("no tools", func(t *testing.T) {
+		f := newFake()
+		f.files = map[string]string{"Makefile": "test:\n\ttrue\n"}
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assert.Empty(t, res.Tools)
+		assert.Equal(t, slices.DeleteFunc(slices.Clone(fullOrder), func(s string) bool { return s == "run/mise install" }), f.calls())
+		assert.Equal(t, env.MiseConfig(nil), f.copied[env.MiseConfigFile], "a stale configuration is replaced")
+	})
+}
+
+func TestPrepareReportsIgnoredTools(t *testing.T) {
+	f := newFake()
+	f.files[".tool-versions"] = "ubi:owner/tool 1.0\n"
+
+	res, err := f.runner().Prepare(t.Context(), testConfig())
+	require.NoError(t, err)
+	assert.Equal(t, []string{".tool-versions: ubi:owner/tool 1.0"}, res.IgnoredTools)
+	assert.Equal(t, []string{"go@1.25.0"}, res.Tools)
+}
+
+func TestPrepareStepFailures(t *testing.T) {
+	failed := sandbox.Result{ExitCode: 1, Output: "step output\n"}
+	timedOut := sandbox.Result{ExitCode: 137, Output: "step output\n", TimedOut: true}
+
+	tests := []struct {
+		name   string
+		script func(f *fakeSandbox)
+		step   string
+		last   string // the last call
+	}{
+		{name: "clone error", script: func(f *fakeSandbox) { f.cloneErr = errors.New("sandbox: clone: repository not found") }, step: "clone", last: "clone"},
+		{name: "a version file that does not parse", script: func(f *fakeSandbox) { f.files["go.mod"] = "go not-a-version\n" }, step: "toolchain", last: "read"},
+		{name: "mise install exit 1", script: func(f *fakeSandbox) { f.results["mise install"] = failed }, step: "toolchain", last: "run/mise install"},
+		{name: "mise install timeout", script: func(f *fakeSandbox) { f.results["mise install"] = timedOut }, step: "toolchain", last: "run/mise install"},
+		{name: "setup exit 1", script: func(f *fakeSandbox) { f.results["make setup"] = failed }, step: "setup", last: "run/make setup"},
+		{name: "setup timeout", script: func(f *fakeSandbox) { f.results["make setup"] = timedOut }, step: "setup", last: "run/make setup"},
+		{name: "baseline exit 1", script: func(f *fakeSandbox) { f.results["make test"] = failed }, step: "baseline", last: "run/make test"},
+		{name: "baseline timeout", script: func(f *fakeSandbox) { f.results["make test"] = timedOut }, step: "baseline", last: "run/make test"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+			tt.script(f)
+
+			res, err := f.runner().Prepare(t.Context(), testConfig())
+			require.NoError(t, err)
+			assert.Equal(t, tt.step, res.FailedStep)
+			assert.NotEmpty(t, res.Output)
+
+			calls := f.calls()
+			assert.Equal(t, tt.last, calls[len(calls)-1], "no later step runs")
+
+			if tt.step == "baseline" {
+				assert.Equal(t, engine.ResultFailed, res.Baseline)
+			}
+		})
+	}
+
+	t.Run("the output is the step's", func(t *testing.T) {
+		f := newFake()
+		f.results["make setup"] = failed
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assert.Equal(t, failed.Output, res.Output)
+	})
+
+	t.Run("a clone error is its text", func(t *testing.T) {
+		f := newFake()
+		f.cloneErr = errors.New("sandbox: clone: repository not found")
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assert.Equal(t, f.cloneErr.Error(), res.Output)
+	})
+}
+
+// A fault of the sandbox, a command that cannot start or a blank verify
+// command is an error, never a failed step.
+func TestPrepareFaults(t *testing.T) {
+	tests := []struct {
+		name   string
+		script func(f *fakeSandbox, c *engine.RunConfig)
+		is     error
+	}{
+		{name: "a clone killed for memory", script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.cloneErr = fmt.Errorf("%w: the clone container hit its 2048 MB limit", sandbox.ErrOutOfMemory)
+		}, is: sandbox.ErrOutOfMemory},
+		{name: "a clone container not isolated", script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.cloneErr = fmt.Errorf("sandbox: clone: %w", sandbox.ErrNotIsolated)
+		}, is: sandbox.ErrNotIsolated},
+		{name: "a clone sidecar down", script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.cloneErr = fmt.Errorf("sandbox: clone: %w", sandbox.ErrSidecarDown)
+		}, is: sandbox.ErrSidecarDown},
+		{name: "an up that fails", script: func(f *fakeSandbox, _ *engine.RunConfig) { f.upErr = sandbox.ErrNotIsolated }, is: sandbox.ErrNotIsolated},
+		{name: "a read that fails", script: func(f *fakeSandbox, _ *engine.RunConfig) { f.readCode = 128 }},
+		{name: "mise install that cannot start", script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.runErrs["mise install"] = errors.New("exec in cavu-setup: no such container")
+		}},
+		{name: "a setup command that cannot start", script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.runErrs["make setup"] = errors.New("environment entry at index 3: invalid variable name")
+		}},
+		{name: "a blank verify command", script: func(_ *fakeSandbox, c *engine.RunConfig) { c.Verify.Command = "  " }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+			c := testConfig()
+			tt.script(f, &c)
+
+			res, err := f.runner().Prepare(t.Context(), c)
+			require.Error(t, err)
+			assert.Empty(t, res.FailedStep)
+
+			if tt.is != nil {
+				require.ErrorIs(t, err, tt.is)
+			}
+		})
+	}
+
+	t.Run("a context that ends during the clone", func(t *testing.T) {
+		f := newFake()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		res, err := f.runner().Prepare(ctx, testConfig())
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Empty(t, res.FailedStep)
+	})
+
+	t.Run("a sidecar that ends during a command", func(t *testing.T) {
+		f := newFake()
+
+		const down = "sandbox: the sidecar does not answer: it exited: killed"
+
+		f.onRun = func(name string) {
+			if name == "make setup" {
+				f.fail(down)
+			}
+		}
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.Error(t, err)
+		assert.Equal(t, down, err.Error())
+		assert.Empty(t, res.FailedStep)
+		assert.Equal(t, "run/make setup", f.calls()[len(f.calls())-1], "the action in flight ends")
+	})
+}
+
+func TestPrepareOutputIsRedacted(t *testing.T) {
+	leak := "token " + plantedSetup + " key " + plantedEndpoint + " forge " + plantedForge
+
+	t.Run("a failed step", func(t *testing.T) {
+		f := newFake()
+		f.results["make setup"] = sandbox.Result{ExitCode: 1, Output: leak}
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assert.Equal(t, "setup", res.FailedStep)
+		assertMasked(t, res.Output)
+		assert.Contains(t, res.Output, "[redacted]")
+	})
+
+	t.Run("a failed clone", func(t *testing.T) {
+		f := newFake()
+		f.cloneErr = errors.New(leak)
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assertMasked(t, res.Output)
+	})
+
+	t.Run("an error", func(t *testing.T) {
+		f := newFake()
+		f.runErrs["make setup"] = errors.New(leak)
+
+		_, err := f.runner().Prepare(t.Context(), testConfig())
+		require.Error(t, err)
+		assertMasked(t, err.Error())
+	})
+
+	t.Run("a long output is cut after masking", func(t *testing.T) {
+		f := newFake()
+		f.results["make test"] = sandbox.Result{ExitCode: 1, Output: strings.Repeat(leak+"\n", 4000)}
+
+		res, err := f.runner().Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		assertMasked(t, res.Output)
+		assert.LessOrEqual(t, len(res.Output), 64<<10)
+	})
+}
+
+func assertMasked(t *testing.T, s string) {
+	t.Helper()
+
+	for _, secret := range []string{plantedSetup, plantedEndpoint, plantedForge} {
+		assert.NotContains(t, s, secret)
+	}
+}
+
+func TestCheckEnvironmentNeverReusesBaseline(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Verify.BaselinePassed, c.Verify.BaselineCommit = true, baseCommit
+
+	res, suggestion, err := f.runner().CheckEnvironment(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, engine.ResultPassed, res.Baseline)
+	assert.Equal(t, "make test", suggestion)
+
+	calls := f.calls()
+	assert.Equal(t, "destroy", calls[0], "a check that died must not hand its home to the next")
+	assert.Equal(t, "run/make test", calls[len(calls)-2])
+	assert.Equal(t, "destroy", calls[len(calls)-1], "the check removes its volumes")
+
+	for _, o := range f.opened {
+		assert.Zero(t, o.RunID)
+		assert.Zero(t, o.TaskID)
+		assert.Equal(t, c.ProjectID, o.ProjectID)
+	}
+
+	t.Run("released after a fault", func(t *testing.T) {
+		f := newFake()
+		f.upErr = sandbox.ErrNotIsolated
+
+		_, _, err := f.runner().CheckEnvironment(t.Context(), testConfig())
+		require.ErrorIs(t, err, sandbox.ErrNotIsolated)
+		assert.Equal(t, "destroy", f.calls()[len(f.calls())-1])
+	})
+
+	t.Run("released after a failed step", func(t *testing.T) {
+		f := newFake()
+		f.results["make setup"] = sandbox.Result{ExitCode: 2, Output: "no rule"}
+
+		res, suggestion, err := f.runner().CheckEnvironment(t.Context(), testConfig())
+		require.NoError(t, err)
+		assert.Equal(t, "setup", res.FailedStep)
+		assert.Equal(t, "make test", suggestion, "the files were read before the failure")
+		assert.Equal(t, "destroy", f.calls()[len(f.calls())-1])
+	})
+}
+
+func TestVerifyResultsMatchEngine(t *testing.T) {
+	assert.Equal(t, engine.ResultPassed, verify.Passed)
+	assert.Equal(t, engine.ResultFailed, verify.Failed)
+	assert.Equal(t, engine.ResultTimeout, verify.Timeout)
+}
+
+func TestVerifyTimeoutDefault(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Verify.Timeout = 0
+
+	_, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, verify.ClampTimeout(0), f.run(t, "make test").timeout)
+}
+
+func sorted(s []string) []string {
+	s = slices.Clone(s)
+	slices.Sort(s)
+
+	return slices.Compact(s)
+}
