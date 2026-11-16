@@ -47,17 +47,17 @@ func TestDetect(t *testing.T) {
 		{
 			name:      "nvmrc",
 			files:     map[string]string{".nvmrc": "v22.3.0\n"},
-			wantTools: []Tool{{"node", "22.3.0"}},
+			wantTools: []Tool{{"node", "22.3.0"}}, wantEco: []string{"node"},
 		},
 		{
 			name:      "nvmrc comments",
 			files:     map[string]string{".nvmrc": "# pinned\n\nv22.3.0 # lts\n"},
-			wantTools: []Tool{{"node", "22.3.0"}},
+			wantTools: []Tool{{"node", "22.3.0"}}, wantEco: []string{"node"},
 		},
 		{
 			name:      "nvmrc lts alias",
 			files:     map[string]string{".nvmrc": "lts/*\n"},
-			wantTools: []Tool{{"node", "lts"}},
+			wantTools: []Tool{{"node", "lts"}}, wantEco: []string{"node"},
 		},
 		{
 			name:      "nvmrc beats engines",
@@ -142,7 +142,7 @@ func TestDetect(t *testing.T) {
 		{
 			name:      "rust channel",
 			files:     map[string]string{"rust-toolchain.toml": "[toolchain]\nchannel = \"1.99.0\"\n"},
-			wantTools: []Tool{{"rust", "1.99.0"}},
+			wantTools: []Tool{{"rust", "1.99.0"}}, wantEco: []string{"rust"},
 		},
 		{
 			name:      "rust default",
@@ -162,7 +162,27 @@ func TestDetect(t *testing.T) {
 		{
 			name:      "tool-versions",
 			files:     map[string]string{".tool-versions": "# c\ngolang 1.26.1 1.25.0\nnodejs 20.1.0 # trailing\n\n"},
-			wantTools: []Tool{{"go", "1.26.1"}, {"node", "20.1.0"}},
+			wantTools: []Tool{{"go", "1.26.1"}, {"node", "20.1.0"}}, wantEco: []string{"go", "node"},
+		},
+		{
+			name:      "bom package.json",
+			files:     map[string]string{"package.json": "\xef\xbb\xbf{\"engines\":{\"node\":\"^22\"}}"},
+			wantTools: []Tool{{"node", "22"}}, wantEco: []string{"node"},
+		},
+		{
+			name:      "bom tool-versions",
+			files:     map[string]string{".tool-versions": "\xef\xbb\xbfgolang 1.27.4\n"},
+			wantTools: []Tool{{"go", "1.27.4"}}, wantEco: []string{"go"},
+		},
+		{
+			name:      "crlf tool-versions",
+			files:     map[string]string{".tool-versions": "golang 1.27.4\r\nnodejs 20.1.0\r\n"},
+			wantTools: []Tool{{"go", "1.27.4"}, {"node", "20.1.0"}}, wantEco: []string{"go", "node"},
+		},
+		{
+			name:      "crlf go.mod",
+			files:     map[string]string{"go.mod": "module x\r\n\r\ngo 1.27.4\r\n"},
+			wantTools: []Tool{{"go", "1.27.4"}}, wantEco: []string{"go"},
 		},
 		{
 			name:       "tool-versions name without version",
@@ -173,7 +193,7 @@ func TestDetect(t *testing.T) {
 			name: "mise toml only tools",
 			files: map[string]string{"mise.toml": "[env]\nX = \"1\"\n[tasks.a]\nrun = \"echo\"\n" +
 				"[tools]\ngo = \"1.26.0\"\nnodejs = [\"20\", \"18\"]\npython = { version = \"3.11\" }\n"},
-			wantTools: []Tool{{"go", "1.26.0"}, {"node", "20"}, {"python", "3.11"}},
+			wantTools: []Tool{{"go", "1.26.0"}, {"node", "20"}, {"python", "3.11"}}, wantEco: []string{"go", "node", "python"},
 		},
 		{
 			name:       "mise toml bad shape",
@@ -201,6 +221,21 @@ func TestDetect(t *testing.T) {
 				"mise.toml": "[tools]\ngo = \"1.21\"\n",
 			},
 			wantTools: []Tool{{"go", "1.21"}}, wantEco: []string{"go"},
+		},
+		{
+			name:      "tool implies ecosystem",
+			files:     map[string]string{".tool-versions": "golang 1.27.4\n"},
+			wantTools: []Tool{{"go", "1.27.4"}}, wantEco: []string{"go"},
+		},
+		{
+			name:      "override implies ecosystem without default",
+			overrides: map[string]string{"rust": "1.99.0", "node": "22.1.0"},
+			wantTools: []Tool{{"node", "22.1.0"}, {"rust", "1.99.0"}}, wantEco: []string{"node", "rust"},
+		},
+		{
+			name:      "implied python adds no default beyond its version",
+			files:     map[string]string{".tool-versions": "python 3.11.2\n"},
+			wantTools: []Tool{{"python", "3.11.2"}}, wantEco: []string{"python"},
 		},
 		{
 			name:      "override replaces and adds",

@@ -63,6 +63,9 @@ type Detection struct {
 // versions without a "path:" or "ref:" prefix: a backend or a path named by
 // the repository could run code in the setup container. Such entries go to
 // Ignored and shadow nothing. Overrides are the operator's and are exempt.
+// A resolved tool named go, node, python or rust also adds that ecosystem, so a
+// monorepo with the version file at its root and the manifest below still gets
+// the caches and hosts; such an ecosystem never adds a default.
 func Detect(files map[string][]byte, overrides map[string]string) (Detection, error) {
 	for name, version := range overrides {
 		if name == "" || version == "" {
@@ -105,6 +108,14 @@ func Detect(files map[string][]byte, overrides map[string]string) (Detection, er
 			versions[d.tool] = d.version
 		}
 	}
+
+	for _, e := range []string{"go", "node", "python", "rust"} {
+		if _, ok := versions[e]; ok && !slices.Contains(ecosystems, e) {
+			ecosystems = append(ecosystems, e)
+		}
+	}
+
+	slices.Sort(ecosystems)
 
 	var tools []Tool
 
