@@ -148,7 +148,7 @@ func green(t *testing.T, mode string) (Deps, *fakeHost, *fakeDriver) {
 		Version:      version,
 		AgentVersion: pinned,
 		Settings: map[string]string{
-			"instance_id": "0123456789abcdef", "endpoint_mode": mode, "endpoint_url": "https://gateway.example",
+			"endpoint_mode": mode, "endpoint_url": "https://gateway.example",
 			"endpoint_auth_header": "bearer", "model_work": "model-a", "commit_name": "CAVU", "commit_email": "cavu@example.com",
 		},
 		Credential: credential,

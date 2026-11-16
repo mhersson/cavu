@@ -268,9 +268,10 @@ func (r *doctor) claudeCode(ctx context.Context) Check {
 	return Check{OK: true, Detail: v}
 }
 
-// settings names every key a run requires that is not set.
+// settings names every key a run requires that the operator has not set;
+// instance_id is generated at first use.
 func (r *doctor) settings() Check {
-	keys := []string{"instance_id", "endpoint_mode", "model_work", "commit_name", "commit_email"}
+	keys := []string{"endpoint_mode", "model_work", "commit_name", "commit_email"}
 	if r.Settings["endpoint_mode"] == "key" {
 		keys = append(keys, "endpoint_url", "endpoint_auth_header")
 	}
