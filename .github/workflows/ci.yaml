@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per ref. A newer pull-request run cancels the older one; push and
+# workflow_dispatch runs finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  go-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Runs before make: the action puts golangci-lint on PATH, and fmt-check
+      # needs the binary.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+      - name: make gates
+        run: make build build-darwin fmt-check vet test-race tidy-check scan size
+
+  # Native macOS catches what a Linux build and a cross-compile cannot.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: make build vet test
+        run: make build vet test
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  commits:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # The full history, so the scan can walk the pull request's commits.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: make scan-commits
+        run: make scan-commits SCAN_BASE="origin/$BASE_REF"
+        env:
+          BASE_REF: ${{ github.base_ref }}
