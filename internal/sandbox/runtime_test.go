@@ -250,61 +250,33 @@ func TestStartBuildsHardenedArgv(t *testing.T) {
 	})
 }
 
+// execTrue runs true in a container with env and waits for its end.
+func execTrue(t *testing.T, r Runtime, env []string) {
+	t.Helper()
+
+	p, err := r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"true"}, Env: env})
+	require.NoError(t, err)
+	require.NoError(t, p.Stdin().Close())
+
+	_, err = p.Wait()
+	require.NoError(t, err)
+}
+
 func TestEnvNeverInArgvOrClientEnv(t *testing.T) {
 	const secret = "hunter2hunter2"
 
-	env := []string{"SECRET=" + secret, "HOME=/home/agent"}
+	r, f := fakeRuntime(t, "docker")
+	execTrue(t, r, []string{"SECRET=" + secret, "HOME=/home/agent"})
 
-	starts := map[string]func(r Runtime) error{
-		"Start": func(r Runtime) error {
-			s := goodSpec()
-			s.Env = env
+	c := f.only(t)
 
-			return r.Start(t.Context(), s)
-		},
-		"StartAttached": func(r Runtime) error {
-			s := goodSpec()
-			s.Env = env
-
-			p, err := r.StartAttached(t.Context(), s)
-			if err != nil {
-				return err
-			}
-
-			_ = p.Stdin().Close()
-			_, err = p.Wait()
-
-			return err
-		},
-		"Container.Start": func(r Runtime) error {
-			p, err := r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"true"}, Env: env})
-			if err != nil {
-				return err
-			}
-
-			_ = p.Stdin().Close()
-			_, err = p.Wait()
-
-			return err
-		},
+	for _, a := range c.argv {
+		assert.NotContains(t, a, secret)
 	}
 
-	for name, start := range starts {
-		t.Run(name, func(t *testing.T) {
-			r, f := fakeRuntime(t, "docker")
-			require.NoError(t, start(r))
-
-			c := f.only(t)
-
-			for _, a := range c.argv {
-				assert.NotContains(t, a, secret)
-			}
-
-			assert.NotContains(t, c.env, "SECRET")
-			assert.Equal(t, os.Getenv("HOME"), c.home)
-			assert.Contains(t, strings.Split(string(c.fd3), "\n"), "SECRET="+secret)
-		})
-	}
+	assert.NotContains(t, c.env, "SECRET")
+	assert.Equal(t, os.Getenv("HOME"), c.home)
+	assert.Contains(t, strings.Split(string(c.fd3), "\n"), "SECRET="+secret)
 }
 
 func TestEnvRefusesBadNamesAndValues(t *testing.T) {
@@ -332,17 +304,7 @@ func TestEnvRefusesBadNamesAndValues(t *testing.T) {
 			r, f := fakeRuntime(t, "docker")
 			env := []string{"GOOD=1", entry}
 
-			s := goodSpec()
-			s.Env = env
-			err := r.Start(t.Context(), s)
-			require.Error(t, err)
-			assert.NotContains(t, err.Error(), secret)
-
-			_, err = r.StartAttached(t.Context(), s)
-			require.Error(t, err)
-			assert.NotContains(t, err.Error(), secret)
-
-			_, err = r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"true"}, Env: env})
+			_, err := r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"true"}, Env: env})
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), secret)
 
@@ -358,118 +320,18 @@ func TestEnvRefusesBadNamesAndValues(t *testing.T) {
 		r, f := fakeRuntime(t, "docker")
 		line := "A=" + strings.Repeat("x", 65535-2)
 
-		s := goodSpec()
-		s.Env = []string{line}
-		require.NoError(t, r.Start(t.Context(), s))
+		execTrue(t, r, []string{line})
 		assert.Equal(t, line+"\n", string(f.only(t).fd3))
 	})
 }
 
-func TestMountValidation(t *testing.T) {
-	withMount := func(m Mount) ContainerSpec {
-		s := goodSpec()
-		s.Mounts = []Mount{m}
+func TestStartRefusesALabelKeyWithEquals(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+	s := goodSpec()
+	s.Labels = map[string]string{"a=b": "c"}
 
-		return s
-	}
-
-	withTmpfs := func(path string) ContainerSpec {
-		s := goodSpec()
-		s.Tmpfs = []string{path}
-
-		return s
-	}
-
-	badVolumes := []string{"a/b", "a,b", "a=b", ".a", "~a", "-a", "", "x,volume-opt=type=none", "x,volume-opt=device=/etc"}
-
-	cases := map[string]func(r Runtime) error{
-		"relative target": func(r Runtime) error {
-			return r.Start(t.Context(), withMount(Mount{Volume: "v", Path: "workspace"}))
-		},
-		"target with a comma": func(r Runtime) error {
-			return r.Start(t.Context(), withMount(Mount{Volume: "v", Path: "/w,readonly=false"}))
-		},
-		"tmpfs with options": func(r Runtime) error {
-			return r.Start(t.Context(), withTmpfs("/run/cavu:exec,suid,dev"))
-		},
-		"tmpfs with a comma": func(r Runtime) error {
-			return r.Start(t.Context(), withTmpfs("/run/cavu,exec"))
-		},
-		"tmpfs with a line break": func(r Runtime) error {
-			return r.Start(t.Context(), withTmpfs("/run/cavu\n"))
-		},
-		"relative tmpfs": func(r Runtime) error {
-			return r.Start(t.Context(), withTmpfs("run/cavu"))
-		},
-		"container name starting with -": func(r Runtime) error {
-			s := goodSpec()
-			s.Name = "--privileged"
-
-			return r.Start(t.Context(), s)
-		},
-		"image starting with -": func(r Runtime) error {
-			s := goodSpec()
-			s.Image = "--privileged"
-
-			return r.Start(t.Context(), s)
-		},
-		"exec into a name starting with -": func(r Runtime) error {
-			_, err := r.Container("--user=0").Run(t.Context(), proc.Command{Argv: []string{"id"}}, time.Minute)
-
-			return err
-		},
-		"inspect a name starting with -": func(r Runtime) error {
-			_, err := r.Inspect(t.Context(), "-f")
-
-			return err
-		},
-		"remove a name starting with -": func(r Runtime) error {
-			return r.Remove(t.Context(), "ok", "-f")
-		},
-	}
-
-	for _, v := range badVolumes {
-		cases["mount volume "+strconv.Quote(v)] = func(r Runtime) error {
-			return r.Start(t.Context(), withMount(Mount{Volume: v, Path: "/workspace"}))
-		}
-		cases["create volume "+strconv.Quote(v)] = func(r Runtime) error {
-			return r.VolumeCreate(t.Context(), v, nil)
-		}
-		cases["remove volume "+strconv.Quote(v)] = func(r Runtime) error {
-			return r.VolumeRemove(t.Context(), "ok", v)
-		}
-	}
-
-	for name, run := range cases {
-		t.Run(name, func(t *testing.T) {
-			r, f := fakeRuntime(t, "docker")
-			require.Error(t, run(r))
-			assert.Empty(t, f.calls(t), "the runtime was called")
-		})
-	}
-}
-
-func TestStartRefusesBadSpecs(t *testing.T) {
-	cases := map[string]func(s *ContainerSpec){
-		"empty network":           func(s *ContainerSpec) { s.Network = "" },
-		"host network":            func(s *ContainerSpec) { s.Network = "host" },
-		"hardened without memory": func(s *ContainerSpec) { s.MemoryMB = 0 },
-		"negative memory":         func(s *ContainerSpec) { s.Hardened = false; s.MemoryMB = -1 },
-		"label key with =":        func(s *ContainerSpec) { s.Labels = map[string]string{"a=b": "c"} },
-		"empty name":              func(s *ContainerSpec) { s.Name = "" },
-		"empty image":             func(s *ContainerSpec) { s.Image = "" },
-	}
-
-	for name, mutate := range cases {
-		t.Run(name, func(t *testing.T) {
-			r, f := fakeRuntime(t, "docker")
-			s := goodSpec()
-			mutate(&s)
-
-			require.Error(t, r.Start(t.Context(), s))
-			assert.Empty(t, f.calls(t), "the runtime was called")
-		})
-	}
+	require.Error(t, r.Start(t.Context(), s))
+	assert.Empty(t, f.calls(t), "the runtime was called")
 }
 
 const (
@@ -623,23 +485,6 @@ func TestDetect(t *testing.T) {
 	})
 }
 
-func TestUnknownKindIsRefused(t *testing.T) {
-	for _, kind := range []string{"", "nerdctl"} {
-		t.Run(strconv.Quote(kind), func(t *testing.T) {
-			r, f := fakeRuntime(t, "docker")
-			r.Kind = kind
-
-			require.Error(t, r.Start(t.Context(), goodSpec()))
-
-			_, err := r.StartAttached(t.Context(), goodSpec())
-			require.Error(t, err)
-			require.Error(t, r.VolumeCreate(t.Context(), "v1", nil))
-			require.Error(t, r.VolumeRemove(t.Context(), "v1"))
-			assert.Empty(t, f.calls(t), "the runtime was called")
-		})
-	}
-}
-
 // clientProxyNames spells the ten names out, so the test does not trust the
 // package's own list.
 var clientProxyNames = []string{
@@ -676,33 +521,9 @@ func TestRunNeutralisesClientConfig(t *testing.T) {
 		})
 	}
 
-	for _, n := range append(slices.Clone(clientProxyNames), "Http_Proxy") {
-		t.Run("refuses "+n, func(t *testing.T) {
-			for _, bin := range []string{"docker", "podman"} {
-				r, f := fakeRuntime(t, bin)
-				s := goodSpec()
-				s.Env = []string{n + "=http://proxy.invalid:3128"}
-
-				err := r.Start(t.Context(), s)
-				require.Error(t, err)
-				assert.NotContains(t, err.Error(), "proxy.invalid")
-
-				_, err = r.StartAttached(t.Context(), s)
-				require.Error(t, err)
-				assert.Empty(t, f.calls(t), "the runtime was called")
-			}
-		})
-	}
-
 	t.Run("an exec may carry a proxy", func(t *testing.T) {
 		r, f := fakeRuntime(t, "docker")
-
-		p, err := r.Container("cavu-agent-r1").Start(t.Context(), proc.Command{Argv: []string{"true"}, Env: []string{"HTTPS_PROXY=http://proxy.invalid:3128"}})
-		require.NoError(t, err)
-		require.NoError(t, p.Stdin().Close())
-
-		_, err = p.Wait()
-		require.NoError(t, err)
+		execTrue(t, r, []string{"HTTPS_PROXY=http://proxy.invalid:3128"})
 		assert.Equal(t, "HTTPS_PROXY=http://proxy.invalid:3128\n", string(f.only(t).fd3))
 	})
 }
@@ -726,8 +547,6 @@ func TestInspectParsesNetworkNone(t *testing.T) {
 				OOMKilled: true,
 				Network:   "none",
 				ExitCode:  137,
-				Labels:    map[string]string{"cavu.run": "r1"},
-				EnvNames:  []string{"FROMFILE", "HTTPS_PROXY", "HTTP_PROXY", "PATH"},
 				Mounts: []MountInfo{
 					{Type: "bind", Source: "/srv/host", Target: "/host"},
 					{Type: "tmpfs", Target: "/run/cavu"},
@@ -743,10 +562,8 @@ func TestInspectParsesNetworkNone(t *testing.T) {
 				`"Mounts":[{"Type":"volume","Name":"cavu-workspace-r1","Source":"/home/u/.local/share/containers/storage/volumes/cavu-workspace-r1/_data","Destination":"/workspace","Driver":"local","Mode":"","Options":["nosuid","nodev","rbind"],"RW":true,"Propagation":"rprivate"},` +
 				`{"Type":"bind","Source":"/srv/host","Destination":"/host","Driver":"","Mode":"","Options":["nosuid","nodev","rbind"],"RW":false,"Propagation":"rprivate"}]}]`,
 			want: Info{
-				Running:  true,
-				Network:  "none",
-				Labels:   map[string]string{"cavu.run": "r1"},
-				EnvNames: []string{"FROMFILE", "HOME", "HOSTNAME", "PATH", "container"},
+				Running: true,
+				Network: "none",
 				Mounts: []MountInfo{
 					{Type: "bind", Source: "/srv/host", Target: "/host"},
 					{Type: "tmpfs", Target: "/run/cavu"},
@@ -798,18 +615,6 @@ func TestListParsesNames(t *testing.T) {
 	}
 }
 
-func TestClientFailureCarriesStderrNotEnv(t *testing.T) {
-	r, f := fakeRuntime(t, "docker")
-	f.set(t, "exit", []byte("125"))
-
-	s := goodSpec()
-	s.Env = []string{"SECRET=hunter2hunter2"}
-
-	err := r.Start(t.Context(), s)
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "hunter2hunter2")
-}
-
 func TestCallsHonourContext(t *testing.T) {
 	r, f := fakeRuntime(t, "docker")
 	f.set(t, "sleep", []byte("cavu-agent-r1"))
@@ -825,10 +630,7 @@ func TestCallsHonourContext(t *testing.T) {
 
 func TestFeedIsTheEnvFile(t *testing.T) {
 	r, f := fakeRuntime(t, "docker")
-
-	s := goodSpec()
-	s.Env = []string{"A=1", "B=two words", "C="}
-	require.NoError(t, r.Start(t.Context(), s))
+	execTrue(t, r, []string{"A=1", "B=two words", "C="})
 
 	c := f.only(t)
 	assert.Contains(t, c.argv, "--env-file=/dev/fd/3")
@@ -836,7 +638,7 @@ func TestFeedIsTheEnvFile(t *testing.T) {
 
 	t.Run("no env, no env file", func(t *testing.T) {
 		r, f := fakeRuntime(t, "docker")
-		require.NoError(t, r.Start(t.Context(), goodSpec()))
+		execTrue(t, r, nil)
 
 		c := f.only(t)
 		assert.NotContains(t, c.argv, "--env-file=/dev/fd/3")
@@ -960,18 +762,12 @@ func TestDetectPrefersRealPodmanOverShim(t *testing.T) {
 	})
 }
 
-func TestHostGatewayNeedsBridge(t *testing.T) {
+func TestHostGateway(t *testing.T) {
 	r, f := fakeRuntime(t, "docker")
 	s := goodSpec()
+	s.Network = "bridge"
 	s.HostGateway = true
 
-	require.Error(t, r.Start(t.Context(), s))
-
-	_, err := r.StartAttached(t.Context(), s)
-	require.Error(t, err)
-	assert.Empty(t, f.calls(t), "the runtime was called")
-
-	s.Network = "bridge"
 	require.NoError(t, r.Start(t.Context(), s))
 	assert.Contains(t, f.only(t).argv, "--add-host=host.docker.internal:host-gateway")
 
@@ -1020,14 +816,6 @@ func TestVolumeLabels(t *testing.T) {
 
 		_, err := r.VolumeLabels(t.Context(), "v1")
 		require.Error(t, err)
-	})
-
-	t.Run("a name the client would read as a flag", func(t *testing.T) {
-		r, f := fakeRuntime(t, "docker")
-
-		_, err := r.VolumeLabels(t.Context(), "-v")
-		require.Error(t, err)
-		assert.Empty(t, f.calls(t), "the runtime was called")
 	})
 }
 

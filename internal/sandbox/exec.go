@@ -69,10 +69,6 @@ func (c Container) Start(ctx context.Context, cmd proc.Command) (proc.Process, e
 // the command's group from a second exec; an exec'd command leads its own
 // group. merge sends the command's stderr to its stdout.
 func (c Container) start(ctx context.Context, cmd proc.Command, merge bool) (*execProcess, error) {
-	if err := checkArg("container name", c.name); err != nil {
-		return nil, err
-	}
-
 	if len(cmd.Argv) == 0 || strings.HasPrefix(cmd.Argv[0], "-") {
 		return nil, errors.New("command argv: empty or starts with -")
 	}

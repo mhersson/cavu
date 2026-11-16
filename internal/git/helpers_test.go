@@ -100,31 +100,6 @@ func killProcess(t *testing.T, pid int) {
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
-// killGroupIn sends SIGKILL to the process group whose id the file at path
-// holds, if it holds one, or fails the test without a signal when signalable
-// refuses it.
-func killGroupIn(t *testing.T, path string) {
-	t.Helper()
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-
-	pgid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return
-	}
-
-	if err := signalable(pgid); err != nil {
-		t.Error(err)
-
-		return
-	}
-
-	_ = syscall.Kill(-pgid, syscall.SIGKILL)
-}
-
 func TestSignalableRefusesUnsafeIDs(t *testing.T) {
 	t.Parallel()
 

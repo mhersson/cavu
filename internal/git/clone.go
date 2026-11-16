@@ -31,7 +31,7 @@ type CloneSpec struct {
 // Clone brings the bare mirror at MirrorDir up to date with URL, clones the
 // workspace from it at the base commit, and checks out a new Branch there. The
 // workspace keeps no remote and no local branch but Branch. It returns the base
-// commit. Errors never contain the token or the URL.
+// commit. Errors never contain the token; one from git may name the URL.
 func Clone(ctx context.Context, s CloneSpec) (string, error) {
 	if err := validate(ctx, s); err != nil {
 		return "", err

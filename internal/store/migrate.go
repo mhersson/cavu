@@ -85,7 +85,7 @@ func applyMigration(ctx context.Context, tx *sql.Tx, m Migration) error {
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
-		m.Version, toMillis(time.Now()),
+		m.Version, time.Now().UnixMilli(),
 	); err != nil {
 		return fmt.Errorf("record: %w", err)
 	}

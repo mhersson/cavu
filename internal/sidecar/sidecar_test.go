@@ -169,7 +169,7 @@ func TestProxyOpServesOnSocket(t *testing.T) {
 	// A stale file from an earlier container is replaced.
 	require.NoError(t, os.WriteFile(sock, nil, 0o600))
 
-	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{Socket: sock, AllowHosts: []string{upstream.Listener.Addr().String()}}})
+	run := start(t, Request{Proxy: &ProxyRequest{Socket: sock, AllowHosts: []string{upstream.Listener.Addr().String()}}})
 	run.stdout.waitFor(t, "ready")
 
 	info, err := os.Stat(sock)
@@ -211,7 +211,7 @@ func TestProxyOpUsageLines(t *testing.T) {
 	t.Cleanup(model.Close)
 
 	sock := filepath.Join(shortDir(t), "p.sock")
-	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{
+	run := start(t, Request{Proxy: &ProxyRequest{
 		Socket: sock,
 		Model:  &proxy.ModelRoute{BaseURL: model.URL, Credential: "real", AuthHeader: "x-api-key", StandIn: "stand-in"},
 	}})
@@ -268,7 +268,7 @@ func TestProxyOpDrainsInFlightResponsesBeforeReturning(t *testing.T) {
 	t.Cleanup(releaseOnce)
 
 	sock := filepath.Join(shortDir(t), "p.sock")
-	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{
+	run := start(t, Request{Proxy: &ProxyRequest{
 		Socket: sock,
 		Model:  &proxy.ModelRoute{BaseURL: model.URL, Credential: "real", AuthHeader: "x-api-key", StandIn: "stand-in"},
 	}})
@@ -331,38 +331,6 @@ func TestProxyOpDrainsInFlightResponsesBeforeReturning(t *testing.T) {
 	assert.JSONEq(t, `{"model":"m1","usage":{"input_tokens":3,"output_tokens":5}}`, string(<-body))
 }
 
-func TestProxyOpModelErrorLine(t *testing.T) {
-	t.Parallel()
-
-	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
-	}))
-	t.Cleanup(model.Close)
-
-	sock := filepath.Join(shortDir(t), "p.sock")
-	run := start(t, Request{Op: "proxy", Proxy: &ProxyRequest{
-		Socket: sock,
-		Model:  &proxy.ModelRoute{BaseURL: model.URL, Credential: "real", AuthHeader: "bearer", StandIn: "stand-in"},
-	}})
-	run.stdout.waitFor(t, "ready")
-
-	c := unixClient(sock, false)
-
-	req, err := http.NewRequest(http.MethodPost, "http://model.invalid/v1/messages", strings.NewReader(`{}`))
-	require.NoError(t, err)
-
-	req.Header.Set("Authorization", "Bearer stand-in")
-
-	resp, err := c.Do(req)
-	require.NoError(t, err)
-
-	_ = resp.Body.Close()
-
-	l := run.stdout.waitFor(t, "model_error")
-	assert.Equal(t, http.StatusTooManyRequests, l.Status)
-	assert.Equal(t, "rate_limit", l.Kind)
-}
-
 func gitServer(t *testing.T, up string) (url, ca, repo string) {
 	t.Helper()
 
@@ -384,7 +352,7 @@ func TestCloneOpWritesClonedLine(t *testing.T) {
 
 	var out syncBuffer
 
-	err := Run(context.Background(), encode(t, Request{Op: "clone", Clone: &CloneRequest{
+	err := Run(context.Background(), encode(t, Request{Clone: &CloneRequest{
 		URL: base + repo, Token: "tok", BaseBranch: "main", Branch: "cavu/x", CABundle: ca,
 		MirrorDir: filepath.Join(root, "mirror"), WorkspaceDir: filepath.Join(root, "ws"),
 		Name: "Cavu", Email: "cavu@example.com",
@@ -411,7 +379,7 @@ func TestErrorLineScrubsToken(t *testing.T) {
 
 		var out syncBuffer
 
-		err := Run(context.Background(), encode(t, Request{Op: "clone", Clone: &CloneRequest{
+		err := Run(context.Background(), encode(t, Request{Clone: &CloneRequest{
 			URL: target, Token: token, BaseBranch: "main", Branch: "cavu/x",
 			MirrorDir: filepath.Join(root, "mirror"), WorkspaceDir: filepath.Join(root, "ws"),
 			Name: "Cavu", Email: "cavu@example.com",
@@ -431,10 +399,10 @@ func TestErrorLineScrubsToken(t *testing.T) {
 	}
 }
 
-func TestUnknownOp(t *testing.T) {
+func TestRequestWithoutAnOp(t *testing.T) {
 	t.Parallel()
 
-	for _, in := range []io.Reader{encode(t, Request{Op: "frobnicate"}), encode(t, Request{Op: "clone"}), strings.NewReader("{not json")} {
+	for _, in := range []io.Reader{encode(t, Request{}), strings.NewReader("{not json")} {
 		var out syncBuffer
 
 		require.Error(t, Run(context.Background(), in, &out))

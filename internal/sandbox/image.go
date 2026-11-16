@@ -25,11 +25,7 @@ const imageRepo = "cavu-sandbox"
 //go:embed Dockerfile
 var dockerfile []byte
 
-var (
-	versionText = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
-	sha512Hex   = regexp.MustCompile(`^[0-9a-f]{128}$`)
-	badTagChars = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
-)
+var badTagChars = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
 
 // ImageName is the sandbox image for one cavu version. Characters a tag cannot
 // hold become -.
@@ -64,10 +60,6 @@ type BuildOptions struct {
 func (r Runtime) BuildImage(ctx context.Context, o BuildOptions, out io.Writer) error {
 	bundleSum, err := BundleSum(o.CABundle)
 	if err != nil {
-		return err
-	}
-
-	if err := checkBuildOptions(o); err != nil {
 		return err
 	}
 
@@ -143,24 +135,6 @@ func BundleSum(b []byte) (string, error) {
 	sum := sha256.Sum256(b)
 
 	return hex.EncodeToString(sum[:]), nil
-}
-
-func checkBuildOptions(o BuildOptions) error {
-	if !versionText.MatchString(o.CavuVersion) {
-		return fmt.Errorf("cavu version %q: want letters, digits and . _ + -", o.CavuVersion)
-	}
-
-	if !versionText.MatchString(o.AgentVersion) {
-		return fmt.Errorf("agent version %q: want letters, digits and . _ + -", o.AgentVersion)
-	}
-
-	for _, arch := range []string{"amd64", "arm64"} {
-		if !sha512Hex.MatchString(o.AgentSHA512[arch]) {
-			return fmt.Errorf("agent checksum for %s: want 128 lower-case hex characters", arch)
-		}
-	}
-
-	return nil
 }
 
 // readLinuxBinary refuses what could not run in the image, which is what a

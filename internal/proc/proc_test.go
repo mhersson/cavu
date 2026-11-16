@@ -83,23 +83,6 @@ func runHelper(mode string) {
 		_ = os.WriteFile(os.Getenv("PROC_PIDFILE"), []byte(strconv.Itoa(gc.Process.Pid)), 0o600) //nolint:gosec // test-supplied path
 
 		fmt.Println("hi")
-	case "escape":
-		// A setsid grandchild leaves the group, as Claude Code's Bash tool does.
-		signal.Ignore(syscall.SIGTERM)
-
-		gc := spawnSleeper()
-		gc.Stdout = nil
-		gc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-		if err := gc.Start(); err != nil {
-			os.Exit(2)
-		}
-
-		_ = os.WriteFile(os.Getenv("PROC_PIDFILE"), []byte(strconv.Itoa(gc.Process.Pid)), 0o600) //nolint:gosec // test-supplied path
-
-		fmt.Println("ready")
-
-		block()
 	case "ignoreterm":
 		signal.Ignore(syscall.SIGTERM)
 		fmt.Println("ready")

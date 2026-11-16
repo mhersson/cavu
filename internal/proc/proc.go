@@ -36,8 +36,7 @@ type process struct {
 	abandon     chan struct{}
 	abandonOnce sync.Once
 
-	readErrMu sync.Mutex
-	readErr   error
+	readErr error // written only by the stdout reader, read after the readers finish
 
 	done    chan struct{}
 	code    int   // set before done is closed
@@ -171,7 +170,7 @@ func start(c Command, limit int) (*process, error) {
 			_ = feedW.Close()
 		}
 
-		p.waitErr = errors.Join(exitErr, p.getReadErr())
+		p.waitErr = errors.Join(exitErr, p.readErr)
 
 		close(p.done)
 	}()
@@ -206,9 +205,8 @@ func (p *process) Lines() <-chan []byte { return p.lines }
 // StderrTail returns the last 16 KiB of stderr.
 func (p *process) StderrTail() string { return p.tail.String() }
 
-// Stop sends SIGTERM to the process group and SIGKILL after grace, to the
-// group and, on Linux, to every descendant that left it. It is idempotent and
-// returns nil once the process has exited.
+// Stop sends SIGTERM to the process group and SIGKILL after grace to the
+// group. It is idempotent and returns nil once the process has exited.
 func (p *process) Stop(grace time.Duration) error {
 	p.abandonLines()
 
@@ -230,8 +228,6 @@ func (p *process) Stop(grace time.Duration) error {
 		return nil
 	case <-timer.C:
 	}
-
-	killDescendants(p.cmd.Process.Pid)
 
 	err := p.signalGroup(syscall.SIGKILL)
 
@@ -269,20 +265,6 @@ func (p *process) signalGroup(sig syscall.Signal) error {
 	return nil
 }
 
-func (p *process) setReadErr(err error) {
-	p.readErrMu.Lock()
-	defer p.readErrMu.Unlock()
-
-	p.readErr = err
-}
-
-func (p *process) getReadErr() error {
-	p.readErrMu.Lock()
-	defer p.readErrMu.Unlock()
-
-	return p.readErr
-}
-
 // bestEffort stops writing after the first failure and reports success, so a
 // broken copy never ends the tail beside it.
 type bestEffort struct {
@@ -304,7 +286,7 @@ func (b *bestEffort) Write(data []byte) (int, error) {
 // on a full pipe.
 func (p *process) copyStdout(r io.Reader, w io.Writer) {
 	if _, err := io.Copy(w, r); err != nil {
-		p.setReadErr(fmt.Errorf("copy stdout: %w", err))
+		p.readErr = fmt.Errorf("copy stdout: %w", err)
 
 		_, _ = io.Copy(io.Discard, r)
 	}
@@ -327,7 +309,7 @@ func (p *process) readStdout(r io.Reader) {
 		}
 
 		if content > p.maxLine {
-			p.setReadErr(fmt.Errorf("stdout line exceeds the %d byte limit", p.maxLine))
+			p.readErr = fmt.Errorf("stdout line exceeds the %d byte limit", p.maxLine)
 			// Killing is the only way to stop a child that keeps writing a
 			// line that will never fit.
 			_ = p.signalGroup(syscall.SIGKILL)
@@ -352,7 +334,7 @@ func (p *process) readStdout(r io.Reader) {
 
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				p.setReadErr(fmt.Errorf("read stdout: %w", err))
+				p.readErr = fmt.Errorf("read stdout: %w", err)
 			}
 
 			return

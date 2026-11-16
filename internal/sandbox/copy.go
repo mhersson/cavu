@@ -29,10 +29,6 @@ func checkPath(p string) error {
 // existing parent directories keep their owner and mode. It needs a running
 // container and works on volumes and on a tmpfs.
 func (c Container) CopyIn(ctx context.Context, files map[string][]byte) error {
-	if err := checkArg("container name", c.name); err != nil {
-		return err
-	}
-
 	var buf bytes.Buffer
 
 	tw := tar.NewWriter(&buf)
@@ -76,10 +72,6 @@ func (c Container) CopyIn(ctx context.Context, files map[string][]byte) error {
 // on volumes and on a tmpfs. A caller copying a path the agent controls bounds
 // the copy with its writer: a writer that fails stops the client.
 func (c Container) CopyOut(ctx context.Context, p string, w io.Writer) error {
-	if err := checkArg("container name", c.name); err != nil {
-		return err
-	}
-
 	if err := checkPath(p); err != nil {
 		return err
 	}

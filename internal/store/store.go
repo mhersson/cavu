@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"modernc.org/sqlite"
 )
@@ -23,14 +22,7 @@ var (
 
 // SQLite result codes.
 const (
-	sqliteBusy             = 5    // SQLITE_BUSY
 	sqliteConstraintUnique = 2067 // SQLITE_CONSTRAINT_UNIQUE
-)
-
-// The first connection's retries while another opener switches a fresh database to WAL.
-const (
-	connectAttempts = 50
-	connectBackoff  = 20 * time.Millisecond
 )
 
 // Store is a handle on the database. It is safe for concurrent use.
@@ -80,12 +72,6 @@ func open(ctx context.Context, path string, ms []Migration) (*Store, error) {
 		return nil, err
 	}
 
-	if err := connect(ctx, db); err != nil {
-		_ = db.Close()
-
-		return nil, err
-	}
-
 	if err := migrate(ctx, db, ms); err != nil {
 		_ = db.Close()
 
@@ -95,56 +81,15 @@ func open(ctx context.Context, path string, ms []Migration) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// connect opens the first connection, which switches a fresh database to WAL.
-// SQLite fails one of two concurrent switches with SQLITE_BUSY at once, without
-// calling the busy handler, so the switch is retried here.
-func connect(ctx context.Context, db *sql.DB) error {
-	err := db.PingContext(ctx)
-
-	for attempt := 1; attempt < connectAttempts && isBusy(err); attempt++ {
-		t := time.NewTimer(connectBackoff)
-
-		select {
-		case <-ctx.Done():
-			t.Stop()
-
-			return fmt.Errorf("store: connect: %w", ctx.Err())
-		case <-t.C:
-		}
-
-		err = db.PingContext(ctx)
-	}
-
-	if err != nil {
-		return fmt.Errorf("store: connect: %w", err)
-	}
-
-	return nil
-}
-
 // Close releases the database.
 func (s *Store) Close() error {
 	return s.db.Close()
-}
-
-func isBusy(err error) bool {
-	var se *sqlite.Error
-
-	return errors.As(err, &se) && se.Code()&0xff == sqliteBusy
 }
 
 func isUniqueViolation(err error) bool {
 	var se *sqlite.Error
 
 	return errors.As(err, &se) && se.Code() == sqliteConstraintUnique
-}
-
-func toMillis(t time.Time) int64 {
-	return t.UnixMilli()
-}
-
-func fromMillis(ms int64) time.Time {
-	return time.UnixMilli(ms)
 }
 
 // nullableID maps the zero id to NULL.

@@ -30,10 +30,10 @@ func scanRun(sc scanner) (Run, error) {
 		return Run{}, err
 	}
 
-	r.StartedAt = fromMillis(started)
+	r.StartedAt = time.UnixMilli(started)
 
 	if ended.Valid {
-		t := fromMillis(ended.Int64)
+		t := time.UnixMilli(ended.Int64)
 		r.EndedAt = &t
 	}
 
@@ -45,7 +45,7 @@ func endedArg(t *time.Time) any {
 		return nil
 	}
 
-	return toMillis(*t)
+	return t.UnixMilli()
 }
 
 // CreateRun inserts r and returns it with its id; a zero StartedAt becomes now.
@@ -56,7 +56,7 @@ func (s *Store) CreateRun(ctx context.Context, r Run) (Run, error) {
 
 	res, err := s.db.ExecContext(ctx, `INSERT INTO runs (task_id, reason, session_id, outcome,
 		started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		r.TaskID, r.Reason, r.SessionID, r.Outcome, toMillis(r.StartedAt), endedArg(r.EndedAt))
+		r.TaskID, r.Reason, r.SessionID, r.Outcome, r.StartedAt.UnixMilli(), endedArg(r.EndedAt))
 	if err != nil {
 		return Run{}, fmt.Errorf("create run: %w", err)
 	}

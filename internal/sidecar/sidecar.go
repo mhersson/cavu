@@ -12,7 +12,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -57,12 +56,12 @@ func Run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	var err error
 
 	switch {
-	case req.Op == "proxy" && req.Proxy != nil:
+	case req.Proxy != nil:
 		err = runProxy(ctx, out, rest, req.Proxy)
-	case req.Op == "clone" && req.Clone != nil:
+	case req.Clone != nil:
 		err = runClone(ctx, out, req.Clone)
 	default:
-		err = errors.New("request: unknown op or missing body")
+		err = errors.New("request: no proxy or clone body")
 	}
 
 	if err != nil {
@@ -85,12 +84,11 @@ func runProxy(ctx context.Context, out *writer, stdin io.Reader, p *ProxyRequest
 	}
 
 	h, err := proxy.New(proxy.Config{
-		AllowHosts:   p.AllowHosts,
-		Model:        p.Model,
-		CABundle:     []byte(p.CABundle),
-		OnDenied:     func(host string) { out.write(Line{Type: "denied", Host: host}) },
-		OnUsage:      func(u proxy.Usage) { out.write(Line{Type: "usage", Usage: &u}) },
-		OnModelError: func(status int, kind string) { out.write(Line{Type: "model_error", Status: status, Kind: kind}) },
+		AllowHosts: p.AllowHosts,
+		Model:      p.Model,
+		CABundle:   []byte(p.CABundle),
+		OnDenied:   func(host string) { out.write(Line{Type: "denied", Host: host}) },
+		OnUsage:    func(u proxy.Usage) { out.write(Line{Type: "usage", Usage: &u}) },
 	})
 	if err != nil {
 		return fmt.Errorf("proxy: %w", err)
@@ -174,14 +172,6 @@ func scrub(msg string, req *Request) string {
 	if req != nil {
 		if c := req.Clone; c != nil {
 			secrets = append(secrets, c.Token, c.URL, c.CABundle)
-
-			if u, err := url.Parse(c.URL); err == nil && u.User != nil {
-				secrets = append(secrets, u.User.String())
-
-				if pw, ok := u.User.Password(); ok {
-					secrets = append(secrets, pw)
-				}
-			}
 		}
 
 		if p := req.Proxy; p != nil && p.Model != nil {

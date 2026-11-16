@@ -76,7 +76,7 @@ var (
 	// container cannot reach through the bridge.
 	ErrSidecarDown = errors.New("sandbox: the sidecar does not answer")
 	// ErrOutOfMemory is a container the kernel killed at its memory limit.
-	ErrOutOfMemory = errors.New(errPrefix + oomText)
+	ErrOutOfMemory = errors.New("sandbox: killed for memory")
 
 	errNoVolumes = errors.New("sandbox: the volumes are not in place: run EnsureVolumes first")
 )
@@ -130,10 +130,6 @@ func Open(o Options) (*Sandbox, error) {
 	}
 
 	if err := checkArg("image", o.Image); err != nil {
-		return nil, fmt.Errorf("sandbox: %w", err)
-	}
-
-	if _, err := o.Runtime.podman(); err != nil {
 		return nil, fmt.Errorf("sandbox: %w", err)
 	}
 
@@ -339,7 +335,7 @@ func (s *Sandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (baseCommit
 func readClone(ctx context.Context, p proc.Process, r sidecar.CloneRequest) (string, error) {
 	// A client that never reads its stdin must not block the call.
 	go func() {
-		_ = json.NewEncoder(p.Stdin()).Encode(sidecar.Request{Op: "clone", Clone: &r})
+		_ = json.NewEncoder(p.Stdin()).Encode(sidecar.Request{Clone: &r})
 		_ = p.Stdin().Close()
 	}()
 
@@ -414,7 +410,7 @@ func (s *Sandbox) Scratch(ctx context.Context) (Container, error) {
 // container has network none, no mount or variable beyond its spec, and
 // reaches the proxy through its bridge. It fails closed: after any error
 // neither container is left, and a failed check is ErrNotIsolated or
-// ErrSidecarDown. lines receives the sidecar's denied, usage and model_error
+// ErrSidecarDown. lines receives the sidecar's denied and usage
 // lines on a goroutine of its own; one that blocks holds back the proxy. When
 // the sidecar ends after it got ready and the sandbox did not stop it, lines
 // receives one error line with the reason: the phase container has lost its
@@ -557,7 +553,7 @@ func (s *Sandbox) ensureSidecar(ctx context.Context, p sidecar.ProxyRequest, lin
 
 	// Stdin stays open, because its end ends the proxy. A request that never
 	// arrives shows as a sidecar that does not get ready.
-	go func() { _ = json.NewEncoder(pr.Stdin()).Encode(sidecar.Request{Op: "proxy", Proxy: &p}) }()
+	go func() { _ = json.NewEncoder(pr.Stdin()).Encode(sidecar.Request{Proxy: &p}) }()
 
 	return nil
 }
@@ -612,12 +608,6 @@ func (s *Sandbox) check(ctx context.Context) (Container, error) {
 
 	if err := checkMounts(spec, info.Mounts); err != nil {
 		return Container{}, err
-	}
-
-	for _, n := range info.EnvNames {
-		if err := checkEnvName(n); err != nil {
-			return Container{}, err
-		}
 	}
 
 	out, err := s.o.Runtime.output(ctx, append([]string{"exec", spec.Name}, envArgv...)...)
@@ -719,7 +709,7 @@ func (s *Sandbox) probe(ctx context.Context, name string) error {
 		case ctx.Err() != nil:
 			return fmt.Errorf("sandbox: %w", ctx.Err())
 		case !s.side.alive():
-			return sidecarDown(s.side.cause)
+			return fmt.Errorf("%w: %w", ErrSidecarDown, s.side.cause)
 		case time.Now().After(deadline):
 			return fmt.Errorf("%w: the proxy did not refuse a probe through the bridge within %s", ErrSidecarDown, s.timeouts.probe)
 		}
@@ -776,7 +766,7 @@ func (sc *sidecarProc) read() {
 			sc.readyOnce.Do(func() { close(sc.ready) })
 		case "error":
 			sc.fail(errors.New("its error: " + l.Error))
-		case "denied", "usage", "model_error":
+		case "denied", "usage":
 			if l.Type == "denied" && l.Host == probeHost {
 				continue
 			}
@@ -786,34 +776,6 @@ func (sc *sidecarProc) read() {
 	}
 
 	sc.fail(sc.endCause())
-}
-
-const (
-	errPrefix = "sandbox: "
-	oomText   = "killed for memory"
-)
-
-// downError carries both sentinels under one message, so the "sandbox: "
-// prefix appears once.
-type downError struct {
-	msg   string
-	cause error
-}
-
-func (e *downError) Error() string   { return e.msg }
-func (e *downError) Unwrap() []error { return []error{ErrSidecarDown, e.cause} }
-
-// sidecarDown is ErrSidecarDown for cause. A cause that is already a sandbox
-// error keeps its own sentinel and drops its repeated prefix.
-func sidecarDown(cause error) error {
-	if !errors.Is(cause, ErrOutOfMemory) {
-		return fmt.Errorf("%w: %w", ErrSidecarDown, cause)
-	}
-
-	return &downError{
-		msg:   ErrSidecarDown.Error() + ": " + strings.TrimPrefix(cause.Error(), errPrefix),
-		cause: cause,
-	}
 }
 
 // endCause is why the output ended. The runtime is asked only about an end
@@ -838,7 +800,7 @@ func (sc *sidecarProc) fail(cause error) {
 
 		// Before ready, Up's error reports it.
 		if sc.isReady() && !sc.stopping.Load() {
-			sc.deliver(sidecar.Line{Type: "error", Error: sidecarDown(cause).Error()})
+			sc.deliver(sidecar.Line{Type: "error", Error: fmt.Errorf("%w: %w", ErrSidecarDown, cause).Error()})
 		}
 	})
 }
@@ -870,7 +832,7 @@ func (sc *sidecarProc) isReady() bool {
 // waitReady counts within from the sidecar's start.
 func (sc *sidecarProc) waitReady(ctx context.Context, within time.Duration) error {
 	if !sc.alive() {
-		return sidecarDown(sc.cause)
+		return fmt.Errorf("%w: %w", ErrSidecarDown, sc.cause)
 	}
 
 	// First, because for a sidecar older than within the timer below has
@@ -888,7 +850,7 @@ func (sc *sidecarProc) waitReady(ctx context.Context, within time.Duration) erro
 	case <-sc.ready:
 		return nil
 	case <-sc.down:
-		return sidecarDown(sc.cause)
+		return fmt.Errorf("%w: %w", ErrSidecarDown, sc.cause)
 	case <-timer.C:
 		return fmt.Errorf("%w: no ready line within %s", ErrSidecarDown, within)
 	case <-ctx.Done():

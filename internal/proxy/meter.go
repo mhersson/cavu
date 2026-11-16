@@ -2,9 +2,7 @@ package proxy
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -163,14 +161,11 @@ func (m *meter) result() (Usage, bool) {
 	}, true
 }
 
-// meterBody passes bytes through unchanged and reports usage and a cut-off stream on Close.
+// meterBody passes bytes through unchanged and reports usage on Close.
 type meterBody struct {
-	rc       io.ReadCloser
-	m        *meter // nil when the response is not metered
-	h        *handler
-	status   int
-	reported bool // an error status was already reported
-	err      error
+	rc io.ReadCloser
+	m  *meter // nil when the response is not metered
+	h  *handler
 }
 
 func encoded(res *http.Response) bool {
@@ -179,8 +174,8 @@ func encoded(res *http.Response) bool {
 	return enc != "" && !strings.EqualFold(enc, "identity")
 }
 
-func newMeterBody(res *http.Response, h *handler, reported bool) io.ReadCloser {
-	b := &meterBody{rc: res.Body, h: h, status: res.StatusCode, reported: reported}
+func newMeterBody(res *http.Response, h *handler) io.ReadCloser {
+	b := &meterBody{rc: res.Body, h: h}
 
 	if res.StatusCode >= 400 || encoded(res) {
 		return b
@@ -202,21 +197,11 @@ func (b *meterBody) Read(p []byte) (int, error) {
 		b.m.write(p[:n])
 	}
 
-	if err != nil && !errors.Is(err, io.EOF) {
-		b.err = err
-	}
-
 	return n, err
 }
 
 func (b *meterBody) Close() error {
 	err := b.rc.Close()
-
-	if b.err != nil && !errors.Is(b.err, context.Canceled) && !b.reported {
-		b.h.modelError(b.status, kindTransport)
-	}
-
-	b.reported = true // Close can run twice; report once
 
 	if b.m != nil {
 		if u, ok := b.m.result(); ok {

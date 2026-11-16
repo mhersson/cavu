@@ -47,7 +47,7 @@ func (s *Store) CreateReplay(ctx context.Context, r Replay) (Replay, error) {
 	}
 
 	res, err := s.db.ExecContext(ctx, `INSERT INTO replays (name, config, image, started_at, ended_at) VALUES (?, ?, ?, ?, ?)`,
-		r.Name, string(config), r.Image, toMillis(r.StartedAt), endedArg(r.EndedAt))
+		r.Name, string(config), r.Image, r.StartedAt.UnixMilli(), endedArg(r.EndedAt))
 	if err != nil {
 		return Replay{}, fmt.Errorf("create replay: %w", err)
 	}
@@ -62,7 +62,7 @@ func (s *Store) CreateReplay(ctx context.Context, r Replay) (Replay, error) {
 
 // EndReplay marks the replay with id as ended at at, or returns ErrNotFound.
 func (s *Store) EndReplay(ctx context.Context, id int64, at time.Time) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE replays SET ended_at = ? WHERE id = ?`, toMillis(at), id)
+	res, err := s.db.ExecContext(ctx, `UPDATE replays SET ended_at = ? WHERE id = ?`, at.UnixMilli(), id)
 	if err != nil {
 		return fmt.Errorf("end replay: %w", err)
 	}
@@ -120,7 +120,7 @@ func (s *Store) PreviousReplay(ctx context.Context, before int64) (Replay, bool,
 		r       Replay
 		config  string
 		started int64
-		ended   sql.NullInt64
+		ended   int64
 	)
 
 	err := s.db.QueryRowContext(ctx, `SELECT id, name, config, image, started_at, ended_at FROM replays
@@ -137,12 +137,9 @@ func (s *Store) PreviousReplay(ctx context.Context, before int64) (Replay, bool,
 		return Replay{}, false, fmt.Errorf("decode replay %d: %w", r.ID, err)
 	}
 
-	r.StartedAt = fromMillis(started)
-
-	if ended.Valid {
-		t := fromMillis(ended.Int64)
-		r.EndedAt = &t
-	}
+	r.StartedAt = time.UnixMilli(started)
+	endedAt := time.UnixMilli(ended)
+	r.EndedAt = &endedAt
 
 	return r, true, nil
 }

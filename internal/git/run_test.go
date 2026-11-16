@@ -2,52 +2,15 @@ package git
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mhersson/cavu/internal/testkit/gitrepo"
 )
-
-func TestRunIgnoresInheritedRepoVariables(t *testing.T) {
-	root := gitrepo.New(t, map[string]string{"f": "x\n"})
-
-	t.Setenv("GIT_DIR", "/nonexistent")
-	t.Setenv("GIT_INDEX_FILE", "/nonexistent")
-	t.Setenv("GIT_WORK_TREE", "/nonexistent")
-
-	ctx, envLog := wrapGit(t, `env > "$LOG.env"`)
-
-	out, err := run(ctx, call{dir: root, args: []string{"rev-parse", "--show-toplevel"}, read: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got := strings.TrimSpace(string(out)); got != root {
-		t.Errorf("toplevel = %q, want %q", got, root)
-	}
-
-	env, err := os.ReadFile(envLog + ".env")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, name := range []string{"GIT_DIR=", "GIT_INDEX_FILE=", "GIT_WORK_TREE="} {
-		if strings.Contains(string(env), name) {
-			t.Errorf("environment still has %s", name)
-		}
-	}
-
-	if !strings.Contains(string(env), "GIT_OPTIONAL_LOCKS=0") {
-		t.Error("read call lacks GIT_OPTIONAL_LOCKS=0")
-	}
-}
 
 func TestRunEnvAndLocks(t *testing.T) {
 	t.Parallel()
@@ -98,104 +61,32 @@ func TestRunErrorCarriesStderrFirstLine(t *testing.T) {
 	}
 }
 
-// The wrapper forks without pause, so the cancel lands mid-fork: a child that
-// misses the group kill outlives the call.
-func TestRunCancelKillsChildrenForkedDuringTheKill(t *testing.T) {
-	root := gitrepo.New(t, map[string]string{"f": "x\n"})
-	ctx, logPath := wrapGit(t, `echo $$ > "$LOG.pgid"
-i=0
-while [ $i -lt 300 ]; do
-	sh -c 'echo $$ >> "$1"; exec sleep 30' sh "$LOG.pids" &
-	i=$((i+1))
-done
-wait`)
-
-	t.Cleanup(func() { killGroupIn(t, logPath+".pgid") })
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	go func() {
-		for ctx.Err() == nil {
-			if raw, err := os.ReadFile(logPath + ".pids"); err == nil && strings.Count(string(raw), "\n") >= 5 {
-				cancel()
-
-				return
-			}
-
-			time.Sleep(time.Millisecond)
-		}
-	}()
-
-	_, err := run(ctx, call{dir: root, args: []string{"status"}})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want canceled", err)
-	}
-
-	raw, err := os.ReadFile(logPath + ".pids")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	deadline := time.Now().Add(time.Second)
-
-	for field := range strings.FieldsSeq(string(raw)) {
-		pid, err := strconv.Atoi(field)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		for alive(pid) && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
-
-		if alive(pid) {
-			t.Errorf("child %d survived cancel", pid)
-		}
-	}
-}
-
-func TestNetCallHasNoTerminal(t *testing.T) {
-	for _, name := range []string{"GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE"} {
+// A read takes no optional locks and a network call never prompts; a plain
+// call gets neither setting.
+func TestCallEnv(t *testing.T) {
+	for _, name := range []string{"GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE"} {
 		t.Setenv(name, "")
 		os.Unsetenv(name)
 	}
 
-	netCmd := call{args: []string{"fetch"}, net: true}.command(context.Background())
-	if !netCmd.SysProcAttr.Setsid || netCmd.SysProcAttr.Setpgid {
-		t.Errorf("net call attr = %+v, want Setsid without Setpgid", netCmd.SysProcAttr)
-	}
+	read := []string{"GIT_OPTIONAL_LOCKS=0"}
+	net := []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never"}
 
-	for _, kv := range []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never"} {
-		if !slices.Contains(netCmd.Env, kv) {
-			t.Errorf("net call lacks %s", kv)
-		}
-	}
+	for _, tt := range []struct {
+		name string
+		c    call
+		want []string
+	}{
+		{"read", call{args: []string{"status"}, read: true}, read},
+		{"net", call{args: []string{"fetch"}, net: true}, net},
+		{"plain", call{args: []string{"status"}}, nil},
+	} {
+		env := tt.c.command(context.Background()).Env
 
-	plain := call{args: []string{"status"}}.command(context.Background())
-	if !plain.SysProcAttr.Setpgid || plain.SysProcAttr.Setsid {
-		t.Errorf("plain call attr = %+v, want Setpgid without Setsid", plain.SysProcAttr)
-	}
-
-	for _, kv := range []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never"} {
-		if slices.Contains(plain.Env, kv) {
-			t.Errorf("plain call has %s", kv)
-		}
-	}
-}
-
-func TestHideURLs(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct{ in, want string }{
-		{"", ""},
-		{"fatal: no url", "fatal: no url"},
-		{"fatal: unable to access 'https://user:secret@example.invalid/o/r.git/'", "fatal: unable to access '<url>'"},
-		{": ssh://host:22/o/r and git://h/x done", ": <url> and <url> done"},
-	}
-	for _, tt := range tests {
-		if got := hideURLs(tt.in); got != tt.want {
-			t.Errorf("hideURLs(%q) = %q, want %q", tt.in, got, tt.want)
+		for _, kv := range append(slices.Clone(read), net...) {
+			if got, want := slices.Contains(env, kv), slices.Contains(tt.want, kv); got != want {
+				t.Errorf("%s call has %s = %v, want %v", tt.name, kv, got, want)
+			}
 		}
 	}
 }
