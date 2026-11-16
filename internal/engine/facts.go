@@ -166,7 +166,10 @@ func (f *Facts) sessionStarted(p SessionStartedPayload) {
 	}
 
 	if f.RunOpen {
-		f.Pending, f.SessionID, f.Session, f.Verify = string(KindWork), p.SessionID, nil, ""
+		f.Pending, f.Session, f.Verify = string(KindWork), nil, ""
+		if p.SessionID != "" {
+			f.SessionID = p.SessionID
+		}
 	}
 }
 

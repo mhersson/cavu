@@ -117,6 +117,11 @@ func TestReduce(t *testing.T) {
 			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, Pending: "work", SessionID: "s1"},
 		},
 		{
+			name:   "a session start with no session id",
+			events: preparedRun(firstSession, unfinished, ev(engine.SessionStarted, `{"mode":"continue","automatic":true}`)),
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, Pending: "work", SessionID: "s1", Continuations: 1},
+		},
+		{
 			name:   "an answer after a question",
 			events: questionAnswered(),
 			want: engine.Facts{
@@ -277,6 +282,11 @@ func TestReducePendingAndCounting(t *testing.T) {
 		},
 		{name: "a pending first session", events: preparedRun(firstSession), want: work(engine.ModeContinue, false)},
 		{name: "a pending automatic continuation", events: preparedRun(firstSession, unfinished, autoContinue), want: work(engine.ModeContinue, false)},
+		{
+			name:   "a pending session with no session id",
+			events: preparedRun(firstSession, unfinished, ev(engine.SessionStarted, `{"mode":"continue","automatic":true}`)),
+			want:   work(engine.ModeContinue, false),
+		},
 		{name: "a pending resume after a usage limit", events: append(slices.Clone(usageLimit), resumeAfterLimit), want: work(engine.ModeContinue, false)},
 		{name: "a pending fix after a retry", events: append(verifyStop(), retried, personFix), want: work(engine.ModeFixVerify, false)},
 		{

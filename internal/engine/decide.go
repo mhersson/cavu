@@ -55,6 +55,10 @@ const (
 	StopCancelled    = "cancelled"
 )
 
+// UsageLimitFallback is how long a usage limit holds when its reset time is
+// unknown or already past, so a usage-limit cycle never resumes without real time passing.
+const UsageLimitFallback = 30 * time.Minute
+
 // The actions that clear a stop.
 const (
 	ClearRetry  = "retry"
@@ -74,7 +78,7 @@ type Action struct {
 	Stop      string    // stop: the reason
 	Explain   string    // stop: one line for a person
 	Clear     string    // stop: the one action that clears it
-	ResetsAt  time.Time // stop: when a usage limit resets
+	ResetsAt  time.Time // stop: when a usage limit resets, always after Now
 }
 
 // Decide returns the next action for s; the first rule that matches wins. It
@@ -152,9 +156,14 @@ func Decide(s Snapshot) Action {
 	failed := f.Verify == ResultFailed || f.Verify == ResultTimeout
 
 	if sess.Outcome == OutcomeUsageLimit {
+		resets := sess.ResetsAt
+		if !resets.After(s.Now) {
+			resets = s.Now.Add(UsageLimitFallback)
+		}
+
 		a := halt(StopUsageLimit, ClearNone, "The session hit a usage limit.",
 			"The model's usage limit was reached; work resumes when it resets.")
-		a.ResetsAt = sess.ResetsAt
+		a.ResetsAt = resets
 
 		return a
 	}

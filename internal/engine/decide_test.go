@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -83,12 +84,17 @@ func halt(reason, clears string) engine.Action {
 func decideCases() []decideCase {
 	resets := now.Add(30 * time.Minute)
 	reset := now.Add(-30 * time.Minute)
+	later := now.Add(2 * time.Hour)
+	fallback := now.Add(engine.UsageLimitFallback)
 	none := engine.Action{Kind: engine.KindNone}
 	contOff := engine.Switches{VerifyFix: true}
 	fixOff := engine.Switches{Continuations: true}
 
 	cancelledStop := openStop(engine.StopCancelled, time.Time{})
 	cancelledStop.Cancelled = true
+
+	cancelledQuestion := openStop(engine.StopQuestion, time.Time{})
+	cancelledQuestion.Cancelled = true
 
 	exportedOpen := prepared()
 	exportedOpen.Exported = true
@@ -109,6 +115,7 @@ func decideCases() []decideCase {
 	return []decideCase{
 		{name: "not started", snap: snap(engine.Facts{}), want: none},
 		{name: "cancelled", snap: snap(engine.Facts{Started: true, Cancelled: true, RunOpen: true}), want: halt(engine.StopCancelled, engine.ClearNone)},
+		{name: "cancelled with another stop open", snap: snap(cancelledQuestion), want: halt(engine.StopCancelled, engine.ClearNone)},
 		{name: "usage limit before its reset", snap: snap(openStop(engine.StopUsageLimit, resets)), want: engine.Action{Kind: engine.KindWait, Until: resets}, clock: true},
 		{name: "usage limit reset reached", snap: snap(openStop(engine.StopUsageLimit, reset)), want: work(engine.ModeContinue, false), clock: true},
 		{name: "usage limit with no reset time", snap: snap(openStop(engine.StopUsageLimit, time.Time{})), want: work(engine.ModeContinue, false)},
@@ -131,8 +138,16 @@ func decideCases() []decideCase {
 		{name: "no ended session", snap: snap(prepared()), want: work(engine.ModeStart, false)},
 		{name: "no ended session with a session id", snap: snap(withSession), want: work(engine.ModeContinue, false)},
 		{
-			name: "session usage limit", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeUsageLimit, ResetsAt: resets})),
-			want: engine.Action{Kind: engine.KindStop, Stop: engine.StopUsageLimit, Clear: engine.ClearNone, ResetsAt: resets},
+			name: "session usage limit with a future reset", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeUsageLimit, ResetsAt: later})),
+			want: engine.Action{Kind: engine.KindStop, Stop: engine.StopUsageLimit, Clear: engine.ClearNone, ResetsAt: later},
+		},
+		{
+			name: "session usage limit with no reset time", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeUsageLimit})),
+			want: engine.Action{Kind: engine.KindStop, Stop: engine.StopUsageLimit, Clear: engine.ClearNone, ResetsAt: fallback}, clock: true,
+		},
+		{
+			name: "session usage limit with a past reset", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeUsageLimit, ResetsAt: reset})),
+			want: engine.Action{Kind: engine.KindStop, Stop: engine.StopUsageLimit, Clear: engine.ClearNone, ResetsAt: fallback}, clock: true,
 		},
 		{name: "session endpoint", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeEndpoint})), want: halt(engine.StopEndpoint, engine.ClearRetry)},
 		{name: "session timeout", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeTimeout})), want: halt(engine.StopTimeout, engine.ClearRetry)},
@@ -222,5 +237,41 @@ func TestDecideIsPure(t *testing.T) {
 			moved := engine.Decide(later) != first || engine.Decide(earlier) != first
 			assert.Equal(t, tc.clock, moved)
 		})
+	}
+}
+
+// A usage limit with no usable reset time still waits real time before each
+// resume, so the cycle of limit, stop and resume cannot spin.
+func TestUsageLimitCycleWaits(t *testing.T) {
+	limited := ev(engine.SessionEnded, `{"outcome":"usage_limit"}`)
+	events := preparedRun(firstSession, limited)
+	at := now
+
+	for round := range 2 {
+		s := snap(engine.Reduce(events))
+		s.Now = at
+
+		stop := engine.Decide(s)
+		require.Equal(t, engine.KindStop, stop.Kind, "round %d", round)
+		require.True(t, stop.ResetsAt.After(at), "round %d", round)
+
+		payload, err := json.Marshal(engine.StoppedPayload{Reason: stop.Stop, Explanation: stop.Explain, Action: stop.Clear, ResetsAt: stop.ResetsAt})
+		require.NoError(t, err)
+
+		events = append(events, ev(engine.Stopped, string(payload)))
+		s = snap(engine.Reduce(events))
+		s.Now = at
+
+		wait := engine.Decide(s)
+		assert.Equal(t, engine.KindWait, wait.Kind, "round %d", round)
+		assert.Equal(t, stop.ResetsAt, wait.Until, "round %d", round)
+
+		at = stop.ResetsAt
+		s.Now = at
+		resume := engine.Decide(s)
+		assert.Equal(t, engine.KindWork, resume.Kind, "round %d", round)
+		assert.Equal(t, engine.ModeContinue, resume.WorkMode, "round %d", round)
+
+		events = append(events, ev(engine.SessionStarted, `{"mode":"continue","session_id":"s1","resume":true}`), limited)
 	}
 }
