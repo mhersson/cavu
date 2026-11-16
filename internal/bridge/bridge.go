@@ -5,16 +5,14 @@ package bridge
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net"
 	"sync"
-	"syscall"
-	"time"
 )
 
 // Serve accepts TCP connections on listen and copies each to a new connection
-// to the Unix socket, both directions, until ctx ends.
+// to the Unix socket, both directions, until ctx ends. The container running it
+// is removed by force, so open connections are not drained.
 func Serve(ctx context.Context, listen, socket string) error {
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
 	if err != nil {
@@ -25,21 +23,8 @@ func Serve(ctx context.Context, listen, socket string) error {
 }
 
 func serve(ctx context.Context, ln net.Listener, socket string) error {
-	var open tracker
-
-	// Closing the listener and every open connection ends the accept loop and
-	// each copy.
-	stop := context.AfterFunc(ctx, func() {
-		_ = ln.Close()
-
-		open.closeAll()
-	})
+	stop := context.AfterFunc(ctx, func() { _ = ln.Close() })
 	defer stop()
-
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
-	var delay time.Duration
 
 	for {
 		client, err := ln.Accept()
@@ -48,101 +33,22 @@ func serve(ctx context.Context, ln net.Listener, socket string) error {
 				return nil
 			}
 
-			if !temporary(err) {
-				return err
-			}
-
-			// Back off as net/http does, so a descriptor shortage does not end egress.
-			delay = min(max(2*delay, 5*time.Millisecond), time.Second)
-
-			select {
-			case <-time.After(delay):
-				continue
-			case <-ctx.Done():
-				return nil
-			}
+			return err
 		}
 
-		delay = 0
-
-		wg.Go(func() { handle(ctx, client, socket, &open) })
+		go handle(ctx, client, socket)
 	}
 }
 
-// temporary reports an Accept error worth retrying: a timeout or a shortage of
-// descriptors.
-func temporary(err error) bool {
-	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
-		return true
-	}
-
-	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
-}
-
-// tracker holds the open connections so a stop can close them all.
-type tracker struct {
-	mu     sync.Mutex
-	conns  map[net.Conn]struct{}
-	closed bool
-}
-
-// add registers c and returns its release, or closes c and returns false when
-// the bridge is already stopping.
-func (t *tracker) add(c net.Conn) (release func(), ok bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
-		_ = c.Close()
-
-		return nil, false
-	}
-
-	if t.conns == nil {
-		t.conns = map[net.Conn]struct{}{}
-	}
-
-	t.conns[c] = struct{}{}
-
-	return func() {
-		t.mu.Lock()
-		delete(t.conns, c)
-		t.mu.Unlock()
-
-		_ = c.Close()
-	}, true
-}
-
-func (t *tracker) closeAll() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.closed = true
-
-	for c := range t.conns {
-		_ = c.Close()
-	}
-}
-
-func handle(ctx context.Context, client net.Conn, socket string, open *tracker) {
-	release, ok := open.add(client)
-	if !ok {
-		return
-	}
-
-	defer release()
+func handle(ctx context.Context, client net.Conn, socket string) {
+	defer client.Close()
 
 	upstream, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	if err != nil {
 		return
 	}
 
-	release, ok = open.add(upstream)
-	if !ok {
-		return
-	}
-
-	defer release()
+	defer upstream.Close()
 
 	var wg sync.WaitGroup
 
