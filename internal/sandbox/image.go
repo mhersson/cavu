@@ -62,7 +62,7 @@ type BuildOptions struct {
 // The context is a tar stream on stdin, so no host path is involved. The
 // client's stdout goes to out; a failure carries the tail of its stderr.
 func (r Runtime) BuildImage(ctx context.Context, o BuildOptions, out io.Writer) error {
-	bundleSum, err := checkBundle(o.CABundle)
+	bundleSum, err := BundleSum(o.CABundle)
 	if err != nil {
 		return err
 	}
@@ -106,10 +106,10 @@ func (r Runtime) BuildImage(ctx context.Context, o BuildOptions, out io.Writer) 
 	return nil
 }
 
-// checkBundle returns the bundle's sha256, or "" for no bundle. Every PEM
-// block must be a certificate that parses, so a mistaken file fails here and
-// not as a trust failure inside the image.
-func checkBundle(b []byte) (string, error) {
+// BundleSum is the image's cavu.ca_bundle label for a CA bundle: its sha256,
+// or "" for none. Every PEM block must be a certificate that parses, so a
+// mistaken file fails here and not as a trust failure inside the image.
+func BundleSum(b []byte) (string, error) {
 	if len(bytes.TrimSpace(b)) == 0 {
 		return "", nil
 	}

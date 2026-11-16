@@ -3,12 +3,9 @@
 package doctor
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	_ "embed" // the endpoint check's prompt
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,7 +70,7 @@ type host interface {
 	// detect finds the runtime and names it with its engine's version.
 	detect(ctx context.Context, preferred string) (string, error)
 	imageLabels(ctx context.Context) (sandbox.ImageLabels, bool, error)
-	// open opens a sandbox of the image under run 0 and task 0.
+	// open opens a sandbox of the image under the environment check's ids: run and task id 0.
 	open(projectID int64) (box, error)
 }
 
@@ -96,7 +93,6 @@ type target interface {
 type doctor struct {
 	Deps
 
-	h       host
 	image   string
 	labels  sandbox.ImageLabels
 	found   bool
@@ -112,9 +108,9 @@ type doctor struct {
 // Run runs the checks in order. One whose prerequisite did not pass is
 // skipped with the reason; settings is decided first, as sandbox needs it.
 func Run(ctx context.Context, d Deps) []Check {
-	r := &doctor{Deps: d, h: d.host, image: sandbox.ImageName(d.Version), failed: map[string]bool{}}
-	if r.h == nil {
-		r.h = &runtimeHost{image: r.image, instance: d.Settings["instance_id"]}
+	r := &doctor{Deps: d, image: sandbox.ImageName(d.Version), failed: map[string]bool{}}
+	if r.host == nil {
+		r.host = &runtimeHost{image: r.image, instance: d.Settings["instance_id"]}
 	}
 
 	settings := r.settings()
@@ -175,9 +171,9 @@ func (r *doctor) step(ctx context.Context, name string, check func(context.Conte
 func failed(err error, fix string) Check { return Check{Detail: err.Error(), Fix: fix} }
 
 func (r *doctor) runtime(ctx context.Context) Check {
-	v, err := r.h.detect(ctx, r.Settings["runtime"])
+	v, err := r.host.detect(ctx, r.Settings["runtime"])
 	if err != nil {
-		return failed(err, "install Docker Engine or Podman, or set runtime to the one installed")
+		return failed(err, "install or start Docker Engine or Podman, or set runtime to the one installed")
 	}
 
 	return Check{OK: true, Detail: v}
@@ -186,11 +182,11 @@ func (r *doctor) runtime(ctx context.Context) Check {
 // start reads the image's labels and starts the doctor's sandbox clean, with
 // its scratch container when the image is there.
 func (r *doctor) start(ctx context.Context) {
-	if r.labels, r.found, r.err = r.h.imageLabels(ctx); r.err != nil {
+	if r.labels, r.found, r.err = r.host.imageLabels(ctx); r.err != nil {
 		return
 	}
 
-	if r.box, r.err = r.h.open(0); r.err != nil {
+	if r.box, r.err = r.host.open(0); r.err != nil {
 		return
 	}
 
@@ -234,12 +230,7 @@ func (r *doctor) noNetwork(ctx context.Context) Check {
 
 func (r *doctor) imageCheck(ctx context.Context) Check {
 	fail := func(detail string) Check { return Check{Detail: detail, Fix: buildFix} }
-
-	// What the build labels the image with: the bundle's sha256, empty for none.
-	sum, bundleSum := sha256.Sum256(r.CABundle), ""
-	if len(bytes.TrimSpace(r.CABundle)) > 0 {
-		bundleSum = hex.EncodeToString(sum[:])
-	}
+	bundleSum, err := sandbox.BundleSum(r.CABundle)
 
 	switch {
 	case r.err != nil:
@@ -248,6 +239,8 @@ func (r *doctor) imageCheck(ctx context.Context) Check {
 		return fail("image " + r.image + " is not built")
 	case r.labels.CavuVersion != r.Version:
 		return fail(fmt.Sprintf("image %s is from cavu %s, this is %s", r.image, r.labels.CavuVersion, r.Version))
+	case err != nil:
+		return failed(err, "set ca_bundle_path to a PEM file of CA certificates")
 	case r.labels.CABundle != bundleSum:
 		return fail("the image's CA bundle is not the configured one")
 	}
@@ -395,13 +388,13 @@ func (r *doctor) endpointFix() string {
 	return "check endpoint_mode, endpoint_url, endpoint_auth_header, model_work and the secret endpoint_credential"
 }
 
-// forge fetches the project into its own mirror under run 0 and task 0.
+// forge fetches the project into its own mirror, with run and task id 0.
 func (r *doctor) forge(ctx context.Context) Check {
 	if r.ForgeToken == "" || r.Project == nil {
 		return Check{Skipped: true, Detail: "skipped: no forge token or no project"}
 	}
 
-	b, err := r.h.open(r.Project.ID)
+	b, err := r.host.open(r.Project.ID)
 	if err == nil {
 		err = b.Destroy(ctx, false)
 	}

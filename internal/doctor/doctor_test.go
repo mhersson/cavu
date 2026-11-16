@@ -18,6 +18,7 @@ import (
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
+	"github.com/mhersson/cavu/internal/testkit/sandboxtest"
 )
 
 const (
@@ -28,10 +29,7 @@ const (
 	routeHead  = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
 )
 
-var (
-	bundle = []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
-	order  = []string{"runtime", "no_network", "image", "claude_code", "sandbox", "settings", "endpoint", "forge"}
-)
+var order = []string{"runtime", "no_network", "image", "claude_code", "sandbox", "settings", "endpoint", "forge"}
 
 // fakeHost answers from its fields and records what the doctor asks of it.
 // It runs nothing.
@@ -136,7 +134,10 @@ func sum(b []byte) string {
 }
 
 // green is an installation where every check passes.
-func green(mode string) (Deps, *fakeHost, *fakeDriver) {
+func green(t *testing.T, mode string) (Deps, *fakeHost, *fakeDriver) {
+	t.Helper()
+
+	bundle, _, _ := sandboxtest.CA(t)
 	h := &fakeHost{labels: sandbox.ImageLabels{CavuVersion: version, AgentVersion: pinned, CABundle: sum(bundle)}, found: true}
 	done := driver.Result{Reason: driver.ReasonDone, Structured: json.RawMessage(`{"ok":true}`)}
 	cached := done
@@ -178,7 +179,7 @@ func byName(t *testing.T, checks []Check) map[string]Check {
 func TestDoctorAllGreen(t *testing.T) {
 	for _, mode := range []string{"key", "subscription"} {
 		t.Run(mode, func(t *testing.T) {
-			d, h, drv := green(mode)
+			d, h, drv := green(t, mode)
 
 			checks := Run(t.Context(), d)
 			for _, c := range byName(t, checks) {
@@ -192,7 +193,7 @@ func TestDoctorAllGreen(t *testing.T) {
 			require.Len(t, h.ups, 1)
 			up := h.ups[0]
 			assert.Equal(t, drv.Hosts(mode), up.AllowHosts)
-			assert.Equal(t, string(bundle), up.CABundle)
+			assert.Equal(t, string(d.CABundle), up.CABundle)
 
 			require.Len(t, drv.specs, 2)
 			first, second := drv.specs[0], drv.specs[1]
@@ -222,8 +223,9 @@ func TestDoctorAllGreen(t *testing.T) {
 }
 
 func TestDoctorCABundleChanged(t *testing.T) {
-	d, h, _ := green("key")
-	d.CABundle = []byte("-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----\n")
+	d, h, _ := green(t, "key")
+	configured := d.CABundle
+	d.CABundle, _, _ = sandboxtest.CAFromSeed(t, "doctor-test-other-ca-seed-012345")
 
 	checks := byName(t, Run(t.Context(), d))
 	assert.False(t, checks["image"].OK)
@@ -232,14 +234,22 @@ func TestDoctorCABundleChanged(t *testing.T) {
 
 	t.Run("a bundle configured after an image without one", func(t *testing.T) {
 		h.labels.CABundle = ""
-		d.CABundle = bundle
+		d.CABundle = configured
 
 		assert.False(t, byName(t, Run(t.Context(), d))["image"].OK)
+	})
+
+	t.Run("a configured file that is no bundle", func(t *testing.T) {
+		d.CABundle = []byte("not a certificate")
+
+		image := byName(t, Run(t.Context(), d))["image"]
+		assert.False(t, image.OK)
+		assert.NotContains(t, image.Fix, "cavu image build", "a rebuild would not help")
 	})
 }
 
 func TestDoctorImageVersionMismatch(t *testing.T) {
-	d, h, drv := green("key")
+	d, h, drv := green(t, "key")
 	h.labels.CavuVersion = "1.3.0"
 
 	checks := Run(t.Context(), d)
@@ -261,7 +271,7 @@ func TestDoctorImageVersionMismatch(t *testing.T) {
 // whose network none still routes.
 func TestDoctorImageFaults(t *testing.T) {
 	t.Run("not built", func(t *testing.T) {
-		d, h, _ := green("key")
+		d, h, _ := green(t, "key")
 		h.found = false
 
 		m := byName(t, Run(t.Context(), d))
@@ -271,7 +281,7 @@ func TestDoctorImageFaults(t *testing.T) {
 	})
 
 	t.Run("no sandbox marker", func(t *testing.T) {
-		d, h, _ := green("key")
+		d, h, _ := green(t, "key")
 		h.noMarker = true
 
 		m := byName(t, Run(t.Context(), d))
@@ -280,7 +290,7 @@ func TestDoctorImageFaults(t *testing.T) {
 	})
 
 	t.Run("a route out", func(t *testing.T) {
-		d, h, _ := green("key")
+		d, h, _ := green(t, "key")
 		h.route = true
 
 		m := byName(t, Run(t.Context(), d))
@@ -292,7 +302,7 @@ func TestDoctorImageFaults(t *testing.T) {
 func TestDoctorMissingSettingNamesKey(t *testing.T) {
 	for _, key := range []string{"model_work", "endpoint_url", "commit_email", "endpoint_credential"} {
 		t.Run(key, func(t *testing.T) {
-			d, h, drv := green("key")
+			d, h, drv := green(t, "key")
 			delete(d.Settings, key)
 
 			if key == "endpoint_credential" {
@@ -316,7 +326,7 @@ func TestDoctorMissingSettingNamesKey(t *testing.T) {
 	}
 
 	t.Run("subscription mode needs no endpoint url", func(t *testing.T) {
-		d, _, _ := green("subscription")
+		d, _, _ := green(t, "subscription")
 		delete(d.Settings, "endpoint_url")
 
 		assert.True(t, byName(t, Run(t.Context(), d))["settings"].OK)
@@ -324,7 +334,7 @@ func TestDoctorMissingSettingNamesKey(t *testing.T) {
 }
 
 func TestDoctorEndpointAuthFailure(t *testing.T) {
-	d, _, drv := green("key")
+	d, _, drv := green(t, "key")
 	drv.results[0] = driver.Result{
 		Reason: driver.ReasonAuth, IsError: true,
 		Detail: "API error 401 authentication_error: the key " + credential + " and " + forgeToken + " are refused",
@@ -346,7 +356,7 @@ func TestDoctorEndpointAuthFailure(t *testing.T) {
 }
 
 func TestDoctorEndpointWarnsWithoutCacheReads(t *testing.T) {
-	d, _, drv := green("key")
+	d, _, drv := green(t, "key")
 	drv.results[1].Usage = []driver.Usage{{Model: "model-a", Input: 900}}
 
 	checks := Run(t.Context(), d)
@@ -360,7 +370,7 @@ func TestDoctorEndpointWarnsWithoutCacheReads(t *testing.T) {
 // machine's loopback.
 func TestDoctorLoopbackEndpointFix(t *testing.T) {
 	fix := func(url string) string {
-		d, _, drv := green("key")
+		d, _, drv := green(t, "key")
 		d.Settings["endpoint_url"] = url
 		drv.results[0] = driver.Result{Reason: driver.ReasonEndpoint, IsError: true, Detail: "connection refused"}
 
