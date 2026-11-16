@@ -142,6 +142,26 @@ func TestAgentLinksCargoBinaries(t *testing.T) {
 	}
 }
 
+// The agent's Cargo home gets what the setup phase's fetch downloaded into the
+// cache's: the registry index, the crate archives and the git databases.
+func TestAgentSeedsCargoDownloads(t *testing.T) {
+	t.Parallel()
+
+	agent := envMap(t, AgentEnv([]string{"rust"}, "/home/agent"))["CARGO_HOME"]
+	setup := envMap(t, SetupEnv([]string{"rust"}))["CARGO_HOME"]
+
+	want := map[string]string{}
+	for _, dir := range []string{"registry/index", "registry/cache", "git/db"} {
+		want[agent+"/"+dir] = setup + "/" + dir
+	}
+
+	assert.Equal(t, want, AgentSeeds([]string{"rust"}, "/home/agent"))
+
+	for _, ecosystems := range [][]string{nil, {"go", "node", "python"}} {
+		assert.Empty(t, AgentSeeds(ecosystems, "/home/agent"), ecosystems)
+	}
+}
+
 // A tool missing in the agent phase stays missing: an install there would
 // write under the read-only cache and record a failed install in the home.
 func TestMiseInstallsNothingInTheAgentPhase(t *testing.T) {

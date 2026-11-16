@@ -109,6 +109,24 @@ func AgentLinks(ecosystems []string, home string) map[string]string {
 	}
 }
 
+// AgentSeeds are the directories, path to source, that the agent phase needs
+// filled in home from the read-only cache each time it comes up: Cargo's
+// registry index, crate archives and git databases. A build there then needs
+// neither the network nor a credential only the setup phase had, and a crate
+// the agent adds still lands in its writable Cargo home.
+func AgentSeeds(ecosystems []string, home string) map[string]string {
+	if !slices.Contains(ecosystems, "rust") {
+		return nil
+	}
+
+	seeds := map[string]string{}
+	for _, dir := range []string{"registry/index", "registry/cache", "git/db"} {
+		seeds[path.Join(cargoHome(agentRoot(home)), dir)] = path.Join(cargoHome(cacheDir), dir)
+	}
+
+	return seeds
+}
+
 // SetupEnv returns the environment of the setup phase: caches under /cache, writable.
 func SetupEnv(ecosystems []string) []string {
 	m := common()
