@@ -152,10 +152,10 @@ type ContainerSpec struct {
 	Argv        []string
 	Env         []string
 	Labels      map[string]string
-	Mounts      []Mount // named volumes only
-	Tmpfs       []string
-	Network     string // "none" or "bridge"
-	Hardened    bool   // cap-drop ALL, no-new-privileges, init, pids 2048, uid 1000, memory limit
+	Mounts      []Mount  // named volumes only
+	Tmpfs       []string // absolute paths, mounted with the runtime's default options
+	Network     string   // "none" or "bridge"
+	Hardened    bool     // cap-drop ALL, no-new-privileges, init, pids 2048, uid 1000, memory limit
 	MemoryMB    int
 	Stdin       bool // keep stdin open and attached (sidecar)
 }
@@ -435,8 +435,10 @@ func (r Runtime) runArgs(s ContainerSpec, detach bool) ([]string, []byte, error)
 	}
 
 	for _, t := range s.Tmpfs {
-		if !strings.HasPrefix(t, "/") {
-			return nil, nil, fmt.Errorf("tmpfs %q: want an absolute path", t)
+		// Options after a colon could drop the runtime's noexec, nosuid and
+		// nodev defaults.
+		if !path.IsAbs(t) || strings.ContainsAny(t, ":,\n\r") {
+			return nil, nil, fmt.Errorf("tmpfs %q: want an absolute path without options", t)
 		}
 
 		args = append(args, "--tmpfs="+t)

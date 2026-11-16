@@ -342,6 +342,13 @@ func TestMountValidation(t *testing.T) {
 		return s
 	}
 
+	withTmpfs := func(path string) ContainerSpec {
+		s := goodSpec()
+		s.Tmpfs = []string{path}
+
+		return s
+	}
+
 	badVolumes := []string{"a/b", "a,b", "a=b", ".a", "~a", "-a", "", "x,volume-opt=type=none", "x,volume-opt=device=/etc"}
 
 	cases := map[string]func(r Runtime) error{
@@ -350,6 +357,18 @@ func TestMountValidation(t *testing.T) {
 		},
 		"target with a comma": func(r Runtime) error {
 			return r.Start(t.Context(), withMount(Mount{Volume: "v", Path: "/w,readonly=false"}))
+		},
+		"tmpfs with options": func(r Runtime) error {
+			return r.Start(t.Context(), withTmpfs("/run/cavu:exec,suid,dev"))
+		},
+		"tmpfs with a comma": func(r Runtime) error {
+			return r.Start(t.Context(), withTmpfs("/run/cavu,exec"))
+		},
+		"tmpfs with a line break": func(r Runtime) error {
+			return r.Start(t.Context(), withTmpfs("/run/cavu\n"))
+		},
+		"relative tmpfs": func(r Runtime) error {
+			return r.Start(t.Context(), withTmpfs("run/cavu"))
 		},
 		"container name starting with -": func(r Runtime) error {
 			s := goodSpec()
@@ -405,7 +424,6 @@ func TestStartRefusesBadSpecs(t *testing.T) {
 		"host network":            func(s *ContainerSpec) { s.Network = "host" },
 		"hardened without memory": func(s *ContainerSpec) { s.MemoryMB = 0 },
 		"negative memory":         func(s *ContainerSpec) { s.Hardened = false; s.MemoryMB = -1 },
-		"relative tmpfs":          func(s *ContainerSpec) { s.Tmpfs = []string{"run/cavu"} },
 		"label key with =":        func(s *ContainerSpec) { s.Labels = map[string]string{"a=b": "c"} },
 		"empty name":              func(s *ContainerSpec) { s.Name = "" },
 		"empty image":             func(s *ContainerSpec) { s.Image = "" },
