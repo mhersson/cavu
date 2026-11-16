@@ -15,7 +15,7 @@ help:
 	@echo "  scan         fail on em-dashes in Go, Markdown, YAML, TOML, shell and Dockerfile files"
 	@echo "  scan-commits fail on session links, attribution, task or milestone numbers, em-dashes and big blobs in SCAN_BASE..SCAN_HEAD (origin/main..HEAD)"
 	@echo "  size         count the non-test Go lines"
-	@echo "  image        build the sandbox image cavu-sandbox:<version> on the detected runtime"
+	@echo "  image        build the sandbox image cavu-sandbox:<version> with cavu image build, on the runtime and CA bundle the data directory's settings name"
 	@echo "  test-integration  run the tests that need a container runtime, including the checks against the real claude binary in the built image"
 	@echo "  check        build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan, size"
 	@echo "  test-ecosystems   run the tests that prepare a Go, a Node, a Python and a Rust repository (need the internet)"
