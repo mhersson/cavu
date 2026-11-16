@@ -53,9 +53,10 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 - `make scan` fails on em-dashes; `make scan-commits` fails on session links, attribution lines, task or milestone numbers, em-dashes and blobs over 500 KB in the commits since `origin/main`.
 - `make size` counts non-test Go lines against the 25,000 budget.
 - `make image` builds `bin/cavu` and a Linux `bin/cavu-linux` for the host's architecture, then the sandbox image `cavu-sandbox:<version>` from it on the detected runtime.
-- `make test-integration` runs the `integration` tests, which include the conformance suite against the real `claude` binary in the built image, with `-count=1`, a 30 minute timeout and all packages.
-- Tests that need a container runtime carry the build tag `integration`; tests that prepare a repository of each supported ecosystem and need the internet carry `ecosystems`. Run both with `-count=1`.
-- `make test-ecosystems` runs the `ecosystems` tests, which prepare a Go, a Node, a Python and a Rust repository in real containers and need the internet.
+- `make test-integration` runs the `integration` tests with `-count=1`, a 30 minute timeout and all packages; `make test-ecosystems` runs the `ecosystems` tests.
+- Test tags, each run with `-count=1`: `integration` needs a container runtime and builds the sandbox image, and includes the conformance suite against the real `claude` binary; `ecosystems` prepares a Go, a Node, a Python and a Rust repository in real containers and needs the internet on every run; `live` is added to `integration` (`-tags integration,live`) and needs credentials.
+- Prerequisites for the tagged tests: Docker, or Podman with `CAVU_TEST_RUNTIME=podman`; the image `docker.io/library/busybox:1.37`, which the runtime tests run with `--pull=never`, so pull it first (`docker pull docker.io/library/busybox:1.37`); the internet for the first sandbox image build, since later builds come from the layer cache.
+- `live` checks skip unless their variables are set and never run in CI: `CAVU_LIVE_SUBSCRIPTION_TOKEN` for a subscription, `CAVU_LIVE_ENDPOINT_URL` and `CAVU_LIVE_ENDPOINT_KEY` for a gateway, and optionally `CAVU_LIVE_ENDPOINT_AUTH_HEADER` and `CAVU_LIVE_MODEL`. `docs/assumptions.md` has the commands.
 
 ## Layout
 
