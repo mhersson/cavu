@@ -62,11 +62,14 @@ scan-commits:
 size:
 	@sh scripts/size.sh
 
+# The image needs a Linux cavu for the runtime's architecture, also on macOS.
 image: build
-	bin/cavu image build
+	CGO_ENABLED=0 GOOS=linux GOARCH=$$(go env GOARCH) go build -trimpath -ldflags='-s -w' -o bin/cavu-linux ./cmd/cavu
+	bin/cavu image build --cavu-binary bin/cavu-linux
 
+# Above the 20 minutes a cold image build may take.
 test-integration:
-	go test -tags integration -count=1 ./...
+	go test -tags integration -count=1 -timeout 30m ./...
 
 test-conformance:
 	go test -tags conformance -count=1 ./internal/driver/claudecode/
