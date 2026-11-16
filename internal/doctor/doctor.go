@@ -86,7 +86,6 @@ type target interface {
 type doctor struct {
 	Deps
 
-	image   string
 	labels  sandbox.ImageLabels
 	found   bool
 	box     box              // the doctor's own sandbox, under project 0
@@ -102,9 +101,9 @@ type doctor struct {
 // Run runs the checks in order. One whose prerequisite did not pass is
 // skipped with the reason; settings is decided first, as sandbox needs it.
 func Run(ctx context.Context, d Deps) []Check {
-	r := &doctor{Deps: d, image: sandbox.ImageName(d.Version), failed: map[string]bool{}}
+	r := &doctor{Deps: d, failed: map[string]bool{}}
 	if r.host == nil {
-		r.host = &runtimeHost{image: r.image, instance: d.Settings["instance_id"]}
+		r.host = &runtimeHost{image: sandbox.ImageName(d.Version), instance: d.Settings["instance_id"]}
 	}
 
 	settings := r.settings()
@@ -224,27 +223,42 @@ func (r *doctor) noNetwork(ctx context.Context) Check {
 }
 
 func (r *doctor) imageCheck(ctx context.Context) Check {
-	fail := func(detail string) Check { return Check{Detail: detail, Fix: buildFix} }
-	bundleSum, err := sandbox.BundleSum(r.CABundle)
-
-	switch {
-	case r.err != nil:
+	if r.err != nil {
 		return failed(r.err, "")
-	case !r.found:
-		return fail("image " + r.image + " is not built")
-	case r.labels.CavuVersion != r.Version:
-		return fail(fmt.Sprintf("image %s is from cavu %s, this is %s", r.image, r.labels.CavuVersion, r.Version))
-	case err != nil:
-		return failed(err, "set ca_bundle_path to a PEM file of CA certificates")
-	case r.labels.CABundle != bundleSum:
-		return fail("the image's CA bundle is not the configured one")
+	}
+
+	c := CheckImage(r.labels, r.found, r.Version, r.CABundle)
+	if !c.OK {
+		return c
 	}
 
 	if _, err := r.run(ctx, "test", "-f", proc.SandboxMarker); err != nil {
-		return fail("the image has no sandbox marker " + proc.SandboxMarker + ": " + err.Error())
+		return Check{Detail: "the image has no sandbox marker " + proc.SandboxMarker + ": " + err.Error(), Fix: buildFix}
 	}
 
-	return Check{OK: true, Detail: r.image}
+	return c
+}
+
+// CheckImage checks the labels of version's image, found or not: the image
+// must be built by that version and carry the configured CA bundle, empty for
+// none. A run starts only on an image it passes.
+func CheckImage(labels sandbox.ImageLabels, found bool, version string, caBundle []byte) Check {
+	image := sandbox.ImageName(version)
+	fail := func(detail string) Check { return Check{Detail: detail, Fix: buildFix} }
+	bundleSum, err := sandbox.BundleSum(caBundle)
+
+	switch {
+	case !found:
+		return fail("image " + image + " is not built")
+	case labels.CavuVersion != version:
+		return fail(fmt.Sprintf("image %s is from cavu %s, this is %s", image, labels.CavuVersion, version))
+	case err != nil:
+		return failed(err, "set ca_bundle_path to a PEM file of CA certificates")
+	case labels.CABundle != bundleSum:
+		return fail("the image's CA bundle is not the configured one")
+	}
+
+	return Check{OK: true, Detail: image}
 }
 
 func (r *doctor) claudeCode(ctx context.Context) Check {
