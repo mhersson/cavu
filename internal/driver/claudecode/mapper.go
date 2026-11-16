@@ -139,11 +139,9 @@ type mapper struct {
 	sessionID string                  // from init
 	lastText  string
 	rateLimit *driver.RateLimit // the last rate_limit_event
-	limit     *driver.RateLimit // a usage limit that ended the run
 
 	authFailed bool
 	sawResult  bool
-	halted     bool // a usage limit was seen; later lines are ignored
 	res        driver.Result
 }
 
@@ -158,10 +156,10 @@ func newMapper(secrets []string, sink func(driver.Event)) *mapper {
 }
 
 // feed consumes one stdout line and reports whether the caller should stop the
-// process: the run's result or a usage limit has been seen. Lines the mapper
+// process: the run's result has been seen. Lines the mapper
 // does not know, or that are not JSON, are ignored.
 func (m *mapper) feed(line []byte) (stop bool) {
-	if m.halted || m.sawResult {
+	if m.sawResult {
 		return true
 	}
 
@@ -200,7 +198,7 @@ func (m *mapper) feed(line []byte) (stop bool) {
 		m.onResult(l)
 	}
 
-	return m.halted || m.sawResult
+	return m.sawResult
 }
 
 // finish returns the run's result once the stream has ended. exitCode and
@@ -220,9 +218,6 @@ func (m *mapper) finish(exitCode int, stderrTail string) driver.Result {
 	m.res.IsError = true
 
 	switch {
-	case m.limit != nil:
-		m.res.Reason = driver.ReasonUsageLimit
-		m.res.RateLimit = m.maskedLimit(m.limit)
 	case m.authFailed:
 		m.res.Reason = driver.ReasonAuth
 		m.res.RateLimit = m.maskedLimit(m.rateLimit)
@@ -456,11 +451,6 @@ func (m *mapper) onRateLimit(info *rateLimitInfo) {
 	m.rateLimit = &rl
 
 	m.emit(driver.Event{Kind: driver.KindRateLimit, RateLimit: &rl})
-
-	if rl.Status == "rejected" {
-		m.limit = &rl
-		m.halted = true
-	}
 }
 
 // closeCall emits the open call's events: its text, its usage, its tool uses,
@@ -587,11 +577,9 @@ func (m *mapper) outcome(l streamLine) {
 		reason = driver.ReasonAuth
 	case l.IsError && status == 429 && isUsageLimitText(l.Result):
 		reason = driver.ReasonUsageLimit
-		m.res.RateLimit = m.maskedLimit(resultLimit(l.Result))
+		m.res.RateLimit = m.maskedLimit(m.rateLimit)
 	case l.Subtype == "error_max_turns":
 		reason = driver.ReasonMaxTurns
-	case l.Subtype == "error_max_budget_usd":
-		reason = driver.ReasonMaxBudget
 	case !l.IsError:
 		// terminal_reason is not consulted, so a release that drops or renames
 		// it degrades instead of failing every run.

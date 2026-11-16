@@ -25,7 +25,6 @@ const (
 const (
 	ReasonDone          = "done"
 	ReasonMaxTurns      = "max_turns"
-	ReasonMaxBudget     = "max_budget"
 	ReasonUsageLimit    = "usage_limit"
 	ReasonAuth          = "auth"
 	ReasonEndpoint      = "endpoint"

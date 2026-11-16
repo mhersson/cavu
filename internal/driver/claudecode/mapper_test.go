@@ -181,30 +181,35 @@ func TestMapperAuthFailureOutranksSubtype(t *testing.T) {
 	assert.NotEmpty(t, res.Detail)
 }
 
-func TestMapperRejectedRateLimit(t *testing.T) {
-	evs, res := replay(t, "synthetic/rejected.jsonl", 0)
+func TestMapperRejectedRateLimitDoesNotStop(t *testing.T) {
+	evs, res := replay(t, "synthetic/rejected.jsonl", 1)
 
-	assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
-	assert.True(t, res.IsError)
-	require.NotNil(t, res.RateLimit)
-	assert.Equal(t, "seven_day", res.RateLimit.Window)
-	assert.Equal(t, "rejected", res.RateLimit.Status)
-	assert.True(t, res.RateLimit.ResetsAt.Equal(time.Unix(1794510000, 0)))
+	assert.Equal(t, driver.ReasonDone, res.Reason, "the result line decides")
+	assert.False(t, res.IsError)
 	assert.Contains(t, kinds(evs), driver.KindRateLimit)
-	assert.Equal(t, []driver.Usage{{Model: "claude-haiku-5-5", Input: 2, Output: 4, CacheRead: 11382, CacheWrite: 6379}}, res.Usage, "the usage streamed so far")
+
+	var rl *driver.RateLimit
+
+	for _, ev := range ofKind(evs, driver.KindRateLimit) {
+		rl = ev.RateLimit
+	}
+
+	require.NotNil(t, rl)
+	assert.Equal(t, "rejected", rl.Status)
+	assert.Equal(t, "seven_day", rl.Window)
 }
 
-func TestMapperRejectedHaltsFeeding(t *testing.T) {
+func TestMapperRejectedEventKeepsFeeding(t *testing.T) {
 	var got int
 
 	m := newMapper(nil, func(driver.Event) { got++ })
 
-	assert.True(t, m.feed([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}`)))
+	assert.False(t, m.feed([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}`)))
 
 	before := got
 
-	assert.True(t, m.feed([]byte(`{"type":"system","subtype":"init","session_id":"s"}`)))
-	assert.Equal(t, before, got, "lines after a usage limit are ignored")
+	assert.False(t, m.feed([]byte(`{"type":"system","subtype":"init","session_id":"s"}`)))
+	assert.Equal(t, before+1, got, "lines after a rejected event are still mapped")
 }
 
 func TestMapperStopsAtResult(t *testing.T) {
@@ -216,21 +221,11 @@ func TestMapperStopsAtResult(t *testing.T) {
 	assert.Equal(t, driver.ReasonDone, m.finish(0, "").Reason)
 }
 
-func TestMapperBudgetAndTurnStops(t *testing.T) {
-	for _, tc := range []struct {
-		path, reason string
-	}{
-		{"synthetic/max_turns.jsonl", driver.ReasonMaxTurns},
-		{"synthetic/max_budget_end_turn.jsonl", driver.ReasonMaxBudget},
-		{"synthetic/max_budget_tool_use.jsonl", driver.ReasonMaxBudget},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			_, res := replay(t, tc.path, 1)
+func TestMapperTurnStops(t *testing.T) {
+	_, res := replay(t, "synthetic/max_turns.jsonl", 1)
 
-			assert.Equal(t, tc.reason, res.Reason)
-			assert.True(t, res.IsError)
-		})
-	}
+	assert.Equal(t, driver.ReasonMaxTurns, res.Reason)
+	assert.True(t, res.IsError)
 }
 
 func TestMapperNoResultIsNeverSuccess(t *testing.T) {
@@ -514,21 +509,19 @@ func TestMapperEndpointFailures(t *testing.T) {
 }
 
 func TestMapperUsageLimitFromResult(t *testing.T) {
-	for _, tc := range []struct{ text, window string }{
-		{"You've hit your weekly limit - resets Friday", "seven_day"},
-		{"You've hit your 5-hour limit", "five_hour"},
-		{"You've hit your something new", ""},
-		{"Your usage limit was reached", ""},
+	for _, text := range []string{
+		"You've hit your weekly limit - resets Friday",
+		"You've hit your something new",
+		"Your usage limit was reached",
 	} {
-		t.Run(tc.text, func(t *testing.T) {
+		t.Run(text, func(t *testing.T) {
 			_, res := replayData(t, resultLine(t, map[string]any{
-				"is_error": true, "api_error_status": 429, "result": tc.text,
+				"is_error": true, "api_error_status": 429, "result": text,
 			}), nil, 1)
 
 			assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
-			require.NotNil(t, res.RateLimit)
-			assert.Equal(t, tc.window, res.RateLimit.Window)
-			assert.True(t, res.RateLimit.ResetsAt.IsZero())
+			assert.True(t, res.IsError)
+			assert.Nil(t, res.RateLimit, "no rate-limit event came")
 		})
 	}
 }
@@ -732,10 +725,9 @@ func TestMapperCallClosesOnNextCall(t *testing.T) {
 	}
 }
 
-func TestMapperUsageLimitResultIgnoresAllowedWindow(t *testing.T) {
-	// The five_hour window was fine; the weekly one stopped the run.
-	allowed := `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794510000,"rateLimitType":"five_hour"}}` + "\n"
-	data := append([]byte(allowed), resultLine(t, map[string]any{
+func TestMapperUsageLimitResultCarriesLastEvent(t *testing.T) {
+	event := `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794510000,"rateLimitType":"seven_day"}}` + "\n"
+	data := append([]byte(event), resultLine(t, map[string]any{
 		"is_error": true, "api_error_status": 429, "result": "You've hit your weekly limit",
 	})...)
 
@@ -744,5 +736,5 @@ func TestMapperUsageLimitResultIgnoresAllowedWindow(t *testing.T) {
 	assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
 	require.NotNil(t, res.RateLimit)
 	assert.Equal(t, "seven_day", res.RateLimit.Window)
-	assert.True(t, res.RateLimit.ResetsAt.IsZero(), "the allowed window's reset must not be reported")
+	assert.True(t, res.RateLimit.ResetsAt.Equal(time.Unix(1794510000, 0)))
 }

@@ -797,15 +797,13 @@ func TestFilesWrittenThroughCommand(t *testing.T) {
 	assert.Equal(t, testInstr, rec.RunFiles["--append-system-prompt-file"])
 }
 
-func TestUsageLimitStopsTheProcess(t *testing.T) {
+func TestRejectedEventDoesNotStopTheSession(t *testing.T) {
 	f := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "synthetic/rejected.jsonl"), Hang: true})
 
-	start := time.Now()
 	res, err := f.run(t.Context())
 
 	require.NoError(t, err)
-	assert.Less(t, time.Since(start), f.d.grace+time.Second)
-	assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
+	assert.Equal(t, driver.ReasonDone, res.Reason, "the result line after the event decides")
 	assert.True(t, processGone(f.recorded(t).PID))
 }
 

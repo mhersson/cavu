@@ -4,9 +4,8 @@ Stream-json fixtures recorded with Claude Code 2.1.322. `TestFixturesCarryNoToke
 scans every file here for credential shapes.
 
 The recordings are kept as recorded, including characters this repository's own
-text avoids: `synthetic/max_budget_end_turn.jsonl`,
-`synthetic/max_budget_tool_use.jsonl`, `synthetic/max_turns.jsonl` and
-`synthetic/parallel.jsonl` contain the long dash character in recorded CLI output.
+text avoids: `synthetic/max_turns.jsonl` and `synthetic/parallel.jsonl`
+contain the long dash character in recorded CLI output.
 
 - `real/` - CLI output recorded on 2026-11-11 (see below for the one edit).
 - `synthetic/` - shapes the recorded runs do not cover, derived from a real
@@ -44,10 +43,8 @@ dash-encoded `projects/` key to `-scratch-spike` (`cwd`, `original_cwd`,
 | File | Derived from | Change |
 |---|---|---|
 | `partial.jsonl` | `real/t5.jsonl`, in the shapes of `real/p4-partial-messages.jsonl` | `stream_event` lines added per call: `message_start` (all four buckets; the early `output_tokens` of the call's assistant line), text deltas in fragments, a `tool_use` block start with three `input_json_delta` fragments that concatenate to the finish input, `message_delta` with cumulative complete usage and `stop_reason` (call 1: input 2, output 120, cache read 0, cache creation 3844, `tool_use`; call 2: 2, 5, 3844, 133, `end_turn`), `message_stop`. The `t5` lines are unchanged; the `message_delta` usages sum to `result.usage`. Call 1's early `output_tokens` (2) differs from its final 120 |
-| `rejected.jsonl` | `real/t1.jsonl` | `rate_limit_event` status `rejected` (window `seven_day` rejected, utilization 1.0); no `result` line. A real rejection is unrecorded |
+| `rejected.jsonl` | `real/t1.jsonl` | the `rate_limit_event` status changed to `rejected` (window `seven_day` rejected, utilization 1.0); the `result` line is kept, so the session goes on after the event and ends done. A real rejection is unrecorded |
 | `max_turns.jsonl` | CLI output of a mock-API run, `--max-turns 1`, one `Bash` turn, gated by `initialize` | `result` with `subtype: "error_max_turns"`, `is_error: true`, `terminal_reason: "max_turns"`, `errors: ["Reached maximum number of turns (1)"]` and no `result` field; the process exited 1. Starts with the gate's `control_response`; usage values are the mock's |
-| `max_budget_end_turn.jsonl` | CLI output of a mock-API run, `--max-budget-usd 0.000001`, one text-only call (scenario `text`), gated by `initialize` | `result` with `subtype: "error_max_budget_usd"`, `is_error: true`, `terminal_reason: "budget_exhausted"`, `stop_reason: "end_turn"`, `errors: ["Reached maximum budget ($0.000001)"]` and `result: null`; one call, whose answer is `ok`. Starts with the gate's `control_response`; usage values are the mock's |
-| `max_budget_tool_use.jsonl` | the same run with the `bash` scenario (`{"command":"echo one"}`) | the same `result` shape with `stop_reason: "tool_use"`; the call's tool never runs |
 | `two_models.jsonl` | `real/t5.jsonl` | `result.modelUsage` and `model_usage_since_last_result` gain a `claude-haiku-5-5` entry (350/12/0/0, `costUSD` 0.000041) that no assistant message served; `total_cost_usd` 0.0175914; `result.usage` unchanged |
 | `unknown.jsonl` | `real/t1.jsonl` | an unknown top-level type (`x_future_event`), an unknown `system` subtype (`x_future_subtype`), `x_future_field` on every known line, and unknown keys inside the assistant `message` and `result.usage` |
 | `crash.jsonl` | `real/t5.jsonl` | the `result` line removed |
@@ -118,8 +115,8 @@ and on Podman. Rows that cite the binary come from `grep -a` on
 | Retry bound | `CLAUDE_CODE_MAX_RETRIES` caps the retries (the binary clamps it to 15 unless the retry watchdog is on); the suite passes `1` through `Spec.Env`, so one retry waits about 0.5 s | `TestErrorResults` (exactly one retry event and two model calls per status, `max_retries: 1`, `retry_delay_ms` 534 to 605); binary `function aRr(){...let e=Ub(),n=i.CLAUDE_CODE_MAX_RETRIES;...}`, default 10 |
 | Token on output | neither the stand-in nor the subscription token appears on `claude`'s stdout or stderr in any check, errors included | `requireNoSecretOutput` in `TestKeyModeTraffic`, `TestErrorResults` and `TestTrustsCustomCAThroughTunnel` |
 | `rate_limit_event`, allowed | recorded live on 2.1.322, not yet seen on 2.1.325 against a real endpoint | `real/t1.jsonl`, `t3-iso`, `t5`, `t6`, `t7`, `t7b` and `p4-partial-messages` carry `rate_limit_info` with `status`, `resetsAt` (unix seconds), `rateLimitType`, `overageStatus`, `overageDisabledReason`, `isUsingOverage` and `unifiedWindows` (per window: `utilization`, `resetsAt`, `status`). On 2.1.325 against the mock, which sends no rate-limit headers, the event is only `{"status":"allowed","isUsingOverage":false}`. Its confirmation on 2.1.325 is left to `TestLiveRateLimitEventShape` |
-| `rate_limit_event`, rejected | never recorded: not here, and not in contextmatrix-vendorkit, the ContextMatrix agent or AIM; the mapper's treatment of a rejected event as a stop rests on `synthetic/rejected.jsonl` alone, which is `real/t1.jsonl` with the status changed | none. Caution, from issue reports and not verified: accounts with overage enabled were reported to get `status: "rejected"` on requests that still succeeded |
-| Usage-limit text | the prefix and the six window names `limitPrefix` and `limitWindows` hold are all in the 2.1.325 binary, unchanged | `grep -a` in a container of the image: the message is built as `` return`You've hit your ${e}${n}${d}` `` and the names come from `hve={five_hour:"5-hour limit",seven_day:"weekly limit",seven_day_opus:"Opus limit",seven_day_sonnet:"Sonnet limit",seven_day_overage_included:"Fable limit",overage:"usage credit limit"}`; `grep -a -c -F` finds `5-hour limit` 15 times, `weekly limit` 18, `Opus limit` 2, `Sonnet limit` 2, `Fable limit` 8, `usage credit limit` 8. No mock answer reaches the text |
+| `rate_limit_event`, rejected | never recorded: not here, and not in contextmatrix-vendorkit, the ContextMatrix agent or AIM; the mapper emits it and does not stop on it; `synthetic/rejected.jsonl` is `real/t1.jsonl` with the status changed | none. Caution, from issue reports and not verified: accounts with overage enabled were reported to get `status: "rejected"` on requests that still succeeded |
+| Usage-limit text | the prefix `limitPrefix` holds and the six window names are all in the 2.1.325 binary, unchanged | `grep -a` in a container of the image: the message is built as `` return`You've hit your ${e}${n}${d}` `` and the names come from `hve={five_hour:"5-hour limit",seven_day:"weekly limit",seven_day_opus:"Opus limit",seven_day_sonnet:"Sonnet limit",seven_day_overage_included:"Fable limit",overage:"usage credit limit"}`; `grep -a -c -F` finds `5-hour limit` 15 times, `weekly limit` 18, `Opus limit` 2, `Sonnet limit` 2, `Fable limit` 8, `usage credit limit` 8. No mock answer reaches the text |
 
 ### How instruction loading was settled
 
@@ -167,7 +164,7 @@ and `CAVU_LIVE_MODEL` (default `claude-haiku-5-5`) adjust them.
 |---|---|
 | The hosts a subscription run asks for beyond `api.anthropic.com` | `TestLiveSubscriptionHosts` logs every refused host; the run must still succeed |
 | The `rate_limit_event` shape on 2.1.325: recorded live only on 2.1.322 (see the allowed row above) | `TestLiveRateLimitEventShape` wants a window and a reset time |
-| A rejected `rate_limit_event`, and the text and the `result` line of a usage limit actually reached, per window, and whether the newer texts (`You've reached your`, `You're out of usage credits`) end a run too | a subscription run at an exhausted window; no live check reaches one on purpose |
+| A rejected `rate_limit_event`, whether a session that gets one goes on, and the text and the `result` line of a usage limit actually reached, per window, and whether the newer texts (`You've reached your`, `You're out of usage credits`) end a run too | a subscription run at an exhausted window; no live check reaches one on purpose |
 | Cache reads through a real gateway | `TestLiveGatewayCacheReads`: the sidecar's meter must count cache reads on the second of two turns |
 | Whether `--max-budget-usd` stops a subscription run | `TestLiveBudgetFlagUnderSubscription` logs the outcome; a finding, not a gate |
 | A tail of stderr cut inside a base64 form of the token keeps a fragment `stderrDetail` does not drop | not reachable: no check saw a token on stderr in any form |
