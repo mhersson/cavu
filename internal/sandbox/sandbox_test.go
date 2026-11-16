@@ -516,6 +516,27 @@ func TestAgentPhaseMountsCacheReadOnly(t *testing.T) {
 	})
 }
 
+func TestScratch(t *testing.T) {
+	s, f := fakeSandbox(t)
+
+	c, err := s.Scratch(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, s.name("scratch"), c.name)
+
+	run := onlyRun(t, f, s.name("scratch"))
+	assert.Subset(t, run.argv, []string{
+		"--detach", "--network=none", "--cap-drop=ALL", "--user=1000:1000", "--memory=1024m",
+		"--label=cavu.instance=" + instanceA, "--label=cavu.run=7",
+	})
+	assert.Empty(t, mountFlags(run.argv))
+	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(run.argv))
+	assert.Equal(t, []string{"cavu-sandbox:test", "sleep", "infinity"}, run.argv[len(run.argv)-3:])
+
+	n := len(f.calls(t))
+	require.NoError(t, s.Down(t.Context()))
+	assert.Contains(t, removedAfter(f.calls(t), n-1), s.name("scratch"))
+}
+
 func TestSetupPhaseHasNoHomeMount(t *testing.T) {
 	s, f := ensured(t)
 

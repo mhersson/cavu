@@ -50,9 +50,12 @@ const (
 	cleanupTimeout   = time.Minute
 )
 
+// BridgeURL is the proxy as a phase container reaches it, through its bridge.
+const BridgeURL = "http://" + bridgeAddr
+
 var (
 	envArgv   = []string{"env", "-0"}
-	probeArgv = []string{"curl", "--silent", "--output", "/dev/null", "--max-time", "5", "--proxy", "http://" + bridgeAddr, probeURL, "--write-out", "%{http_code}"}
+	probeArgv = []string{"curl", "--silent", "--output", "/dev/null", "--max-time", "5", "--proxy", BridgeURL, probeURL, "--write-out", "%{http_code}"}
 
 	instanceIDText = regexp.MustCompile(`^[0-9a-f]{16}$`)
 	commitID       = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
@@ -382,6 +385,30 @@ read:
 	return result.Commit, nil
 }
 
+// Scratch starts a throwaway container of the image beside the sandbox, for a
+// command that needs the image and nothing else: network none, hardened, no
+// volume, and the tmpfs a command runs with. Down removes it.
+func (s *Sandbox) Scratch(ctx context.Context) (Container, error) {
+	if err := s.readMemory(ctx); err != nil {
+		return Container{}, err
+	}
+
+	spec := ContainerSpec{
+		Name: s.name("scratch"), Image: s.o.Image, Argv: []string{"sleep", "infinity"}, Labels: s.labels("scratch"),
+		Tmpfs: []string{pidDir}, Network: "none", Hardened: true, MemoryMB: min(sidecarMemoryMB, s.totalMB),
+	}
+
+	if err := s.o.Runtime.Remove(ctx, spec.Name); err != nil {
+		return Container{}, fmt.Errorf("sandbox: %w", err)
+	}
+
+	if err := s.o.Runtime.Start(ctx, spec); err != nil {
+		return Container{}, fmt.Errorf("sandbox: %w", err)
+	}
+
+	return s.o.Runtime.Container(spec.Name), nil
+}
+
 // Up starts the sidecar and the phase container where they are not running
 // (a sidecar serving another request is replaced), then checks that the phase
 // container has network none, no mount or variable beyond its spec, and
@@ -458,8 +485,9 @@ func (s *Sandbox) restart(ctx context.Context, phase Phase) (Container, error) {
 	return s.check(ctx)
 }
 
-// Down removes the containers and keeps the volumes. It does so on a
-// cancelled ctx too, so a cancelled run leaves no container running.
+// Down removes the containers, the scratch one too, and keeps the volumes. It
+// does so on a cancelled ctx too, so a cancelled run leaves no container
+// running.
 func (s *Sandbox) Down(ctx context.Context) error {
 	s.stopSidecar()
 	s.phase = ""
@@ -467,7 +495,7 @@ func (s *Sandbox) Down(ctx context.Context) error {
 	cleanup, cancel := cleanupContext(ctx)
 	defer cancel()
 
-	if err := s.o.Runtime.Remove(cleanup, s.name("agent"), s.name("setup"), s.name("sidecar"), s.name("clone")); err != nil {
+	if err := s.o.Runtime.Remove(cleanup, s.name("agent"), s.name("setup"), s.name("sidecar"), s.name("clone"), s.name("scratch")); err != nil {
 		return fmt.Errorf("sandbox: %w", err)
 	}
 
