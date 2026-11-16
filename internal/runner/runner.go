@@ -340,7 +340,6 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 
 	req := sidecar.ProxyRequest{
 		AllowHosts: allowlist(env.AgentHosts(st.ecosystems), c.Setup.EgressHosts, r.driver.Hosts(c.Endpoint.Mode)),
-		CABundle:   string(c.CABundle),
 	}
 
 	st.standIn = ""

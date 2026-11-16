@@ -51,7 +51,7 @@ type Deps struct {
 	AgentVersion string            // the pinned agent release
 	Settings     map[string]string // the settings table; runtime names the runtime to use
 	Credential   string            // the secret endpoint_credential
-	CABundle     []byte            // the configured CA bundle, empty for none
+	CABundle     []byte            // the configured CA bundle the image must carry, empty for none
 	ForgeToken   string
 	Project      *Project // the project the forge check fetches; nil for none
 	Driver       driver.Driver
@@ -295,7 +295,7 @@ func (r *doctor) settings() Check {
 // has, and in key mode the model route with a stand-in token.
 func (r *doctor) sandbox(ctx context.Context) Check {
 	mode := r.Settings["endpoint_mode"]
-	req := sidecar.ProxyRequest{AllowHosts: r.Driver.Hosts(mode), CABundle: string(r.CABundle)}
+	req := sidecar.ProxyRequest{AllowHosts: r.Driver.Hosts(mode)}
 
 	if mode == "key" {
 		r.standIn, _ = proxy.NewStandIn() // crypto/rand does not fail
@@ -404,7 +404,7 @@ func (r *doctor) forge(ctx context.Context) Check {
 		if err = b.EnsureVolumes(ctx); err == nil {
 			_, err = b.Clone(ctx, sidecar.CloneRequest{
 				URL: r.Project.RepoURL, Token: r.ForgeToken, BaseBranch: r.Project.BaseBranch, Branch: "cavu/doctor",
-				CABundle: string(r.CABundle), Name: r.Settings["commit_name"], Email: r.Settings["commit_email"],
+				Name: r.Settings["commit_name"], Email: r.Settings["commit_email"],
 			})
 		}
 

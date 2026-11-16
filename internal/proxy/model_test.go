@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -227,6 +228,56 @@ func TestModelRouteDialFailureIsBadGateway(t *testing.T) {
 
 	resp := post(t, p.URL, "/v1/messages", authBearer, strings.NewReader("{}"))
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+func TestCredentialNeverInErrors(t *testing.T) {
+	var logs bytes.Buffer
+
+	prev := log.Writer()
+
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+
+	cut := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: x\n")
+		w.(http.Flusher).Flush()
+
+		panic(http.ErrAbortHandler)
+	}))
+
+	// httptest's certificate is in no system store, so the proxy refuses it.
+	untrusted := httptest.NewUnstartedServer(http.NotFoundHandler())
+	untrusted.Config.ErrorLog = log.New(io.Discard, "", 0)
+	untrusted.StartTLS()
+	t.Cleanup(untrusted.Close)
+
+	var sb strings.Builder
+
+	for _, base := range []string{deadURL, cut.URL, untrusted.URL} {
+		p := startProxy(t, Config{Model: modelRoute(base, authBearer)})
+
+		resp := post(t, p.URL, "/v1/messages", authBearer, strings.NewReader("{}"))
+		b, _ := io.ReadAll(resp.Body)
+
+		sb.Write(b)
+		sb.WriteString(resp.Status)
+
+		for k, v := range resp.Header {
+			sb.WriteString(k + strings.Join(v, ","))
+		}
+	}
+
+	sb.WriteString(logs.String())
+
+	assert.NotContains(t, sb.String(), realKey)
+	assert.NotContains(t, sb.String(), standIn)
+	// The reverse proxy would log a cut stream to the default logger if its ErrorLog were not discarded.
+	assert.Empty(t, logs.String())
 }
 
 func TestSSEFlush(t *testing.T) {

@@ -49,7 +49,7 @@ func TestPrepareOrder(t *testing.T) {
 	assert.Equal(t, fullOrder, f.calls())
 	assert.Equal(t, []sidecar.CloneRequest{{
 		URL: c.Repo.URL, Token: plantedForge, BaseBranch: "main", Commit: baseCommit, Branch: "cavu/fix-login",
-		CABundle: string(c.CABundle), Name: "CAVU", Email: "cavu@example.com",
+		Name: "CAVU", Email: "cavu@example.com",
 	}}, f.clones, "a redone run clones the recorded base, not the branch's tip")
 	assert.Equal(t, engine.PrepareResult{
 		BaseCommit: baseCommit, Tools: []string{"go@1.25.0"}, Ecosystems: []string{"go"}, Baseline: engine.ResultPassed,
@@ -117,13 +117,11 @@ func TestPrepareAllowlists(t *testing.T) {
 
 			for _, req := range setup {
 				assert.Nil(t, req.Model, "the setup phase has no model route")
-				assert.Equal(t, string(c.CABundle), req.CABundle)
 			}
 
 			agent := f.requests(sandbox.PhaseAgent)
 			require.Len(t, agent, 1)
 			assert.Equal(t, tt.agent, agent[0].AllowHosts)
-			assert.Equal(t, string(c.CABundle), agent[0].CABundle)
 
 			if !tt.model {
 				assert.Nil(t, agent[0].Model)
@@ -205,7 +203,7 @@ func TestSetupSecretsOnlyInSetupPhase(t *testing.T) {
 		model.Credential = ""
 
 		for _, secret := range planted {
-			assert.NotContains(t, fmt.Sprint(req.AllowHosts, req.CABundle, model), secret)
+			assert.NotContains(t, fmt.Sprint(req.AllowHosts, model), secret)
 		}
 	}
 }

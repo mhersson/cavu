@@ -43,7 +43,6 @@ func testConfig() engine.RunConfig {
 	c.Verify.Timeout = 2 * time.Minute
 	c.Endpoint.Mode, c.Endpoint.URL, c.Endpoint.AuthHeader, c.Endpoint.Credential = "key", "https://gateway.example", "bearer", plantedEndpoint
 	c.Identity.Name, c.Identity.Email = "CAVU", "cavu@example.com"
-	c.CABundle = []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
 
 	return c
 }

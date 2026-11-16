@@ -3,7 +3,6 @@ package engine_test
 import (
 	"bytes"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -17,9 +16,8 @@ import (
 )
 
 type configFixture struct {
-	task   store.Task
-	run    store.Run
-	caPath string
+	task store.Task
+	run  store.Run
 }
 
 type configCase struct {
@@ -54,7 +52,6 @@ func TestBuildRunConfig(t *testing.T) {
 				want.Agent.Model, want.Agent.Effort = "model-a", "high"
 				want.Agent.MaxTurns, want.Agent.Timeout, want.Agent.WebTools = 50, 30*time.Minute, true
 				want.Identity.Name, want.Identity.Email = "CAVU Bot", "bot@example.com"
-				want.CABundle = []byte("-----BEGIN CERTIFICATE-----\n")
 				want.Task.Title, want.Task.Body = "Fix the login page", "It fails on submit."
 
 				assert.Equal(t, want, got)
@@ -64,7 +61,7 @@ func TestBuildRunConfig(t *testing.T) {
 			name: "optional settings and secrets take their defaults",
 			unset: []string{
 				"endpoint_url", "endpoint_auth_header", "effort_work", "work_max_turns", "work_timeout_minutes",
-				"verify_timeout_minutes", "ca_bundle_path", "forge_token", "endpoint_credential",
+				"verify_timeout_minutes", "forge_token", "endpoint_credential",
 			},
 			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
 				assert.Empty(t, got.Endpoint.URL)
@@ -73,7 +70,6 @@ func TestBuildRunConfig(t *testing.T) {
 				assert.Equal(t, 200, got.Agent.MaxTurns)
 				assert.Equal(t, 60*time.Minute, got.Agent.Timeout)
 				assert.Equal(t, 10*time.Minute, got.Verify.Timeout)
-				assert.Nil(t, got.CABundle)
 				assert.Empty(t, got.Repo.Token)
 				assert.Empty(t, got.Endpoint.Credential)
 			},
@@ -90,7 +86,6 @@ func TestBuildRunConfig(t *testing.T) {
 		{name: "a negative work timeout", set: map[string]string{"work_timeout_minutes": "-5"}, errHas: "work_timeout_minutes"},
 		{name: "a verify timeout that does not parse", set: map[string]string{"verify_timeout_minutes": "soon"}, errHas: "verify_timeout_minutes"},
 		{name: "a verify timeout that is not a number", set: map[string]string{"verify_timeout_minutes": "NaN"}, errHas: "verify_timeout_minutes"},
-		{name: "a CA bundle that cannot be read", set: map[string]string{"ca_bundle_path": "/nonexistent/ca.pem"}, errHas: "ca_bundle_path"},
 		{name: "a project secret with no stored value", unset: []string{"project.web.NPM_AUTH"}, errHas: "project.web.NPM_AUTH"},
 		{
 			name: "a long verify timeout is clamped to 120 minutes",
@@ -158,14 +153,13 @@ func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture)
 	v, err := auth.NewVault(s, bytes.Repeat([]byte{9}, auth.MasterKeyLen))
 	require.NoError(t, err)
 
-	fx := configFixture{caPath: filepath.Join(dir, "ca.pem")}
-	require.NoError(t, os.WriteFile(fx.caPath, []byte("-----BEGIN CERTIFICATE-----\n"), 0o600))
+	var fx configFixture
 
 	settings := map[string]string{
 		"instance_id": "inst-1", "endpoint_mode": "key", "endpoint_url": "https://llm.example.com",
 		"endpoint_auth_header": "x-api-key", "model_work": "model-a", "effort_work": "high",
 		"work_timeout_minutes": "30", "work_max_turns": "50", "verify_timeout_minutes": "2.5",
-		"ca_bundle_path": fx.caPath, "commit_name": "CAVU Bot", "commit_email": "bot@example.com",
+		"commit_name": "CAVU Bot", "commit_email": "bot@example.com",
 	}
 	sealed := [][2]string{
 		{"endpoint_credential", "sk-credential-value"},

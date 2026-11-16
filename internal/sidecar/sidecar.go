@@ -86,7 +86,6 @@ func runProxy(ctx context.Context, out *writer, stdin io.Reader, p *ProxyRequest
 	h, err := proxy.New(proxy.Config{
 		AllowHosts: p.AllowHosts,
 		Model:      p.Model,
-		CABundle:   []byte(p.CABundle),
 		OnDenied:   func(host string) { out.write(Line{Type: "denied", Host: host}) },
 		OnUsage:    func(u proxy.Usage) { out.write(Line{Type: "usage", Usage: &u}) },
 	})
@@ -150,7 +149,7 @@ func runProxy(ctx context.Context, out *writer, stdin io.Reader, p *ProxyRequest
 func runClone(ctx context.Context, out *writer, c *CloneRequest) error {
 	base, err := git.Clone(ctx, git.CloneSpec{
 		URL: c.URL, Token: c.Token, BaseBranch: c.BaseBranch, Commit: c.Commit, Branch: c.Branch,
-		MirrorDir: c.MirrorDir, WorkspaceDir: c.WorkspaceDir, CABundle: c.CABundle,
+		MirrorDir: c.MirrorDir, WorkspaceDir: c.WorkspaceDir,
 		Name: c.Name, Email: c.Email,
 	})
 	if err != nil {
@@ -171,7 +170,7 @@ func scrub(msg string, req *Request) string {
 
 	if req != nil {
 		if c := req.Clone; c != nil {
-			secrets = append(secrets, c.Token, c.URL, c.CABundle)
+			secrets = append(secrets, c.Token, c.URL)
 		}
 
 		if p := req.Proxy; p != nil && p.Model != nil {

@@ -196,7 +196,6 @@ func TestNewRejectsBadConfig(t *testing.T) {
 		"bare wildcard":            {AllowHosts: []string{"*"}},
 		"bad port":                 {AllowHosts: []string{"example.com:99999"}},
 		"mid wildcard":             {AllowHosts: []string{"a.*.example.com"}},
-		"bundle without certs":     {CABundle: []byte("not a certificate")},
 		"model no scheme":          {Model: modelRoute("gateway.example", authBearer)},
 		"model userinfo":           {Model: modelRoute("https://user:"+realKey+"@gateway.example", authBearer)},
 		"model bad style":          {Model: modelRoute("https://gateway.example", "basic")},

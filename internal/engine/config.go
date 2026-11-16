@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"time"
@@ -71,12 +69,6 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 	c.Agent.WebTools = sw.WebTools
 	c.Identity.Name, c.Identity.Email = set.required("commit_name"), set.required("commit_email")
 	c.Task.Title, c.Task.Body = t.Title, t.Body
-
-	if path := values["ca_bundle_path"]; path != "" {
-		if c.CABundle, err = os.ReadFile(filepath.Clean(path)); err != nil {
-			set.fail("ca_bundle_path", err.Error())
-		}
-	}
 
 	if set.err != nil {
 		return RunConfig{}, fmt.Errorf("run config: %w", set.err)
