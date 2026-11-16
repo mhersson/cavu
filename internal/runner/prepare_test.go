@@ -24,9 +24,12 @@ import (
 // reshimName is how the fake names the step that makes the tools' shims.
 var reshimName = stepName([]string{"sh", "-c", reshimScript})
 
+// treeCheck is how the fake names the working tree check.
+const treeCheck = "run/git status --porcelain"
+
 var fullOrder = []string{
 	"destroy/keep-home", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
-	"run/mise install", "run/make setup", "run/" + reshimName, "down", "up/agent", "run/make test",
+	"run/mise install", "run/make setup", "run/" + reshimName, "down", "up/agent", treeCheck, "run/make test", treeCheck,
 }
 
 // without is fullOrder without the given calls.
@@ -213,7 +216,7 @@ func TestPrepareReusesBaseline(t *testing.T) {
 	res, err := f.runner().Prepare(t.Context(), c)
 	require.NoError(t, err)
 	assert.Equal(t, "reused", res.Baseline)
-	assert.Equal(t, fullOrder[:len(fullOrder)-1], f.calls(), "the agent phase comes up and the verify does not run")
+	assert.Equal(t, fullOrder[:len(fullOrder)-2], f.calls(), "the agent phase comes up and the verify does not run")
 
 	t.Run("not on another commit", func(t *testing.T) {
 		f := newFake()
@@ -245,7 +248,7 @@ func TestPrepareWaived(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, engine.ResultWaived, res.Baseline)
 	assert.Empty(t, res.FailedStep)
-	assert.Equal(t, fullOrder[:len(fullOrder)-1], f.calls())
+	assert.Equal(t, fullOrder[:len(fullOrder)-2], f.calls())
 }
 
 func TestPrepareSkipsWhatIsNotThere(t *testing.T) {
@@ -257,7 +260,11 @@ func TestPrepareSkipsWhatIsNotThere(t *testing.T) {
 
 			_, err := f.runner().Prepare(t.Context(), c)
 			require.NoError(t, err)
-			assert.Equal(t, without("run/make setup", "run/"+reshimName), f.calls(), "nothing was added to a tool")
+			// Only the setup step's check goes: the baseline's stays.
+			want := without("run/make setup", "run/"+reshimName)
+			i := slices.Index(want, treeCheck)
+
+			assert.Equal(t, slices.Delete(want, i, i+1), f.calls(), "nothing was added to a tool")
 		})
 	}
 
@@ -300,6 +307,7 @@ func TestPrepareStepFailures(t *testing.T) {
 		{name: "setup exit 1", script: func(f *fakeSandbox) { f.results["make setup"] = failed }, step: "setup", last: "run/make setup"},
 		{name: "setup timeout", script: func(f *fakeSandbox) { f.results["make setup"] = timedOut }, step: "setup", last: "run/make setup"},
 		{name: "reshim exit 1", script: func(f *fakeSandbox) { f.results[reshimName] = failed }, step: "setup", last: "run/" + reshimName},
+		{name: "setup leaves the tree changed", script: func(f *fakeSandbox) { f.results[treeCheck[4:]] = sandbox.Result{Output: " M package-lock.json\n"} }, step: "setup", last: treeCheck},
 		{name: "baseline exit 1", script: func(f *fakeSandbox) { f.results["make test"] = failed }, step: "baseline", last: "run/make test"},
 		{name: "baseline timeout", script: func(f *fakeSandbox) { f.results["make test"] = timedOut }, step: "baseline", last: "run/make test"},
 	}
@@ -478,7 +486,7 @@ func TestCheckEnvironmentNeverReusesBaseline(t *testing.T) {
 
 	calls := f.calls()
 	assert.Equal(t, "destroy", calls[0], "a check that died must not hand its home to the next")
-	assert.Equal(t, "run/make test", calls[len(calls)-2])
+	assert.Contains(t, calls, "run/make test")
 	assert.Equal(t, "destroy", calls[len(calls)-1], "the check removes its volumes")
 
 	for _, o := range f.opened {

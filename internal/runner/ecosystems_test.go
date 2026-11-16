@@ -89,7 +89,8 @@ var ecosystemFixtures = []ecosystemFixture{
 `,
 			"eco.test.js": "const test = require('node:test');\nconst assert = require('node:assert');\nconst ms = require('ms');\n\n" +
 				"test('ms parses a duration', () => {\n  assert.strictEqual(ms('2s'), 2000);\n});\n",
-			"mise.toml": hostileMise,
+			"mise.toml":  hostileMise,
+			".gitignore": "node_modules/\n",
 		},
 		setup: "npm ci && " + noFixtureEnv, verify: "npm test",
 		tools:        []string{"node@lts"},
@@ -101,6 +102,7 @@ var ecosystemFixtures = []ecosystemFixture{
 		name: "python",
 		files: map[string]string{
 			"requirements.txt": "six==1.17.0\npytest==9.2.0\n",
+			".gitignore":       "__pycache__/\n.pytest_cache/\n",
 			"test_eco.py":      "import six\n\n\ndef test_string_types():\n    assert isinstance(\"x\", six.string_types)\n",
 		},
 		// pytest is a console script the setup command installs; pycodestyle
@@ -113,6 +115,7 @@ var ecosystemFixtures = []ecosystemFixture{
 	{
 		name: "rust",
 		files: map[string]string{
+			".gitignore": "target/\nCargo.lock\n",
 			"Cargo.toml": "[package]\nname = \"eco\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nitoa = \"=1.0.11\"\n",
 			"src/lib.rs": "pub fn format(n: u64) -> String {\n    itoa::Buffer::new().format(n).to_string()\n}\n\n" +
 				"#[cfg(test)]\nmod tests {\n    #[test]\n    fn formats() {\n        assert_eq!(super::format(42), \"42\");\n    }\n}\n",

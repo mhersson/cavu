@@ -27,6 +27,7 @@ const (
 const (
 	toolchainTimeout = 20 * time.Minute
 	setupTimeout     = 30 * time.Minute
+	statusTimeout    = time.Minute
 	baselineReused   = "reused"
 )
 
@@ -141,6 +142,12 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return engine.PrepareResult{}, err
 	}
 
+	if strings.TrimSpace(c.Setup.Command) != "" {
+		if failed, err := p.cleanTree(ctx, stepSetup); err != nil || failed != nil {
+			return failure(res, failed), err
+		}
+	}
+
 	return p.baseline(ctx, res, base)
 }
 
@@ -249,12 +256,39 @@ func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult, ba
 	if vr.Result == verify.Passed {
 		res.Baseline = engine.ResultPassed
 
+		failed, err := p.cleanTree(ctx, stepBaseline)
+		if err != nil || failed != nil {
+			return failure(res, failed), err
+		}
+
 		return res, nil
 	}
 
 	res.Baseline = engine.ResultFailed
 
 	return failure(res, &stepFailure{stepBaseline, vr.Output}), nil
+}
+
+// cleanTree fails step when it left the working tree changed, so the agent's
+// exported diff holds only what the agent did.
+func (p *preparation) cleanTree(ctx context.Context, step string) (*stepFailure, error) {
+	cmd := proc.Command{Argv: []string{"git", "status", "--porcelain"}, Env: agentEnv(p.st.ecosystems), Dir: workspace}
+
+	res, err := p.st.agent.Run(ctx, cmd, statusTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	if res.ExitCode != 0 || res.TimedOut {
+		return nil, fmt.Errorf("runner: git status failed: %s", res.Output)
+	}
+
+	if strings.TrimSpace(res.Output) == "" {
+		return nil, nil
+	}
+
+	return &stepFailure{step, res.Output + "The " + step + " step left these files changed or untracked. Add their paths to .gitignore, " +
+		"or use a command that leaves tracked files alone: the baseline runs on the base commit and the exported diff holds only what the agent did.\n"}, nil
 }
 
 // runVerify runs the verify command in the agent phase, under the same
