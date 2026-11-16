@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path"
@@ -39,12 +40,13 @@ const (
 
 // localTarget runs the fake claude on the host and nothing else. It refuses,
 // as a test failure and without running anything, any other program and a
-// command whose dir, files or config dir lie outside the test's temporary
-// directory. It creates the parent directories of a command's files, as a
-// container's copy-in does, and runs a command that names no dir in root.
+// command whose dir, files or config dir, or whose scenario's record or
+// grandchild file, lie outside root. It creates the parent directories of a
+// command's files, as a container's copy-in does, and runs a command that
+// names no dir in root.
 type localTarget struct {
 	binary string                           // the fake claude: this test binary
-	root   string                           // holds every t.TempDir() of the test
+	root   string                           // a t.TempDir() of the test; every path the fake uses
 	env    []string                         // added to every command
 	fail   func(format string, args ...any) // t.Errorf; the test of the refusals swaps it
 
@@ -53,13 +55,20 @@ type localTarget struct {
 	existed  []string // files already on disk when the command arrived
 }
 
-func newLocalTarget(t *testing.T, env ...string) *localTarget {
+// newLocalTarget takes root from the caller's own t.TempDir(), which lies
+// strictly below the system's temporary directory.
+func newLocalTarget(t *testing.T, root string, env ...string) *localTarget {
 	t.Helper()
+
+	rel, err := filepath.Rel(os.TempDir(), root)
+	require.NoError(t, err)
+	require.True(t, filepath.IsAbs(root) && rel != "." && !strings.HasPrefix(rel, ".."),
+		"root %q is not strictly below the temporary directory", root)
 
 	bin, err := os.Executable()
 	require.NoError(t, err)
 
-	return &localTarget{binary: bin, root: filepath.Dir(t.TempDir()), env: env, fail: t.Errorf}
+	return &localTarget{binary: bin, root: root, env: env, fail: t.Errorf}
 }
 
 func (l *localTarget) Start(ctx context.Context, c proc.Command) (proc.Process, error) {
@@ -108,18 +117,54 @@ func (l *localTarget) refusal(c proc.Command) string {
 	}
 
 	if c.Dir != "" && !l.holds(c.Dir) {
-		return "its dir is outside the test's temporary directory"
+		return "its dir is outside root"
 	}
 
 	for p := range c.Files {
 		if !l.holds(p) {
-			return "a file is outside the test's temporary directory"
+			return "a file is outside root"
 		}
 	}
 
 	for _, kv := range env {
-		if k, v, _ := strings.Cut(kv, "="); k == "CLAUDE_CONFIG_DIR" && !l.holds(v) {
-			return "its config dir is outside the test's temporary directory"
+		switch k, v, _ := strings.Cut(kv, "="); k {
+		case "CLAUDE_CONFIG_DIR":
+			if !l.holds(v) {
+				return "its config dir is outside root"
+			}
+		case fakeclaude.EnvVar:
+			if why := l.scenarioRefusal(v); why != "" {
+				return why
+			}
+		}
+	}
+
+	return ""
+}
+
+// scenarioRefusal says why the scenario file p must not reach the fake. The
+// fake writes its record and its grandchild's pid beside their paths, with a
+// ".tmp" suffix, then renames them into place, so each path must lie strictly
+// below root. A missing file is allowed: the fake then fails to load it and
+// writes nothing.
+func (l *localTarget) scenarioRefusal(p string) string {
+	if !filepath.IsAbs(p) {
+		return "its scenario path is relative"
+	}
+
+	data, err := os.ReadFile(p) //nolint:gosec // a scenario the test wrote
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+
+	var sc fakeclaude.Scenario
+	if err != nil || json.Unmarshal(data, &sc) != nil {
+		return "its scenario cannot be read"
+	}
+
+	for _, w := range []string{sc.Record, sc.Grandchild} {
+		if w != "" && (!l.holds(w) || filepath.Clean(w) == filepath.Clean(l.root)) {
+			return "its scenario writes outside root"
 		}
 	}
 
@@ -374,6 +419,8 @@ func (s scriptedStdin) Close() error {
 	return nil
 }
 
+// testDriver has no run root: a run's files then have relative paths, which
+// localTarget refuses, until a fake run sets one below its root.
 func testDriver(t *testing.T) claudeCode {
 	t.Helper()
 
@@ -381,7 +428,7 @@ func testDriver(t *testing.T) claudeCode {
 	require.NoError(t, err)
 
 	return claudeCode{
-		binary: bin, runRoot: t.TempDir(), gateTimeout: 10 * time.Second, grace: stopGrace,
+		binary: bin, gateTimeout: 10 * time.Second, grace: stopGrace,
 		listLimit: listLimit, stageLimit: stageLimit,
 	}
 }
@@ -427,31 +474,49 @@ type fakeRun struct {
 	events []driver.Event
 }
 
-// newFakeRun returns a subscription-mode run of the fake claude with sc. Only
-// the fake runs on the host; the staging's commands are recorded.
+// newFakeRun returns a subscription-mode run of the fake claude with sc, in a
+// root of its own.
 func newFakeRun(t *testing.T, sc fakeclaude.Scenario) *fakeRun {
 	t.Helper()
 
+	return newFakeRunIn(t, t.TempDir(), sc)
+}
+
+// newFakeRunIn returns a subscription-mode run of the fake claude with sc.
+// Its dir, home, config dir, run root and default record are in a fresh
+// directory below root, the only tree its localTarget lets the fake use. Only
+// the fake runs on the host; the staging's commands are recorded.
+func newFakeRunIn(t *testing.T, root string, sc fakeclaude.Scenario) *fakeRun {
+	t.Helper()
+
+	base, err := os.MkdirTemp(root, "run")
+	require.NoError(t, err)
+
+	dir, home := filepath.Join(base, "dir"), filepath.Join(base, "home")
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	require.NoError(t, os.Mkdir(home, 0o700))
+
 	if sc.Record == "" {
-		sc.Record = filepath.Join(t.TempDir(), "record.json")
+		sc.Record = filepath.Join(base, "record.json")
 	}
 
 	if sc.Version == "" {
 		sc.Version = "2.1.322"
 	}
 
-	home := t.TempDir()
+	d := testDriver(t)
+	d.runRoot = filepath.Join(base, "run")
 
 	return &fakeRun{
-		d:      testDriver(t),
-		target: &routedTarget{local: newLocalTarget(t), rec: newRecordingTarget(t)},
+		d:      d,
+		target: &routedTarget{local: newLocalTarget(t, root), rec: newRecordingTarget(t)},
 		spec: driver.Spec{
 			Auth:      driver.Auth{Mode: modeSubscription, Token: testToken},
 			Model:     testModel,
 			MaxTurns:  10,
 			SessionID: testSessionID,
 			Prompt:    testPrompt,
-			Dir:       t.TempDir(),
+			Dir:       dir,
 			Home:      home,
 			ConfigDir: home + "/.claude-cavu",
 			Env:       fakeEnv(t, sc),
@@ -590,17 +655,16 @@ func TestInitializeErrorAnswer(t *testing.T) {
 }
 
 func TestResume(t *testing.T) {
-	dir, home := t.TempDir(), t.TempDir()
+	root := t.TempDir()
 
-	a := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
-	a.spec.Dir, a.spec.Home, a.spec.ConfigDir = dir, home, home+"/.claude-cavu"
+	a := newFakeRunIn(t, root, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
 
 	res, err := a.run(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, driver.ReasonDone, res.Reason)
 
-	b := newFakeRun(t, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
-	b.spec.Dir, b.spec.Home, b.spec.ConfigDir = dir, home, home+"/.claude-cavu"
+	b := newFakeRunIn(t, root, fakeclaude.Scenario{Replay: fixture(t, "real/t1.jsonl")})
+	b.spec.Dir, b.spec.Home, b.spec.ConfigDir = a.spec.Dir, a.spec.Home, a.spec.ConfigDir
 	b.spec.SessionID, b.spec.Resume = "", testSessionID
 
 	res, err = b.run(t.Context())
@@ -633,8 +697,9 @@ func TestResumeRefused(t *testing.T) {
 }
 
 func TestCancelInterrupts(t *testing.T) {
-	pidPath := filepath.Join(t.TempDir(), "grandchild.pid")
-	f := newFakeRun(t, fakeclaude.Scenario{
+	root := t.TempDir()
+	pidPath := filepath.Join(root, "grandchild.pid")
+	f := newFakeRunIn(t, root, fakeclaude.Scenario{
 		Replay: fixture(t, "synthetic/crash.jsonl"), Hang: true, Grandchild: pidPath,
 	})
 
@@ -819,36 +884,73 @@ func TestCancelBeforeStart(t *testing.T) {
 }
 
 // localTarget refuses, as a test failure and without starting anything, any
-// program but the fake and any path outside the test's temporary directory.
-// Each refused command would be harmless if it ran.
+// program but the fake and any path the fake would use outside its root. Each
+// refused command would be harmless if it ran, and the path outside is in a
+// directory this test created.
 func TestLocalTargetRefuses(t *testing.T) {
-	outside := filepath.Join(filepath.Dir(filepath.Dir(t.TempDir())), "cavu-refused-"+randomID())
+	outside := filepath.Join(t.TempDir(), "refused")
+
+	scenario := func(t *testing.T, sc fakeclaude.Scenario) []string {
+		t.Helper()
+
+		sc.Version = "2.1.325"
+
+		return fakeEnv(t, sc)
+	}
 
 	for _, tc := range []struct {
 		name   string
-		mutate func(*localTarget, *proc.Command)
+		mutate func(*testing.T, *localTarget, *proc.Command)
 	}{
-		{"another program", func(_ *localTarget, c *proc.Command) { c.Argv = []string{"true"} }},
-		{"a shell", func(_ *localTarget, c *proc.Command) { c.Argv = []string{"sh", "-c", "exit 0"} }},
-		{"no program", func(_ *localTarget, c *proc.Command) { c.Argv = nil }},
+		{"another program", func(_ *testing.T, _ *localTarget, c *proc.Command) { c.Argv = []string{"true"} }},
+		{"a shell", func(_ *testing.T, _ *localTarget, c *proc.Command) { c.Argv = []string{"sh", "-c", "exit 0"} }},
+		{"no program", func(_ *testing.T, _ *localTarget, c *proc.Command) { c.Argv = nil }},
 		// Run without a scenario, the test binary would run no test.
-		{"no fake scenario", func(l *localTarget, c *proc.Command) { l.env, c.Argv = nil, []string{l.binary, "-test.run=^$"} }},
-		{"a dir outside", func(_ *localTarget, c *proc.Command) { c.Dir = "/" }},
-		{"a dir escaping with ..", func(l *localTarget, c *proc.Command) { c.Dir = l.root + "/.." }},
-		{"a relative dir", func(_ *localTarget, c *proc.Command) { c.Dir = "." }},
-		{"a file outside", func(_ *localTarget, c *proc.Command) { c.Files = map[string][]byte{outside: []byte("x")} }},
-		{"a relative file", func(_ *localTarget, c *proc.Command) { c.Files = map[string][]byte{"refused.txt": []byte("x")} }},
-		{"a config dir outside", func(_ *localTarget, c *proc.Command) { c.Env = []string{"CLAUDE_CONFIG_DIR=/"} }},
+		{"no fake scenario", func(_ *testing.T, l *localTarget, c *proc.Command) {
+			l.env, c.Argv = nil, []string{l.binary, "-test.run=^$"}
+		}},
+		{"a dir outside", func(_ *testing.T, _ *localTarget, c *proc.Command) { c.Dir = "/" }},
+		{"a dir escaping with ..", func(_ *testing.T, l *localTarget, c *proc.Command) { c.Dir = l.root + "/.." }},
+		{"a relative dir", func(_ *testing.T, _ *localTarget, c *proc.Command) { c.Dir = "." }},
+		{"a file outside", func(_ *testing.T, _ *localTarget, c *proc.Command) {
+			c.Files = map[string][]byte{outside: []byte("x")}
+		}},
+		{"a relative file", func(_ *testing.T, _ *localTarget, c *proc.Command) {
+			c.Files = map[string][]byte{"refused.txt": []byte("x")}
+		}},
+		{"a config dir outside", func(_ *testing.T, _ *localTarget, c *proc.Command) { c.Env = []string{"CLAUDE_CONFIG_DIR=/"} }},
+		{"a record outside", func(t *testing.T, l *localTarget, _ *proc.Command) {
+			l.env = scenario(t, fakeclaude.Scenario{Record: outside})
+		}},
+		{"a relative record", func(t *testing.T, l *localTarget, _ *proc.Command) {
+			l.env = scenario(t, fakeclaude.Scenario{Record: "record.json"})
+		}},
+		// The fake would write the record's temporary file beside the root.
+		{"the root as the record", func(t *testing.T, l *localTarget, _ *proc.Command) {
+			l.env = scenario(t, fakeclaude.Scenario{Record: l.root})
+		}},
+		{"a grandchild outside", func(t *testing.T, l *localTarget, _ *proc.Command) {
+			l.env = scenario(t, fakeclaude.Scenario{Grandchild: outside})
+		}},
+		{"a relative scenario", func(_ *testing.T, l *localTarget, _ *proc.Command) {
+			l.env = []string{fakeclaude.EnvVar + "=scenario.json"}
+		}},
+		{"a scenario that does not decode", func(t *testing.T, l *localTarget, _ *proc.Command) {
+			p := filepath.Join(t.TempDir(), "scenario.json")
+			require.NoError(t, os.WriteFile(p, []byte("{"), 0o600))
+
+			l.env = []string{fakeclaude.EnvVar + "=" + p}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			l := newLocalTarget(t, fakeEnv(t, fakeclaude.Scenario{Version: "2.1.325"})...)
+			l := newLocalTarget(t, t.TempDir(), scenario(t, fakeclaude.Scenario{})...)
 
 			var failures []string
 
 			l.fail = func(format string, args ...any) { failures = append(failures, fmt.Sprintf(format, args...)) }
 
-			c := proc.Command{Argv: []string{l.binary, "--version"}, Dir: t.TempDir()}
-			tc.mutate(l, &c)
+			c := proc.Command{Argv: []string{l.binary, "--version"}, Dir: l.root}
+			tc.mutate(t, l, &c)
 
 			p, err := l.Start(bounded(t), c)
 			require.Error(t, err)
@@ -856,11 +958,17 @@ func TestLocalTargetRefuses(t *testing.T) {
 			assert.Len(t, failures, 1, "the refusal is no test failure")
 			assert.Empty(t, l.started())
 			assert.NoFileExists(t, outside)
+			assert.NoFileExists(t, outside+".tmp")
 		})
 	}
 
-	t.Run("the fake in the temporary directory runs", func(t *testing.T) {
-		got, err := testDriver(t).Probe(bounded(t), newLocalTarget(t, fakeEnv(t, fakeclaude.Scenario{Version: "2.1.325"})...))
+	t.Run("the fake whose files are in its root runs", func(t *testing.T) {
+		root := t.TempDir()
+		env := scenario(t, fakeclaude.Scenario{
+			Record: filepath.Join(root, "record.json"), Grandchild: filepath.Join(root, "grandchild.pid"),
+		})
+
+		got, err := testDriver(t).Probe(bounded(t), newLocalTarget(t, root, env...))
 		require.NoError(t, err)
 		assert.Equal(t, "2.1.325", got)
 	})

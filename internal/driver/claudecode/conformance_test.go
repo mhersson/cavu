@@ -133,7 +133,8 @@ func keyBoxWith(t *testing.T, authHeader string, steps ...mockapi.Step) *box {
 }
 
 // up starts the sandbox of a fresh instance and removes all of it after the
-// test.
+// test: every container and volume with both the instance's label and its
+// name prefix.
 func (b *box) up(image string, req sidecar.ProxyRequest) {
 	t := b.t
 	instance := randomID()[:16]
@@ -153,8 +154,8 @@ func (b *box) up(image string, req sidecar.ProxyRequest) {
 
 		containers, volumes, err := b.rt.List(ctx, "cavu.instance="+instance)
 		if assert.NoError(t, err) {
-			assert.NoError(t, b.rt.Remove(ctx, containers...))
-			assert.NoError(t, b.rt.VolumeRemove(ctx, volumes...))
+			assert.NoError(t, b.rt.Remove(ctx, instanceNames(t, instance, containers)...))
+			assert.NoError(t, b.rt.VolumeRemove(ctx, instanceNames(t, instance, volumes)...))
 		}
 	})
 
@@ -171,6 +172,29 @@ func (b *box) up(image string, req sidecar.ProxyRequest) {
 			assert.Len(t, modelCalls(b.mock), len(b.mock.Requests()), "a request was not a streaming model call")
 		})
 	}
+}
+
+// instanceNames keeps the names that carry the instance's prefix, so a runtime
+// that ignored the label filter cannot hand the cleanup someone else's. It
+// reports the rest and leaves them in place.
+func instanceNames(t *testing.T, instance string, names []string) []string {
+	t.Helper()
+
+	prefix := "cavu-" + instance[:8] + "-"
+
+	var own []string
+
+	for _, n := range names {
+		if !strings.HasPrefix(n, prefix) {
+			t.Errorf("the filter cavu.instance=%s listed %q, which lacks the instance prefix; left in place", instance, n)
+
+			continue
+		}
+
+		own = append(own, n)
+	}
+
+	return own
 }
 
 // plant writes the fixture repository into the workspace and commits it, as
