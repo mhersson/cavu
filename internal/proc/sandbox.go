@@ -6,8 +6,10 @@ import "strconv"
 // image carries.
 const SandboxMarker = "/etc/cavu/sandbox"
 
-// NotInSandbox is the exit status of a script SandboxOnly refused.
-const NotInSandbox = 125
+// NotInSandbox is the exit status of a script SandboxOnly refused. Neither the
+// shell nor a container runtime uses 97; both runtimes exit 125 on their own
+// exec failures.
+const NotInSandbox = 97
 
 // SandboxOnly returns a POSIX sh script that exits with NotInSandbox, running
 // nothing of script, unless SandboxMarker exists. Callers pass every path as a
