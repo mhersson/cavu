@@ -4,12 +4,9 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// MiseDataDir holds mise's toolchains and shims, on the project cache.
-const MiseDataDir = cacheDir + "/mise"
-
 // MiseConfigFile is where the setup phase writes MiseConfig's output, on the
 // project cache; both phases point mise at it.
-const MiseConfigFile = MiseDataDir + "/cavu.toml"
+const MiseConfigFile = cacheDir + "/mise/cavu.toml"
 
 // MiseConfig renders the mise configuration CAVU writes. It holds only a
 // [tools] table, encoded so no name or version can open another table: CAVU

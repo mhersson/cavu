@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,21 +27,13 @@ const (
 const (
 	toolchainTimeout = 20 * time.Minute
 	setupTimeout     = 30 * time.Minute
-	reshimTimeout    = 5 * time.Minute
 	baselineReused   = "reused"
 )
 
-// reshimScript has mise make the shims for what the setup command added to a
-// tool, such as a console script pip installed: both phases reach a tool's
-// commands only through the shims. mise works on its data directory as ".",
-// whose real path is the one reshimCommand validated.
-var reshimScript = proc.SandboxOnly(`[ "$#" -eq 1 ] || exit 2
-cd -P -- "$1" || exit 2
-if [ "$(pwd -P)" != "$1" ]; then
-	printf 'cavu: %s resolves to %s; no shim changed\n' "$1" "$(pwd -P)" >&2
-	exit ` + strconv.Itoa(elsewhere) + `
-fi
-MISE_DATA_DIR=. mise reshim || exit 2`)
+// reshimScript makes the shims for what the setup command added to a tool,
+// such as a console script pip installed: both phases reach a tool's commands
+// only through them.
+var reshimScript = proc.SandboxOnly("exec mise reshim")
 
 // Prepare starts the run from empty run volumes, keeping the task's home so
 // a later run resumes its session, and leaves the agent phase up.
@@ -229,37 +220,9 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 		return failed, err
 	}
 
-	return reshim(ctx, sc, det.Ecosystems)
-}
+	reshim := proc.Command{Argv: []string{"sh", "-c", reshimScript}, Env: setupEnv(det.Ecosystems)}
 
-// reshim makes the shims for what the setup command added to the tools. A
-// refused script is a fault; any other failure fails the setup step.
-func reshim(ctx context.Context, sc container, ecosystems []string) (*stepFailure, error) {
-	cmd, err := reshimCommand(env.MiseDataDir, setupEnv(ecosystems))
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := runGuarded(ctx, sc, cmd, reshimTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("runner: make the tools' shims: %w", err)
-	}
-
-	if res.ExitCode != 0 || res.TimedOut {
-		return &stepFailure{stepSetup, output(res, reshimTimeout)}, nil
-	}
-
-	return nil, nil
-}
-
-// reshimCommand refuses a data directory that is not strictly under the
-// cache, so mise only ever works on one there.
-func reshimCommand(dataDir string, environ []string) (proc.Command, error) {
-	if err := within(dataDir, cache); err != nil {
-		return proc.Command{}, err
-	}
-
-	return proc.Command{Argv: []string{"sh", "-c", reshimScript, "sh", dataDir}, Env: environ}, nil
+	return runStep(ctx, sc, stepSetup, reshim, toolchainTimeout)
 }
 
 // baseline verifies the base commit unless the project waives it, or a

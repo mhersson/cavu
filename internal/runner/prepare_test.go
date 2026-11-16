@@ -22,7 +22,7 @@ import (
 )
 
 // reshimName is how the fake names the step that makes the tools' shims.
-var reshimName = stepName([]string{"sh", "-c", reshimScript, "sh", env.MiseDataDir})
+var reshimName = stepName([]string{"sh", "-c", reshimScript})
 
 var fullOrder = []string{
 	"destroy/keep-home", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
@@ -68,18 +68,7 @@ func TestPrepareReshimsAfterTheSetupCommand(t *testing.T) {
 
 	run := f.run(t, reshimName)
 	assert.Equal(t, sandbox.PhaseSetup, run.phase)
-	assert.Equal(t, []string{"sh", "-c", reshimScript, "sh", env.MiseDataDir}, run.cmd.Argv, "the data directory goes as an argument")
 	assert.True(t, strings.HasPrefix(run.cmd.Argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox")
-}
-
-// A data directory outside the cache stops the step before a command is
-// composed.
-func TestReshimRefusesADataDirectoryOutOfBounds(t *testing.T) {
-	for _, dir := range []string{"", "cache/mise", "/cache", "/cache/", "/cache/mise/", "/cache/../etc", "/cache2/mise", "/etc/mise"} {
-		cmd, err := reshimCommand(dir, nil)
-		require.ErrorIs(t, err, errOutOfBounds, dir)
-		assert.Empty(t, cmd.Argv, "nothing is composed for %q", dir)
-	}
 }
 
 func TestPrepareStartsFromEmptyVolumes(t *testing.T) {
@@ -310,8 +299,7 @@ func TestPrepareStepFailures(t *testing.T) {
 		{name: "mise install timeout", script: func(f *fakeSandbox) { f.results["mise install"] = timedOut }, step: "toolchain", last: "run/mise install"},
 		{name: "setup exit 1", script: func(f *fakeSandbox) { f.results["make setup"] = failed }, step: "setup", last: "run/make setup"},
 		{name: "setup timeout", script: func(f *fakeSandbox) { f.results["make setup"] = timedOut }, step: "setup", last: "run/make setup"},
-		{name: "reshim exit 2", script: func(f *fakeSandbox) { f.results[reshimName] = sandbox.Result{ExitCode: 2, Output: "mise ERROR\n"} }, step: "setup", last: "run/" + reshimName},
-		{name: "reshim timeout", script: func(f *fakeSandbox) { f.results[reshimName] = timedOut }, step: "setup", last: "run/" + reshimName},
+		{name: "reshim exit 1", script: func(f *fakeSandbox) { f.results[reshimName] = failed }, step: "setup", last: "run/" + reshimName},
 		{name: "baseline exit 1", script: func(f *fakeSandbox) { f.results["make test"] = failed }, step: "baseline", last: "run/make test"},
 		{name: "baseline timeout", script: func(f *fakeSandbox) { f.results["make test"] = timedOut }, step: "baseline", last: "run/make test"},
 	}
@@ -380,15 +368,6 @@ func TestPrepareFaults(t *testing.T) {
 			f.runErrs["make setup"] = errors.New("environment entry at index 3: invalid variable name")
 		}},
 		{name: "a blank verify command", script: func(_ *fakeSandbox, c *engine.RunConfig) { c.Verify.Command = "  " }},
-		{name: "a reshim outside a sandbox", script: func(f *fakeSandbox, _ *engine.RunConfig) {
-			f.results[reshimName] = sandbox.Result{ExitCode: proc.NotInSandbox}
-		}, is: errNotInSandbox},
-		{name: "a mise data directory that resolves elsewhere", script: func(f *fakeSandbox, _ *engine.RunConfig) {
-			f.results[reshimName] = sandbox.Result{ExitCode: elsewhere, Output: "cavu: /cache/mise resolves to /tmp/x; no shim changed\n"}
-		}, is: errElsewhere},
-		{name: "a reshim that cannot start", script: func(f *fakeSandbox, _ *engine.RunConfig) {
-			f.runErrs[reshimName] = errors.New("exec in cavu-setup: no such container")
-		}},
 	}
 
 	for _, tt := range tests {

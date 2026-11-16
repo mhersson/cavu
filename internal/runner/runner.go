@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,17 +27,11 @@ const (
 	bridgeURL = "http://127.0.0.1:3128"
 	loopback  = "localhost,127.0.0.1,::1"
 	home      = "/home/agent"
-	cache     = "/cache"
 	workspace = "/workspace"
 	modeKey   = "key"
 
-	linkTimeout = time.Minute
-	// seedTimeout leaves room for a large project's crates on a slow volume.
-	seedTimeout = 10 * time.Minute
-
-	// elsewhere is a guarded script's exit status when a directory it would
-	// change resolves elsewhere; its other failures exit 2.
-	elsewhere = 1
+	// homeTimeout leaves room to copy a large project's crates on a slow volume.
+	homeTimeout = 10 * time.Minute
 )
 
 // linkScript makes each link given as a path and its target, replacing what
@@ -50,29 +42,12 @@ var linkScript = proc.SandboxOnly(`while [ "$#" -ge 2 ]; do
 done`)
 
 // seedScript copies into each directory, given with its source, what the
-// source holds that is missing or older there: a later setup-phase fetch then
-// replaces a stale index entry in a kept home, and the agent's newer files
-// stay. It writes only by relative name in a directory whose real path is the
-// one seedCommand validated; -f replaces the read-only files git writes.
+// source holds that is missing or older there, so a later setup-phase fetch
+// replaces a stale index entry in a kept home; -f replaces git's read-only files.
 var seedScript = proc.SandboxOnly(`while [ "$#" -ge 2 ]; do
-	if [ -d "$2" ]; then
-		mkdir -p -- "$1" && cd -P -- "$1" || exit 2
-		if [ "$(pwd -P)" != "$1" ]; then
-			printf 'cavu: %s resolves to %s; nothing copied into it\n' "$1" "$(pwd -P)" >&2
-			exit ` + strconv.Itoa(elsewhere) + `
-		fi
-		cp -R -u -f -- "$2/." . || exit 2
-	fi
+	if [ -d "$2" ]; then mkdir -p -- "$1" && cp -R -u -f -- "$2/." "$1" || exit 1; fi
 	shift 2
-done
-[ "$#" -eq 0 ] || exit 2`)
-
-var (
-	errOutOfBounds  = errors.New("runner: a guarded step's path is not a clean absolute path strictly under its root")
-	errNotInSandbox = errors.New("the image lacks the sandbox marker " + proc.SandboxMarker +
-		", so nothing ran; `cavu image build` builds an image with the marker")
-	errElsewhere = errors.New("a directory resolves elsewhere, and nothing in it was changed")
-)
+done`)
 
 // proxyEnv sends a command's egress through the bridge, the one way out of
 // either phase, and keeps loopback traffic off it.
@@ -297,11 +272,11 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		return err
 	}
 
-	if err := linkHome(ctx, a, env.AgentLinks(st.ecosystems, home)); err != nil {
+	if err := homeStep(ctx, a, linkScript, env.AgentLinks(st.ecosystems, home)); err != nil {
 		return err
 	}
 
-	if err := seedHome(ctx, a, env.AgentSeeds(st.ecosystems, home)); err != nil {
+	if err := homeStep(ctx, a, seedScript, env.AgentSeeds(st.ecosystems, home)); err != nil {
 		return err
 	}
 
@@ -310,102 +285,28 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 	return nil
 }
 
-// linkHome makes links, path to target, in the agent phase's home.
-func linkHome(ctx context.Context, a container, links map[string]string) error {
-	if len(links) == 0 {
+// homeStep runs script in the agent phase with each pair, a path in the home
+// and the cache path it comes from, as positional arguments.
+func homeStep(ctx context.Context, a container, script string, pairs map[string]string) error {
+	if len(pairs) == 0 {
 		return nil
 	}
 
-	argv := []string{"sh", "-c", linkScript, "sh"}
-	for _, link := range slices.Sorted(maps.Keys(links)) {
-		argv = append(argv, link, links[link])
+	argv := []string{"sh", "-c", script, "sh"}
+	for _, p := range slices.Sorted(maps.Keys(pairs)) {
+		argv = append(argv, p, pairs[p])
 	}
 
-	res, err := a.Run(ctx, proc.Command{Argv: argv}, linkTimeout)
+	res, err := a.Run(ctx, proc.Command{Argv: argv}, homeTimeout)
 	if err != nil {
 		return err
 	}
 
 	if res.ExitCode != 0 || res.TimedOut {
-		return fmt.Errorf("runner: link the agent's home: %s", strings.TrimSpace(output(res, linkTimeout)))
+		return fmt.Errorf("runner: prepare the agent's home: %s", strings.TrimSpace(output(res, homeTimeout)))
 	}
 
 	return nil
-}
-
-// seedHome fills directories in the agent phase's home from their sources in
-// the cache.
-func seedHome(ctx context.Context, a container, seeds map[string]string) error {
-	if len(seeds) == 0 {
-		return nil
-	}
-
-	cmd, err := seedCommand(seeds)
-	if err != nil {
-		return err
-	}
-
-	return homeStep(ctx, a, "seed the agent's home", cmd, seedTimeout)
-}
-
-// seedCommand refuses every directory unless each is strictly under the home
-// and each source under the cache, so the script copies only into the home.
-func seedCommand(seeds map[string]string) (proc.Command, error) {
-	argv := []string{"sh", "-c", seedScript, "sh"}
-
-	for _, dir := range slices.Sorted(maps.Keys(seeds)) {
-		src := seeds[dir]
-		if err := errors.Join(within(dir, home), within(src, cache)); err != nil {
-			return proc.Command{}, err
-		}
-
-		argv = append(argv, dir, src)
-	}
-
-	return proc.Command{Argv: argv}, nil
-}
-
-// homeStep runs a guarded step on the agent phase's home, where every failure
-// is a fault: the home is the task's, and only removing it mends it.
-func homeStep(ctx context.Context, a container, what string, cmd proc.Command, timeout time.Duration) error {
-	res, err := runGuarded(ctx, a, cmd, timeout)
-	if err == nil && (res.ExitCode != 0 || res.TimedOut) {
-		err = errors.New(strings.TrimSpace(output(res, timeout)))
-	}
-
-	if err != nil {
-		return fmt.Errorf("runner: %s: %w", what, err)
-	}
-
-	return nil
-}
-
-// runGuarded runs a script proc.SandboxOnly wraps, which exits elsewhere when
-// a directory it would change resolves elsewhere. Those two refusals are
-// errors; any other failure comes back in the result.
-func runGuarded(ctx context.Context, c container, cmd proc.Command, timeout time.Duration) (sandbox.Result, error) {
-	res, err := c.Run(ctx, cmd, timeout)
-	if err != nil || res.TimedOut {
-		return res, err
-	}
-
-	switch res.ExitCode {
-	case proc.NotInSandbox:
-		return res, errNotInSandbox
-	case elsewhere:
-		return res, fmt.Errorf("%w: %s", errElsewhere, strings.TrimSpace(res.Output))
-	}
-
-	return res, nil
-}
-
-// within is nil when p is a clean absolute path strictly under root.
-func within(p, root string) error {
-	if path.IsAbs(p) && path.Clean(p) == p && strings.HasPrefix(p, root+"/") {
-		return nil
-	}
-
-	return fmt.Errorf("%w: %q is not strictly under %s", errOutOfBounds, p, root)
 }
 
 // Release stops the run's containers and, when removeVolumes is set, removes
