@@ -45,9 +45,11 @@ type Runner interface {
 	// verify. Work, Verify and Export bring the run's containers up themselves
 	// when they are not running, so a restart needs no second prepare.
 	Prepare(ctx context.Context, c RunConfig) (PrepareResult, error)
-	// Work with Resume true may name a session the agent never started, when
-	// the process died between the claim and the start; the runner then starts
-	// it under that id. progress is never called after Work returns.
+	// Work returns how the session ended as a result, endpoint failures and
+	// usage limits included; an error means the sandbox itself failed. Work
+	// with Resume true may name a session the agent never started, when the
+	// process died between the claim and the start; the runner then starts it
+	// under that id. progress is never called after Work returns.
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
 	// Export is safe to repeat for the same run.
@@ -80,7 +82,8 @@ type Progress struct {
 // WorkResult is how a session ended.
 type WorkResult struct {
 	SessionID, Outcome     string
-	Title, Summary, Detail string
+	Title, Summary         string
+	Detail                 string // the upstream status or error text for endpoint, usage_limit and crashed
 	Assumptions, Questions []string
 	Changed                bool
 	Turns                  int

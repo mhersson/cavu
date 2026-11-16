@@ -2,8 +2,10 @@ package engine_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/stretchr/testify/assert"
@@ -112,6 +114,11 @@ func decideCases() []decideCase {
 	withSession := prepared()
 	withSession.SessionID = "s1"
 
+	crashedWithDetail := cut(engine.OutcomeCrashed, 2)
+	crashedWithDetail.Session.Detail = "stream closed: 502 Bad Gateway"
+
+	longSummary := strings.Repeat("日本語", 200)
+
 	return []decideCase{
 		{name: "not started", snap: snap(engine.Facts{}), want: none},
 		{name: "cancelled", snap: snap(engine.Facts{Started: true, Cancelled: true, RunOpen: true}), want: halt(engine.StopCancelled, engine.ClearNone)},
@@ -149,7 +156,19 @@ func decideCases() []decideCase {
 			name: "session usage limit with a past reset", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeUsageLimit, ResetsAt: reset})),
 			want: engine.Action{Kind: engine.KindStop, Stop: engine.StopUsageLimit, Clear: engine.ClearNone, ResetsAt: fallback}, clock: true,
 		},
+		{
+			name: "session usage limit with a status", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeUsageLimit, ResetsAt: later, Detail: "429 rate_limit_error"})),
+			want: engine.Action{Kind: engine.KindStop, Stop: engine.StopUsageLimit, Clear: engine.ClearNone, ResetsAt: later}, explainHas: "429",
+		},
 		{name: "session endpoint", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeEndpoint})), want: halt(engine.StopEndpoint, engine.ClearRetry)},
+		{
+			name: "session endpoint with a status", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeEndpoint, Detail: "401 invalid x-api-key"})),
+			want: halt(engine.StopEndpoint, engine.ClearRetry), explainHas: "401",
+		},
+		{
+			name: "session endpoint with a long detail", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeEndpoint, Detail: "503 " + longSummary})),
+			want: halt(engine.StopEndpoint, engine.ClearRetry), explainHas: "503",
+		},
 		{name: "session timeout", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeTimeout})), want: halt(engine.StopTimeout, engine.ClearRetry)},
 		{name: "session max turns", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeMaxTurns})), want: halt(engine.StopBudget, engine.ClearRetry)},
 		{
@@ -160,12 +179,17 @@ func decideCases() []decideCase {
 			name: "session failed", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeFailed, Summary: "The tests need a database.\nNone is running."})),
 			want: halt(engine.StopAgentError, engine.ClearRetry), explainHas: "The tests need a database.",
 		},
+		{
+			name: "session failed with a long summary", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeFailed, Summary: longSummary})),
+			want: halt(engine.StopAgentError, engine.ClearRetry), explainHas: "日本語",
+		},
 		{name: "unfinished with no continuation yet", snap: snap(cut(engine.OutcomeUnfinished, 0)), want: work(engine.ModeContinue, true)},
 		{name: "unfinished with one continuation", snap: snap(cut(engine.OutcomeUnfinished, 1)), want: work(engine.ModeContinue, true)},
 		{name: "unfinished at the continuation cap", snap: snap(cut(engine.OutcomeUnfinished, 2)), want: halt(engine.StopAgentError, engine.ClearRetry)},
 		{name: "unfinished with continuations off", snap: snapWith(cut(engine.OutcomeUnfinished, 0), contOff), want: halt(engine.StopAgentError, engine.ClearRetry)},
 		{name: "crashed with no continuation yet", snap: snap(cut(engine.OutcomeCrashed, 0)), want: work(engine.ModeContinue, true)},
 		{name: "crashed at the continuation cap", snap: snap(cut(engine.OutcomeCrashed, 2)), want: halt(engine.StopAgentError, engine.ClearRetry)},
+		{name: "crashed at the continuation cap with a detail", snap: snap(crashedWithDetail), want: halt(engine.StopAgentError, engine.ClearRetry), explainHas: "502"},
 		{name: "done without a change", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeDone})), want: halt(engine.StopNoChange, engine.ClearRetry)},
 		{name: "done and not verified", snap: snap(verified("", 0)), want: engine.Action{Kind: engine.KindVerify}},
 		{name: "verify failed with no fix yet", snap: snap(verified(engine.ResultFailed, 0)), want: work(engine.ModeFixVerify, true)},
@@ -189,6 +213,8 @@ func TestDecide(t *testing.T) {
 			if got.Kind == engine.KindStop {
 				assert.NotEmpty(t, got.Explain)
 				assert.NotContains(t, got.Explain, "\n")
+				assert.LessOrEqual(t, len(got.Explain), 300)
+				assert.True(t, utf8.ValidString(got.Explain))
 			}
 
 			if tc.explainHas != "" {

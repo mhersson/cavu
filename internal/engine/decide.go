@@ -162,7 +162,7 @@ func Decide(s Snapshot) Action {
 		}
 
 		a := halt(StopUsageLimit, ClearNone, "The session hit a usage limit.",
-			"The model's usage limit was reached; work resumes when it resets.")
+			withDetail("The model's usage limit was reached; work resumes at "+resets.UTC().Format(time.RFC3339), sess.Detail))
 		a.ResetsAt = resets
 
 		return a
@@ -170,7 +170,7 @@ func Decide(s Snapshot) Action {
 
 	if sess.Outcome == OutcomeEndpoint {
 		return halt(StopEndpoint, ClearRetry, "The session could not use the model endpoint.",
-			"The model endpoint failed or refused the agent's requests.")
+			withDetail("The model endpoint failed or refused the agent's requests", sess.Detail))
 	}
 
 	if sess.Outcome == OutcomeTimeout {
@@ -200,7 +200,7 @@ func Decide(s Snapshot) Action {
 
 	if cut {
 		return halt(StopAgentError, ClearRetry, "The session stopped early.",
-			"The agent session ended before the work was finished.")
+			withDetail("The agent session ended before the work was finished", sess.Detail))
 	}
 
 	if sess.Outcome == OutcomeDone && !sess.Changed {
@@ -254,12 +254,31 @@ func first(texts []string) string {
 	return texts[0]
 }
 
-// lineOr folds text written by the agent onto one line, or returns fallback
-// when it is blank, so every stop carries an explanation.
+// maxExplain bounds a stop's explanation, in bytes.
+const maxExplain = 300
+
+// line folds text onto one line of at most maxExplain bytes. Text from the
+// runner must be masked first, so a cut cannot leave the head of a secret behind.
+func line(text string) string {
+	return clip(strings.Join(strings.Fields(text), " "), maxExplain)
+}
+
+// lineOr returns text as one line, or fallback when it is blank, so every stop
+// carries an explanation.
 func lineOr(text, fallback string) string {
-	if line := strings.Join(strings.Fields(text), " "); line != "" {
-		return line
+	if l := line(text); l != "" {
+		return l
 	}
 
 	return fallback
+}
+
+// withDetail ends sentence with the runner's detail, such as an upstream
+// status, so a person can tell a refused credential from an outage.
+func withDetail(sentence, detail string) string {
+	if line(detail) == "" {
+		return sentence + "."
+	}
+
+	return line(sentence + ": " + detail)
 }

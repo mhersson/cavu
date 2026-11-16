@@ -612,7 +612,7 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 
 	if res.Problem != "" {
 		return p.halt(ctx, -1, o.task, &o.row, StoppedPayload{
-			Reason: StopAgentError, Explanation: lineOr(res.Problem, "Exporting the change failed."), Action: ClearRetry,
+			Reason: StopAgentError, Explanation: lineOr(p.mask(res.Problem), "Exporting the change failed."), Action: ClearRetry,
 		})
 	}
 
@@ -629,7 +629,7 @@ func (p *pass) fault(ctx context.Context, o openRun, cause error) error {
 	}
 
 	return p.halt(ctx, -1, o.task, &o.row, StoppedPayload{
-		Reason: StopSandbox, Explanation: lineOr("The runner failed: "+cause.Error(), "The runner failed."), Action: ClearRetry,
+		Reason: StopSandbox, Explanation: line(p.mask("The runner failed: " + cause.Error())), Action: ClearRetry,
 	})
 }
 

@@ -654,6 +654,100 @@ func TestLoopExportProblemStops(t *testing.T) {
 	assert.Empty(t, h.spy.ended(), "the run keeps its volumes and stays open")
 }
 
+// A stop's explanation is one bounded line; the full agent text stays in its result.
+func TestLoopBoundsStopExplanations(t *testing.T) {
+	long := strings.Repeat("日本語", 200)
+
+	tests := []struct {
+		name    string
+		script  func(r *fakeRunner)
+		head    string // text the explanation starts from
+		reason  string
+		summary bool // the session's result keeps the full text
+	}{
+		{
+			name: "a long summary",
+			script: func(r *fakeRunner) {
+				r.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeFailed, Summary: long}}}
+			},
+			head: "日本語", reason: engine.StopAgentError, summary: true,
+		},
+		{
+			name: "a long runner error",
+			script: func(r *fakeRunner) {
+				r.works = []step[engine.WorkResult]{{err: errors.New("the container exited\n" + long)}}
+			},
+			head: "the container exited", reason: engine.StopSandbox,
+		},
+		{
+			name: "a long export problem",
+			script: func(r *fakeRunner) {
+				r.exports = []step[engine.ExportResult]{{res: engine.ExportResult{Problem: "the push was rejected\n" + long}}}
+			},
+			head: "the push was rejected", reason: engine.StopAgentError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			tt.script(h.runner)
+
+			status, err := h.run(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, engine.StatusBlocked, status)
+
+			stop := h.lastStop()
+			assert.Equal(t, tt.reason, stop.Reason)
+			assert.LessOrEqual(t, len(stop.Explanation), 300)
+			assert.True(t, utf8.ValidString(stop.Explanation))
+			assert.NotContains(t, stop.Explanation, "\n")
+			assert.Contains(t, stop.Explanation, tt.head)
+
+			if tt.summary {
+				ended := h.eventsOf(engine.SessionEnded)
+				require.Len(t, ended, 1)
+				assert.Equal(t, long, payloadOf[engine.SessionEndedPayload](t, ended[0]).Summary)
+			}
+		})
+	}
+}
+
+// Runner text is masked before its explanation is cut, so the cut leaves no head of a secret.
+func TestLoopMasksBeforeCutting(t *testing.T) {
+	const planted, mask = "sk-ant-api03-plainsecretvalue", "[redacted]"
+
+	copies := strings.Repeat(planted, 40)
+
+	tests := []struct {
+		name   string
+		script func(r *fakeRunner)
+	}{
+		{"a runner error", func(r *fakeRunner) { r.works = []step[engine.WorkResult]{{err: errors.New(copies)}} }},
+		{"an export problem", func(r *fakeRunner) {
+			r.exports = []step[engine.ExportResult]{{res: engine.ExportResult{Problem: copies}}}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			require.NoError(t, h.vault.Set(t.Context(), "endpoint_credential", planted))
+			tt.script(h.runner)
+
+			_, err := h.run(t.Context())
+			require.NoError(t, err)
+
+			explanation := h.lastStop().Explanation
+			last := strings.LastIndex(explanation, mask)
+			require.GreaterOrEqual(t, last, 0)
+
+			tail := explanation[last+len(mask):]
+			assert.True(t, strings.HasPrefix(mask, tail), "the cut falls inside a mask, not a secret: %q", tail)
+		})
+	}
+}
+
 func TestLoopRepairsRunRows(t *testing.T) {
 	exportedRun := []store.Event{
 		ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`),
