@@ -141,3 +141,13 @@ func TestAgentLinksCargoBinaries(t *testing.T) {
 		assert.Empty(t, AgentLinks(ecosystems, "/home/agent"), ecosystems)
 	}
 }
+
+// A tool missing in the agent phase stays missing: an install there would
+// write under the read-only cache and record a failed install in the home.
+func TestMiseInstallsNothingInTheAgentPhase(t *testing.T) {
+	t.Parallel()
+
+	for _, ecosystems := range [][]string{nil, allEcosystems} {
+		assert.Equal(t, "false", envMap(t, AgentEnv(ecosystems, "/home/agent"))["MISE_AUTO_INSTALL"], ecosystems)
+	}
+}

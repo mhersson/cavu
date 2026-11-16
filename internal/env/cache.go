@@ -78,10 +78,12 @@ func render(m map[string]string) []string {
 // mise toolchains (MISE_DATA_DIR and the shims) and the Rust toolchain
 // (RUSTUP_HOME, and Cargo's binaries through AgentLinks). Not shared: the npm,
 // pip, uv and Cargo caches, which start empty under home, so those packages
-// come from the registries in AgentHosts.
+// come from the registries in AgentHosts. mise installs nothing there: its data
+// is read-only and the toolchain hosts are out of reach.
 func AgentEnv(ecosystems []string, home string) []string {
 	m := common()
 	cacheVars(m, ecosystems, agentRoot(home))
+	m["MISE_AUTO_INSTALL"] = "false"
 
 	for _, e := range ecosystems {
 		if e == "go" {
