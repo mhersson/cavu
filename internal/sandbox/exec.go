@@ -163,9 +163,11 @@ func (p *execProcess) Wait() (int, error) {
 // nil once the command has ended. Otherwise it ends the client and reports
 // that the command may run on until the container is removed.
 //
-// Only a client that ended cleanly speaks for the command. One that died
-// (proc's line cap kills it) or that a Stop had to kill does not, so the stop
-// exec answers instead; with the group gone it ends at once.
+// Only a client that ended cleanly speaks for the command. After a client
+// that died (proc's line cap kills it) the stop exec's answer decides; with
+// the group gone it ends at once. After a client that a Stop had to kill, the
+// exec still runs, but Stop reports that the command may run on whatever it
+// answers.
 func (p *execProcess) Stop(grace time.Duration) error {
 	p.stopMu.Lock()
 	defer p.stopMu.Unlock()
