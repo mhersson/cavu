@@ -2,12 +2,17 @@ package claudecode
 
 import (
 	"io/fs"
+	"maps"
 	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mhersson/cavu/internal/driver"
 )
 
 // credentialPattern matches an Anthropic key, an OAuth token marker or an env
@@ -66,4 +71,56 @@ func TestFixturesCarryNoToken(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotZero(t, files, "testdata holds no files")
+}
+
+// TestMapperEveryFixture replays every recording through the mapper, so each
+// copied fixture is exercised, and a new one needs an expected reason here.
+func TestMapperEveryFixture(t *testing.T) {
+	want := map[string]string{
+		"real/dl-httphook.jsonl":              driver.ReasonDone,
+		"real/p3.jsonl":                       driver.ReasonDone,
+		"real/p3b.jsonl":                      driver.ReasonDone,
+		"real/p4-partial-messages.jsonl":      driver.ReasonDone,
+		"real/t1.jsonl":                       driver.ReasonDone,
+		"real/t2.jsonl":                       driver.ReasonAuth,
+		"real/t3-iso.jsonl":                   driver.ReasonDone,
+		"real/t5.jsonl":                       driver.ReasonDone,
+		"real/t6.jsonl":                       driver.ReasonDone,
+		"real/t7.jsonl":                       driver.ReasonDone,
+		"real/t7b.jsonl":                      driver.ReasonDone,
+		"synthetic/crash.jsonl":               driver.ReasonCrashed,
+		"synthetic/max_budget_end_turn.jsonl": driver.ReasonMaxBudget,
+		"synthetic/max_budget_tool_use.jsonl": driver.ReasonMaxBudget,
+		"synthetic/max_turns.jsonl":           driver.ReasonMaxTurns,
+		"synthetic/parallel.jsonl":            driver.ReasonDone,
+		"synthetic/partial.jsonl":             driver.ReasonDone,
+		"synthetic/rejected.jsonl":            driver.ReasonUsageLimit,
+		"synthetic/two_models.jsonl":          driver.ReasonDone,
+		"synthetic/unknown.jsonl":             driver.ReasonDone,
+	}
+
+	var found []string
+
+	for _, dir := range []string{"real", "synthetic"} {
+		entries, err := os.ReadDir(filepath.Join("testdata", dir))
+		require.NoError(t, err)
+
+		for _, e := range entries {
+			found = append(found, dir+"/"+e.Name())
+		}
+	}
+
+	assert.ElementsMatch(t, slices.Collect(maps.Keys(want)), found, "every fixture has an expected reason")
+
+	for _, path := range found {
+		t.Run(path, func(t *testing.T) {
+			reason, ok := want[path]
+			require.True(t, ok)
+
+			evs, res := replay(t, path, 1)
+			assert.NotEmpty(t, evs)
+			assert.Equal(t, reason, res.Reason)
+			assert.Equal(t, reason != driver.ReasonDone, res.IsError)
+		})
+	}
 }
