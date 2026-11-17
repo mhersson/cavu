@@ -231,7 +231,7 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 			r.seen[id] = snap.LastEventID
 		case a.Kind == KindWait:
 			why = a.Why
-		case r.busy() < slots:
+		case a.Kind == KindStop || r.busy() < slots: // a stop starts no container and its drive ends at once
 			s.drive(ctx, r, snap)
 		default:
 			why = WaitingForSlot

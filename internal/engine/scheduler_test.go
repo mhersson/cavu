@@ -164,6 +164,7 @@ type running struct {
 	ended  atomic.Int64 // passes ended
 	mu     sync.Mutex
 	failed []int64 // the task id of each OnError call
+	watch  func()  // runs at the end of each pass, before it counts
 	stop   func() error
 }
 
@@ -185,7 +186,17 @@ func (h *harness) schedule(edit func(s *engine.Scheduler)) *running {
 		edit(r.Scheduler)
 	}
 
-	engine.SetPassHook(r.Scheduler, func() { r.ended.Add(1) })
+	engine.SetPassHook(r.Scheduler, func() {
+		r.mu.Lock()
+		watch := r.watch
+		r.mu.Unlock()
+
+		if watch != nil {
+			watch()
+		}
+
+		r.ended.Add(1)
+	})
 
 	ctx, cancel := context.WithCancel(h.t.Context())
 	done := make(chan error, 1)
@@ -210,6 +221,14 @@ func (h *harness) schedule(edit func(s *engine.Scheduler)) *running {
 	h.t.Cleanup(func() { assert.NoError(h.t, r.stop()) })
 
 	return r
+}
+
+// watchEach makes f run at the end of every pass from now on.
+func (r *running) watchEach(f func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.watch = f
 }
 
 func (r *running) errs() []int64 {
@@ -733,5 +752,50 @@ func TestSchedulerCheckTakesASlot(t *testing.T) {
 	h.eventually(func() bool { return slices.Equal(g.held("check"), []int64{h.task.ProjectID}) })
 	g.let(t, "check", h.task.ProjectID)
 	h.eventually(func() bool { return h.inReview(h.task.ID) && h.checkCleared(h.task.ProjectID) })
+	assert.Empty(t, s.errs())
+}
+
+// A stop takes no slot, so a cancelled task's interrupted run is ended and
+// released at once, even while a task that became ready holds the only slot.
+func TestSchedulerStopTakesNoSlot(t *testing.T) {
+	h := newHarness(t)
+	second := h.started()
+	h.set("concurrency", "1")
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: []string{"Which port?"}}}}
+	g := h.gate("work")
+
+	s := h.schedule(nil)
+
+	h.eventually(func() bool { return slices.Equal(g.held("work"), []int64{h.task.ID}) })
+	g.let(t, "work", h.task.ID)
+	h.eventually(func() bool { return slices.Equal(g.held("work"), []int64{second.ID}) })
+
+	var slotWaits atomic.Int64
+
+	s.watchEach(func() {
+		if s.Waiting(second.ID) == engine.WaitingForSlot {
+			slotWaits.Add(1)
+		}
+	})
+
+	require.NoError(t, h.loop.Answer(t.Context(), h.task.ID, "Use port 8080."))
+	s.Nudge()
+	h.eventually(func() bool { return s.Waiting(h.task.ID) == engine.WaitingForSlot })
+
+	require.NoError(t, h.loop.Cancel(t.Context(), second.ID))
+	s.Nudge()
+
+	h.eventually(func() bool { return slices.Equal(g.held("work"), []int64{h.task.ID}) }, "the answered task takes the slot")
+	h.eventually(func() bool { return slices.Contains(h.runner.callsFor(second.ID), "release/remove") }, "the cancelled run is released")
+	assert.Equal(t, []string{"prepare", "work/start", "release/remove"}, h.runner.callsFor(second.ID))
+	assert.Equal(t, []int64{h.task.ID}, g.held("work"), "the answered task still holds the slot")
+	assert.Equal(t, engine.StatusCancelled, h.statusOf(second.ID))
+
+	s.passes(t, 2)
+	assert.Zero(t, slotWaits.Load(), "the cancelled task never waits for a slot")
+	assert.Empty(t, s.Waiting(second.ID))
+
+	g.free("work")
+	h.eventually(func() bool { return h.inReview(h.task.ID) })
 	assert.Empty(t, s.errs())
 }
