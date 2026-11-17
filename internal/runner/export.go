@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/mhersson/cavu/internal/engine"
@@ -17,17 +18,20 @@ const (
 	bundleFile = "/handoff/task.bundle"
 	// maxArtifact bounds each file the export copies out of the container.
 	maxArtifact = 64 << 20
+	// maxStatFiles bounds the files git names in the change's summary; its last line still counts them all.
+	maxStatFiles = 50
 )
 
 var errArtifactTooLarge = errors.New("the file is over the export's bound")
 
 // exportScript points the task branch $3 at the frozen commit $2, writes the
 // diff from the base commit $1 to $4 and a bundle of the branch from the base
-// to $5. It refuses a commit that is missing or does not descend from the
-// base. The working tree and HEAD are not read.
+// to $5, and prints git's summary of the diff. It refuses a commit that is
+// missing or does not descend from the base. The working tree and HEAD are not read.
 var exportScript = proc.SandboxOnly(gitFunc + `g merge-base --is-ancestor "$1" "$2" 2>/dev/null ||
 	{ echo "The frozen commit $2 is missing from the repository or does not descend from the base commit."; exit 1; }
-g update-ref "refs/heads/$3" "$2" && g diff --binary "$1" "$2" >"$4" && g bundle create -q "$5" "$1..$3"`)
+g update-ref "refs/heads/$3" "$2" && g diff --binary "$1" "$2" >"$4" && g bundle create -q "$5" "$1..$3" &&
+g diff --stat --stat-count=` + strconv.Itoa(maxStatFiles) + ` "$1" "$2"`)
 
 // Export exports commit, the work a session froze: it points the task branch
 // at it and returns the diff from the base commit and a bundle of the branch.
@@ -39,7 +43,7 @@ func (r *Runner) Export(ctx context.Context, c engine.RunConfig, commit string) 
 	return act(ctx, r, c, func(ctx context.Context, st *run, mask func(string) string) (engine.ExportResult, error) {
 		cmd := proc.Command{
 			Argv: scriptArgv(exportScript, c.Repo.BaseCommit, commit, c.Repo.Branch, diffFile, bundleFile),
-			Env:  agentEnv(st.ecosystems), Dir: workspace,
+			Env:  agentEnv(st.ecosystems, c.Repo.BaseCommit), Dir: workspace,
 		}
 
 		out, err := st.agent.Run(ctx, cmd, gitTimeout)
@@ -61,8 +65,24 @@ func (r *Runner) Export(ctx context.Context, c engine.RunConfig, commit string) 
 			return engine.ExportResult{Problem: problem}, err
 		}
 
-		return engine.ExportResult{HeadCommit: commit, Diff: diff, Bundle: bundle, FilesChanged: changedFiles(diff)}, nil
+		return engine.ExportResult{
+			HeadCommit: commit, Diff: diff, Bundle: bundle, FilesChanged: changedFiles(diff), DiffStat: diffStat(out.Output),
+		}, nil
 	})
+}
+
+// diffStat is the lines of git's summary in out, which git indents by one
+// space: the runtime client's own warnings can follow a command's output.
+func diffStat(out string) []string {
+	var stat []string
+
+	for l := range strings.Lines(out) {
+		if s, ok := strings.CutPrefix(strings.TrimSuffix(l, "\n"), " "); ok {
+			stat = append(stat, s)
+		}
+	}
+
+	return stat
 }
 
 // copyOut copies file out of the agent container through the agent container,

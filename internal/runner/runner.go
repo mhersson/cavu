@@ -414,17 +414,23 @@ func (r *Runner) Release(ctx context.Context, ref engine.RunRef, removeVolumes b
 
 // agentEnv is the environment of the commands the runner runs in the agent
 // phase.
-func agentEnv(ecosystems []string) []string {
-	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv, noProxyEnv)
+func agentEnv(ecosystems []string, base string) []string {
+	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv, noProxyEnv, baseEnv(base))
 }
 
 // sessionEnv is agentEnv without noProxyEnv, which the driver adds itself.
-func sessionEnv(ecosystems []string) []string {
-	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv)
+func sessionEnv(ecosystems []string, base string) []string {
+	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv, baseEnv(base))
 }
 
-func setupEnv(ecosystems []string) []string {
-	return slices.Concat(env.SetupEnv(ecosystems), bridgeEnv, noProxyEnv)
+func setupEnv(ecosystems []string, base string) []string {
+	return slices.Concat(env.SetupEnv(ecosystems), bridgeEnv, noProxyEnv, baseEnv(base))
+}
+
+// baseEnv names the run's base commit, which nothing in the workspace names:
+// it keeps no remote and no branch but the task's.
+func baseEnv(base string) []string {
+	return []string{"CAVU_BASE_COMMIT=" + base}
 }
 
 func allowlist(lists ...[]string) []string {

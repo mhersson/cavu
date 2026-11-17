@@ -20,9 +20,23 @@ var registryHosts = map[string][]string{
 	"rust":   {"crates.io", "index.crates.io", "static.crates.io"},
 }
 
-// SetupHosts are the toolchain downloads plus the registries of the ecosystems.
+// setupOnlyHosts are reached by the setup phase alone: the Go proxy redirects
+// large modules to general storage, which the agent phase must not reach.
+var setupOnlyHosts = map[string][]string{
+	"go": {"storage.googleapis.com"},
+}
+
+// SetupHosts are the toolchain downloads plus the registries of the ecosystems
+// and the hosts only setup reaches.
 func SetupHosts(ecosystems []string) []string {
-	return hosts(toolchainHosts, ecosystems)
+	out := hosts(toolchainHosts, ecosystems)
+	for _, e := range ecosystems {
+		out = append(out, setupOnlyHosts[e]...)
+	}
+
+	sort.Strings(out)
+
+	return slices.Compact(out)
 }
 
 // AgentHosts are the registries of the ecosystems only.

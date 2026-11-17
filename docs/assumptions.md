@@ -36,7 +36,7 @@ It also lists what the Claude Code adapter assumes of the pinned Claude Code ver
   - a cleared config directory and staged instruction files: before every session the driver empties the config directory but for the transcripts (`projects/`), and when the session names a base commit it writes the repository's root instruction files, rules and skills from that commit into it;
   - a sandbox check: both run only through `/etc/cavu/sandbox`, a file only the sandbox image carries, and a session in an image without it stops with an error naming `cavu image build`. `internal/driver/claudecode/stage.go` holds how the clear, the staging, their limits and the check work.
 - Assumption: on the pinned version these flags and variables give user-level settings only and a clean headless run. The pinned version reads a repository's `CLAUDE.md`, `AGENTS.md` and skills only with the project settings source, which also applies the repository's own settings file (its environment, permission rules and hooks), so the staging gives the agent those files through the user source instead.
-- Check to change or retire it: run the conformance suite against each new release. Change a flag or variable when the suite fails, and drop one once a release makes it unnecessary. `TestInstructionsNeedStaging` runs a session without staging and wants none of the repository's instruction files in any request; when it fails, the release loads them without the project source, and the staging goes.
+- Check to change or retire it: run the conformance suite against each new release. Change a flag or variable when the suite fails, and drop one once a release makes it unnecessary. `TestInstructionsNeedStaging` runs a session without staging and wants none of the repository's instruction files in any request; when it fails, the release loads them without the project source, and the staging goes. `TestLiveSubscriptionHosts` logs every host a subscription run asks for beyond the adapter's `Hosts`; on 2.1.325 it logged none.
 
 ## The stream the Claude Code adapter reads
 
@@ -48,6 +48,8 @@ It also lists what the Claude Code adapter assumes of the pinned Claude Code ver
 - Synthetic messages: an assistant line whose model is `<synthetic>` is a message Claude Code made up locally and is not counted as a model call. Check: `real/t2.jsonl`.
 - Resumed sessions: `model_usage_since_last_result` is the share of the process that wrote it, where `modelUsage` and `total_cost_usd` are cumulative over the resumed session; the mapper takes the share and falls back to the cumulative fields when it is missing. Check: `TestResumeAcrossContainers` runs a resume; the field itself is read in `two_models.jsonl` and `real/t5.jsonl`.
 - Refused resume: `--resume` of a session with no transcript ends with an error result and `No conversation found` on stderr, and maps to `resume_refused`. Check: `TestResumeUnknownSession`.
+- Rate limit event: a live `rate_limit_event` carries `status`, `resetsAt`, `rateLimitType`, `overageStatus`, `overageDisabledReason`, `isUsingOverage` and `unifiedWindows` with each window's `utilization`, `resetsAt` and `status`, as recorded on 2.1.322 and 2.1.326. Against a mock it is only `{"status":"allowed","isUsingOverage":false}`. Check: `TestLiveRateLimitEventShape` passed on 2.1.325.
+- Budget flag: `--max-budget-usd` stops a subscription run with an error result of `subtype` `error_max_budget_usd` and `terminal_reason` `budget_exhausted`, the limit in `errors` and a per-model cost whose `costBasis` is `list`. The mapper has no case for it and maps it to `crashed`; CAVU passes no budget flag. Check: `TestLiveBudgetFlagUnderSubscription` logged it on 2.1.325.
 
 ## Unknown on 2.1.325
 
@@ -62,9 +64,6 @@ CAVU_LIVE_ENDPOINT_URL=... CAVU_LIVE_ENDPOINT_KEY=... go test -tags integration,
 
 | Question | What would settle it |
 |---|---|
-| The hosts a subscription run asks for beyond `api.anthropic.com` | `TestLiveSubscriptionHosts` logs every refused host; the run must still succeed |
-| The `rate_limit_event` shape on 2.1.325: recorded live only on 2.1.322 and 2.1.326, where it carries `status`, `resetsAt`, `rateLimitType`, `overageStatus`, `overageDisabledReason`, `isUsingOverage` and `unifiedWindows`; against a mock on 2.1.325 it is only `{"status":"allowed","isUsingOverage":false}` | `TestLiveRateLimitEventShape` wants a window and a reset time |
 | The usage-limit `result` line on 2.1.325 itself (the weekly one is recorded on 2.1.326 only), the other windows, a `rejected` event on an account with overage, and whether the newer texts end a run | a subscription run at an exhausted window; no live check reaches one on purpose |
 | Cache reads through a real gateway | `TestLiveGatewayCacheReads`: the sidecar's meter must count cache reads on the second of two turns |
-| Whether `--max-budget-usd` stops a subscription run | `TestLiveBudgetFlagUnderSubscription` logs the outcome; a finding, not a gate |
 | A tail of stderr cut inside the token, or a form of it, keeps a fragment no mask can recognise | not reachable: no check saw a token on stderr in any form |

@@ -62,6 +62,27 @@ func Reduce(events []store.Event) Facts {
 	return f
 }
 
+// TurnsAndDuration is how much work a task was: the turns of all its sessions,
+// and the time from its newest start to its last event, 0 if it never started.
+func TurnsAndDuration(events []store.Event) (turns int, d time.Duration) {
+	var started time.Time
+
+	for _, e := range events {
+		switch e.Type {
+		case TaskStarted:
+			started = e.At
+		case SessionEnded:
+			turns += decode[SessionEndedPayload](e.Payload).Turns
+		}
+	}
+
+	if started.IsZero() {
+		return turns, 0
+	}
+
+	return turns, events[len(events)-1].At.Sub(started)
+}
+
 // apply ignores run-scoped results while no run is open, since those facts
 // describe the open run.
 func (f *Facts) apply(e store.Event) {

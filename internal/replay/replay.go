@@ -10,7 +10,6 @@ import (
 	"io"
 	"maps"
 	"strconv"
-	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -155,12 +154,10 @@ func record(ctx context.Context, s *store.Store, shadow store.Task) (store.Repla
 		item.Stop = stop.Reason
 	}
 
-	var started time.Time
+	item.Turns, item.Duration = engine.TurnsAndDuration(events)
 
 	for _, e := range events {
 		switch e.Type {
-		case engine.TaskStarted:
-			started = e.At
 		case engine.VerifyEnded:
 			var p engine.VerifyEndedPayload
 			if err := json.Unmarshal(e.Payload, &p); err != nil {
@@ -174,7 +171,6 @@ func record(ctx context.Context, s *store.Store, shadow store.Task) (store.Repla
 				return store.ReplayItem{}, fmt.Errorf("event %d: %w", e.ID, err)
 			}
 
-			item.Turns += p.Turns
 			item.Asked = item.Asked || p.Outcome == engine.OutcomeBlocked
 		case engine.Exported:
 			var p engine.ExportedPayload
@@ -184,10 +180,6 @@ func record(ctx context.Context, s *store.Store, shadow store.Task) (store.Repla
 
 			item.DiffPath = p.DiffPath
 		}
-	}
-
-	if len(events) > 0 {
-		item.Duration = events[len(events)-1].At.Sub(started)
 	}
 
 	for _, u := range usage {

@@ -159,8 +159,12 @@ func TestPrepareEnvironments(t *testing.T) {
 		assert.Subset(t, cmd.Env, proxyVars, name)
 	}
 
+	// The config of a first prepare has no base commit: the clone's is named.
+	base := "CAVU_BASE_COMMIT=" + baseCommit
+	assert.Contains(t, f.run(t, "make setup").cmd.Env, base)
+
 	verifyEnv := f.run(t, "make test").cmd.Env
-	assert.ElementsMatch(t, append(env.AgentEnv([]string{"go"}, "/home/agent"), proxyVars...), verifyEnv)
+	assert.ElementsMatch(t, append(env.AgentEnv([]string{"go"}, "/home/agent"), append(proxyVars, base)...), verifyEnv)
 	assert.Equal(t, "/workspace", f.run(t, "make test").cmd.Dir)
 	assert.Equal(t, "/workspace", f.run(t, "make setup").cmd.Dir)
 }

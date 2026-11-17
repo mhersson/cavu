@@ -73,7 +73,7 @@ func fixtureRun(t *testing.T, files map[string]string) (*Runner, engine.RunConfi
 func runIn(t *testing.T, st *run, argv ...string) sandbox.Result {
 	t.Helper()
 
-	cmd := proc.Command{Argv: argv, Env: agentEnv(st.ecosystems), Dir: workspace}
+	cmd := proc.Command{Argv: argv, Env: agentEnv(st.ecosystems, ""), Dir: workspace}
 
 	res, err := st.agent.Run(t.Context(), cmd, 10*time.Minute)
 	require.NoError(t, err)

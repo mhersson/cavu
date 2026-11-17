@@ -336,20 +336,62 @@ func TestTaskShowPrintsUsageAndCost(t *testing.T) {
 	}
 }
 
+// labelled returns the value of every line of out that starts with label.
+func labelled(out, label string) []string {
+	var vs []string
+
+	for line := range strings.Lines(out) {
+		if v, ok := strings.CutPrefix(line, label); ok {
+			vs = append(vs, strings.TrimSpace(v))
+		}
+	}
+
+	return vs
+}
+
 func TestTaskShowPrintsTheNewestExport(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix")
+	stat := []string{"login.go | 2 +-", "app.bin  | Bin 0 -> 23456789 bytes", "2 files changed, 1 insertion(+), 1 deletion(-)"}
 
 	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}),
-		event(engine.Exported, "runner", engine.ExportedPayload{DiffPath: "/old/change.diff", BundlePath: "/old/change.bundle"}),
-		event(engine.Exported, "runner", engine.ExportedPayload{DiffPath: "/new/change.diff", BundlePath: "/new/change.bundle"}))
+		event(engine.Exported, "runner", engine.ExportedPayload{
+			DiffPath: "/old/change.diff", BundlePath: "/old/change.bundle", DiffStat: []string{"old.go | 1 +"},
+		}),
+		event(engine.Exported, "runner", engine.ExportedPayload{DiffPath: "/new/change.diff", BundlePath: "/new/change.bundle", DiffStat: stat}))
 
 	out := cavuIn(t, dir, "task", "show", id)
 
-	assert.Contains(t, out, "/new/change.diff")
-	assert.Contains(t, out, "/new/change.bundle")
-	assert.NotContains(t, out, "/old/")
-	assert.Contains(t, out, string(engine.StatusInReview))
+	assert.Equal(t, []string{"/new/change.diff"}, labelled(out, "diff:"))
+	assert.Equal(t, []string{"/new/change.bundle"}, labelled(out, "bundle:"))
+	assert.Equal(t, stat, labelled(out, "changed:"), "a line per line of git's summary, of the newest export only")
+	assert.Equal(t, []string{string(engine.StatusInReview)}, labelled(out, "status:"))
+}
+
+func TestTaskShowPrintsTurnsAndDuration(t *testing.T) {
+	dir := webData(t)
+	id := addTask(t, dir, "Fix")
+
+	out := cavuIn(t, dir, "task", "show", id)
+	assert.Equal(t, []string{"0"}, labelled(out, "turns:"), "a draft")
+	assert.Equal(t, []string{"0s"}, labelled(out, "duration:"), "a draft")
+
+	t0 := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	at := func(e store.Event, d time.Duration) store.Event {
+		e.At = t0.Add(d)
+
+		return e
+	}
+
+	seedEvents(t, dir, id, nil,
+		at(event(engine.TaskStarted, "user", struct{}{}), 0),
+		at(event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeUnfinished, Turns: 3}), time.Minute),
+		at(event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeDone, Turns: 4}), 4*time.Minute),
+		at(question(), 5*time.Minute+3400*time.Millisecond))
+
+	out = cavuIn(t, dir, "task", "show", id)
+	assert.Equal(t, []string{"7"}, labelled(out, "turns:"))
+	assert.Equal(t, []string{"5m3s"}, labelled(out, "duration:"))
 }
 
 func TestTaskDiffPrintsTheNewestExport(t *testing.T) {
@@ -504,6 +546,8 @@ func TestTaskRunPrintsEventsAndStatus(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
 	assert.Contains(t, strings.Join(tail, "\n"), x.DiffPath)
+	assert.Equal(t, []string{"login.go | 1 +", "1 file changed, 1 insertion(+)"}, x.DiffStat)
+	assert.Equal(t, x.DiffStat, labelled(strings.Join(tail, "\n"), "changed:"), "the end of the run shows the change's summary")
 	assert.True(t, strings.HasPrefix(x.DiffPath, filepath.Join(dir, "artifacts")), "the artifacts are in the data directory")
 
 	diff, err := os.ReadFile(x.DiffPath)

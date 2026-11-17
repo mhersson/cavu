@@ -145,10 +145,11 @@ type (
 	}
 
 	ExportedPayload struct {
-		HeadCommit   string `json:"head_commit"`
-		DiffPath     string `json:"diff_path"`
-		BundlePath   string `json:"bundle_path"`
-		FilesChanged int    `json:"files_changed"`
+		HeadCommit   string   `json:"head_commit"`
+		DiffPath     string   `json:"diff_path"`
+		BundlePath   string   `json:"bundle_path"`
+		FilesChanged int      `json:"files_changed"`
+		DiffStat     []string `json:"diff_stat"`
 	}
 
 	StoppedPayload struct {

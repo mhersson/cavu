@@ -49,7 +49,8 @@ func TestVerifyRunsOutsideTheSession(t *testing.T) {
 	assert.Equal(t, sandbox.PhaseAgent, run.phase)
 	assert.Equal(t, 3*time.Minute, run.timeout)
 	assert.Equal(t, verify.Argv("make test"), run.cmd.Argv)
-	assert.Equal(t, agentEnv([]string{"go"}), run.cmd.Env)
+	assert.Equal(t, agentEnv([]string{"go"}, baseCommit), run.cmd.Env)
+	assert.Contains(t, run.cmd.Env, "CAVU_BASE_COMMIT="+baseCommit)
 	assert.Equal(t, workspace, run.cmd.Dir)
 }
 

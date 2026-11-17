@@ -118,6 +118,8 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 	}
 
 	res := engine.PrepareResult{BaseCommit: base}
+	// A first prepare's config has no base commit yet: the clone's is the run's.
+	p.c.Repo.BaseCommit = base
 
 	det, failed, err := p.detect(ctx, base)
 	if err != nil || failed != nil {
@@ -137,7 +139,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return engine.PrepareResult{}, err
 	}
 
-	if err := p.r.ensureUp(ctx, c); err != nil {
+	if err := p.r.ensureUp(ctx, p.c); err != nil {
 		return engine.PrepareResult{}, err
 	}
 
@@ -200,8 +202,10 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 		return nil, err
 	}
 
+	environ := setupEnv(det.Ecosystems, p.c.Repo.BaseCommit)
+
 	if len(det.Tools) > 0 {
-		cmd := proc.Command{Argv: []string{"mise", "install"}, Env: setupEnv(det.Ecosystems)}
+		cmd := proc.Command{Argv: []string{"mise", "install"}, Env: environ}
 		if failed, err := runStep(ctx, p.st, sc, stepToolchain, cmd, toolchainTimeout); err != nil || failed != nil {
 			return failed, err
 		}
@@ -217,7 +221,7 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 
 	cmd := proc.Command{
 		Argv: verify.Argv(p.c.Setup.Command),
-		Env:  proc.BuildEnv(setupEnv(det.Ecosystems), vars),
+		Env:  proc.BuildEnv(environ, vars),
 		Dir:  workspace,
 	}
 
@@ -225,7 +229,7 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 		return failed, err
 	}
 
-	reshim := proc.Command{Argv: []string{"sh", "-c", reshimScript}, Env: setupEnv(det.Ecosystems)}
+	reshim := proc.Command{Argv: []string{"sh", "-c", reshimScript}, Env: environ}
 
 	return runStep(ctx, p.st, sc, stepSetup, reshim, toolchainTimeout)
 }
@@ -280,7 +284,7 @@ const treeScript = `s=$(git status --porcelain) || exit 2; [ -z "$s" ] || { prin
 // cleanTree fails step when it left the working tree changed, so the agent's
 // exported diff holds only what the agent did.
 func (p *preparation) cleanTree(ctx context.Context, step string) (*stepFailure, error) {
-	cmd := proc.Command{Argv: []string{"sh", "-c", treeScript}, Env: agentEnv(p.st.ecosystems), Dir: workspace}
+	cmd := proc.Command{Argv: []string{"sh", "-c", treeScript}, Env: agentEnv(p.st.ecosystems, p.c.Repo.BaseCommit), Dir: workspace}
 
 	res, err := p.st.agent.Run(ctx, cmd, statusTimeout)
 	if err != nil {
@@ -306,7 +310,7 @@ func runVerify(ctx context.Context, st *run, c engine.RunConfig) (engine.VerifyR
 		return engine.VerifyResult{}, errors.New("runner: the verify command is blank and the project does not waive it")
 	}
 
-	cmd := proc.Command{Argv: verify.Argv(c.Verify.Command), Env: agentEnv(st.ecosystems), Dir: workspace}
+	cmd := proc.Command{Argv: verify.Argv(c.Verify.Command), Env: agentEnv(st.ecosystems, c.Repo.BaseCommit), Dir: workspace}
 	start := time.Now()
 
 	st.resetDenied()

@@ -137,7 +137,10 @@ func (r *fakeRunner) Verify(context.Context, engine.RunConfig) (engine.VerifyRes
 func (r *fakeRunner) Export(_ context.Context, _ engine.RunConfig, commit string) (engine.ExportResult, error) {
 	r.actions = append(r.actions, engine.KindExport)
 
-	return engine.ExportResult{HeadCommit: commit, Diff: []byte("diff --git a/login.go b/login.go\n"), Bundle: []byte("bundle"), FilesChanged: 1}, nil
+	return engine.ExportResult{
+		HeadCommit: commit, Diff: []byte("diff --git a/login.go b/login.go\n"), Bundle: []byte("bundle"), FilesChanged: 1,
+		DiffStat: []string{"login.go | 1 +", "1 file changed, 1 insertion(+)"},
+	}, nil
 }
 
 func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {

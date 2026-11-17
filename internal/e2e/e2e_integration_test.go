@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,8 +33,9 @@ import (
 )
 
 const (
-	// verify passes on the fixture repository and on every change that keeps its first line.
-	verify = "grep -qx 'first line' notes.txt"
+	// verify passes on the fixture repository and on every change that keeps its first line,
+	// while CAVU_BASE_COMMIT names a commit in the workspace.
+	verify = `grep -qx 'first line' notes.txt && git cat-file -e "$CAVU_BASE_COMMIT^{commit}"`
 	// marker is the line the change step adds; title is every task's.
 	marker = "CAVU-E2E-LINE"
 	title  = "Add a line"
@@ -455,6 +457,16 @@ func TestPipelineEndToEnd(t *testing.T) {
 	show := in.ok("task", "show", id)
 	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
 	assert.Contains(t, strings.Split(in.ok("task", "diff", id), "\n"), "+"+marker)
+
+	changed := values(show, "changed:")
+	require.NotEmpty(t, changed, show)
+	assert.Equal(t, "notes.txt", strings.Fields(changed[0])[0], show)
+
+	turns := values(show, "turns:")
+	require.Len(t, turns, 1, show)
+	n, err := strconv.Atoi(turns[0])
+	require.NoError(t, err, show)
+	assert.Positive(t, n)
 
 	var sources []string
 	for _, u := range values(show, "usage:") {

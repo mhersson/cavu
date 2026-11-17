@@ -114,6 +114,7 @@ var (
 	verifyOK = engine.VerifyResult{Result: engine.ResultPassed, Command: "make test", Output: "ok"}
 	exportOK = engine.ExportResult{
 		HeadCommit: "head456", Diff: []byte("diff --git a/x b/x\n"), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 1,
+		DiffStat: []string{"x | 1 +", "1 file changed, 1 insertion(+)"},
 	}
 )
 
@@ -917,7 +918,7 @@ func TestLoopWritesArtifacts(t *testing.T) {
 		dir := artifactDir(h, exported[0].RunID)
 		assert.Equal(t, engine.ExportedPayload{
 			HeadCommit: "head456", DiffPath: filepath.Join(dir, "diff.patch"), BundlePath: filepath.Join(dir, "task.bundle"),
-			FilesChanged: 1,
+			FilesChanged: 1, DiffStat: exportOK.DiffStat,
 		}, payloadOf[engine.ExportedPayload](t, exported[0]))
 		assertArtifacts(t, dir, exportOK)
 	})

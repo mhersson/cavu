@@ -13,6 +13,10 @@ func TestHostListsSortedUniqueDisjoint(t *testing.T) {
 	lists := map[string][]string{"toolchain": toolchainHosts}
 	maps.Copy(lists, registryHosts)
 
+	for eco, l := range setupOnlyHosts {
+		lists["setup-only "+eco] = l
+	}
+
 	for name, l := range lists {
 		assert.IsIncreasing(t, l, name)
 	}
@@ -27,6 +31,15 @@ func TestHostListsSortedUniqueDisjoint(t *testing.T) {
 			assert.False(t, tc[h], "%s shares %s with toolchain", eco, h)
 		}
 	}
+}
+
+func TestGoStorageHostIsSetupOnly(t *testing.T) {
+	t.Parallel()
+
+	assert.Contains(t, SetupHosts([]string{"go"}), "storage.googleapis.com")
+	assert.NotContains(t, AgentHosts([]string{"go"}), "storage.googleapis.com")
+	assert.NotContains(t, SetupHosts([]string{"node"}), "storage.googleapis.com")
+	assert.IsIncreasing(t, SetupHosts([]string{"go"}))
 }
 
 func TestAgentHostsExcludeToolchainHosts(t *testing.T) {

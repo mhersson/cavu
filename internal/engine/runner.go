@@ -125,5 +125,6 @@ type ExportResult struct {
 	HeadCommit   string
 	Diff, Bundle []byte
 	FilesChanged int
-	Problem      string // non-empty: stop as agent_error with this text
+	DiffStat     []string // git's summary of the diff: a line per file, a long list cut short, then the totals
+	Problem      string   // non-empty: stop as agent_error with this text
 }
