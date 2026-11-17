@@ -22,6 +22,7 @@ import (
 
 // Store is the part of *store.Store the engine uses; tests wrap it to inject a conflict.
 type Store interface {
+	CreateTask(ctx context.Context, t store.Task) (store.Task, error)
 	Task(ctx context.Context, id int64) (store.Task, error)
 	UpdateTask(ctx context.Context, t store.Task) error
 	Project(ctx context.Context, id int64) (store.Project, error)
@@ -73,6 +74,7 @@ const (
 	actorEngine = "engine"
 	actorRunner = "runner"
 	actorAgent  = "agent"
+	actorUser   = "user"
 )
 
 // progressActors are the progress types the loop records, with their actors.

@@ -8,7 +8,6 @@ import "time"
 // Event types, each with the actor that records it. A type with a payload
 // encodes it as the struct named after the type with a Payload suffix.
 const (
-	TaskCreated    = "task_created"    // user
 	TaskStarted    = "task_started"    // user
 	HumanAnswered  = "human_answered"  // user
 	HumanRetried   = "human_retried"   // user
