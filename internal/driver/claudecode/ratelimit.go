@@ -22,6 +22,10 @@ func parseRateLimit(info *rateLimitInfo) driver.RateLimit {
 	return driver.RateLimit{Window: info.RateLimitType, Status: info.Status, ResetsAt: resets}
 }
 
+// usageLimitCode is the structured api_error of a usage limit; the text is the
+// fallback for a release without it.
+const usageLimitCode = "usage_limit_reached"
+
 // limitPrefix opens the pinned release's usage-limit message: "You've hit your
 // <limit name>...".
 const limitPrefix = "You've hit your "

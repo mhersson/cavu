@@ -34,6 +34,7 @@ type streamLine struct {
 	// result
 	IsError                   bool                  `json:"is_error"`
 	APIErrorStatus            *int                  `json:"api_error_status"`
+	APIError                  string                `json:"api_error"`
 	Result                    string                `json:"result"`
 	StructuredOutput          json.RawMessage       `json:"structured_output"`
 	Errors                    []string              `json:"errors"`

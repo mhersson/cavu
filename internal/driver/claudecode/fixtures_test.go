@@ -88,6 +88,7 @@ func TestMapperEveryFixture(t *testing.T) {
 		"real/t6.jsonl":                  driver.ReasonDone,
 		"real/t7.jsonl":                  driver.ReasonDone,
 		"real/t7b.jsonl":                 driver.ReasonDone,
+		"real/weekly-limit.jsonl":        driver.ReasonUsageLimit,
 		"synthetic/crash.jsonl":          driver.ReasonCrashed,
 		"synthetic/max_turns.jsonl":      driver.ReasonMaxTurns,
 		"synthetic/parallel.jsonl":       driver.ReasonDone,

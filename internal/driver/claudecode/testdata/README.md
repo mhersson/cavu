@@ -1,13 +1,14 @@
 # claudecode testdata
 
-Stream-json fixtures recorded with Claude Code 2.1.322. `TestFixturesCarryNoToken`
-scans every file here for credential shapes.
+Stream-json fixtures recorded with Claude Code 2.1.322, and
+`real/weekly-limit.jsonl` with 2.1.326. `TestFixturesCarryNoToken` scans every
+file here for credential shapes.
 
 The recordings are kept as recorded, including characters this repository's own
 text avoids: `synthetic/max_turns.jsonl` and `synthetic/parallel.jsonl`
 contain the long dash character in recorded CLI output.
 
-- `real/` - CLI output recorded from a live or mock-API run (see below for the one edit).
+- `real/` - CLI output recorded from a live or mock-API run (see below for the edits).
 - `synthetic/` - shapes the recorded runs do not cover, derived from a real
   fixture or captured against a mock Messages API.
 
@@ -32,11 +33,16 @@ recorded.
 | `p3.jsonl` | mock Messages API | finish refused by MCP schema validation (`isError`), then accepted; the refusal fires `PostToolUseFailure` only |
 | `p3b.jsonl` | mock Messages API | as `p3`, refused by a handler error |
 | `dl-httphook.jsonl` | mock Messages API, distroless image | an http `PostToolUse` hook ends the run with `hook_stopped` |
+| `weekly-limit.jsonl` | live, 2.1.326, a subscription at its weekly limit | a `rate_limit_event` (`rejected`, `seven_day`, `resetsAt` 1795114800), a `<synthetic>` assistant line, then a `result` with `subtype: "success"`, `is_error: true`, `api_error_status` 429, `api_error: "usage_limit_reached"`, `terminal_reason: "api_error"` and the limit text. The hook and `init` lines of the recording are left out |
 
-The only edit to these captures: in `p3.jsonl` and `p3b.jsonl` the
+The edits to these captures: in `p3.jsonl` and `p3b.jsonl` the
 prototype's local scratch directory is rewritten to `/scratch/spike`, and its
 dash-encoded `projects/` key to `-scratch-spike` (`cwd`, `original_cwd`,
-`memory_paths`). Every other byte is as recorded.
+`memory_paths`). In `weekly-limit.jsonl` the values that identify the recording
+are replaced: `session_id`, each line's `uuid`, the assistant's `message.id`,
+`request_id`, `timestamp`, `credential_expires_at`, and in the limit text the
+hour and the time zone (`7pm (UTC)`, the event's reset time in UTC). Every other
+byte is as recorded.
 
 ## synthetic/
 

@@ -644,16 +644,33 @@ func TestMapperCallClosesOnNextCall(t *testing.T) {
 	}
 }
 
-func TestMapperUsageLimitResultCarriesLastEvent(t *testing.T) {
-	event := `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794510000,"rateLimitType":"seven_day"}}` + "\n"
-	data := append([]byte(event), resultLine(t, map[string]any{
-		"is_error": true, "api_error_status": 429, "result": "You've hit your weekly limit",
-	})...)
+func TestMapperUsageLimitFixture(t *testing.T) {
+	const code, text = `"api_error":"usage_limit_reached"`, "You've hit your weekly limit"
 
-	_, res := replayData(t, data, 1)
+	// An empty replacement keeps the recorded bytes.
+	for _, tc := range []struct{ name, code, text, reason string }{
+		{"as recorded", "", "", driver.ReasonUsageLimit},
+		{"the code alone", "", "Something else entirely", driver.ReasonUsageLimit},
+		{"the text alone", `"api_error":"other"`, "", driver.ReasonUsageLimit},
+		{"neither", `"api_error":"other"`, "Something else entirely", driver.ReasonEndpoint},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := string(readFixture(t, "real/weekly-limit.jsonl"))
 
-	assert.Equal(t, driver.ReasonUsageLimit, res.Reason)
-	require.NotNil(t, res.RateLimit)
-	assert.Equal(t, "seven_day", res.RateLimit.Window)
-	assert.True(t, res.RateLimit.ResetsAt.Equal(time.Unix(1794510000, 0)))
+			for from, to := range map[string]string{code: tc.code, text: tc.text} {
+				if to != "" {
+					require.Contains(t, data, from)
+
+					data = strings.ReplaceAll(data, from, to)
+				}
+			}
+
+			_, res := replayData(t, []byte(data), 1)
+
+			assert.Equal(t, tc.reason, res.Reason)
+			require.NotNil(t, res.RateLimit)
+			assert.Equal(t, "seven_day", res.RateLimit.Window)
+			assert.True(t, res.RateLimit.ResetsAt.Equal(time.Unix(1795114800, 0)))
+		})
+	}
 }
