@@ -40,7 +40,7 @@ case $0 in /*) ;; *) exit 99;; esac
 d=${0%/*}/logs
 set -C
 i=1
-while ! { true > "$d/seq.$i"; } 2>/dev/null; do i=$((i + 1)); done
+while ! { true > "$d/seq.$i"; } 2>/dev/null; do [ -e "$d/seq.$i" ] || exit 99; i=$((i + 1)); done
 set +C
 n=$(mktemp -d "$d/call.$(printf %06d "$i").XXXXXX") || exit 99
 for a in "$@"; do printf '%s\000' "$a"; done > "$n/argv"
