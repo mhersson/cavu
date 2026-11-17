@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -516,4 +517,65 @@ func TestHostRunsNoGit(t *testing.T) {
 	require.Zero(t, run.code, run)
 	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
 	assert.NoFileExists(t, calls)
+}
+
+func TestVerifyGateBlocks(t *testing.T) {
+	// The change drops the line verify wants; each fix session changes nothing.
+	breaks := mockapi.Step{Tool: "Bash", Input: map[string]any{
+		"command": "echo " + marker + " > notes.txt && git commit -qam 'docs(notes): rewrite the notes'",
+	}}
+	mock := mockapi.Start(t, []mockapi.Step{breaks, done, done, done})
+	in := setup(t, mock.HostURL())
+
+	id, run := in.pipeline("notes")
+	require.Equal(t, 3, run.code, run)
+
+	show := in.ok("task", "show", id, "--events")
+	assert.Equal(t, []string{"blocked"}, values(show, "status:"))
+	assert.Equal(t, []string{"verify_failed"}, values(show, "stop:"))
+
+	// An event line is its id, time, type, actor and payload.
+	modes := map[string]int{}
+
+	for line := range strings.Lines(show) {
+		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == "session_started" {
+			var p struct{ Mode string }
+			require.NoError(t, json.Unmarshal([]byte(e[4]), &p))
+			modes[p.Mode]++
+		}
+	}
+
+	assert.Equal(t, map[string]int{"start": 1, "fix_verify": 2}, modes)
+	assert.Equal(t, 1, in.cavu("", "task", "diff", id).code)
+
+	diffs, err := filepath.Glob(filepath.Join(in.dir, "artifacts", "*", "*", "diff.patch"))
+	require.NoError(t, err)
+	assert.Empty(t, diffs)
+}
+
+func TestGatewayBehindCustomCA(t *testing.T) {
+	mock := mockapi.StartTLSWith(t, []mockapi.Step{change, done}, sandboxtest.ServerCertificate(t))
+	in := setup(t, mock.HostURL())
+
+	id, run := in.pipeline("notes")
+	require.Zero(t, run.code, run)
+	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+	assert.Len(t, slices.DeleteFunc(mock.Requests(), func(r mockapi.Request) bool { return !r.ModelCall }), 2)
+
+	// A network adds a CA, so the configured bundle is no longer the image's.
+	ca, _, _ := sandboxtest.CA(t)
+	added, _, _ := sandboxtest.CAFromSeed(t, "cavu-test-ca-seed-another-net-ca")
+	bundle := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(bundle, append(ca, added...), 0o600))
+	in.ok("settings", "set", "ca_bundle_path", bundle)
+
+	id = in.task("notes")
+	r := in.cavu("", "task", "run", id)
+	assert.Equal(t, 1, r.code, r)
+	assert.Contains(t, r.stderr, "cavu image build")
+	assert.Equal(t, []string{"draft"}, values(in.ok("task", "show", id), "status:"))
+
+	containers, _, err := in.rt.List(t.Context(), "cavu.instance="+in.id)
+	require.NoError(t, err)
+	assert.Empty(t, containers)
 }
