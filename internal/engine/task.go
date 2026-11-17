@@ -42,7 +42,7 @@ func (l *Loop) Start(ctx context.Context, taskID int64) error {
 		case f.Started:
 			return false, nil
 		case !p.VerifyWaived && (p.Baseline == nil || !p.Baseline.Passed):
-			return false, refuse("project %q has no passed baseline and verify is not waived", p.Name)
+			return false, refuse("project %q has neither a passed baseline nor a waived verify; check the project, or waive verify", p.Name)
 		}
 
 		return true, nil
