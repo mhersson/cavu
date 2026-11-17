@@ -855,6 +855,92 @@ func TestInstanceInstructionsAndSkillsReachTheAgent(t *testing.T) {
 	assert.Contains(t, b.readConfig("skills/conformance-marker/SKILL.md"), markerSkill, "the repository's skill was not written over the instance's")
 }
 
+// TestSubagentIsCounted settles what a subagent counts toward. The main
+// session calls the Agent tool; the subagent, whose requests open with the
+// prompt it was given, runs a Bash call and ends; then the main session ends.
+// Every call costs 10 input and 5 output tokens.
+func TestSubagentIsCounted(t *testing.T) {
+	const marker = "CONFORMANCE-SUBAGENT-PROMPT-3c9e"
+
+	withSubagent := []mockapi.Step{
+		{Tool: "Agent", Input: map[string]any{"description": "Conformance subagent", "prompt": marker}},
+		{Tool: "Bash", Input: map[string]any{"command": "true"}},
+		{Text: "subagent done"},
+		{Text: "done"},
+	}
+
+	// session runs steps under maxTurns, logs every count, and returns the
+	// outcome, which requests were the subagent's, and the proxy's count.
+	session := func(t *testing.T, maxTurns int, steps ...mockapi.Step) (outcome, []bool, proxy.Usage) {
+		t.Helper()
+
+		b := keyBox(t, steps...)
+		s := b.spec()
+		s.MaxTurns = maxTurns
+
+		o := b.run(conformanceDriver(), s)
+
+		var bySubagent []bool
+		for _, r := range modelCalls(b.mock) {
+			bySubagent = append(bySubagent, len(r.Messages) > 0 && bytes.Contains(r.Messages[0], []byte(marker)))
+		}
+
+		var proxied proxy.Usage
+
+		lines := b.sidecar.of("usage")
+		for _, l := range lines {
+			proxied.Input, proxied.Output = proxied.Input+l.Usage.Input, proxied.Output+l.Usage.Output
+		}
+
+		type perModel map[string]struct {
+			Input  int64 `json:"inputTokens"`
+			Output int64 `json:"outputTokens"`
+		}
+
+		var result struct {
+			Usage struct {
+				Input  int64 `json:"input_tokens"`
+				Output int64 `json:"output_tokens"`
+			} `json:"usage"`
+			ModelUsage perModel `json:"modelUsage"`
+			SinceLast  perModel `json:"model_usage_since_last_result"`
+		}
+
+		require.NoError(t, json.Unmarshal([]byte(rawLine(o, "result")), &result))
+		t.Logf("max turns %d: %s, turns %d, usage %+v; requests by the subagent %v; result line usage %+v, modelUsage %+v, "+
+			"model_usage_since_last_result %+v; proxy %d lines, %d input, %d output", maxTurns, o.res.Reason, o.res.Turns, o.res.Usage,
+			bySubagent, result.Usage, result.ModelUsage, result.SinceLast, len(lines), proxied.Input, proxied.Output)
+
+		return o, bySubagent, proxied
+	}
+
+	t.Run("counts", func(t *testing.T) {
+		o, bySubagent, proxied := session(t, 10, withSubagent...)
+		requireDone(t, o)
+		require.Equal(t, []bool{false, true, true, false}, bySubagent, "the steps did not line up as scripted")
+
+		var total driver.Usage
+		for _, u := range o.res.Usage {
+			total.Input, total.Output = total.Input+u.Input, total.Output+u.Output
+		}
+
+		assert.Equal(t, [2]int64{40, 20}, [2]int64{total.Input, total.Output}, "the result's usage lacks the subagent's calls")
+		assert.Equal(t, [2]int64{40, 20}, [2]int64{proxied.Input, proxied.Output}, "the proxy's count lacks a call")
+		assert.Equal(t, 2, o.res.Turns, "the subagent's turns count in num_turns")
+	})
+
+	// The main session's own two turns fit the limit, as the control shows;
+	// with the subagent's two the run still ends done.
+	t.Run("turn limit", func(t *testing.T) {
+		control, _, _ := session(t, 2, mockapi.Step{Tool: "Bash", Input: map[string]any{"command": "true"}}, mockapi.Step{Text: "done"})
+		require.Equal(t, driver.ReasonDone, control.res.Reason, "a two-turn session does not fit the limit")
+
+		o, bySubagent, _ := session(t, 2, withSubagent...)
+		assert.Equal(t, driver.ReasonDone, o.res.Reason, "the subagent's turns count toward --max-turns")
+		assert.Equal(t, []bool{false, true, true, false}, bySubagent, "the steps did not line up as scripted")
+	})
+}
+
 // confIdentity names the committer of the checks' own commits.
 const confIdentity = "-c user.name=conformance -c user.email=conformance@example.com"
 
