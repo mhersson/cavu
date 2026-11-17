@@ -130,9 +130,12 @@ func (s *Store) LastEventID(ctx context.Context, taskID int64) (int64, error) {
 	return id, nil
 }
 
-// LastEventIDs maps every task that has an event to its newest event id.
+// LastEventIDs maps every task that has an event to its newest event id. It
+// seeks each task's newest event in the index, so a scheduler's pass does not
+// read the whole event history.
 func (s *Store) LastEventIDs(ctx context.Context) (map[int64]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT task_id, MAX(id) FROM events GROUP BY task_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, last FROM (SELECT id,
+		(SELECT MAX(e.id) FROM events e WHERE e.task_id = t.id) AS last FROM tasks t) WHERE last IS NOT NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("newest events: %w", err)
 	}
