@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -46,6 +47,13 @@ var routes = []route{
 	{"GET /api/health", true, (*server).health},
 	{"POST /api/auth/login", true, (*server).login},
 	{"POST /api/auth/logout", false, (*server).logout},
+	{"GET /api/projects", false, (*server).projects},
+	{"POST /api/projects", false, (*server).createProject},
+	{"GET /api/projects/{id}", false, (*server).project},
+	{"PATCH /api/projects/{id}", false, (*server).editProject},
+	{"POST /api/projects/{id}/check", false, (*server).requestCheck},
+	{"GET /api/settings", false, (*server).settings},
+	{"PATCH /api/settings", false, (*server).setSettings},
 }
 
 // Routes lists every REST route as "METHOD /path". The handler is built from it.
@@ -100,17 +108,26 @@ func (e *apiError) Error() string { return e.text }
 
 var errNoAuthority = &apiError{http.StatusUnauthorized, "log in, or send an API token as Authorization: Bearer TOKEN"}
 
-// fail answers err as JSON. An error that is not the caller's is logged and
-// answered without detail.
+// fail answers err as JSON: content the engine refuses is a 400, a write that
+// conflicts with what is stored a 409, and a row that does not exist a 404.
+// An error that is not the caller's is logged and answered without detail.
 func fail(w http.ResponseWriter, r *http.Request, err error) {
-	e, ok := errors.AsType[*apiError](err)
-	if !ok {
-		slog.ErrorContext(r.Context(), "request failed", "route", r.Pattern, "err", err)
+	status, text := http.StatusInternalServerError, "internal error"
 
-		e = &apiError{http.StatusInternalServerError, "internal error"}
+	switch e, ok := errors.AsType[*apiError](err); {
+	case ok:
+		status, text = e.status, e.text
+	case errors.Is(err, engine.ErrRefused):
+		status, text = http.StatusBadRequest, err.Error()
+	case errors.Is(err, store.ErrConflict):
+		status, text = http.StatusConflict, err.Error()
+	case errors.Is(err, store.ErrNotFound):
+		status, text = http.StatusNotFound, err.Error()
+	default:
+		slog.ErrorContext(r.Context(), "request failed", "route", r.Pattern, "err", err)
 	}
 
-	reply(w, e.status, map[string]string{"error": e.text})
+	reply(w, status, map[string]string{"error": text})
 }
 
 func reply(w http.ResponseWriter, status int, v any) {
@@ -141,6 +158,34 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 	}
 
 	return &apiError{http.StatusBadRequest, "the body is not the JSON this route takes: " + err.Error()}
+}
+
+// pathID reads the id in the path; one that is not a number names no row.
+func pathID(r *http.Request) (int64, error) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		return 0, &apiError{http.StatusNotFound, "the id in the path is not a number"}
+	}
+
+	return id, nil
+}
+
+// seal stores each secret under prefix and its name; an empty value removes the secret.
+func (s *server) seal(ctx context.Context, prefix string, secrets map[string]string) error {
+	for name, value := range secrets {
+		var err error
+		if value == "" {
+			err = s.Vault.Delete(ctx, prefix+name)
+		} else {
+			err = s.Vault.Set(ctx, prefix+name, value)
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // authorize is the one check of authority: a bearer token the login service

@@ -11,11 +11,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mhersson/cavu/internal/api"
 	"github.com/mhersson/cavu/internal/auth"
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,13 +51,18 @@ func (c *clock) add(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// fixture is the handler over a real store with one user, served on a port the kernel picks.
+// fixture is the handler over a real store with one user and one API token,
+// served on a port the kernel picks.
 type fixture struct {
-	url   string
-	db    string // the store's file
-	store *store.Store
-	auth  *auth.Service
-	clock *clock
+	url    string
+	db     string // the store's file
+	store  *store.Store
+	vault  *auth.Vault
+	auth   *auth.Service
+	clock  *clock
+	token  string
+	nudges atomic.Int32
+	bodies []string // every body call got
 }
 
 func newServer(t *testing.T) *fixture {
@@ -67,14 +74,58 @@ func newServer(t *testing.T) *fixture {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
+	vault, err := auth.NewVault(s, make([]byte, 32))
+	require.NoError(t, err)
+
 	c := &clock{now: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)}
 	svc := auth.NewService(s, c.Now)
 	require.NoError(t, svc.SetUser(t.Context(), user, password))
 
-	srv := httptest.NewServer(api.New(api.Deps{Store: s, Auth: svc, Version: "1.2.3"}))
-	t.Cleanup(srv.Close)
+	token, err := svc.NewAPIToken(t.Context(), "test")
+	require.NoError(t, err)
 
-	return &fixture{url: srv.URL, db: db, store: s, auth: svc, clock: c}
+	f := &fixture{db: db, store: s, vault: vault, auth: svc, clock: c, token: token}
+	srv := httptest.NewServer(api.New(api.Deps{
+		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: s, Vault: vault, Now: c.Now},
+		Nudge: func() { f.nudges.Add(1) }, Version: "1.2.3",
+	}))
+	t.Cleanup(srv.Close)
+	f.url = srv.URL
+
+	return f
+}
+
+// call sends route with body under the API token and returns the status and the body.
+func (f *fixture) call(t *testing.T, route, body string) (int, string) {
+	t.Helper()
+
+	r := f.request(t, route, body)
+	r.Header.Set("Authorization", "Bearer "+f.token)
+
+	resp, got := send(t, r)
+	f.bodies = append(f.bodies, got)
+
+	return resp.StatusCode, got
+}
+
+// object decodes body, a JSON object.
+func object(t *testing.T, body string) map[string]any {
+	t.Helper()
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(body), &m), body)
+
+	return m
+}
+
+// projects counts the stored projects.
+func (f *fixture) projects(t *testing.T) int {
+	t.Helper()
+
+	ps, err := f.store.Projects(t.Context())
+	require.NoError(t, err)
+
+	return len(ps)
 }
 
 // request builds a request to route, "METHOD /path", with body.
@@ -282,8 +333,10 @@ var open = []string{"GET /api/health", "POST /api/auth/login"}
 
 func TestRequestsWithoutAuthority(t *testing.T) {
 	const (
-		logout = "POST /api/auth/logout"
-		login  = "POST /api/auth/login"
+		create  = "POST /api/projects"
+		list    = "GET /api/projects"
+		login   = "POST /api/auth/login"
+		project = `{"name": "web", "repo_url": "https://example.com/web.git"}`
 	)
 
 	t.Run("nothing sent, to every route but the open ones", func(t *testing.T) {
@@ -300,14 +353,7 @@ func TestRequestsWithoutAuthority(t *testing.T) {
 		}
 	})
 
-	token := func(t *testing.T, f *fixture) string {
-		t.Helper()
-
-		tok, err := f.auth.NewAPIToken(t.Context(), "ci")
-		require.NoError(t, err)
-
-		return tok
-	}
+	bearer := func(_ *testing.T, f *fixture, r *http.Request) { r.Header.Set("Authorization", "Bearer "+f.token) }
 
 	cases := []struct {
 		name  string
@@ -317,48 +363,51 @@ func TestRequestsWithoutAuthority(t *testing.T) {
 		want  int
 	}{
 		{
-			name: "the cookie and the CSRF header on a POST", route: logout, want: http.StatusNoContent,
+			name: "the cookie and the CSRF header on a POST", route: create, body: project, want: http.StatusCreated,
 			add: func(t *testing.T, f *fixture, r *http.Request) { withCookie(r, f.login(t).Value, true) },
 		},
 		{
-			name: "the cookie and no CSRF header on a POST", route: logout, want: http.StatusForbidden,
+			name: "the cookie and no CSRF header on a POST", route: create, body: project, want: http.StatusForbidden,
 			add: func(t *testing.T, f *fixture, r *http.Request) { withCookie(r, f.login(t).Value, false) },
 		},
 		{
-			name: "a bearer token on a POST with no CSRF header", route: logout, want: http.StatusNoContent,
-			add: func(t *testing.T, f *fixture, r *http.Request) { r.Header.Set("Authorization", "Bearer "+token(t, f)) },
+			name: "the cookie on a GET", route: list, want: http.StatusOK,
+			add: func(t *testing.T, f *fixture, r *http.Request) { withCookie(r, f.login(t).Value, false) },
 		},
 		{
-			name: "a bearer token sent as the cookie", route: logout, want: http.StatusUnauthorized,
-			add: func(t *testing.T, f *fixture, r *http.Request) { withCookie(r, token(t, f), true) },
+			name: "a bearer token on a POST with no CSRF header", route: create, body: project, want: http.StatusCreated,
+			add: bearer,
 		},
 		{
-			name: "an unknown bearer token", route: logout, want: http.StatusUnauthorized,
-			add: func(t *testing.T, f *fixture, r *http.Request) {
-				token(t, f)
+			name: "a bearer token sent as the cookie", route: create, body: project, want: http.StatusUnauthorized,
+			add: func(_ *testing.T, f *fixture, r *http.Request) { withCookie(r, f.token, true) },
+		},
+		{
+			name: "an unknown bearer token", route: create, body: project, want: http.StatusUnauthorized,
+			add: func(_ *testing.T, _ *fixture, r *http.Request) {
 				r.Header.Set("Authorization", "Bearer cavu_"+strings.Repeat("A", 43))
 			},
 		},
 		{
-			name: "a cookie after logout", route: logout, want: http.StatusUnauthorized,
+			name: "a cookie after logout", route: create, body: project, want: http.StatusUnauthorized,
 			add: func(t *testing.T, f *fixture, r *http.Request) {
 				c := f.login(t)
-				resp, body := send(t, withCookie(f.request(t, logout, ""), c.Value, true))
+				resp, body := send(t, withCookie(f.request(t, "POST /api/auth/logout", ""), c.Value, true))
 				require.Equal(t, http.StatusNoContent, resp.StatusCode, body)
 				withCookie(r, c.Value, true)
 			},
 		},
 		{
-			name: "a body of 5 MB", route: login, want: http.StatusRequestEntityTooLarge,
-			body: credentials(strings.Repeat("a", 5<<20), password),
+			name: "a body of 5 MB", route: create, want: http.StatusRequestEntityTooLarge, add: bearer,
+			body: `{"name": "web", "repo_url": "https://example.com/` + strings.Repeat("a", 5<<20) + `"}`,
 		},
 		{
 			name: "valid credentials followed by more than 1 MiB", route: login, want: http.StatusRequestEntityTooLarge,
 			body: credentials(user, password) + strings.Repeat(" ", 1<<20),
 		},
 		{
-			name: "JSON with an unknown field", route: login, want: http.StatusBadRequest,
-			body: `{"name": "ada", "password": "correct horse battery", "admin": true}`,
+			name: "JSON with an unknown field", route: create, want: http.StatusBadRequest, add: bearer,
+			body: `{"name": "web", "repo_url": "https://example.com/web.git", "admin": true}`,
 		},
 		{
 			name: "two JSON objects", route: login, want: http.StatusBadRequest,
@@ -375,7 +424,7 @@ func TestRequestsWithoutAuthority(t *testing.T) {
 				tc.add(t, f, r)
 			}
 
-			before := f.sessions(t)
+			sessions := f.sessions(t)
 
 			resp, body := send(t, r)
 			require.Equal(t, tc.want, resp.StatusCode, body)
@@ -383,7 +432,8 @@ func TestRequestsWithoutAuthority(t *testing.T) {
 			if tc.want >= http.StatusBadRequest {
 				assertError(t, body)
 				assert.Empty(t, resp.Cookies(), "a refused request sets no cookie")
-				assert.Equal(t, before, f.sessions(t), "a refused request creates and ends no session")
+				assert.Equal(t, sessions, f.sessions(t), "a refused request creates and ends no session")
+				assert.Zero(t, f.projects(t), "a refused request creates no project")
 			}
 		})
 	}
