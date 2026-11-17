@@ -380,3 +380,60 @@ func TestDetectRejectsEmptyOverrides(t *testing.T) {
 		})
 	}
 }
+
+func TestDetectUv(t *testing.T) {
+	t.Parallel()
+
+	const pyproject = "[project]\nrequires-python = \">=3.12\"\n"
+
+	tests := []struct {
+		name      string
+		files     map[string]string
+		overrides map[string]string
+		wantTools []Tool
+	}{
+		{
+			name:      "lock adds uv",
+			files:     map[string]string{"pyproject.toml": pyproject, "uv.lock": "version = 1\n"},
+			wantTools: []Tool{{"python", "3.12"}, {"uv", "latest"}},
+		},
+		{
+			name:      "lock alone is a python project",
+			files:     map[string]string{"uv.lock": "version = 1\n"},
+			wantTools: []Tool{{"python", "3"}, {"uv", "latest"}},
+		},
+		{
+			name:      "tool-versions pins uv",
+			files:     map[string]string{"uv.lock": "", ".tool-versions": "uv 0.13.1\n"},
+			wantTools: []Tool{{"python", "3"}, {"uv", "0.13.1"}},
+		},
+		{
+			name:      "override pins uv",
+			files:     map[string]string{"pyproject.toml": pyproject, "uv.lock": "", "mise.toml": "[tools]\nuv = \"0.13.1\"\n"},
+			overrides: map[string]string{"uv": "0.13.8"},
+			wantTools: []Tool{{"python", "3.12"}, {"uv", "0.13.8"}},
+		},
+		{
+			name:      "no lock, no uv",
+			files:     map[string]string{"pyproject.toml": pyproject},
+			wantTools: []Tool{{"python", "3.12"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			files := map[string][]byte{}
+			for k, v := range tt.files {
+				require.Contains(t, VersionFiles(), k)
+				files[k] = []byte(v)
+			}
+
+			got, err := Detect(files, tt.overrides)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantTools, got.Tools)
+			assert.Equal(t, []string{"python"}, got.Ecosystems)
+		})
+	}
+}

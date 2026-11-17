@@ -86,8 +86,10 @@ func runProxy(ctx context.Context, out *writer, stdin io.Reader, p *ProxyRequest
 	h, err := proxy.New(proxy.Config{
 		AllowHosts: p.AllowHosts,
 		Model:      p.Model,
+		Budget:     p.Budget,
 		OnDenied:   func(host string) { out.write(Line{Type: "denied", Host: host}) },
 		OnUsage:    func(u proxy.Usage) { out.write(Line{Type: "usage", Usage: &u}) },
+		OnBudget:   func(reason string) { out.write(Line{Type: "budget", Error: reason}) },
 	})
 	if err != nil {
 		return fmt.Errorf("proxy: %w", err)

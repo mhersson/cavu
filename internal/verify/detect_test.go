@@ -75,6 +75,7 @@ func TestSuggestFilesCoverEveryConsultedKey(t *testing.T) {
 		files("Taskfile.yml", "tasks:\n  test:\n"), files("Taskfile.yaml", "tasks:\n  test:\n"),
 		files("go.mod", ""), files("Cargo.toml", ""), files("package.json", `{"scripts":{"test":"x"}}`),
 		files("pytest.ini", ""), files("pyproject.toml", "[tool.pytest"), files("setup.cfg", "[tool:pytest]"),
+		files("pytest.ini", "", "uv.lock", ""),
 		files("gradlew", ""), files("build.gradle", ""), files("build.gradle.kts", ""),
 		files("mvnw", ""), files("pom.xml", ""),
 		files("a.sln", ""), files("a.csproj", ""), files("a.fsproj", ""),
@@ -102,6 +103,27 @@ func TestSuggestFilesCoverEveryConsultedKey(t *testing.T) {
 	entries[0] = "changed"
 
 	assert.NotEqual(t, "changed", SuggestFiles()[0])
+}
+
+func TestSuggestUv(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string][]byte
+		want  string
+		ok    bool
+	}{
+		{"pyproject pytest table", files("pyproject.toml", "[tool.pytest.ini_options]\n", "uv.lock", ""), "uv run pytest -q", true},
+		{"pytest.ini", files("pytest.ini", "", "uv.lock", ""), "uv run pytest -q", true},
+		{"no pytest configuration", files("pyproject.toml", "[project]\nname='x'\n", "uv.lock", ""), "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := Suggest(tt.files)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestNpmPlaceholderIsNotATestScript(t *testing.T) {

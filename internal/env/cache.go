@@ -38,7 +38,7 @@ func common() map[string]string {
 	}
 }
 
-// cacheVars sets each ecosystem's cache variables under root.
+// cacheVars sets each ecosystem's variables, its caches under root.
 func cacheVars(m map[string]string, ecosystems []string, root string) {
 	for _, e := range ecosystems {
 		switch e {
@@ -50,6 +50,9 @@ func cacheVars(m map[string]string, ecosystems []string, root string) {
 		case "python":
 			m["PIP_CACHE_DIR"] = path.Join(root, "pip")
 			m["UV_CACHE_DIR"] = path.Join(root, "uv")
+			// uv runs on mise's interpreter, and copies: its cache is never on the workspace's volume.
+			m["UV_PYTHON_DOWNLOADS"] = "never"
+			m["UV_LINK_MODE"] = "copy"
 		case "rust":
 			m["CARGO_HOME"] = cargoHome(root)
 			m["RUSTUP_HOME"] = cacheDir + "/rustup"
@@ -80,7 +83,8 @@ func render(m map[string]string) []string {
 //     cache's interpreter and shared by every task of the project. They pile
 //     up across prepares, so a requirement the project drops stays importable;
 //     a project that wants its own makes a virtual environment in the setup
-//     command, in a directory its .gitignore covers so no commit takes it.
+//     command, as uv sync does, in a directory git ignores so no commit
+//     takes it.
 //   - Rust: Cargo's binaries come through AgentLinks and its downloads through
 //     AgentSeeds.
 func AgentEnv(ecosystems []string, home string) []string {

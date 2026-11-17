@@ -911,7 +911,8 @@ func TestUpForwardsSidecarLines(t *testing.T) {
 	s, f := ensured(t)
 	f.set(t, "early.sidecar", []byte(readyLines+
 		`{"Type":"denied","Host":"other.example:443"}`+"\n"+
-		`{"Type":"usage","Usage":{"Model":"m","Input":3,"Output":4}}`+"\n"))
+		`{"Type":"usage","Usage":{"Model":"m","Input":3,"Output":4}}`+"\n"+
+		`{"Type":"budget","Error":"run cap spent"}`+"\n"))
 
 	var got lineLog
 
@@ -921,6 +922,7 @@ func TestUpForwardsSidecarLines(t *testing.T) {
 	want := []sidecar.Line{
 		{Type: "denied", Host: "other.example:443"},
 		{Type: "usage", Usage: &proxy.Usage{Model: "m", Input: 3, Output: 4}},
+		{Type: "budget", Error: "run cap spent"},
 	}
 
 	require.Eventually(t, func() bool { return len(got.all()) >= len(want) }, 5*time.Second, 10*time.Millisecond)

@@ -123,6 +123,8 @@ Download the modules in the setup command (`go mod download`): the setup phase r
 
 ### Python projects
 
+A `uv.lock` at the repository's root installs uv. Use `uv sync --frozen` as the setup command and `uv run` in the verify command (`uv run pytest -q`): every run then has its own `.venv`, which uv keeps out of git. uv runs on the Python that mise installs and never downloads its own.
+
 Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. A project's open runs share the interpreter's packages, so a bare `pip install` in the setup command changes them under every other open run of the project. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
 
 ## Licence
