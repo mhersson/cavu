@@ -78,21 +78,34 @@ func (l *Loop) runConfig(ctx context.Context, p store.Project, t store.Task, r s
 	return c, nil
 }
 
+// The names under which the engine reads the vault's global secrets.
+const (
+	// SecretForgeToken is the forge token.
+	SecretForgeToken = "forge_token"
+	// SecretEndpointCredential is the endpoint credential.
+	SecretEndpointCredential = "endpoint_credential" //nolint:gosec // a name, not a credential
+)
+
+// ProjectSecretName is the vault name of the project's secret variable.
+func ProjectSecretName(project, variable string) string {
+	return "project." + project + "." + variable
+}
+
 func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) error {
 	var err error
 
-	if c.Repo.Token, _, err = l.Vault.Get(ctx, "forge_token"); err != nil {
+	if c.Repo.Token, _, err = l.Vault.Get(ctx, SecretForgeToken); err != nil {
 		return err
 	}
 
-	if c.Endpoint.Credential, _, err = l.Vault.Get(ctx, "endpoint_credential"); err != nil {
+	if c.Endpoint.Credential, _, err = l.Vault.Get(ctx, SecretEndpointCredential); err != nil {
 		return err
 	}
 
 	c.Setup.Secrets = make(map[string]string, len(p.SecretVars))
 
 	for _, v := range p.SecretVars {
-		name := "project." + p.Name + "." + v
+		name := ProjectSecretName(p.Name, v)
 
 		val, ok, err := l.Vault.Get(ctx, name)
 		if err != nil {
