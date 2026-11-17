@@ -187,6 +187,14 @@ func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	assertBundle(t, r, c, ex.Bundle, res.HeadCommit)
 }
 
+// forgeCommitGraph points the head commit's entry in the commit-graph at the parent's tree.
+const forgeCommitGraph = `g=.git/objects/info/commit-graph
+git --no-replace-objects commit-graph write --reachable && chmod u+w "$g" &&
+perl -e 'open(F, "+<:raw", $ARGV[0]) or die; local $/; my $d = <F>; my %c;
+for my $i (0 .. ord(substr($d, 6, 1)) - 1) { my ($id, $at) = unpack("a4 Q>", substr($d, 8 + 12 * $i, 12)); $c{$id} = $at }
+my $n = 0; $n++ while $c{OIDL} + 20 * $n < $c{CDAT} && substr($d, $c{OIDL} + 20 * $n, 20) ne pack("H*", $ARGV[1]);
+seek(F, $c{CDAT} + 36 * $n, 0); print F pack("H*", $ARGV[2])' "$g" "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD~1^{tree}')"`
+
 // The diff and the summary show the committed change whatever git state the agent left.
 func TestExportShowsCommittedChange(t *testing.T) {
 	r, c, _ := agentRun(t, bash("git config --global diff.external true && "+
@@ -196,6 +204,9 @@ func TestExportShowsCommittedChange(t *testing.T) {
 
 	res := work(t, r, c, newSession(t))
 	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+
+	forged := runIn(t, r.state(c.RunID), "sh", "-c", forgeCommitGraph)
+	require.Equal(t, 0, forged.ExitCode, forged.Output)
 
 	ex := export(t, r, c, res)
 	assert.Contains(t, string(ex.Diff), "\n+CAVU-ADDED-LINE\n")
