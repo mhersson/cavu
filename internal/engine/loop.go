@@ -93,12 +93,10 @@ const recordTimeout = 10 * time.Second
 // keeps one live RunTask per task by holding the data-directory lock or a
 // per-task lock: the compare-and-swap guards claims, not actions in flight.
 func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
-	secrets, err := l.Vault.Values(ctx)
+	p, err := l.newPass(ctx, taskID)
 	if err != nil {
-		return "", fmt.Errorf("task %d: %w", taskID, err)
+		return "", err
 	}
-
-	p := &pass{Loop: l, taskID: taskID, mask: redact.New(secrets...)}
 
 	var status Status
 
@@ -157,6 +155,16 @@ type pass struct {
 	taskID int64
 	mask   func(string) string
 	held   error // an error that must not stop the loop, such as a failed Release
+}
+
+// newPass masks with the vault's secrets as they are now.
+func (l *Loop) newPass(ctx context.Context, taskID int64) (*pass, error) {
+	secrets, err := l.Vault.Values(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	return &pass{Loop: l, taskID: taskID, mask: redact.New(secrets...)}, nil
 }
 
 // view is a snapshot with what the loop needs beside it.

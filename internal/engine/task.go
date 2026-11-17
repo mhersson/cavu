@@ -2,14 +2,12 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/mhersson/cavu/internal/redact"
 	"github.com/mhersson/cavu/internal/store"
 )
 
@@ -37,7 +35,7 @@ func AddTask(ctx context.Context, s Store, t store.Task) (store.Task, error) {
 // as it is. A cancelled task, and one whose project has neither a passed
 // baseline nor a waived verify, is refused.
 func (l *Loop) Start(ctx context.Context, taskID int64) error {
-	return l.human(ctx, taskID, TaskStarted, nil, func(f Facts, p store.Project) (bool, error) {
+	return l.human(ctx, taskID, TaskStarted, struct{}{}, func(f Facts, p store.Project) (bool, error) {
 		switch {
 		case f.Cancelled:
 			return false, refuse("the task is cancelled")
@@ -55,9 +53,7 @@ func (l *Loop) Start(ctx context.Context, taskID int64) error {
 func (l *Loop) Answer(ctx context.Context, taskID int64, text string) error {
 	text = strings.TrimSpace(text)
 
-	return l.human(ctx, taskID, HumanAnswered, func(mask func(string) string) any {
-		return HumanAnsweredPayload{Text: mask(text)}
-	}, func(f Facts, _ store.Project) (bool, error) {
+	return l.human(ctx, taskID, HumanAnswered, HumanAnsweredPayload{Text: text}, func(f Facts, _ store.Project) (bool, error) {
 		switch {
 		case f.OpenStop == nil || f.OpenStop.Reason != StopQuestion:
 			return false, refuse("the task has no open question")
@@ -71,7 +67,7 @@ func (l *Loop) Answer(ctx context.Context, taskID int64, text string) error {
 
 // Retry records a person's retry of the open stop on a task that is not cancelled.
 func (l *Loop) Retry(ctx context.Context, taskID int64) error {
-	return l.human(ctx, taskID, HumanRetried, nil, func(f Facts, _ store.Project) (bool, error) {
+	return l.human(ctx, taskID, HumanRetried, struct{}{}, func(f Facts, _ store.Project) (bool, error) {
 		switch {
 		case f.Cancelled:
 			return false, refuse("the task is cancelled")
@@ -85,7 +81,7 @@ func (l *Loop) Retry(ctx context.Context, taskID int64) error {
 
 // Cancel records that a person cancelled a task that is not yet cancelled or in review.
 func (l *Loop) Cancel(ctx context.Context, taskID int64) error {
-	return l.human(ctx, taskID, HumanCancelled, nil, func(f Facts, _ store.Project) (bool, error) {
+	return l.human(ctx, taskID, HumanCancelled, struct{}{}, func(f Facts, _ store.Project) (bool, error) {
 		if s := StatusOf(f); s == StatusCancelled || s == StatusInReview {
 			return false, refuse("the task is %s", s)
 		}
@@ -99,16 +95,15 @@ func refuse(format string, args ...any) error {
 }
 
 // human reads the task's events, lets guard decide (false: refuse with its
-// error, or with none do nothing), and appends the event as
-// the user, only if no event came since the read. The payload, when there is
-// one, is built with the mask of the vault's secrets.
-func (l *Loop) human(ctx context.Context, taskID int64, typ string, payload func(mask func(string) string) any, guard func(Facts, store.Project) (bool, error)) error {
+// error, or with none do nothing), and records the user's event through the
+// loop's one write, only if no event came since the read.
+func (l *Loop) human(ctx context.Context, taskID int64, typ string, payload any, guard func(Facts, store.Project) (bool, error)) error {
 	t, err := l.Store.Task(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("task %d: %w", taskID, err)
 	}
 
-	p, err := l.Store.Project(ctx, t.ProjectID)
+	proj, err := l.Store.Project(ctx, t.ProjectID)
 	if err != nil {
 		return fmt.Errorf("task %d: project: %w", taskID, err)
 	}
@@ -123,30 +118,14 @@ func (l *Loop) human(ctx context.Context, taskID int64, typ string, payload func
 		last = events[len(events)-1].ID
 	}
 
-	if ok, err := guard(Reduce(events), p); !ok {
+	if ok, err := guard(Reduce(events), proj); !ok {
 		return err
 	}
 
-	var v any = struct{}{}
-
-	if payload != nil {
-		secrets, err := l.Vault.Values(ctx)
-		if err != nil {
-			return fmt.Errorf("task %d: %w", taskID, err)
-		}
-
-		v = payload(redact.New(secrets...))
-	}
-
-	raw, err := json.Marshal(v)
+	p, err := l.newPass(ctx, taskID)
 	if err != nil {
-		return fmt.Errorf("task %d: encode %s: %w", taskID, typ, err)
+		return err
 	}
 
-	e := store.Event{TaskID: taskID, At: l.Now(), Type: typ, Actor: actorUser, Payload: raw}
-	if _, err := l.Store.Append(ctx, taskID, last, []store.Event{e}, nil); err != nil {
-		return fmt.Errorf("task %d: %s: %w", taskID, typ, err)
-	}
-
-	return nil
+	return p.write(ctx, last, 0, nil, draft{typ, actorUser, payload})
 }
