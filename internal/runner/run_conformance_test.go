@@ -207,7 +207,7 @@ for my $i (0 .. ord(substr($d, 6, 1)) - 1) { my ($id, $at) = unpack("a4 Q>", sub
 my $n = 0; $n++ while $c{OIDL} + 20 * $n < $c{CDAT} && substr($d, $c{OIDL} + 20 * $n, 20) ne pack("H*", $ARGV[1]);
 seek(F, $c{CDAT} + 36 * $n, 0); print F pack("H*", $ARGV[2])' "$g" "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD~1^{tree}')"`
 
-// The diff and the summary show the committed change whatever git state the agent left.
+// The diff and the summary show the committed change whatever diff drivers, replace refs or commit-graph the agent left.
 func TestExportShowsCommittedChange(t *testing.T) {
 	r, c, _ := agentRun(t, bash("git config --global diff.external true && "+
 		"echo 'notes.txt diff=silent' >> .git/info/attributes && git config diff.silent.textconv true && "+

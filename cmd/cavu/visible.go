@@ -13,7 +13,7 @@ type visibleWriter struct {
 	held []byte // an incomplete UTF-8 sequence ending the previous write
 }
 
-// A sequence still held when the process ends is dropped: fmt never writes a partial rune.
+// A sequence still held at exit is dropped: output, the image build client's included, ends in a newline.
 func (v *visibleWriter) Write(p []byte) (int, error) {
 	in := slices.Concat(v.held, p)
 	v.held = nil
