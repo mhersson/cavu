@@ -109,7 +109,7 @@ cavu replay --name no-continuations --no-continuations
 
 `--model ID`, `--effort LEVEL`, `--no-continuations`, `--no-verify-fix` and `--web-tools` (which turns `web_tools` on, whatever the project says) change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
 
-A replayed task starts as a new task does, so its project needs a passed baseline or a waived verify, and the replay says why such a task waits when it does. An interrupted replay cancels the task it was running and is never compared with; the next replay ends what an earlier one left unfinished.
+A replayed task starts as a new task does, so its project needs a passed baseline or a waived verify, and the replay says why such a task waits when it does. An interrupted replay cancels the task it was running and is never compared with; the next replay ends what an earlier one left unfinished. Run one replay at a time: a replay started while another runs cancels that one's unfinished shadows.
 
 ### Go projects
 
@@ -117,7 +117,7 @@ Download the modules in the setup command (`go mod download`): the setup phase r
 
 ### Python projects
 
-Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. Runs of one project run side by side and share the interpreter, so a bare `pip install` is not safe beside another run of the project. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
+Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. A project's open runs share the interpreter's packages, so a bare `pip install` in the setup command changes them under every other open run of the project. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
 
 ## Licence
 
