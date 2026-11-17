@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -85,13 +86,16 @@ func TestServeStartsDrivesAndStops(t *testing.T) {
 
 	cancel()
 
-	// The open stream ends at once, so the verb does not wait out the grace.
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(shutdownGrace / 2):
-		require.FailNow(t, "the verb did not end before the grace ran out")
+	case <-time.After(within):
+		require.FailNow(t, "the verb did not end")
 	}
+
+	// A stream the server's stop ended closes cleanly; one cut once the grace ran out reads unexpected EOF.
+	_, err = io.ReadAll(stream.Body)
+	require.NoError(t, err, "the open stream ended when the server stopped")
 
 	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork}, fake.runner.actions)
 
