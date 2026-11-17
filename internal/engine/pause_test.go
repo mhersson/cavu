@@ -39,10 +39,11 @@ func (h *harness) stopTask(id int64, p engine.StoppedPayload) {
 func TestPausesFollowTheStore(t *testing.T) {
 	h := newHarness(t)
 	ctx := t.Context()
-	endpoint, limited := h.started(), h.started()
+	endpoint, limited, alsoLimited := h.started(), h.started(), h.started()
 	resets := now.Add(time.Hour)
 
 	h.stopTask(endpoint.ID, engine.StoppedPayload{Reason: engine.StopEndpoint, Action: engine.ClearRetry})
+	h.stopTask(alsoLimited.ID, engine.StoppedPayload{Reason: engine.StopUsageLimit, Action: engine.ClearNone, ResetsAt: resets})
 	h.stopTask(limited.ID, engine.StoppedPayload{Reason: engine.StopUsageLimit, Action: engine.ClearNone, ResetsAt: resets})
 
 	s := &readsStore{Store: h.store}
@@ -50,13 +51,14 @@ func TestPausesFollowTheStore(t *testing.T) {
 	var p engine.Pauses
 
 	require.NoError(t, p.Read(ctx, s))
-	assert.ElementsMatch(t, []int64{h.task.ID, endpoint.ID, limited.ID}, s.reads, "the first read reads every task")
+	assert.ElementsMatch(t, []int64{h.task.ID, endpoint.ID, limited.ID, alsoLimited.ID}, s.reads, "the first read reads every task")
 
 	got := p.Of(h.task.ID)
 	assert.Equal(t, endpoint.ID, got.EndpointTask)
 	assert.True(t, resets.Equal(got.LimitedUntil), got.LimitedUntil)
+	assert.Equal(t, limited.ID, got.LimitedBy, "of two limits that reset together, the lower task names the pause")
 	assert.Zero(t, p.Of(endpoint.ID).EndpointTask, "a task's own stop does not pause it")
-	assert.True(t, p.Of(limited.ID).LimitedUntil.IsZero(), "a task's own stop does not pause it")
+	assert.Equal(t, alsoLimited.ID, p.Of(limited.ID).LimitedBy, "a task's own stop does not pause it")
 
 	s.reads = nil
 	require.NoError(t, p.Read(ctx, s))

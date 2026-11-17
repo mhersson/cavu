@@ -154,7 +154,7 @@ func decideCases() []decideCase {
 	wait := func(until time.Time) engine.Action { return engine.Action{Kind: engine.KindWait, Until: until} }
 	prepare := engine.Action{Kind: engine.KindPrepare, NewRun: true}
 	endpointPause := engine.Pause{EndpointTask: 7}
-	limitPause := engine.Pause{LimitedUntil: now.Add(time.Hour)}
+	limitPause := engine.Pause{LimitedUntil: now.Add(time.Hour), LimitedBy: 9}
 
 	return []decideCase{
 		{name: "not started", snap: snap(engine.Facts{}), want: none},
@@ -265,8 +265,8 @@ func decideCases() []decideCase {
 		{name: "an endpoint pause holds a prepare", snap: paused(startedOnly, endpointPause), want: wait(time.Time{}), whyHas: "7"},
 		{name: "an endpoint pause leaves a verify alone", snap: paused(verified("", 0), endpointPause), want: engine.Action{Kind: engine.KindVerify}},
 		{name: "an endpoint pause leaves an export alone", snap: paused(verified(engine.ResultPassed, 0), endpointPause), want: engine.Action{Kind: engine.KindExport}},
-		{name: "a usage limit pause holds a session", snap: paused(prepared(), limitPause), want: wait(limitPause.LimitedUntil), clock: true},
-		{name: "a usage limit pause holds a prepare", snap: paused(startedOnly, limitPause), want: wait(limitPause.LimitedUntil), clock: true},
+		{name: "a usage limit pause holds a session", snap: paused(prepared(), limitPause), want: wait(limitPause.LimitedUntil), whyHas: "9", clock: true},
+		{name: "a usage limit pause holds a prepare", snap: paused(startedOnly, limitPause), want: wait(limitPause.LimitedUntil), whyHas: "9", clock: true},
 		{name: "a usage limit pause leaves a verify alone", snap: paused(verified("", 0), limitPause), want: engine.Action{Kind: engine.KindVerify}},
 		{
 			name: "a usage limit pause already past", snap: paused(prepared(), engine.Pause{LimitedUntil: now.Add(-time.Minute)}),

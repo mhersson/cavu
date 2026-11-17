@@ -18,6 +18,7 @@ type Caps struct{ Continuations, VerifyFixes, FaultRetries int }
 type Pause struct {
 	EndpointTask int64     // another task that holds an open endpoint stop, 0 when none
 	LimitedUntil time.Time // the reset time of another task's open usage_limit stop, zero when none
+	LimitedBy    int64     // the task whose usage_limit stop sets LimitedUntil
 }
 
 // Dep is one dependency of a task, with where it stands.
@@ -116,7 +117,9 @@ func Decide(s Snapshot) Action {
 	}
 
 	if s.Now.Before(s.Pause.LimitedUntil) {
-		return Action{Kind: KindWait, Why: "Another task hit the usage limit, which has not reset yet.", Until: s.Pause.LimitedUntil}
+		return Action{
+			Kind: KindWait, Why: fmt.Sprintf("Task %d hit the usage limit, which has not reset yet.", s.Pause.LimitedBy), Until: s.Pause.LimitedUntil,
+		}
 	}
 
 	return a

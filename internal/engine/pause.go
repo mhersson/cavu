@@ -49,7 +49,8 @@ func (p *Pauses) Read(ctx context.Context, s Store) error {
 func (p *Pauses) Of(taskID int64) Pause { return pauseOf(p.stops, taskID) }
 
 // pauseOf is what the open stops of tasks other than taskID mean for it: the
-// lowest task with an endpoint stop, and the latest usage-limit reset.
+// lowest task with an endpoint stop, and the latest usage-limit reset with the
+// lowest task that holds it, since one account's limits reset together.
 func pauseOf(stops map[int64]StopFact, taskID int64) Pause {
 	var p Pause
 
@@ -58,8 +59,8 @@ func pauseOf(stops map[int64]StopFact, taskID int64) Pause {
 		case id == taskID:
 		case st.Reason == StopEndpoint && (p.EndpointTask == 0 || id < p.EndpointTask):
 			p.EndpointTask = id
-		case st.Reason == StopUsageLimit && st.ResetsAt.After(p.LimitedUntil):
-			p.LimitedUntil = st.ResetsAt
+		case st.Reason == StopUsageLimit && (st.ResetsAt.After(p.LimitedUntil) || st.ResetsAt.Equal(p.LimitedUntil) && id < p.LimitedBy):
+			p.LimitedUntil, p.LimitedBy = st.ResetsAt, id
 		}
 	}
 
