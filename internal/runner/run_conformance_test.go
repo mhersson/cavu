@@ -187,6 +187,21 @@ func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	assertBundle(t, r, c, ex.Bundle, res.HeadCommit)
 }
 
+// The diff a person reads comes from git itself, whatever external diff command
+// or text-conversion driver the agent configured.
+func TestExportIgnoresDiffDrivers(t *testing.T) {
+	r, c, _ := agentRun(t, bash("git config --global diff.external true && "+
+		"echo 'notes.txt diff=silent' >> .git/info/attributes && git config diff.silent.textconv true && "+
+		"echo CAVU-ADDED-LINE >> notes.txt && git commit -qam 'docs(notes): add a line'"), done)
+
+	res := work(t, r, c, newSession(t))
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+
+	ex := export(t, r, c, res)
+	assert.Contains(t, string(ex.Diff), "\n+CAVU-ADDED-LINE\n")
+	assert.Equal(t, []string{"notes.txt | 1 +", "1 file changed, 1 insertion(+)"}, ex.DiffStat)
+}
+
 func TestVerifyRunsInFreshContainer(t *testing.T) {
 	const left = "^sleep 987654$"
 

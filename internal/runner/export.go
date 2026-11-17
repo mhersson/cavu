@@ -30,8 +30,8 @@ var errArtifactTooLarge = errors.New("the file is over the export's bound")
 // missing or does not descend from the base. The working tree and HEAD are not read.
 var exportScript = proc.SandboxOnly(gitFunc + `g merge-base --is-ancestor "$1" "$2" 2>/dev/null ||
 	{ echo "The frozen commit $2 is missing from the repository or does not descend from the base commit."; exit 1; }
-g update-ref "refs/heads/$3" "$2" && g diff --binary "$1" "$2" >"$4" && g bundle create -q "$5" "$1..$3" &&
-g diff --stat --stat-count=` + strconv.Itoa(maxStatFiles) + ` "$1" "$2"`)
+g update-ref "refs/heads/$3" "$2" && g diff --no-ext-diff --no-textconv --binary "$1" "$2" >"$4" && g bundle create -q "$5" "$1..$3" &&
+g diff --no-ext-diff --no-textconv --stat --stat-count=` + strconv.Itoa(maxStatFiles) + ` "$1" "$2"`)
 
 // Export exports commit, the work a session froze: it points the task branch
 // at it and returns the diff from the base commit and a bundle of the branch.
