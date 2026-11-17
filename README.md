@@ -6,11 +6,11 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Status
 
-Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes and lists projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark.
+Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes and lists projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark, and `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 
 ## Try it
 
-CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep their data in one directory: the default is created on first use, and `CAVU_DATA_DIR` or `--data-dir DIR` puts it elsewhere.
+CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep their data in one directory: the default is created on first use, and `CAVU_DATA_DIR` puts it elsewhere. Every `cavu` verb also takes `--data-dir DIR`; `make image` takes only the variable.
 
 1. Build the binary and the sandbox image. The build opens the data directory and uses its `runtime` and `ca_bundle_path` settings.
 
@@ -18,7 +18,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep t
    make image
    ```
 
-   With a built `cavu`, `cavu image build` builds the image alone.
+   The binary is `bin/cavu`, which is not on your `PATH`: copy it to a directory that is (`install bin/cavu ~/.local/bin/`), or write `bin/cavu` where the commands below say `cavu`. With a built `cavu`, `cavu image build` builds the image alone.
 
 2. Set what a run needs. In `subscription` mode the credential is a subscription token; in `key` mode also set the endpoint.
 
@@ -38,7 +38,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep t
    cavu secret set forge_token < token.txt
    ```
 
-4. Check the setup. Each line is a check; `skipped` follows from an earlier failure and `warning` passes. The exit code is 1 when a check failed.
+4. Check the setup. Each line is a check; `skipped` follows from an earlier failure, or for the forge check from having no forge token or no project yet, and `warning` passes. The exit code is 1 when a check failed.
 
    ```
    cavu doctor
@@ -73,6 +73,18 @@ cavu task cancel ID                 # give up on it
 ```
 
 Then `cavu task run ID` again for an answer or a retry. Only one `cavu` verb that drives containers runs at a time; a second one is refused with a message naming the lock.
+
+### Replaying tasks
+
+A replay re-runs tasks that have already run, under a configuration you name, and shows each beside the same task in the previous replay. Mark the tasks to replay (each needs a base commit, which a run gives it), then replay them:
+
+```
+cavu task mark ID
+cavu replay --name baseline
+cavu replay --name no-continuations --no-continuations
+```
+
+`--model ID`, `--effort LEVEL`, `--no-continuations` and `--no-verify-fix` change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
 
 ### Python projects
 
