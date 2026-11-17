@@ -52,6 +52,11 @@ func (v *Vault) Get(ctx context.Context, name string) (string, bool, error) {
 	return string(plain), true, nil
 }
 
+// Delete removes the secret name; an unknown name is a no-op.
+func (v *Vault) Delete(ctx context.Context, name string) error {
+	return v.store.DeleteSecret(ctx, name)
+}
+
 // Values returns the plaintext of every stored secret, for the redactor.
 func (v *Vault) Values(ctx context.Context) ([]string, error) {
 	names, err := v.store.SecretNames(ctx)

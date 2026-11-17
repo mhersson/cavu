@@ -55,11 +55,12 @@ func TestLogin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, f.clock.Add(30*day), expires)
 
-	ok, err := f.svc.Session(ctx, cookie)
+	ok, renewed, err := f.svc.Session(ctx, cookie)
 	require.NoError(t, err)
 	assert.True(t, ok)
+	assert.Zero(t, renewed, "a new session is not written again")
 
-	ok, err = f.svc.Session(ctx, "not-a-cookie")
+	ok, _, err = f.svc.Session(ctx, "not-a-cookie")
 	require.NoError(t, err)
 	assert.False(t, ok)
 
@@ -74,17 +75,17 @@ func TestLogin(t *testing.T) {
 
 	require.NoError(t, f.svc.Logout(ctx, cookie))
 
-	ok, err = f.svc.Session(ctx, cookie)
+	ok, _, err = f.svc.Session(ctx, cookie)
 	require.NoError(t, err)
 	assert.False(t, ok)
 
-	ok, err = f.svc.Session(ctx, other)
+	ok, _, err = f.svc.Session(ctx, other)
 	require.NoError(t, err)
 	assert.True(t, ok, "logging one session out leaves the other")
 
 	require.NoError(t, f.svc.SetUser(ctx, "ada", "another long password"))
 
-	ok, err = f.svc.Session(ctx, other)
+	ok, _, err = f.svc.Session(ctx, other)
 	require.NoError(t, err)
 	assert.False(t, ok, "setting the user ends every session")
 }
@@ -181,9 +182,10 @@ func TestSessionLifetime(t *testing.T) {
 	for range 4 {
 		*f.clock = f.clock.Add(20 * day)
 
-		ok, err := f.svc.Session(ctx, cookie)
+		ok, renewed, err := f.svc.Session(ctx, cookie)
 		require.NoError(t, err)
 		require.True(t, ok, "a session used every 20 days lives on")
+		assert.Equal(t, f.clock.Add(30*day), renewed, "the moved expiry is returned")
 	}
 
 	hash := auth.HashToken(cookie)
@@ -195,8 +197,9 @@ func TestSessionLifetime(t *testing.T) {
 
 	*f.clock = f.clock.Add(time.Hour)
 
-	_, err = f.svc.Session(ctx, cookie)
+	_, renewed, err := f.svc.Session(ctx, cookie)
 	require.NoError(t, err)
+	assert.Zero(t, renewed, "an expiry that does not move is not returned")
 
 	same, _, err := f.store.SessionExpiry(ctx, hash)
 	require.NoError(t, err)
@@ -204,7 +207,7 @@ func TestSessionLifetime(t *testing.T) {
 
 	*f.clock = f.clock.Add(31 * day)
 
-	ok, err = f.svc.Session(ctx, cookie)
+	ok, _, err = f.svc.Session(ctx, cookie)
 	require.NoError(t, err)
 	assert.False(t, ok)
 

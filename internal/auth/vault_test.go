@@ -86,3 +86,22 @@ func TestVaultWrongKey(t *testing.T) {
 	require.ErrorIs(t, err, auth.ErrDecrypt)
 	assert.Nil(t, values)
 }
+
+func TestVaultDelete(t *testing.T) {
+	ctx := context.Background()
+	v := newVault(t, openStore(t), testKey(t))
+
+	require.NoError(t, v.Set(ctx, "forge_token", "ghp_value12345"))
+	require.NoError(t, v.Set(ctx, "endpoint_credential", "sk-ant-kept"))
+
+	require.NoError(t, v.Delete(ctx, "forge_token"))
+	require.NoError(t, v.Delete(ctx, "never_set"), "an unknown name is a no-op")
+
+	_, ok, err := v.Get(ctx, "forge_token")
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	values, err := v.Values(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sk-ant-kept"}, values)
+}
