@@ -167,7 +167,7 @@ func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (drive
 		Model: c.Agent.Model, Effort: c.Agent.Effort, MaxTurns: c.Agent.MaxTurns,
 		Instructions: instructions, OutputSchema: prompts.ResultSchema(),
 		Dir: workspace, BaseCommit: c.Repo.BaseCommit, Home: home, ConfigDir: configDir,
-		Env: sessionEnv(ecosystems), WebTools: c.Agent.WebTools,
+		Env: sessionEnv(ecosystems, c.Repo.BaseCommit), WebTools: c.Agent.WebTools,
 	}
 
 	if c.Endpoint.Mode == modeKey {
@@ -268,7 +268,7 @@ func (s *session) freeze(ctx context.Context, res *engine.WorkResult) error {
 	message := cmp.Or(res.Title, s.c.Task.Title)
 	cmd := proc.Command{
 		Argv: scriptArgv(freezeScript, s.c.Repo.BaseCommit, s.c.Repo.Branch, message),
-		Env:  agentEnv(s.st.ecosystems), Dir: workspace,
+		Env:  agentEnv(s.st.ecosystems, s.c.Repo.BaseCommit), Dir: workspace,
 	}
 
 	out, err := s.st.agent.Run(ctx, cmd, gitTimeout)

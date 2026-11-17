@@ -234,7 +234,7 @@ func TestWorkSpec(t *testing.T) {
 				Model: "claude-test", Effort: "high", MaxTurns: 50,
 				Prompt: tt.prompt(t, c), Instructions: render(t, prompts.Instructions, nil), OutputSchema: prompts.ResultSchema(),
 				Dir: workspace, BaseCommit: baseCommit, Home: home, ConfigDir: "/home/agent/.claude-cavu",
-				Env: sessionEnv([]string{"go"}), WebTools: true,
+				Env: sessionEnv([]string{"go"}, baseCommit), WebTools: true,
 			}
 			if tt.w.Resume {
 				want.Resume = sessionUUID
@@ -243,6 +243,7 @@ func TestWorkSpec(t *testing.T) {
 			}
 
 			assert.Equal(t, want, d.specs[0])
+			assert.Contains(t, d.specs[0].Env, "CAVU_BASE_COMMIT="+baseCommit)
 		})
 	}
 }

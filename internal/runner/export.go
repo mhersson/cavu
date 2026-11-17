@@ -43,7 +43,7 @@ func (r *Runner) Export(ctx context.Context, c engine.RunConfig, commit string) 
 	return act(ctx, r, c, func(ctx context.Context, st *run, mask func(string) string) (engine.ExportResult, error) {
 		cmd := proc.Command{
 			Argv: scriptArgv(exportScript, c.Repo.BaseCommit, commit, c.Repo.Branch, diffFile, bundleFile),
-			Env:  agentEnv(st.ecosystems), Dir: workspace,
+			Env:  agentEnv(st.ecosystems, c.Repo.BaseCommit), Dir: workspace,
 		}
 
 		out, err := st.agent.Run(ctx, cmd, gitTimeout)

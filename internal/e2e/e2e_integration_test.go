@@ -33,8 +33,9 @@ import (
 )
 
 const (
-	// verify passes on the fixture repository and on every change that keeps its first line.
-	verify = "grep -qx 'first line' notes.txt"
+	// verify passes on the fixture repository and on every change that keeps its first line,
+	// while CAVU_BASE_COMMIT names a commit in the workspace.
+	verify = `grep -qx 'first line' notes.txt && git cat-file -e "$CAVU_BASE_COMMIT^{commit}"`
 	// marker is the line the change step adds; title is every task's.
 	marker = "CAVU-E2E-LINE"
 	title  = "Add a line"
