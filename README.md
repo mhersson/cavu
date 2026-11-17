@@ -18,6 +18,7 @@ Pre-release. The verbs today:
 - `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
 - `cavu task` adds tasks, each with the tasks it depends on, lists and shows them, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
+- `cavu serve` drives every started task and serves the HTTP API until interrupted.
 
 ## Try it
 
@@ -96,6 +97,17 @@ cavu task cancel ID                 # give up on it
 ```
 
 Then `cavu task run ID` again for an answer or a retry. A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock.
+
+### Running the server
+
+`cavu serve` drives every started task, as `task run` drives one, and serves the HTTP API of [docs/api.md](docs/api.md) on the `listen_address` setting (default `127.0.0.1:7117`). Set the user first, with the password in a file, then start it:
+
+```
+cavu user set NAME < password.txt
+cavu serve
+```
+
+It prints the address it listens on. Log in with `POST /api/auth/login`, or send an API token from `cavu token add NAME`. While it runs, `task run`, `project check` and `replay` leave the driving to it, and `doctor` is refused. Ctrl-C stops it, and the next `cavu serve` carries on with the tasks it was running.
 
 ### Replaying tasks
 

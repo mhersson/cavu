@@ -14,7 +14,8 @@ import (
 func TestServerHalfHasNoRuntimeDependency(t *testing.T) {
 	const module = "github.com/mhersson/cavu"
 
-	out, err := execGoListDeps(t, module+"/internal/engine", module+"/internal/store", module+"/internal/replay")
+	out, err := execGoListDeps(t, module+"/internal/engine", module+"/internal/store", module+"/internal/replay",
+		module+"/internal/auth", module+"/internal/api")
 	require.NoError(t, err, "%s", out)
 	assert.Empty(t, runtimeDeps(strings.Fields(out)))
 
