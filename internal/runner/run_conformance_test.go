@@ -166,6 +166,18 @@ func TestFreezeGitStates(t *testing.T) {
 	}
 }
 
+func TestFreezeRunsNoMonitor(t *testing.T) {
+	r, c, _ := agentRun(t, bash("echo CAVU-ADDED-LINE >> notes.txt && git commit -qam 'docs(notes): add a line' && "+
+		`printf '#!/bin/sh\ntouch /tmp/cavu-monitor-ran\nexit 1\n' > /tmp/monitor && chmod +x /tmp/monitor && `+
+		"git config core.fsmonitor /tmp/monitor && echo CAVU-LEFT > left.txt"), done)
+
+	res := work(t, r, c, newSession(t))
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+	require.True(t, res.Changed)
+
+	assert.NotEqual(t, 0, runIn(t, r.state(c.RunID), "test", "-e", "/tmp/cavu-monitor-ran").ExitCode, "the monitor ran")
+}
+
 func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	r, c, _ := agentRun(t, bash("echo CAVU-FROZEN >> notes.txt && git commit -qam 'docs(notes): add a line'"), done)
 
@@ -173,7 +185,7 @@ func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
 
 	c.Verify.Command = "echo CAVU-LATER >> notes.txt && git commit -qam later && git checkout -q -b later && " +
-		"{ setsid sh -c 'while :; do echo CAVU-BACKGROUND >> notes.txt; sleep 0.1; done' </dev/null >/dev/null 2>&1 & }"
+		"{ setsid sh -c 'while :; do echo CAVU-REWRITTEN > /handoff/diff.patch; sleep 0.01; done' </dev/null >/dev/null 2>&1 & }"
 
 	vr, err := r.Verify(t.Context(), c)
 	require.NoError(t, err)
@@ -183,8 +195,37 @@ func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	ex := export(t, r, c, res)
 	assert.Contains(t, string(ex.Diff), "\n+CAVU-FROZEN\n")
 	assert.NotContains(t, string(ex.Diff), "CAVU-LATER")
-	assert.NotContains(t, string(ex.Diff), "CAVU-BACKGROUND")
+	assert.NotContains(t, string(ex.Diff), "CAVU-REWRITTEN")
 	assertBundle(t, r, c, ex.Bundle, res.HeadCommit)
+}
+
+// forgeCommitGraph points the head commit's entry in the commit-graph at the parent's tree.
+const forgeCommitGraph = `g=.git/objects/info/commit-graph
+git --no-replace-objects commit-graph write --reachable && chmod u+w "$g" &&
+perl -e 'open(F, "+<:raw", $ARGV[0]) or die; local $/; my $d = <F>; my %c;
+for my $i (0 .. ord(substr($d, 6, 1)) - 1) { my ($id, $at) = unpack("a4 Q>", substr($d, 8 + 12 * $i, 12)); $c{$id} = $at }
+my $n = 0; $n++ while $c{OIDL} + 20 * $n < $c{CDAT} && substr($d, $c{OIDL} + 20 * $n, 20) ne pack("H*", $ARGV[1]);
+seek(F, $c{CDAT} + 36 * $n, 0); print F pack("H*", $ARGV[2])' "$g" "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD~1^{tree}')"`
+
+// The diff and the summary show the committed change whatever diff drivers, replace refs, commit-graph or submodule setting the agent left.
+func TestExportShowsCommittedChange(t *testing.T) {
+	r, c, _ := agentRun(t, bash("git config --global diff.external true && "+
+		"echo 'notes.txt diff=silent' >> .git/info/attributes && git config diff.silent.textconv true && "+
+		"echo CAVU-ADDED-LINE >> notes.txt && "+
+		`mkdir sub && git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",sub && git config diff.ignoreSubmodules all && `+
+		"git commit -qam 'docs(notes): add a line' && "+
+		"git replace \"$(git rev-parse HEAD:notes.txt)\" \"$(git rev-parse HEAD~1:notes.txt)\""), done)
+
+	res := work(t, r, c, newSession(t))
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+
+	forged := runIn(t, r.state(c.RunID), "sh", "-c", forgeCommitGraph)
+	require.Equal(t, 0, forged.ExitCode, forged.Output)
+
+	ex := export(t, r, c, res)
+	assert.Contains(t, string(ex.Diff), "\n+CAVU-ADDED-LINE\n")
+	assert.Contains(t, string(ex.Diff), "\n+Subproject commit ")
+	assert.Equal(t, []string{"notes.txt | 1 +", "sub       | 1 +", "2 files changed, 2 insertions(+)"}, ex.DiffStat)
 }
 
 func TestVerifyRunsInFreshContainer(t *testing.T) {

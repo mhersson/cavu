@@ -44,6 +44,14 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if isTerminal(stdout) {
+		stdout = &visibleWriter{w: stdout}
+	}
+
+	if isTerminal(stderr) {
+		stderr = &visibleWriter{w: stderr}
+	}
+
 	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
 	// A hangup ends a verb as Ctrl-C does, unless nohup ignores it: Notify would undo that.
 	if !signal.Ignored(syscall.SIGHUP) {

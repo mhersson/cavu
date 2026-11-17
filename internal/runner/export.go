@@ -30,8 +30,8 @@ var errArtifactTooLarge = errors.New("the file is over the export's bound")
 // missing or does not descend from the base. The working tree and HEAD are not read.
 var exportScript = proc.SandboxOnly(gitFunc + `g merge-base --is-ancestor "$1" "$2" 2>/dev/null ||
 	{ echo "The frozen commit $2 is missing from the repository or does not descend from the base commit."; exit 1; }
-g update-ref "refs/heads/$3" "$2" && g diff --binary "$1" "$2" >"$4" && g bundle create -q "$5" "$1..$3" &&
-g diff --stat --stat-count=` + strconv.Itoa(maxStatFiles) + ` "$1" "$2"`)
+g update-ref "refs/heads/$3" "$2" && g diff --no-ext-diff --no-textconv --ignore-submodules=none --binary "$1" "$2" >"$4" && g bundle create -q "$5" "$1..$3" &&
+g diff --no-ext-diff --no-textconv --ignore-submodules=none --stat --stat-count=` + strconv.Itoa(maxStatFiles) + ` "$1" "$2"`)
 
 // Export exports commit, the work a session froze: it points the task branch
 // at it and returns the diff from the base commit and a bundle of the branch.
@@ -41,6 +41,10 @@ func (r *Runner) Export(ctx context.Context, c engine.RunConfig, commit string) 
 	}
 
 	return act(ctx, r, c, func(ctx context.Context, st *run, mask func(string) string) (engine.ExportResult, error) {
+		if err := st.restartAgent(ctx); err != nil {
+			return engine.ExportResult{}, err
+		}
+
 		cmd := proc.Command{
 			Argv: scriptArgv(exportScript, c.Repo.BaseCommit, commit, c.Repo.Branch, diffFile, bundleFile),
 			Env:  agentEnv(st.ecosystems, c.Repo.BaseCommit), Dir: workspace,
