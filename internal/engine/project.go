@@ -56,34 +56,34 @@ func EditProject(ctx context.Context, s Store, p store.Project) error {
 func checkProject(p store.Project) error {
 	switch {
 	case !projectName.MatchString(p.Name):
-		return fmt.Errorf("name %q: want 1 to 40 of a-z, 0-9 and -", p.Name)
+		return refuse("name %q: want 1 to 40 of a-z, 0-9 and -", p.Name)
 	case !strings.HasPrefix(p.RepoURL, "https://") || !plainArg(p.RepoURL):
-		return fmt.Errorf("repo_url %q: want an https:// URL with no whitespace", p.RepoURL)
+		return refuse("repo_url %q: want an https:// URL with no whitespace", p.RepoURL)
 	case !plainArg(p.BaseBranch):
-		return fmt.Errorf("base_branch %q: want a branch name that does not start with - and holds no whitespace", p.BaseBranch)
+		return refuse("base_branch %q: want a branch name that does not start with - and holds no whitespace", p.BaseBranch)
 	case blank(p.SetupCommand):
-		return errors.New("setup_command is blank")
+		return refuse("setup_command is blank")
 	case blank(p.VerifyCommand):
-		return errors.New("verify_command is blank")
+		return refuse("verify_command is blank")
 	case p.VerifyCommand != "" && p.VerifyWaived:
-		return errors.New("verify_command and verify_waived: give one")
+		return refuse("verify_command and verify_waived: give one")
 	}
 
 	for k := range p.Env {
 		if !varName.MatchString(k) {
-			return fmt.Errorf("env %q: want a variable name of letters, digits and _, not starting with a digit", k)
+			return refuse("env %q: want a variable name of letters, digits and _, not starting with a digit", k)
 		}
 	}
 
 	for _, v := range p.SecretVars {
 		if !varName.MatchString(v) {
-			return fmt.Errorf("secret_vars %q: want a variable name of letters, digits and _, not starting with a digit", v)
+			return refuse("secret_vars %q: want a variable name of letters, digits and _, not starting with a digit", v)
 		}
 	}
 
 	for k, v := range p.ToolOverrides {
 		if k == "" || v == "" {
-			return fmt.Errorf("tool_overrides %q=%q: want a tool name and a version", k, v)
+			return refuse("tool_overrides %q=%q: want a tool name and a version", k, v)
 		}
 	}
 
@@ -91,7 +91,7 @@ func checkProject(p store.Project) error {
 
 	for k := range p.Switches {
 		if known[k] == nil {
-			return fmt.Errorf("switches %q: want continuations, verify_fix or web_tools", k)
+			return refuse("switches %q: want continuations, verify_fix or web_tools", k)
 		}
 	}
 
