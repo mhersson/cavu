@@ -937,6 +937,7 @@ func TestSubagentIsCounted(t *testing.T) {
 
 		o, bySubagent, _ := session(t, 2, withSubagent...)
 		assert.Equal(t, driver.ReasonDone, o.res.Reason, "the subagent's turns count toward --max-turns")
+		assert.Equal(t, 2, o.res.Turns, "the subagent's turns count in num_turns")
 		assert.Equal(t, []bool{false, true, true, false}, bySubagent, "the steps did not line up as scripted")
 	})
 }
