@@ -35,7 +35,10 @@ type projectItem struct {
 // session between requests, and answers in JSON. Each tool calls what the
 // matching REST handler calls, and gives a task as REST gives it.
 func (s *server) tools() http.Handler {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "cavu", Version: s.Version}, nil)
+	// The SDK's defaults advertise listChanged and logging, which makes a current
+	// client open a stream that lasts its whole connection. The list never changes.
+	srv := mcp.NewServer(&mcp.Implementation{Name: "cavu", Version: s.Version},
+		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}})
 
 	addTool(srv, "create_task", "Create a draft task in a project; with start, start it as well.",
 		func(ctx context.Context, in newTask) (taskJSON, error) {

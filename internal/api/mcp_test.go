@@ -72,7 +72,17 @@ func refused(t *testing.T, res *mcp.CallToolResult) {
 }
 
 func TestMCPTools(t *testing.T) {
-	res, err := newServer(t).client(t).ListTools(t.Context(), nil)
+	cs := newServer(t).client(t)
+
+	caps := cs.InitializeResult().Capabilities
+	require.NotNil(t, caps.Tools)
+	assert.False(t, caps.Tools.ListChanged, "a client that sees a changing list opens a stream")
+
+	advertised, err := json.Marshal(caps)
+	require.NoError(t, err)
+	assert.NotContains(t, string(advertised), "logging")
+
+	res, err := cs.ListTools(t.Context(), nil)
 	require.NoError(t, err)
 
 	names := []string{}

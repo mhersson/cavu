@@ -261,7 +261,7 @@ An event is one fact in a task's history, recorded once and never changed:
 
 ## MCP
 
-`POST /mcp` serves six tools to an MCP client over the streamable HTTP transport. It takes only an API token, as `Authorization: Bearer <token>`: a request without a token the server knows is 401 with the JSON error above, whatever cookie it carries, and no request there needs `X-CAVU-CSRF`. The server is stateless: it keeps no session between requests and sets no `Mcp-Session-Id`. It answers each call with one JSON message, never an event stream, and any method but `POST` with 405.
+`POST /mcp` serves six tools to an MCP client over the streamable HTTP transport. It takes only an API token, as `Authorization: Bearer <token>`: a request without a token the server knows is 401 with the JSON error above, whatever cookie it carries, and no request there needs `X-CAVU-CSRF`. The server is stateless: it keeps no session between requests and sets no `Mcp-Session-Id`. It advertises the tools and nothing else: no `listChanged`, no logging, no resources or prompts, so a client has no reason to open a stream and the server holds none. It answers each call with one JSON message, and any method but `POST` with 405.
 
 A tool that does what a REST route does calls that route's code, so it refuses what the route refuses, and every tool gives a task as [the task](#the-task) shows it:
 
