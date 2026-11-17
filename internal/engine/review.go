@@ -98,7 +98,7 @@ func reviewLoop(s Snapshot, f Facts) Action {
 	r := f.Review
 
 	if r.Halt != nil {
-		if a, ok := sessionStop(r.Halt, s.Now); ok {
+		if a, ok := sessionStop(r.Halt, s); ok {
 			return a
 		}
 	}
@@ -138,6 +138,8 @@ func (p *pass) review(ctx context.Context, v view, a Action, o openRun) error {
 	if a.Scoped {
 		r.FixBase, r.Findings = f.Review.Head, f.Review.Open
 	}
+
+	o.cfg.Agent.MaxTurns, o.cfg.Agent.Timeout = left(v.Snapshot)
 
 	if err := p.claim(ctx, v, o, draft{ReviewStarted, actorEngine, ReviewStartedPayload{
 		SessionID: r.SessionID, Scoped: a.Scoped, Head: r.Head, Why: a.Why,

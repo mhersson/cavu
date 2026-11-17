@@ -19,15 +19,19 @@ type Facts struct {
 	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action other than a retry that is no resume came after it, or while a newer session is pending
 	Verify                     string       // result for the newest ended session; "" while a session or a verify is pending
 	Exported                   bool
-	Resumed                    *Resume // a human retry or answer after a stop, other than a retry that is no resume, not yet followed by a finished session or prepare, or by a new run when it came from environment
-	LastVerifyOutput           string  // of the newest verify_ended, for the next fix prompt
-	Continuations, VerifyFixes int     // session starts marked automatic, per mode, since the last human action
-	ReviewFixes                int     // automatic fix_review session starts since the last human action
-	Faults                     int     // sandbox stops since the last human action
+	Resumed                    *Resume       // a human retry or answer after a stop, other than a retry that is no resume, not yet followed by a finished session or prepare, or by a new run when it came from environment
+	LastVerifyOutput           string        // of the newest verify_ended, for the next fix prompt
+	Continuations, VerifyFixes int           // session starts marked automatic, per mode, since the last human action
+	ReviewFixes                int           // automatic fix_review session starts since the last human action
+	Faults                     int           // sandbox stops since the last human action
+	Turns                      int           // of sessions and reviews since the last human action
+	SessionTime                time.Duration // from each session's or review's start to its end, since the last human action
 	Review                     ReviewFact
 	Role                       string   // of the run's session, strong after a fresh fix session; "" means work
 	Answers                    []string // every answer a person gave on the task
 	Assumptions                []string // of the open run's sessions
+
+	started time.Time // of the newest session or review that has not ended, zero when none
 }
 
 // StopFact is the open stop.
@@ -149,10 +153,13 @@ func (f *Facts) apply(e store.Event) {
 		}
 	case SessionStarted:
 		f.sessionStarted(decode[SessionStartedPayload](e.Payload))
+		f.started = e.At
 	case SessionEnded:
+		p := decode[SessionEndedPayload](e.Payload)
+		f.used(e.At, p.Turns)
+
 		f.Resumed = nil
 		if f.RunOpen {
-			p := decode[SessionEndedPayload](e.Payload)
 			f.Verify = ""
 			f.Session = &SessionFact{
 				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary, Detail: p.Detail,
@@ -173,9 +180,13 @@ func (f *Facts) apply(e store.Event) {
 		}
 	case ReviewStarted:
 		f.claimed()
+		f.started = e.At
 	case ReviewEnded:
+		p := decode[ReviewEndedPayload](e.Payload)
+		f.used(e.At, p.Turns)
+
 		if f.RunOpen {
-			f.reviewEnded(decode[ReviewEndedPayload](e.Payload))
+			f.reviewEnded(p)
 		}
 	case ExportStarted:
 		f.claimed()
@@ -200,11 +211,23 @@ func (f *Facts) humanAction() {
 	f.Session = nil
 }
 
-// clearStop closes the open stop and the review's halt, and restarts the caps'
-// count, which runs from the last human action.
+// clearStop closes the open stop and the review's halt, and restarts the
+// count of the caps and of the budget, which runs from the last human action.
 func (f *Facts) clearStop() {
 	f.OpenStop, f.Review.Halt = nil, nil
 	f.Continuations, f.VerifyFixes, f.ReviewFixes, f.Faults = 0, 0, 0, 0
+	f.Turns, f.SessionTime = 0, 0
+}
+
+// used counts a session or review that ended at end toward the budget. One a
+// fault cut never ends, so it counts nothing.
+func (f *Facts) used(end time.Time, turns int) {
+	f.Turns += turns
+	if !f.started.IsZero() {
+		f.SessionTime += end.Sub(f.started)
+	}
+
+	f.started = time.Time{}
 }
 
 // claimed closes what an action's claim closes: the open stop, and the

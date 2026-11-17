@@ -29,7 +29,10 @@ func snap(f engine.Facts) engine.Snapshot {
 }
 
 func snapWith(f engine.Facts, sw engine.Switches) engine.Snapshot {
-	return engine.Snapshot{Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2}}
+	return engine.Snapshot{
+		Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2},
+		Limits: engine.Limits{Turns: 1000, SessionTime: 300 * time.Minute},
+	}
 }
 
 func withDeps(f engine.Facts, deps ...engine.Dep) engine.Snapshot {

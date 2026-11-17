@@ -70,7 +70,7 @@ type call struct {
 	commit string // the commit an export was given
 	ref    engine.RunRef
 	eco    []string         // the config's ecosystems
-	cfg    engine.RunConfig // a check's config
+	cfg    engine.RunConfig // the config of a check, a session or a review
 }
 
 func (c call) String() string {
@@ -165,7 +165,7 @@ func (r *fakeRunner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (
 }
 
 func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
-	if err := r.begin(ctx, call{method: "work", task: c.TaskID, runID: c.RunID, work: w, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "work", task: c.TaskID, runID: c.RunID, work: w, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.WorkResult{}, err
 	}
 
@@ -205,7 +205,7 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit stri
 }
 
 func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.ReviewRequest, _ func(engine.Progress)) (engine.ReviewResult, error) {
-	if err := r.begin(ctx, call{method: "review", task: c.TaskID, runID: c.RunID, review: rv, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "review", task: c.TaskID, runID: c.RunID, review: rv, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.ReviewResult{}, err
 	}
 

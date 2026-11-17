@@ -63,9 +63,9 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu project check web
    ```
 
-   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline, and the tools the newest check found and the verify command it suggested.
+   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches, caps and baseline, and the tools the newest check found and the verify command it suggested.
 
-6. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. `task show` also prints the task's dependencies and why it waits, the turns, the duration and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
+6. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. `task show` also prints the task's dependencies and why it waits, the turns, the duration, the budget it used since you last acted, and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
 
    ```
    cavu task add web --title "Fix the login redirect" --body-file task.md
@@ -107,6 +107,15 @@ cavu task cancel ID                 # give up on it
 ```
 
 Then `cavu task run ID` again for an answer or a retry. A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock.
+
+### Budgets
+
+A task stops when its sessions and reviews have used `task_max_turns` turns (default 1000) or run for `task_timeout_minutes` minutes (default 300) since a person last started, answered, retried or cancelled it, and each session gets what is left. The stop is `budget` or `timeout`, and `cavu task retry ID` gives the task its whole budget again. The two guard against a runaway, so their defaults are high. A project's cap applies to its own tasks over the setting:
+
+```
+cavu settings set task_max_turns 400
+cavu project set web --cap task_timeout_minutes=60    # --cap task_timeout_minutes= removes it
+```
 
 ### Running the server
 

@@ -329,11 +329,11 @@ func TestDoctorMissingSettingNamesKey(t *testing.T) {
 
 	t.Run("a value a run cannot read", func(t *testing.T) {
 		d, _, _ := green(t, "key")
-		d.Settings["work_max_turns"] = "many"
+		d.Settings["task_max_turns"] = "many"
 
 		settings := byName(t, Run(t.Context(), d))["settings"]
 		assert.False(t, settings.OK)
-		assert.Contains(t, settings.Detail, "work_max_turns")
+		assert.Contains(t, settings.Detail, "task_max_turns")
 	})
 
 	t.Run("subscription mode needs no endpoint url", func(t *testing.T) {

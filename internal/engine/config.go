@@ -152,7 +152,7 @@ func ReadSettings(values map[string]string) (RunConfig, error) {
 var settableKeys = []string{
 	"runtime", "ca_bundle_path", "endpoint_mode", "endpoint_url", "endpoint_auth_header",
 	keyModelWork, keyEffortWork, "model_review", "effort_review", "model_strong", "effort_strong",
-	"work_timeout_minutes", "work_max_turns", "verify_timeout_minutes",
+	keyTaskTimeout, keyTaskTurns, "verify_timeout_minutes",
 	"commit_name", "commit_email", "concurrency", "listen_address",
 }
 
@@ -265,12 +265,19 @@ func (s *settingsReader) read() RunConfig {
 	c.Agent.Model, c.Agent.Effort = s.values[keyModelWork], s.values[keyEffortWork]
 	c.Agent.Review.Model, c.Agent.Review.Effort = cmp.Or(s.values["model_review"], c.Agent.Model), cmp.Or(s.values["effort_review"], c.Agent.Effort)
 	c.Agent.Strong.Model, c.Agent.Strong.Effort = cmp.Or(s.values["model_strong"], c.Agent.Model), cmp.Or(s.values["effort_strong"], c.Agent.Effort)
-	c.Agent.MaxTurns = s.positiveInt("work_max_turns", 200)
-	c.Agent.Timeout = time.Duration(s.positiveInt("work_timeout_minutes", 60)) * time.Minute
+	l := s.limits()
+	c.Agent.MaxTurns, c.Agent.Timeout = l.Turns, l.SessionTime
 	c.Verify.Timeout = s.minutes("verify_timeout_minutes", 10, 0.5, 120)
 	c.Identity.Name, c.Identity.Email = s.values["commit_name"], s.values["commit_email"]
 
 	return c
+}
+
+// limits reads the task's budget; a session's config gets what is left of it.
+func (s *settingsReader) limits() Limits {
+	return Limits{
+		Turns: s.positiveInt(keyTaskTurns, 1000), SessionTime: time.Duration(s.positiveInt(keyTaskTimeout, 300)) * time.Minute,
+	}
 }
 
 func (s *settingsReader) fail(key, problem string) {

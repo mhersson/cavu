@@ -36,6 +36,7 @@ type Snapshot struct {
 	Now         time.Time
 	Switches    Switches
 	Caps        Caps
+	Limits      Limits
 	LastEventID int64 // for the loop; Decide does not read it
 }
 
@@ -107,10 +108,16 @@ type Action struct {
 }
 
 // Decide returns the next action for s; the first rule that matches wins, then
-// the pauses hold a prepare or a session. It reads nothing but s, so the same
-// snapshot always gives the same action.
+// the task's budget stops a session, and the pauses hold a prepare or a
+// session. It reads nothing but s, so the same snapshot always gives the same action.
 func Decide(s Snapshot) Action {
 	a := decide(s)
+	if a.Kind == KindWork || a.Kind == KindReview {
+		if stop, ok := overBudget(s); ok {
+			return stop
+		}
+	}
+
 	if a.Kind != KindPrepare && a.Kind != KindWork && a.Kind != KindReview {
 		return a
 	}
@@ -244,7 +251,7 @@ func decide(s Snapshot) Action {
 	failed := f.Verify == ResultFailed || f.Verify == ResultTimeout
 	passed := f.Verify == ResultPassed || f.Verify == ResultWaived
 
-	if a, ok := sessionStop(sess, s.Now); ok {
+	if a, ok := sessionStop(sess, s); ok {
 		return a
 	}
 
@@ -306,13 +313,14 @@ func decide(s Snapshot) Action {
 }
 
 // sessionStop is the stop a session that ended as sess calls for, when its
-// outcome is one that stops the task; a review's halt is decided by it too.
-func sessionStop(sess *SessionFact, now time.Time) (Action, bool) {
+// outcome is one that stops the task; a review's halt is decided by it too. A
+// session's time and turns are what the task's budget left it.
+func sessionStop(sess *SessionFact, s Snapshot) (Action, bool) {
 	switch sess.Outcome {
 	case OutcomeUsageLimit:
 		resets := sess.ResetsAt
-		if !resets.After(now) {
-			resets = now.Add(UsageLimitFallback)
+		if !resets.After(s.Now) {
+			resets = s.Now.Add(UsageLimitFallback)
 		}
 
 		a := halt(StopUsageLimit, ClearNone, "The session hit a usage limit.",
@@ -324,9 +332,9 @@ func sessionStop(sess *SessionFact, now time.Time) (Action, bool) {
 		return halt(StopEndpoint, ClearRetry, "The session could not use the model endpoint.",
 			withDetail("The model endpoint failed or refused the agent's requests", sess.Detail)), true
 	case OutcomeTimeout:
-		return halt(StopTimeout, ClearRetry, "The session timed out.", "The agent session ran past its time limit."), true
+		return halt(StopTimeout, ClearRetry, "The session timed out.", timeUsed(s)), true
 	case OutcomeMaxTurns:
-		return halt(StopBudget, ClearRetry, "The session used all its turns.", "The agent session used all of its turns."), true
+		return halt(StopBudget, ClearRetry, "The session used all its turns.", turnsUsed(s)), true
 	}
 
 	return Action{}, false

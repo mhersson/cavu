@@ -95,6 +95,16 @@ func checkProject(p store.Project) error {
 		}
 	}
 
+	for k, v := range p.Caps {
+		if !slices.Contains(capKeys, k) {
+			return refuse("caps %q: want %s", k, strings.Join(capKeys, " or "))
+		}
+
+		if err := CheckSetting(k, v); err != nil {
+			return refuse("caps: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -111,8 +121,8 @@ func blank(command string) bool {
 }
 
 // sameBaselineGround reports whether a and b agree on what a baseline rests on.
-// Switches change no command, and an edit of the egress hosts adds a host far
-// more often than it removes one a command needed.
+// Switches and caps change no command, and an edit of the egress hosts adds a
+// host far more often than it removes one a command needed.
 func sameBaselineGround(a, b store.Project) bool {
 	return a.RepoURL == b.RepoURL && a.BaseBranch == b.BaseBranch && a.SetupCommand == b.SetupCommand &&
 		a.VerifyCommand == b.VerifyCommand && a.VerifyWaived == b.VerifyWaived &&

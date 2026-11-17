@@ -236,6 +236,16 @@ func (l *Loop) snapshot(ctx context.Context, taskID int64) (Snapshot, []store.Ev
 		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
 	}
 
+	set, err := l.Store.Settings(ctx)
+	if err != nil {
+		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	limits, err := readLimits(set, pr.Caps)
+	if err != nil {
+		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
 	ids, err := l.Store.TaskDeps(ctx, taskID)
 	if err != nil {
 		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
@@ -253,7 +263,7 @@ func (l *Loop) snapshot(ctx context.Context, taskID int64) (Snapshot, []store.Ev
 	}
 
 	s := Snapshot{
-		Task: t, Facts: Reduce(events), Deps: deps, Now: l.Now(), Switches: sw, Caps: defaultCaps, LastEventID: last,
+		Task: t, Facts: Reduce(events), Deps: deps, Now: l.Now(), Switches: sw, Caps: defaultCaps, Limits: limits, LastEventID: last,
 	}
 
 	if l.Paused != nil {
@@ -541,6 +551,8 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 	if !w.Resume {
 		w.SessionID = NewSessionID()
 	}
+
+	o.cfg.Agent.MaxTurns, o.cfg.Agent.Timeout = left(v.Snapshot)
 
 	switch a.WorkMode {
 	case ModeFixVerify:

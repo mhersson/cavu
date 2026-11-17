@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -456,6 +457,33 @@ func TestTaskShowPrintsTurnsAndDuration(t *testing.T) {
 	out = cavuIn(t, dir, "task", "show", id)
 	assert.Equal(t, []string{"7"}, labelled(out, "turns:"))
 	assert.Equal(t, []string{"5m3s"}, labelled(out, "duration:"))
+}
+
+// numbers is every whole number in text, in order.
+var numbers = regexp.MustCompile(`[0-9]+`)
+
+func TestTaskShowPrintsTheBudget(t *testing.T) {
+	dir := webData(t)
+	cavuIn(t, dir, "settings", "set", "task_max_turns", "400")
+	cavuIn(t, dir, "settings", "set", "task_timeout_minutes", "120")
+	id := addTask(t, dir, "Fix")
+
+	t0 := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	at := func(e store.Event, d time.Duration) store.Event {
+		e.At = t0.Add(d)
+
+		return e
+	}
+
+	seedEvents(t, dir, id, nil,
+		at(event(engine.TaskStarted, "user", struct{}{}), 0),
+		at(event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}), 0),
+		at(event(engine.SessionStarted, "engine", engine.SessionStartedPayload{Mode: engine.ModeStart, SessionID: "s1"}), time.Minute),
+		at(event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeUnfinished, Turns: 20}), 11*time.Minute))
+
+	lines := labelled(cavuIn(t, dir, "task", "show", id), "budget:")
+	require.Len(t, lines, 1)
+	assert.Equal(t, []string{"20", "400", "10", "120"}, numbers.FindAllString(lines[0], -1), "turns and minutes used, of how many")
 }
 
 func TestTaskDiffPrintsTheNewestExport(t *testing.T) {

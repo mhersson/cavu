@@ -300,12 +300,17 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
 		printState(stdout, events)
 
-		if err := printQueue(ctx, stdout, a, id); err != nil {
+		snap, err := printQueue(ctx, stdout, a, id)
+		if err != nil {
 			return err
 		}
 
 		turns, d := engine.TurnsAndDuration(events)
 		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
+
+		f, l := snap.Facts, snap.Limits
+		fmt.Fprintf(stdout, "budget:  %d of %d turns, %.0f of %.0f minutes since a person last acted\n",
+			f.Turns, l.Turns, f.SessionTime.Minutes(), l.SessionTime.Minutes())
 
 		if err := printUsage(ctx, stdout, a.store, id); err != nil {
 			return err
@@ -327,11 +332,11 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 }
 
 // printQueue prints the task's dependencies, each with its status, and why
-// Decide holds the task while it does.
-func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
+// Decide holds the task while it does, and returns the snapshot it decided.
+func printQueue(ctx context.Context, w io.Writer, a *app, id int64) (engine.Snapshot, error) {
 	var pauses engine.Pauses
 	if err := pauses.Read(ctx, a.store); err != nil {
-		return err
+		return engine.Snapshot{}, err
 	}
 
 	l := a.actions()
@@ -339,7 +344,7 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
 
 	snap, err := l.Snapshot(ctx, id)
 	if err != nil {
-		return err
+		return engine.Snapshot{}, err
 	}
 
 	if len(snap.Deps) > 0 {
@@ -355,7 +360,7 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
 		fmt.Fprintf(w, "wait:    %s\n", waitText(act))
 	}
 
-	return nil
+	return snap, nil
 }
 
 // printState prints the task's status, its open stop with every question the

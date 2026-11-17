@@ -63,15 +63,15 @@ func TestBuildRunConfig(t *testing.T) {
 			name: "optional settings and secrets take their defaults",
 			set:  map[string]string{"endpoint_mode": "subscription"},
 			unset: []string{
-				"endpoint_url", "endpoint_auth_header", "effort_work", "work_max_turns", "work_timeout_minutes",
+				"endpoint_url", "endpoint_auth_header", "effort_work", "task_max_turns", "task_timeout_minutes",
 				"verify_timeout_minutes", "forge_token", "endpoint_credential",
 			},
 			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
 				assert.Empty(t, got.Endpoint.URL)
 				assert.Empty(t, got.Endpoint.AuthHeader)
 				assert.Empty(t, got.Agent.Effort)
-				assert.Equal(t, 200, got.Agent.MaxTurns)
-				assert.Equal(t, 60*time.Minute, got.Agent.Timeout)
+				assert.Equal(t, 1000, got.Agent.MaxTurns)
+				assert.Equal(t, 300*time.Minute, got.Agent.Timeout)
 				assert.Equal(t, 10*time.Minute, got.Verify.Timeout)
 				assert.Empty(t, got.Repo.Token)
 				assert.Empty(t, got.Endpoint.Credential)
@@ -86,9 +86,9 @@ func TestBuildRunConfig(t *testing.T) {
 		{name: "endpoint_auth_header is required in key mode", unset: []string{"endpoint_auth_header"}, errHas: "endpoint_auth_header"},
 		{name: "an unknown endpoint mode", set: map[string]string{"endpoint_mode": "both"}, errHas: "endpoint_mode"},
 		{name: "an unknown auth header", set: map[string]string{"endpoint_auth_header": "basic"}, errHas: "endpoint_auth_header"},
-		{name: "turns that do not parse", set: map[string]string{"work_max_turns": "many"}, errHas: "work_max_turns"},
-		{name: "zero turns", set: map[string]string{"work_max_turns": "0"}, errHas: "work_max_turns"},
-		{name: "a negative work timeout", set: map[string]string{"work_timeout_minutes": "-5"}, errHas: "work_timeout_minutes"},
+		{name: "turns that do not parse", set: map[string]string{"task_max_turns": "many"}, errHas: "task_max_turns"},
+		{name: "zero turns", set: map[string]string{"task_max_turns": "0"}, errHas: "task_max_turns"},
+		{name: "a negative task timeout", set: map[string]string{"task_timeout_minutes": "-5"}, errHas: "task_timeout_minutes"},
 		{name: "a verify timeout that does not parse", set: map[string]string{"verify_timeout_minutes": "soon"}, errHas: "verify_timeout_minutes"},
 		{name: "a verify timeout that is not a number", set: map[string]string{"verify_timeout_minutes": "NaN"}, errHas: "verify_timeout_minutes"},
 		{name: "a project secret with no stored value", unset: []string{"project.web.NPM_AUTH"}, errHas: "project.web.NPM_AUTH"},
@@ -191,14 +191,14 @@ func runConfigCases(t *testing.T, tests []configCase) {
 }
 
 func TestReadSettingsNamesEveryMissingKey(t *testing.T) {
-	_, err := engine.ReadSettings(map[string]string{"endpoint_mode": "key", "work_max_turns": "many"})
+	_, err := engine.ReadSettings(map[string]string{"endpoint_mode": "key", "task_max_turns": "many"})
 	require.Error(t, err)
 
 	for _, key := range []string{"instance_id", "model_work", "commit_name", "commit_email", "endpoint_url", "endpoint_auth_header"} {
 		assert.Contains(t, err.Error(), key)
 	}
 
-	assert.NotContains(t, err.Error(), "work_max_turns", "a key not set comes before a value that does not parse")
+	assert.NotContains(t, err.Error(), "task_max_turns", "a key not set comes before a value that does not parse")
 }
 
 func TestCheckSetting(t *testing.T) {
@@ -211,9 +211,10 @@ func TestCheckSetting(t *testing.T) {
 		{"endpoint_mode", "both", false},
 		{"endpoint_auth_header", "x-api-key", true},
 		{"endpoint_auth_header", "basic", false},
-		{"work_max_turns", "50", true},
-		{"work_max_turns", "0", false},
-		{"work_timeout_minutes", "soon", false},
+		{"task_max_turns", "50", true},
+		{"task_max_turns", "0", false},
+		{"task_timeout_minutes", "soon", false},
+		{"work_max_turns", "50", false},
 		{"verify_timeout_minutes", "2.5", true},
 		{"verify_timeout_minutes", "soon", false},
 		{"endpoint_mode", "", true},
@@ -322,7 +323,7 @@ func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture)
 	settings := map[string]string{
 		"instance_id": "inst-1", "endpoint_mode": "key", "endpoint_url": "https://llm.example.com",
 		"endpoint_auth_header": "x-api-key", "model_work": "model-a", "effort_work": "high",
-		"work_timeout_minutes": "30", "work_max_turns": "50", "verify_timeout_minutes": "2.5",
+		"task_timeout_minutes": "30", "task_max_turns": "50", "verify_timeout_minutes": "2.5",
 		"commit_name": "CAVU Bot", "commit_email": "bot@example.com",
 	}
 	sealed := [][2]string{
