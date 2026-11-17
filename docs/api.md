@@ -1,21 +1,21 @@
 # HTTP API
 
-`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP. Every route is under `/api/`. Request and response bodies are JSON, but for the event stream's. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
+`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP: the REST routes under `/api/`, and the [MCP tools](#mcp) at `/mcp`. Under `/api/`, request and response bodies are JSON, but for the event stream's. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
 
 ## Authentication
 
-Every route but `GET /api/health` and `POST /api/auth/login` needs one of these:
+Every route under `/api/` but `GET /api/health` and `POST /api/auth/login` needs one of these:
 
 - **An API token**, sent as `Authorization: Bearer <token>`. `cavu token add NAME` creates one and prints it once: `cavu_` followed by 43 URL-safe characters.
 - **The session cookie** `cavu_session`, which `POST /api/auth/login` sets. It is `HttpOnly`, `SameSite=Strict` and `Path=/`, and `Secure` when the login came over TLS or carries `X-Forwarded-Proto: https`. A session lasts 30 days after its last use: when a request moves its expiry, which happens at most once a day, the response sets the cookie again with the new expiry.
 
 A request with the cookie whose method is not `GET` or `HEAD` must also carry the header `X-CAVU-CSRF` with any non-empty value. A page served from another port of the same host can make a browser send the cookie, but cannot add this header. A request with a bearer token needs no such header.
 
-A request with a bearer token the server does not know is judged by its cookie.
+Under `/api/`, a request with a bearer token the server does not know is judged by its cookie. `/mcp` takes only an API token: see [MCP](#mcp).
 
 ## Errors
 
-An error is a JSON object with one field, a line saying what went wrong:
+An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a line saying what went wrong:
 
 ```json
 {"error": "wrong name or password"}
@@ -24,7 +24,7 @@ An error is a JSON object with one field, a line saying what went wrong:
 | Status | Meaning |
 |--------|---------|
 | 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless; or the query names a project or a status that does not exist; or a query value or header that must be a whole number is not one. |
-| 401 | The request has neither a known API token nor a live session cookie, or a login named the wrong name or password. |
+| 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist. |
 | 409 | The write conflicts with what is stored: another project has the name, or an event was recorded on the task between an action's read and its write. Nothing was written; send it again. |
@@ -206,7 +206,7 @@ A list is `[]` when empty, never null.
 | `id` | The task's id. |
 | `project` | The name of the task's project. |
 | `title`, `body` | What the task asks for. |
-| `requester` | What created the task: `cli` for a `cavu task add`, `api` for this API. |
+| `requester` | What created the task: `cli` for a `cavu task add`, `api` for `POST /api/tasks`, `mcp` for the MCP tool `create_task`. |
 | `created_at` | When the task was created. |
 | `status` | Where the task stands: `cancelled` once cancelled, started or not; else `draft` until started; `done` once its change is merged; `blocked` while a stop is open; `in_review` once its change is exported; `queued` while no run is open; else `running`. |
 | `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; else `""`. |
@@ -258,3 +258,20 @@ An event is one fact in a task's history, recorded once and never changed:
 | `type` | What happened, such as `task_started`, `agent_text` or `stopped`. |
 | `actor` | Who recorded it: `user`, `engine`, `runner` or `agent`. |
 | `payload` | The event's details, a JSON value whose shape the type sets. |
+
+## MCP
+
+`POST /mcp` serves six tools to an MCP client over the streamable HTTP transport. It takes only an API token, as `Authorization: Bearer <token>`: a request without a token the server knows is 401 with the JSON error above, whatever cookie it carries, and no request there needs `X-CAVU-CSRF`. The server is stateless: it keeps no session between requests and sets no `Mcp-Session-Id`. It answers each call with one JSON message, never an event stream, and any method but `POST` with 405.
+
+A tool that does what a REST route does calls that route's code, so it refuses what the route refuses, and every tool gives a task as [the task](#the-task) shows it:
+
+| Tool | Input | What it does |
+|------|-------|--------------|
+| `create_task` | `project`, `title`, and optionally `body`, `depends_on` and `start` | Creates a task as `POST /api/tasks` does, with the requester `mcp`, and answers with the task. |
+| `get_task` | `id` | Answers with the task. |
+| `list_tasks` | optionally `project` and `status` | Answers with the list `GET /api/tasks` gives for that query. |
+| `run_task` | `id` | Records the action `start` for a task with no open stop, else the action `retry`, as `POST /api/tasks/{id}/actions` does, and answers with the task. A task stopped on a question is refused with a line saying it needs an answer, which the action `answer` or `cavu task answer ID` gives. |
+| `cancel_task` | `id` | Records the action `cancel` as `POST /api/tasks/{id}/actions` does, and answers with the task. |
+| `list_projects` | none | Answers with each project's name and whether it is [runnable](#the-project): `{"projects": [{"name": "web", "runnable": true}]}`. |
+
+A tool's answer is its structured content, and the same JSON as its text. A call the server refuses, for what it holds, for the task's state, or for a task or project that does not exist, is a tool result marked `isError` whose text is one line saying why, the line a REST route answers for the same refusal; a failure of the server's own is `internal error`. An argument the tool does not take, of the wrong type, or missing, is refused before the tool runs. A request the transport cannot take is refused with an HTTP status and a plain-text line, such as 413 for a body over 1 MiB or 415 for a `Content-Type` other than `application/json`, and a call of a tool that does not exist is a JSON-RPC error. A refused call writes nothing.

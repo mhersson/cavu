@@ -1,5 +1,5 @@
-// Package api serves CAVU's REST API over HTTP under /api/, and checks the
-// authority of every request in one place.
+// Package api serves CAVU's REST API over HTTP under /api/ and its MCP tools
+// at /mcp, and checks the authority of every request in one place.
 package api
 
 import (
@@ -77,7 +77,7 @@ func Routes() []string {
 
 type server struct{ Deps }
 
-// New returns the handler of every route.
+// New returns the handler of every route and of the MCP tools.
 func New(d Deps) http.Handler {
 	s := &server{d}
 	mux := http.NewServeMux()
@@ -98,6 +98,19 @@ func New(d Deps) http.Handler {
 			}
 		})
 	}
+
+	tools := s.tools()
+
+	// Every method reaches the MCP handler, which answers any but POST with 405.
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.authorizeToken(r); err != nil {
+			fail(w, r, err)
+
+			return
+		}
+
+		tools.ServeHTTP(w, r)
+	})
 
 	// Else the mux answers a request that matches no route in plain text.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -202,13 +215,31 @@ func (s *server) seal(ctx context.Context, prefix string, secrets map[string]str
 	return nil
 }
 
-// authorize is the one check of authority: a bearer token the login service
-// accepts, else the session cookie.
+// bearer reports whether the request carries an API token the login service accepts.
+func (s *server) bearer(r *http.Request) (bool, error) {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false, nil
+	}
+
+	return s.Auth.Bearer(r.Context(), token)
+}
+
+// authorizeToken is the check of authority at /mcp: a bearer token alone. A
+// session cookie is none there, since that endpoint has no CSRF rule.
+func (s *server) authorizeToken(r *http.Request) error {
+	if ok, err := s.bearer(r); err != nil || ok {
+		return err
+	}
+
+	return &apiError{http.StatusUnauthorized, "send an API token as Authorization: Bearer TOKEN"}
+}
+
+// authorize is the check of authority under /api/: a bearer token the login
+// service accepts, else the session cookie.
 func (s *server) authorize(w http.ResponseWriter, r *http.Request) error {
-	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-		if valid, err := s.Auth.Bearer(r.Context(), token); err != nil || valid {
-			return err
-		}
+	if ok, err := s.bearer(r); err != nil || ok {
+		return err
 	}
 
 	c, err := r.Cookie(cookieName)

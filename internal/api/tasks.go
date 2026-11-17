@@ -232,13 +232,14 @@ func (s *server) listTasks(ctx context.Context, project string, status engine.St
 	return l, nil
 }
 
-// newTask is what a request gives a new task.
+// newTask is what a request gives a new task, over REST and MCP. The optional
+// fields are omitempty, so that the schema MCP infers does not require them.
 type newTask struct {
-	Project   string  `json:"project"`
-	Title     string  `json:"title"`
-	Body      string  `json:"body"`
-	DependsOn []int64 `json:"depends_on"`
-	Start     bool    `json:"start"`
+	Project   string  `json:"project" jsonschema:"the name of the task's project"`
+	Title     string  `json:"title" jsonschema:"one line of at most 200 characters"`
+	Body      string  `json:"body,omitempty" jsonschema:"what the task asks for, in full"`
+	DependsOn []int64 `json:"depends_on,omitempty" jsonschema:"the ids of the tasks that must be done before this one runs"`
+	Start     bool    `json:"start,omitempty" jsonschema:"start the task as well, which its project must allow"`
 }
 
 func (s *server) createTask(w http.ResponseWriter, r *http.Request) error {
