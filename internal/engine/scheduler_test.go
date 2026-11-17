@@ -830,6 +830,77 @@ func TestCheckRequestedDuringACheckRunsAgain(t *testing.T) {
 	assert.Empty(t, s.errs())
 }
 
+// editVerify changes the project's verify command the way a person's edit does.
+func (h *harness) editVerify(command string) {
+	h.t.Helper()
+
+	p := h.project()
+	p.VerifyCommand = command
+	require.NoError(h.t, engine.EditProject(h.t.Context(), h.store, p))
+}
+
+// A check whose project changed under it stored nothing: its baseline comes
+// from a verify command the person has replaced. The request stays, so the
+// next check runs on the new ground and stores its own result.
+func TestCheckOfAnEditedProjectStoresNothing(t *testing.T) {
+	h := newHarness(t)
+	web := h.task.ProjectID
+	require.NoError(t, h.loop.RequestCheck(t.Context(), web))
+	g := h.gate("check")
+
+	s := h.schedule(func(s *engine.Scheduler) {
+		s.Checks = true
+		s.Only = func(store.Task) bool { return false }
+	})
+
+	h.eventually(func() bool { return slices.Equal(g.held("check"), []int64{web}) })
+	h.editVerify("make check")
+	g.let(t, "check", web)
+
+	h.eventually(func() bool {
+		return len(h.runner.callsOf("check")) == 2 && slices.Equal(g.held("check"), []int64{web})
+	}, "the request stays, so the check runs again on the new command")
+
+	got := h.project()
+	assert.Nil(t, got.Baseline)
+	assert.False(t, engine.Runnable(got))
+	assert.NotNil(t, got.CheckRequestedAt)
+	assert.Equal(t, store.CheckResult{}, got.CheckResult)
+
+	g.let(t, "check", web)
+	h.eventually(func() bool { return h.checkCleared(web) })
+
+	got = h.project()
+	require.NotNil(t, got.Baseline)
+	assert.True(t, engine.Runnable(got))
+	assert.Equal(t, preparedOK.BaseCommit, got.CheckResult.BaseCommit)
+	assert.Empty(t, s.errs())
+}
+
+func TestCheckByAPersonOfAnEditedProjectStoresNothing(t *testing.T) {
+	h := newHarness(t)
+	web := h.task.ProjectID
+	g := h.gate("check")
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, _, err := h.loop.CheckProject(t.Context(), web)
+		done <- err
+	}()
+
+	h.eventually(func() bool { return slices.Equal(g.held("check"), []int64{web}) })
+	h.editVerify("make check")
+	g.let(t, "check", web)
+
+	require.Error(t, <-done, "the person is told to run it again")
+
+	got := h.project()
+	assert.Nil(t, got.Baseline)
+	assert.False(t, engine.Runnable(got))
+	assert.Equal(t, store.CheckResult{}, got.CheckResult)
+}
+
 func TestSchedulerDrivingCoversARelease(t *testing.T) {
 	h := newHarness(t)
 	g := h.gate("release")

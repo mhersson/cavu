@@ -340,8 +340,14 @@ func (s *Scheduler) check(ctx context.Context, r *round) {
 	// CheckProject's two halves, so only a failure to store is reported: the
 	// check's own error is the fault it stores.
 	go func() {
-		res, suggestion, err := s.Loop.checkEnvironment(ctx, next.ID)
-		checked <- s.Loop.storeCheck(ctx, next.ID, *next.CheckRequestedAt, res, suggestion, err)
+		started, res, suggestion, err := s.Loop.checkEnvironment(ctx, next.ID)
+		err = s.Loop.storeCheck(ctx, started, *next.CheckRequestedAt, res, suggestion, err)
+
+		if errors.Is(err, errChangedDuringCheck) {
+			err = nil // the request stays, so the next pass checks again
+		}
+
+		checked <- err
 	}()
 }
 

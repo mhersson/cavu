@@ -30,6 +30,11 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 		return RunConfig{}, fmt.Errorf("project %d: %w", t.ProjectID, err)
 	}
 
+	return l.runConfig(ctx, p, t, r, overrides)
+}
+
+// runConfig builds BuildRunConfig's config from a project already read.
+func (l *Loop) runConfig(ctx context.Context, p store.Project, t store.Task, r store.Run, overrides map[string]string) (RunConfig, error) {
 	sw, err := resolveSwitches(p, overrides)
 	if err != nil {
 		return RunConfig{}, err
