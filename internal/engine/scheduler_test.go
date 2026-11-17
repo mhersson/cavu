@@ -619,9 +619,6 @@ func TestSchedulerRunsRequestedChecks(t *testing.T) {
 	require.NoError(t, h.loop.RequestCheck(ctx, web.ID))
 	h.clock.Advance(time.Second)
 	require.NoError(t, h.loop.RequestCheck(ctx, api.ID))
-	h.clock.Advance(time.Second)
-	require.NoError(t, h.loop.RequestCheck(ctx, web.ID))
-	assert.True(t, now.Equal(*h.project().CheckRequestedAt), "a waiting request keeps its time")
 
 	g := h.gate("check")
 	s := h.schedule(func(s *engine.Scheduler) {
@@ -798,6 +795,36 @@ func TestSchedulerStopTakesNoSlot(t *testing.T) {
 
 	g.free("work")
 	h.eventually(func() bool { return h.inReview(h.task.ID) })
+	assert.Empty(t, s.errs())
+}
+
+// A check asked for while that project's check runs is not lost: the running
+// check leaves the later request, so the next pass runs the check again.
+func TestCheckRequestedDuringACheckRunsAgain(t *testing.T) {
+	h := newHarness(t)
+	web := h.task.ProjectID
+	require.NoError(t, h.loop.RequestCheck(t.Context(), web))
+	g := h.gate("check")
+
+	s := h.schedule(func(s *engine.Scheduler) {
+		s.Checks = true
+		s.Only = func(store.Task) bool { return false }
+	})
+
+	h.eventually(func() bool { return slices.Equal(g.held("check"), []int64{web}) })
+	h.clock.Advance(time.Second)
+	require.NoError(t, h.loop.RequestCheck(t.Context(), web))
+	g.let(t, "check", web)
+
+	h.eventually(func() bool {
+		return len(h.runner.callsOf("check")) == 2 && slices.Equal(g.held("check"), []int64{web})
+	}, "the later request runs the check again")
+	assert.False(t, h.checkCleared(web), "the request stays until the check that started after it ends")
+
+	g.let(t, "check", web)
+	h.eventually(func() bool { return h.checkCleared(web) })
+	s.passes(t, 2)
+	assert.Len(t, h.runner.callsOf("check"), 2)
 	assert.Empty(t, s.errs())
 }
 

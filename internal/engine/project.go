@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -123,16 +124,12 @@ func Runnable(p store.Project) bool {
 	return p.VerifyWaived || p.Baseline != nil && p.Baseline.Passed
 }
 
-// RequestCheck asks for an environment check of the project. A request still
-// waiting keeps its time, so the oldest request runs first.
+// RequestCheck asks for an environment check of the project. Every request
+// carries the time it was made, so a check that started before it leaves it.
 func (l *Loop) RequestCheck(ctx context.Context, projectID int64) error {
 	p, err := l.Store.Project(ctx, projectID)
 	if err != nil {
 		return fmt.Errorf("project %d: %w", projectID, err)
-	}
-
-	if p.CheckRequestedAt != nil {
-		return nil
 	}
 
 	at := l.Now()
@@ -141,15 +138,16 @@ func (l *Loop) RequestCheck(ctx context.Context, projectID int64) error {
 	return l.Store.UpdateProject(ctx, p)
 }
 
-// CheckProject prepares a project the way a run does, under run and task id 0.
+// CheckProject prepares a project the way a run does, under run and task id 0,
+// for a person who runs the check: it answers no request, so it clears none.
 // Whatever the outcome, it stores the project's check result, with any error
-// it met as the fault, clears the check request, and stores the baseline it
-// found unless it met an error or the project has no verify command. It also
-// returns the verify command the repository suggests, or "", even with an error.
+// it met as the fault, and stores the baseline it found unless it met an error
+// or the project has no verify command. It also returns the verify command the
+// repository suggests, or "", even with an error.
 func (l *Loop) CheckProject(ctx context.Context, projectID int64) (PrepareResult, string, error) {
 	res, suggestion, err := l.checkEnvironment(ctx, projectID)
 
-	return res, suggestion, errors.Join(err, l.storeCheck(ctx, projectID, res, suggestion, err))
+	return res, suggestion, errors.Join(err, l.storeCheck(ctx, projectID, time.Time{}, res, suggestion, err))
 }
 
 func (l *Loop) checkEnvironment(ctx context.Context, projectID int64) (PrepareResult, string, error) {
@@ -161,13 +159,18 @@ func (l *Loop) checkEnvironment(ctx context.Context, projectID int64) (PrepareRe
 	return l.Runner.CheckEnvironment(ctx, c)
 }
 
-// storeCheck stores what a check found, or the error it met, and clears the
-// project's check request. An error leaves the baseline as it is, and so does
-// a project with no verify command, since nothing was verified.
-func (l *Loop) storeCheck(ctx context.Context, projectID int64, res PrepareResult, suggestion string, cause error) error {
+// storeCheck stores what a check found, or the error it met. It clears the
+// request made at answers, the one the check started on, unless a later
+// request replaced it. A zero answers clears none.
+// An error leaves the baseline as it is, and so does a project with no verify
+// command, since nothing was verified.
+func (l *Loop) storeCheck(ctx context.Context, projectID int64, answers time.Time, res PrepareResult, suggestion string, cause error) error {
 	p, err := l.Store.Project(ctx, projectID)
 	if err == nil {
-		p.CheckRequestedAt = nil
+		if r := p.CheckRequestedAt; r != nil && r.Equal(answers) {
+			p.CheckRequestedAt = nil
+		}
+
 		p.CheckResult = store.CheckResult{
 			Tools: res.Tools, IgnoredTools: res.IgnoredTools, FailedStep: res.FailedStep, VerifySuggestion: suggestion,
 		}

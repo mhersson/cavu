@@ -341,7 +341,7 @@ func (s *Scheduler) check(ctx context.Context, r *round) {
 	// check's own error is the fault it stores.
 	go func() {
 		res, suggestion, err := s.Loop.checkEnvironment(ctx, next.ID)
-		checked <- s.Loop.storeCheck(ctx, next.ID, res, suggestion, err)
+		checked <- s.Loop.storeCheck(ctx, next.ID, *next.CheckRequestedAt, res, suggestion, err)
 	}()
 }
 
