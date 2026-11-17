@@ -28,8 +28,9 @@ const (
 )
 
 // gitFunc is git for CAVU's own commands in the workspace: a hook the
-// repository or the agent set must not run, and no commit waits on a signer.
-const gitFunc = "g() { git -c core.hooksPath=/dev/null -c commit.gpgSign=false \"$@\"; }\n"
+// repository or the agent set must not run, no replace ref stands in for a
+// real object, and no commit waits on a signer.
+const gitFunc = "g() { git --no-replace-objects -c core.hooksPath=/dev/null -c commit.gpgSign=false \"$@\"; }\n"
 
 // freezeScript commits what the session left uncommitted with message $3,
 // points the task branch $2 at HEAD and prints HEAD. It refuses a workspace
