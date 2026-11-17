@@ -1,2 +1,3 @@
 bin/
 dist/
+/cmd/cavu/cavu
