@@ -61,7 +61,7 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 
 			_, err := runVerify(t.Context(), r.state(c.RunID), c)
 			require.NoError(t, err)
-			assert.Equal(t, agentEnv(tt.ecosystems, c.Repo.BaseCommit), f.run(t, "make test").cmd.Env, "the agent phase's environment follows them too")
+			assert.Equal(t, withProjectVars(agentEnv(tt.ecosystems, c.Repo.BaseCommit), c), f.run(t, "make test").cmd.Env, "the agent phase's environment follows them too")
 		}
 	})
 

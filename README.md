@@ -51,7 +51,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu project check web
    ```
 
-   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline.
+   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline.
 
 6. Add a task and run it. `task run` prints each event as it happens and ends with the task's status. `task show` also prints the turns, the duration and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
 
@@ -92,7 +92,7 @@ Download the modules in the setup command (`go mod download`): the setup phase r
 
 ### Python projects
 
-Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
+Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. Runs of one project run side by side and share the interpreter, so a bare `pip install` is not safe beside another run of the project. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
 
 ## Licence
 
