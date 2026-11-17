@@ -35,7 +35,7 @@ func TestReplayRoundTrip(t *testing.T) {
 
 	item := ReplayItem{
 		ReplayID: r.ID, SourceTaskID: src.ID, TaskID: shadow.ID, Verify: "passed", Stop: "question",
-		Asked: true, Turns: 7, Tokens: 1234, CostEstimateUSD: 0.42, Duration: 90 * time.Second, DiffPath: "diff.patch",
+		Asked: 3, Turns: 7, Tokens: 1234, CostEstimateUSD: 0.42, Duration: 90 * time.Second, DiffPath: "diff.patch",
 	}
 	require.NoError(t, s.PutReplayItem(ctx, item))
 

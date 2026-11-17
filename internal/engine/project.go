@@ -91,7 +91,7 @@ func checkProject(p store.Project) error {
 
 	for k := range p.Switches {
 		if known[k] == nil {
-			return refuse("switches %q: want continuations, verify_fix or web_tools", k)
+			return refuse("switches %q: want continuations, verify_fix, web_tools or readiness", k)
 		}
 	}
 

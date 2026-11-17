@@ -565,8 +565,8 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 
 	if err := p.result(ctx, o, usage, draft{SessionEnded, actorRunner, SessionEndedPayload{
 		Outcome: res.Outcome, Title: res.Title, Summary: res.Summary, Assumptions: res.Assumptions,
-		Questions: res.Questions, Changed: res.Changed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD,
-		ResetsAt: res.ResetsAt, Detail: res.Detail, HeadCommit: res.HeadCommit,
+		Questions: res.Questions, SuggestedAnswers: res.SuggestedAnswers, Changed: res.Changed, Turns: res.Turns,
+		CostEstimateUSD: res.CostEstimateUSD, ResetsAt: res.ResetsAt, Detail: res.Detail, HeadCommit: res.HeadCommit,
 	}}); err != nil {
 		return err
 	}

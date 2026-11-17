@@ -66,7 +66,7 @@ func TestPrepareOrder(t *testing.T) {
 }
 
 // After the setup command, mise makes the shims for what it added to a tool,
-// such as a console script pip installed, so both phases find its commands.
+// such as a console script pip installed, so every phase finds its commands.
 func TestPrepareReshimsAfterTheSetupCommand(t *testing.T) {
 	f := newFake()
 
@@ -140,7 +140,7 @@ func TestPrepareAllowlists(t *testing.T) {
 	}
 }
 
-// Both phases reach their egress through the bridge: every command but the
+// Every phase reaches its egress through the bridge: every command but the
 // read gets the proxy variables, and the agent phase gets the agent's
 // environment.
 func TestPrepareEnvironments(t *testing.T) {

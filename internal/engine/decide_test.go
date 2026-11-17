@@ -116,6 +116,7 @@ func decideCases() []decideCase {
 	none := engine.Action{Kind: engine.KindNone}
 	contOff := engine.Switches{VerifyFix: true}
 	fixOff := engine.Switches{Continuations: true}
+	readiness := engine.Switches{Continuations: true, VerifyFix: true, Readiness: true}
 
 	cancelledStop := openStop(engine.StopCancelled, time.Time{})
 	cancelledStop.Cancelled = true
@@ -204,6 +205,8 @@ func decideCases() []decideCase {
 		{name: "resumed from verify failed", snap: snap(resumed(engine.StopVerifyFailed, "")), want: work(engine.ModeFixVerify, false)},
 		{name: "resumed from an agent error", snap: snap(resumed(engine.StopAgentError, "")), want: work(engine.ModeContinue, false)},
 		{name: "resumed from a question without an answer", snap: snap(resumed(engine.StopQuestion, "")), want: work(engine.ModeContinue, false)},
+		{name: "no ended session, readiness on", snap: snapWith(prepared(), readiness), want: work(engine.ModeReadiness, false)},
+		{name: "no ended session with a session id, readiness on", snap: snapWith(withSession, readiness), want: work(engine.ModeContinue, false)},
 		{name: "no ended session", snap: snap(prepared()), want: work(engine.ModeStart, false)},
 		{name: "no ended session with a session id", snap: snap(withSession), want: work(engine.ModeContinue, false)},
 		{
@@ -245,6 +248,8 @@ func decideCases() []decideCase {
 			name: "session failed with a long summary", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeFailed, Summary: longSummary})),
 			want: halt(engine.StopAgentError, engine.ClearRetry), explainHas: "日本語",
 		},
+		{name: "session ready", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeReady})), want: work(engine.ModeStart, false)},
+		{name: "session ready, readiness on", snap: snapWith(ended(engine.SessionFact{Outcome: engine.OutcomeReady}), readiness), want: work(engine.ModeStart, false)},
 		{name: "unfinished with no continuation yet", snap: snap(cut(engine.OutcomeUnfinished, 0)), want: work(engine.ModeContinue, true)},
 		{name: "unfinished with one continuation", snap: snap(cut(engine.OutcomeUnfinished, 1)), want: work(engine.ModeContinue, true)},
 		{name: "unfinished at the continuation cap", snap: snap(cut(engine.OutcomeUnfinished, 2)), want: halt(engine.StopAgentError, engine.ClearRetry)},

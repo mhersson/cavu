@@ -5,7 +5,7 @@ import (
 )
 
 // MiseConfigFile is where the setup phase writes MiseConfig's output, on the
-// project cache; both phases point mise at it.
+// project cache; every phase points mise at it.
 const MiseConfigFile = cacheDir + "/mise/cavu.toml"
 
 // MiseConfig renders the mise configuration CAVU writes. It holds only a

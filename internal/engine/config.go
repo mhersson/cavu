@@ -177,7 +177,9 @@ func ListenAddress(values map[string]string) (string, error) {
 
 // switchFields maps each switch's name to its field in sw.
 func switchFields(sw *Switches) map[string]*bool {
-	return map[string]*bool{"continuations": &sw.Continuations, "verify_fix": &sw.VerifyFix, "web_tools": &sw.WebTools}
+	return map[string]*bool{
+		"continuations": &sw.Continuations, "verify_fix": &sw.VerifyFix, "web_tools": &sw.WebTools, "readiness": &sw.Readiness,
+	}
 }
 
 // ProjectSwitches returns the state of each switch of a project, over the defaults.
@@ -195,7 +197,7 @@ func ProjectSwitches(p store.Project) map[string]bool {
 // resolveSwitches applies a project's switches over the defaults, then a task's
 // overrides. The snapshot and the run config both resolve through it.
 func resolveSwitches(p store.Project, overrides map[string]string) (Switches, error) {
-	sw := Switches{Continuations: true, VerifyFix: true}
+	sw := Switches{Continuations: true, VerifyFix: true, Readiness: true}
 	fields := switchFields(&sw)
 
 	for k, on := range p.Switches {

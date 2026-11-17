@@ -359,7 +359,8 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
 }
 
 // printState prints the task's status, its open stop with every question the
-// agent asked, and its newest export with git's summary of it, and returns the status.
+// agent asked and the answer it suggested, and its newest export with git's
+// summary of it, and returns the status.
 func printState(w io.Writer, events []store.Event) engine.Status {
 	facts := engine.Reduce(events)
 	status := engine.StatusOf(facts)
@@ -372,8 +373,14 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 
 		// The stop's explanation holds only the first question.
 		if facts.OpenStop.Reason == engine.StopQuestion && facts.Session != nil {
-			for _, q := range facts.Session.Questions {
+			suggested := facts.Session.SuggestedAnswers
+
+			for i, q := range facts.Session.Questions {
 				fmt.Fprintf(w, "asked:   %s\n", q)
+
+				if i < len(suggested) && suggested[i] != "" {
+					fmt.Fprintf(w, "suggest: %s\n", suggested[i])
+				}
 			}
 		}
 	}

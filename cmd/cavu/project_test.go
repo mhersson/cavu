@@ -567,7 +567,7 @@ func TestProjectShowPrintsEveryField(t *testing.T) {
 	out := cavuIn(t, dir, "project", "show", "web")
 
 	for _, want := range []string{
-		repo, "waived", "example.org", "A=b", "TOKEN", "go=1.22", "web_tools=on", "continuations=on", "node@22", "npm test",
+		repo, "waived", "example.org", "A=b", "TOKEN", "go=1.22", "web_tools=on", "continuations=on", "readiness=on", "node@22", "npm test",
 	} {
 		assert.Contains(t, out, want)
 	}

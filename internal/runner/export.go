@@ -11,6 +11,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/proc"
+	"github.com/mhersson/cavu/internal/sandbox"
 )
 
 const (
@@ -40,7 +41,7 @@ func (r *Runner) Export(ctx context.Context, c engine.RunConfig, commit string) 
 		return engine.ExportResult{Problem: "No session froze its work into a commit, so there is nothing to export."}, nil
 	}
 
-	return act(ctx, r, c, func(ctx context.Context, st *run, mask func(string) string) (engine.ExportResult, error) {
+	return act(ctx, r, c, sandbox.PhaseAgent, func(ctx context.Context, st *run, mask func(string) string) (engine.ExportResult, error) {
 		if err := st.restartAgent(ctx); err != nil {
 			return engine.ExportResult{}, err
 		}

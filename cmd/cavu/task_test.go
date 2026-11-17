@@ -353,6 +353,29 @@ func labelled(out, label string) []string {
 	return vs
 }
 
+func TestTaskShowPrintsSuggestedAnswers(t *testing.T) {
+	dir := webData(t)
+	id := addTask(t, dir, "Fix")
+
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}),
+		event(engine.SessionEnded, "runner", engine.SessionEndedPayload{
+			Outcome: engine.OutcomeBlocked, Questions: []string{"Which port?", "Is IPv6 needed?"}, SuggestedAnswers: []string{"8080", ""},
+		}),
+		question())
+
+	var lines []string
+
+	for line := range strings.Lines(cavuIn(t, dir, "task", "show", id)) {
+		if strings.HasPrefix(line, "asked:") || strings.HasPrefix(line, "suggest:") {
+			lines = append(lines, strings.Join(strings.Fields(line), " "))
+		}
+	}
+
+	assert.Equal(t, []string{"asked: Which port?", "suggest: 8080", "asked: Is IPv6 needed?"}, lines,
+		"each suggested answer under its question, and none for a question without one")
+}
+
 func TestTaskShowPrintsTheNewestExport(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix")
@@ -487,6 +510,8 @@ func runSetup(t *testing.T) (dir, id string, fake *fakeRuntime) {
 
 	dir, fake = checkSetup(t, "--verify", "make test")
 	storeBaseline(t, dir, "web")
+	// The fake answers every session alike, so the readiness turn is off: no test here is about it.
+	cavuIn(t, dir, "project", "set", "web", "--switch", "readiness=off")
 
 	fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456", Title: "Fix the login"}
 

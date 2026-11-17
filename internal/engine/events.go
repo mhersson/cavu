@@ -45,6 +45,7 @@ const (
 	OutcomeTimeout    = "timeout"
 	OutcomeUsageLimit = "usage_limit"
 	OutcomeEndpoint   = "endpoint"
+	OutcomeReady      = "ready" // a readiness turn found nothing missing
 )
 
 // Verify results.
@@ -57,6 +58,7 @@ const (
 
 // Work modes, of a session and of the work action that starts it.
 const (
+	ModeReadiness = "readiness"
 	ModeStart     = "start"
 	ModeContinue  = "continue"
 	ModeFixVerify = "fix_verify"
@@ -119,17 +121,18 @@ type (
 	}
 
 	SessionEndedPayload struct {
-		Outcome         string    `json:"outcome"`
-		Title           string    `json:"title"`
-		Summary         string    `json:"summary"`
-		Assumptions     []string  `json:"assumptions"`
-		Questions       []string  `json:"questions"`
-		Changed         bool      `json:"changed"`
-		HeadCommit      string    `json:"head_commit,omitempty"`
-		Turns           int       `json:"turns"`
-		CostEstimateUSD float64   `json:"cost_estimate_usd"`
-		ResetsAt        time.Time `json:"resets_at,omitzero"`
-		Detail          string    `json:"detail"`
+		Outcome          string    `json:"outcome"`
+		Title            string    `json:"title"`
+		Summary          string    `json:"summary"`
+		Assumptions      []string  `json:"assumptions"`
+		Questions        []string  `json:"questions"`
+		SuggestedAnswers []string  `json:"suggested_answers,omitempty"` // one per question, "" where the agent gave none
+		Changed          bool      `json:"changed"`
+		HeadCommit       string    `json:"head_commit,omitempty"`
+		Turns            int       `json:"turns"`
+		CostEstimateUSD  float64   `json:"cost_estimate_usd"`
+		ResetsAt         time.Time `json:"resets_at,omitzero"`
+		Detail           string    `json:"detail"`
 	}
 
 	VerifyStartedPayload struct {

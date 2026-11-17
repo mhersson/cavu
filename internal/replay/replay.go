@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -20,8 +22,8 @@ var ErrNoReferenceTasks = errors.New("replay: no reference task has a base commi
 
 // Config names a replay and what it changes. Empty and nil fields change nothing.
 type Config struct {
-	Name, Model, Effort                string
-	Continuations, VerifyFix, WebTools *bool
+	Name, Model, Effort                           string
+	Continuations, VerifyFix, WebTools, Readiness *bool
 }
 
 // overrides maps c onto the task override keys the engine understands.
@@ -36,7 +38,9 @@ func (c Config) overrides() map[string]string {
 		o["effort_work"] = c.Effort
 	}
 
-	for k, v := range map[string]*bool{"continuations": c.Continuations, "verify_fix": c.VerifyFix, "web_tools": c.WebTools} {
+	for k, v := range map[string]*bool{
+		"continuations": c.Continuations, "verify_fix": c.VerifyFix, "web_tools": c.WebTools, "readiness": c.Readiness,
+	} {
 		if v != nil {
 			o[k] = strconv.FormatBool(*v)
 		}
@@ -138,6 +142,14 @@ func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay,
 	}
 
 	status, err := drive(ctx, shadow.ID)
+	if err == nil && status == engine.StatusBlocked {
+		// Once is enough: the agent suggests answers only in the readiness turn, which runs once per run.
+		var answered bool
+		if answered, err = answerSuggested(ctx, l, shadow.ID); answered {
+			status, err = drive(ctx, shadow.ID)
+		}
+	}
+
 	if err != nil {
 		// The replay ends here, so nothing resumes the shadow: the cancel lets whoever drives it end its run.
 		err = errors.Join(err, l.Cancel(context.WithoutCancel(ctx), shadow.ID))
@@ -169,6 +181,36 @@ func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay,
 	item.ReplayID, item.SourceTaskID = r.ID, src.ID
 
 	return item, nil
+}
+
+// answerSuggested answers the shadow's open question with the answers the
+// agent suggested, each after its question, when it suggested one for every question.
+func answerSuggested(ctx context.Context, l *engine.Loop, taskID int64) (bool, error) {
+	snap, err := l.Snapshot(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+
+	f := snap.Facts
+	if f.OpenStop == nil || f.OpenStop.Reason != engine.StopQuestion || f.Session == nil {
+		return false, nil
+	}
+
+	questions, answers := f.Session.Questions, f.Session.SuggestedAnswers
+	if len(questions) == 0 || len(answers) != len(questions) || slices.Contains(answers, "") {
+		return false, nil
+	}
+
+	pairs := make([]string, len(questions))
+	for i, q := range questions {
+		pairs[i] = q + "\n" + answers[i]
+	}
+
+	if err := l.Answer(ctx, taskID, strings.Join(pairs, "\n\n")); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 // record derives the item from the shadow's events and usage.
@@ -206,7 +248,9 @@ func record(ctx context.Context, s *store.Store, shadow store.Task) (store.Repla
 				return store.ReplayItem{}, fmt.Errorf("event %d: %w", e.ID, err)
 			}
 
-			item.Asked = item.Asked || p.Outcome == engine.OutcomeBlocked
+			if p.Outcome == engine.OutcomeBlocked {
+				item.Asked += len(p.Questions)
+			}
 		case engine.Exported:
 			var p engine.ExportedPayload
 			if err := json.Unmarshal(e.Payload, &p); err != nil {

@@ -25,6 +25,8 @@ func TestEveryPromptRenders(t *testing.T) {
 		},
 		{name: prompts.Answer, data: prompts.AnswerData{Answer: "answer-5"}, values: []string{"answer-5"}},
 		{name: prompts.Doctor},
+		{name: prompts.Readiness, data: prompts.WorkData{Title: "title-6", Body: "body-7"}, values: []string{"title-6", "body-7"}},
+		{name: prompts.Proceed},
 	}
 
 	for _, tt := range tests {
@@ -108,4 +110,54 @@ func TestResultSchemaIsValidJSON(t *testing.T) {
 	raw[0] = 'x'
 
 	assert.True(t, json.Valid(prompts.ResultSchema()), "every call returns its own copy")
+}
+
+func TestReadinessSchemaIsValidJSON(t *testing.T) {
+	raw := prompts.ReadinessSchema()
+	require.True(t, json.Valid(raw))
+
+	var schema struct {
+		Required   []string
+		Properties struct {
+			Status    struct{ Enum []string }
+			Questions struct {
+				Type  string
+				Items struct {
+					Type       string
+					Required   []string
+					Properties map[string]struct{ Type string }
+				}
+			}
+		}
+		If struct {
+			Properties struct{ Status struct{ Const string } }
+		}
+		Then struct {
+			Required   []string
+			Properties struct {
+				Questions struct{ MinItems int }
+			}
+		}
+	}
+
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	assert.Equal(t, []string{"status"}, schema.Required)
+	assert.ElementsMatch(t, []string{"ready", "blocked"}, schema.Properties.Status.Enum)
+
+	items := schema.Properties.Questions.Items
+	assert.Equal(t, "array", schema.Properties.Questions.Type)
+	assert.Equal(t, "object", items.Type, "each question is a pair")
+	assert.ElementsMatch(t, []string{"question", "suggested_answer"}, items.Required)
+
+	for _, k := range []string{"question", "suggested_answer"} {
+		assert.Equal(t, "string", items.Properties[k].Type, k)
+	}
+
+	assert.Equal(t, "blocked", schema.If.Properties.Status.Const)
+	assert.Equal(t, []string{"questions"}, schema.Then.Required)
+	assert.Equal(t, 1, schema.Then.Properties.Questions.MinItems, "blocked asks at least one question")
+
+	raw[0] = 'x'
+
+	assert.True(t, json.Valid(prompts.ReadinessSchema()), "every call returns its own copy")
 }

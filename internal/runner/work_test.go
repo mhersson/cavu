@@ -353,6 +353,150 @@ func TestWorkResumeRefusedStartsFresh(t *testing.T) {
 	assert.Equal(t, render(t, prompts.Work, prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}), d.specs[1].Prompt)
 }
 
+var readinessWork = engine.WorkRequest{Mode: engine.ModeReadiness, SessionID: sessionUUID}
+
+func readyResult() driver.Result {
+	return driver.Result{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "ready"})}
+}
+
+func TestReadinessSpec(t *testing.T) {
+	f := newFake()
+	c := workConfig()
+	c.Endpoint.Mode = "subscription"
+	d := &fakeAgent{results: []driver.Result{readyResult()}}
+
+	res, err := f.workRunner(d).Work(t.Context(), c, readinessWork, noProgress)
+	require.NoError(t, err)
+	assert.Equal(t, engine.OutcomeReady, res.Outcome)
+	assert.Equal(t, []string{"volumes", "up/readonly"}, f.calls(), "a ready result runs no command in the container")
+	require.Len(t, d.specs, 1)
+
+	assert.Equal(t, driver.Spec{
+		Auth:  driver.Auth{Mode: "subscription", Token: plantedEndpoint},
+		Model: "claude-test", Effort: "high", MaxTurns: 50, SessionID: sessionUUID,
+		Prompt:       render(t, prompts.Readiness, prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}),
+		Instructions: render(t, prompts.Instructions, nil), OutputSchema: prompts.ReadinessSchema(),
+		Dir: workspace, BaseCommit: baseCommit, Home: home, ConfigDir: "/home/agent/.claude-cavu",
+		Env: withProjectVars(sessionEnv([]string{"go"}, baseCommit), c), ReadOnly: true,
+	}, d.specs[0])
+}
+
+// The session phases share the run's proxy request, so a switch between them
+// keeps the sidecar; whatever writes runs in the agent phase.
+func TestPhasesSwitch(t *testing.T) {
+	t.Run("the work after a readiness turn", func(t *testing.T) {
+		f := newFake()
+		c := workConfig()
+		freeze := freezeName(c, c.Task.Title)
+		f.results[freeze] = sandbox.Result{Output: headCommit + "\n"}
+		d := &fakeAgent{results: []driver.Result{
+			readyResult(), {Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "done"})},
+		}}
+		r := f.workRunner(d)
+
+		_, err := r.Work(t.Context(), c, readinessWork, noProgress)
+		require.NoError(t, err)
+
+		res, err := r.Work(t.Context(), c, engine.WorkRequest{Mode: engine.ModeStart, SessionID: sessionUUID, Resume: true}, noProgress)
+		require.NoError(t, err)
+		assert.Equal(t, headCommit, res.HeadCommit)
+
+		assert.Equal(t, []string{"volumes", "up/readonly", "up/agent", "run/" + freeze}, f.calls())
+		assert.Equal(t, sandbox.PhaseAgent, f.run(t, freeze).phase)
+
+		readOnly, agent := f.requests(sandbox.PhaseReadOnly), f.requests(sandbox.PhaseAgent)
+		require.Len(t, readOnly, 1)
+		require.Len(t, agent, 1)
+		assert.Equal(t, readOnly[0], agent[0], "the same request, so the sidecar stays")
+		require.Len(t, d.specs, 2)
+		assert.Equal(t, d.specs[0].Auth, d.specs[1].Auth, "both sessions hold the one stand-in")
+	})
+
+	t.Run("a verify after a readiness turn", func(t *testing.T) {
+		f := newFake()
+		c := workConfig()
+		r := f.workRunner(&fakeAgent{results: []driver.Result{readyResult()}})
+
+		_, err := r.Work(t.Context(), c, readinessWork, noProgress)
+		require.NoError(t, err)
+
+		_, err = r.Verify(t.Context(), c)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"volumes", "up/readonly", "up/agent", "restart", "run/make test"}, f.calls())
+		assert.Equal(t, sandbox.PhaseAgent, f.run(t, "make test").phase, "the agent phase restarts, never the read-only one")
+		assert.Equal(t, f.requests(sandbox.PhaseReadOnly), f.requests(sandbox.PhaseAgent))
+	})
+}
+
+func TestReadinessResultMapping(t *testing.T) {
+	leak := " token " + plantedSetup
+	mask := masker(workConfig())
+
+	tests := []struct {
+		name string
+		out  map[string]any
+		want engine.WorkResult
+	}{
+		{name: "ready", out: map[string]any{"status": "ready"}, want: engine.WorkResult{Outcome: engine.OutcomeReady}},
+		{
+			name: "blocked with pairs, masked",
+			out: map[string]any{"status": "blocked", "questions": []map[string]string{
+				{"question": "Which port?" + leak, "suggested_answer": "8080" + leak},
+				{"question": "Is IPv6 needed?", "suggested_answer": ""},
+			}},
+			want: engine.WorkResult{
+				Outcome: engine.OutcomeBlocked, Questions: []string{mask("Which port?" + leak), "Is IPv6 needed?"},
+				SuggestedAnswers: []string{mask("8080" + leak), ""},
+			},
+		},
+		{name: "blocked without a question", out: map[string]any{"status": "blocked"}, want: engine.WorkResult{Outcome: engine.OutcomeUnfinished}},
+		{
+			name: "blocked with an empty list", out: map[string]any{"status": "blocked", "questions": []string{}},
+			want: engine.WorkResult{Outcome: engine.OutcomeUnfinished},
+		},
+		{
+			name: "questions that are not pairs", out: map[string]any{"status": "blocked", "questions": []string{"Which port?"}},
+			want: engine.WorkResult{Outcome: engine.OutcomeUnfinished},
+		},
+		{name: "a work result", out: map[string]any{"status": "done"}, want: engine.WorkResult{Outcome: engine.OutcomeUnfinished}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(tt.out)}}}
+
+			res, err := f.workRunner(d).Work(t.Context(), workConfig(), readinessWork, noProgress)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, res)
+			assert.Empty(t, f.runsIn(sandbox.PhaseReadOnly), "a readiness turn is never frozen")
+		})
+	}
+}
+
+func TestResumedStartUsesProceed(t *testing.T) {
+	c := workConfig()
+
+	for _, tt := range []struct {
+		name   string
+		w      engine.WorkRequest
+		prompt string
+	}{
+		{"resumed", engine.WorkRequest{Mode: engine.ModeStart, SessionID: sessionUUID, Resume: true}, render(t, prompts.Proceed, nil)},
+		{"new", startWork, render(t, prompts.Work, prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}
+
+			_, err := newFake().workRunner(d).Work(t.Context(), c, tt.w, noProgress)
+			require.NoError(t, err)
+			require.Len(t, d.specs, 1)
+			assert.Equal(t, tt.prompt, d.specs[0].Prompt)
+		})
+	}
+}
+
 func TestWorkTimeout(t *testing.T) {
 	t.Run("the session's time limit", func(t *testing.T) {
 		c := workConfig()

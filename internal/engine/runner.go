@@ -104,6 +104,7 @@ type WorkResult struct {
 	Title, Summary         string
 	Detail                 string // the upstream status or error text for endpoint, usage_limit and crashed
 	Assumptions, Questions []string
+	SuggestedAnswers       []string // one per question, the answer the agent would assume
 	Changed                bool
 	HeadCommit             string // the commit the session's work was frozen into
 	Turns                  int

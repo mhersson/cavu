@@ -32,8 +32,8 @@ const (
 )
 
 // reshimScript makes the shims for what the setup command added to a tool,
-// such as a console script pip installed: both phases reach a tool's commands
-// only through them.
+// such as a console script pip installed: every phase reaches a tool's
+// commands only through them.
 var reshimScript = proc.SandboxOnly("exec mise reshim")
 
 // Prepare starts the run from empty volumes and leaves the agent phase up.
@@ -139,7 +139,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return engine.PrepareResult{}, err
 	}
 
-	if err := p.r.ensureUp(ctx, p.c); err != nil {
+	if err := p.r.ensureUp(ctx, p.c, sandbox.PhaseAgent); err != nil {
 		return engine.PrepareResult{}, err
 	}
 

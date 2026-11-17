@@ -131,7 +131,7 @@ func TestReplayVerbFlagsReachConfig(t *testing.T) {
 	markWithBase(t, dir, id)
 
 	code, _, stderr := runCavu("replay", "--name", "tuned", "--model", "model-b", "--effort", "high",
-		"--no-continuations", "--no-verify-fix", "--web-tools", "--image", "cavu-sandbox:other", "--data-dir", dir)
+		"--no-continuations", "--no-verify-fix", "--no-readiness", "--web-tools", "--image", "cavu-sandbox:other", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
 
 	replays, _ := storedReplays(t, dir)
@@ -140,6 +140,7 @@ func TestReplayVerbFlagsReachConfig(t *testing.T) {
 	assert.Equal(t, "cavu-sandbox:other", replays[0].Image)
 	assert.Equal(t, map[string]string{
 		"model_work": "model-b", "effort_work": "high", "continuations": "false", "verify_fix": "false", "web_tools": "true",
+		"readiness": "false",
 	}, replays[0].Config)
 	assert.Empty(t, fake.image, "an explicit image is not checked")
 	require.NotEmpty(t, fake.runner.releases)

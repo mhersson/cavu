@@ -5,6 +5,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/proc"
+	"github.com/mhersson/cavu/internal/sandbox"
 )
 
 // Verify runs the verify command on the frozen work as a command of its own,
@@ -15,7 +16,7 @@ func (r *Runner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyR
 		return engine.VerifyResult{Result: engine.ResultWaived}, nil
 	}
 
-	return act(ctx, r, c, func(ctx context.Context, st *run, mask func(string) string) (engine.VerifyResult, error) {
+	return act(ctx, r, c, sandbox.PhaseAgent, func(ctx context.Context, st *run, mask func(string) string) (engine.VerifyResult, error) {
 		if err := st.restartAgent(ctx); err != nil {
 			return engine.VerifyResult{}, err
 		}
@@ -29,6 +30,8 @@ func (r *Runner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyR
 
 // restartAgent replaces the agent container with a fresh one on the same
 // volumes, so nothing a session or an earlier command left running survives.
+// Its caller's act brought the agent phase up, and Restart restarts the phase
+// of the last Up, so the read-only phase is never restarted to write.
 func (st *run) restartAgent(ctx context.Context) error {
 	st.agent = nil
 

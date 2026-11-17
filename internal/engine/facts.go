@@ -44,6 +44,7 @@ type SessionFact struct {
 	Title, Summary, Detail string
 	HeadCommit             string // the commit the session froze, which an export takes
 	Questions              []string
+	SuggestedAnswers       []string // one per question, the answer the agent would assume
 	ResetsAt               time.Time
 }
 
@@ -143,8 +144,8 @@ func (f *Facts) apply(e store.Event) {
 			p := decode[SessionEndedPayload](e.Payload)
 			f.Verify = ""
 			f.Session = &SessionFact{
-				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary,
-				Detail: p.Detail, HeadCommit: p.HeadCommit, Questions: p.Questions, ResetsAt: p.ResetsAt,
+				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary, Detail: p.Detail,
+				HeadCommit: p.HeadCommit, Questions: p.Questions, SuggestedAnswers: p.SuggestedAnswers, ResetsAt: p.ResetsAt,
 			}
 		}
 	case VerifyStarted:

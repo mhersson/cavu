@@ -9,7 +9,7 @@ import (
 )
 
 // Switches turn a project's removable steps on or off.
-type Switches struct{ Continuations, VerifyFix, WebTools bool }
+type Switches struct{ Continuations, VerifyFix, WebTools, Readiness bool }
 
 // Caps bound the automatic rounds counted in Facts.
 type Caps struct{ Continuations, VerifyFixes, FaultRetries int }
@@ -217,6 +217,10 @@ func decide(s Snapshot) Action {
 		return work(ModeContinue, "A person asked the agent to carry on.")
 	}
 
+	if f.Session == nil && f.SessionID == "" && s.Switches.Readiness {
+		return work(ModeReadiness, "The agent has not yet checked the task for missing facts.")
+	}
+
 	if f.Session == nil {
 		mode := ModeStart
 		if f.SessionID != "" {
@@ -264,6 +268,10 @@ func decide(s Snapshot) Action {
 	if sess.Outcome == OutcomeFailed {
 		return halt(StopAgentError, ClearRetry, "The agent reported a failure.",
 			lineOr(sess.Summary, "The agent reported that it could not do the task."))
+	}
+
+	if sess.Outcome == OutcomeReady {
+		return work(ModeStart, "The agent found nothing missing in the task.")
 	}
 
 	if cut && s.Switches.Continuations && f.Continuations < s.Caps.Continuations {

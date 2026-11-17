@@ -13,6 +13,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver/claudecode"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/testkit/sandboxtest"
 )
 
@@ -74,7 +75,7 @@ func TestPrepareGoRepository(t *testing.T) {
 		assert.NoError(t, restarted.Release(ctx, refOf(c), true))
 	})
 
-	require.NoError(t, restarted.ensureUp(t.Context(), c))
+	require.NoError(t, restarted.ensureUp(t.Context(), c, sandbox.PhaseAgent))
 
 	vr, err := runVerify(t.Context(), restarted.state(c.RunID), c)
 	require.NoError(t, err)

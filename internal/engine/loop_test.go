@@ -381,9 +381,10 @@ func newHarness(t *testing.T) *harness {
 		require.NoError(t, s.SetSetting(ctx, k, val))
 	}
 
+	// The readiness turn is off: only the tests that turn it on are about it.
 	p, err := s.CreateProject(ctx, store.Project{
 		Name: "web", RepoURL: "https://example.com/web.git", BaseBranch: "main",
-		SetupCommand: "make setup", VerifyCommand: "make test",
+		SetupCommand: "make setup", VerifyCommand: "make test", Switches: map[string]bool{"readiness": false},
 	})
 	require.NoError(t, err)
 
@@ -1925,6 +1926,69 @@ func TestLoopAnswerReachesTheAgent(t *testing.T) {
 	require.Len(t, works, 2)
 	assert.Equal(t, engine.ModeAnswer, works[1].work.Mode)
 	assert.Equal(t, "Use port 8080.", works[1].work.Detail)
+	assert.True(t, works[1].work.Resume)
+	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
+}
+
+// withDefaultSwitches gives the harness's project the default switches, which
+// turn the readiness turn on.
+func (h *harness) withDefaultSwitches() {
+	h.t.Helper()
+
+	p := h.project()
+	p.Switches = nil
+	require.NoError(h.t, h.store.UpdateProject(h.t.Context(), p))
+}
+
+func TestLoopReadinessThenWork(t *testing.T) {
+	h := newHarness(t)
+	h.withDefaultSwitches()
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeReady, Turns: 2}}}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, []string{"prepare", "work/readiness", "work/start", "verify", "export", "release/remove"}, h.runner.trace())
+
+	works := h.runner.callsOf("work")
+	require.Len(t, works, 2)
+	assert.Regexp(t, uuidV4, works[0].work.SessionID)
+	assert.False(t, works[0].work.Resume, "the readiness turn opens the session")
+	assert.True(t, works[1].work.Resume, "the work resumes it")
+	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
+}
+
+func TestLoopReadinessQuestion(t *testing.T) {
+	h := newHarness(t)
+	h.withDefaultSwitches()
+
+	questions, suggested := []string{"Which port?", "Is IPv6 needed?"}, []string{"8080", "No"}
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{
+		Outcome: engine.OutcomeBlocked, Questions: questions, SuggestedAnswers: suggested,
+	}}}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, engine.StatusBlocked, status)
+	assert.Equal(t, engine.StopQuestion, h.lastStop().Reason)
+
+	snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	require.NotNil(t, snap.Facts.Session)
+	assert.Equal(t, questions, snap.Facts.Session.Questions)
+	assert.Equal(t, suggested, snap.Facts.Session.SuggestedAnswers)
+
+	require.NoError(t, h.loop.Answer(t.Context(), h.task.ID, "Port 8080, and no IPv6."))
+
+	status, err = h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+
+	works := h.runner.callsOf("work")
+	require.Len(t, works, 2)
+	assert.Equal(t, engine.ModeReadiness, works[0].work.Mode)
+	assert.Equal(t, engine.ModeAnswer, works[1].work.Mode)
+	assert.Equal(t, "Port 8080, and no IPv6.", works[1].work.Detail)
 	assert.True(t, works[1].work.Resume)
 	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
 }

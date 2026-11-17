@@ -25,6 +25,13 @@ It also lists what the Claude Code adapter assumes of the pinned Claude Code ver
 - Assumption: fetched content is an injection and exfiltration channel: current models can follow instructions planted in a page they read, and a request they send can carry the repository's content out.
 - Comparison to retire it: replay the same reference set with `cavu replay --web-tools`, with tasks whose fetched pages carry planted instructions. Retire the part when no session follows a planted instruction or sends the repository's content out, and the verify pass rate is no worse than with it off.
 
+## readiness
+
+- Switch: `readiness`, set per project and overridden by a task's overrides, which is how the `internal/replay` package sets it (`cavu replay --no-readiness`). On by default.
+- What it turns on: a readiness turn opens each run's session. The agent reads the task and what it needs of the repository in the read-only phase, whose workspace is mounted read-only, and ends `ready`, or `blocked` with a question for each fact it needs that neither the task nor the repository holds and the answer it would assume. `ready` resumes the same session in the agent phase to do the task. `blocked` stops the task as `question`, which a person answers as any other, and the answer resumes the session with every tool. A replay answers a shadow's readiness questions with the agent's own suggested answers when it gave one for every question, and counts the questions. With the switch off, the session opens with the task.
+- Assumption: models start unattended work without asking for missing facts.
+- Comparison to retire it: replay the same reference set with `cavu replay --no-readiness`. Retire the part when the questions it asked did not change what a person had to correct, and the verify pass rate is no worse than with it on.
+
 ## The pinned flag set of the Claude Code adapter
 
 - Switch: none. The flags and the environment are constants in `internal/driver/claudecode`, changed when the pinned Claude Code version changes.

@@ -48,7 +48,7 @@ var seedScript = proc.SandboxOnly(`while [ "$#" -ge 2 ]; do
 done`)
 
 // bridgeEnv sends a process's egress through the bridge, the one way out of
-// either phase.
+// every phase.
 var bridgeEnv = []string{
 	"HTTP_PROXY=" + sandbox.BridgeURL, "HTTPS_PROXY=" + sandbox.BridgeURL, "http_proxy=" + sandbox.BridgeURL, "https_proxy=" + sandbox.BridgeURL,
 }
@@ -132,9 +132,11 @@ func openSandbox(o sandbox.Options) (sandboxer, error) {
 // safe for concurrent use; the engine makes one call on a run at a time.
 type run struct {
 	sb         sandboxer
-	agent      container // the agent phase while it is up
+	agent      container     // the agent's container while a session phase is up
+	phase      sandbox.Phase // that session phase: the agent phase or the read-only one
 	ecosystems []string
-	standIn    string // the agent phase's stand-in token in key mode
+	req        sidecar.ProxyRequest // the session phases' proxy request, kept while their sidecar lives
+	standIn    string               // req's stand-in token in key mode
 
 	mu     sync.Mutex // guards the fields below, which the sidecar's reader sets
 	lost   bool       // the sidecar of the phase that is up has ended
@@ -228,13 +230,15 @@ func (st *run) watching(watch func(sidecar.Line)) {
 	st.watch = watch
 }
 
-// act brings the agent phase up and runs do as the run's action in flight,
+// act brings the session phase up and runs do as the run's action in flight,
 // with the run's mask, which also holds its stand-in token: a sidecar error
 // during it fails the call. The error is masked.
-func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, do func(context.Context, *run, func(string) string) (T, error)) (T, error) {
+func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, phase sandbox.Phase,
+	do func(context.Context, *run, func(string) string) (T, error),
+) (T, error) {
 	var zero T
 
-	err := r.ensureUp(ctx, c)
+	err := r.ensureUp(ctx, c, phase)
 
 	// Read after ensureUp, which makes key mode's stand-in: no vault holds it.
 	st := r.state(c.RunID)
@@ -259,7 +263,7 @@ func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, do func(cont
 	return res, maskErr(err, mask)
 }
 
-// up brings phase up with p. The agent phase counts as up once the caller
+// up brings phase up with p. A session phase counts as up once the caller
 // sets agent.
 func (st *run) up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest) (container, error) {
 	st.agent = nil
@@ -278,6 +282,7 @@ func (st *run) down(ctx context.Context) error {
 	return st.sb.Down(ctx)
 }
 
+// agentUp reports whether a session phase is up with its sidecar.
 func (st *run) agentUp() bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -338,11 +343,12 @@ func refOf(c engine.RunConfig) engine.RunRef {
 	return engine.RunRef{InstanceID: c.InstanceID, Image: c.Image, TaskID: c.TaskID, RunID: c.RunID, ProjectID: c.ProjectID}
 }
 
-// ensureUp brings the run's agent phase up unless it is up already. After a
-// restart of this process it opens the run's sandbox and takes the ecosystems
-// from c, which carries what the prepare detected: once an agent has run, the
-// workspace, its .git included, is the agent's and is never read for them.
-func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
+// ensureUp brings phase up, the agent phase or the read-only one, unless it
+// is up already. After a restart of this process it opens the run's sandbox
+// and takes the ecosystems from c, which carries what the prepare detected:
+// once an agent has run, the workspace, its .git included, is the agent's and
+// is never read for them.
+func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig, phase sandbox.Phase) error {
 	st := r.state(c.RunID)
 	if st == nil {
 		sb, err := r.sandbox(refOf(c))
@@ -358,14 +364,18 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		r.setState(c.RunID, st)
 	}
 
-	if st.agentUp() {
+	live := st.agentUp()
+	if live && st.phase == phase {
 		return nil
 	}
 
-	req, standIn := agentProxy(c, st.ecosystems, r.driver)
-	st.standIn = standIn
+	// The sandbox keeps the sidecar for the same request only, so a switch
+	// between the session phases keeps the one the live sidecar serves.
+	if !live {
+		st.req, st.standIn = agentProxy(c, st.ecosystems, r.driver)
+	}
 
-	a, err := st.up(ctx, sandbox.PhaseAgent, req)
+	a, err := st.up(ctx, phase, st.req)
 	if err != nil {
 		return err
 	}
@@ -378,7 +388,7 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		return err
 	}
 
-	st.agent = a
+	st.agent, st.phase = a, phase
 
 	return nil
 }
@@ -388,8 +398,8 @@ func scriptArgv(script string, args ...string) []string {
 	return append([]string{"sh", "-c", script, "sh"}, args...)
 }
 
-// homeStep runs script in the agent phase with each pair, a path in the home
-// and the cache path it comes from, as positional arguments.
+// homeStep runs script in a session phase, whose home is writable, with each
+// pair, a path in the home and the cache path it comes from, as positional arguments.
 func homeStep(ctx context.Context, a container, script string, pairs map[string]string) error {
 	if len(pairs) == 0 {
 		return nil

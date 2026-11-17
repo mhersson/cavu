@@ -25,7 +25,7 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 		require.NoError(t, err)
 
 		for range 2 {
-			err := r.ensureUp(t.Context(), testConfig())
+			err := r.ensureUp(t.Context(), testConfig(), sandbox.PhaseAgent)
 			require.NoError(t, err)
 		}
 
@@ -48,7 +48,7 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 			r := f.runner()
 
 			for range 2 {
-				require.NoError(t, r.ensureUp(t.Context(), c))
+				require.NoError(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent))
 			}
 
 			assert.Equal(t, []string{"volumes", "up/agent"}, f.calls())
@@ -72,11 +72,11 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 		c.Ecosystems = []string{"node"}
 
 		f.volErr = errors.New("sandbox: volume busy")
-		require.ErrorIs(t, r.ensureUp(t.Context(), c), f.volErr)
+		require.ErrorIs(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent), f.volErr)
 
 		f.volErr = nil
 
-		require.NoError(t, r.ensureUp(t.Context(), c))
+		require.NoError(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent))
 		assert.Equal(t, []string{"volumes", "volumes", "up/agent"}, f.calls(), "a failed start keeps no state")
 		assert.Equal(t, []string{"registry.example", "registry.npmjs.org"}, f.requests(sandbox.PhaseAgent)[0].AllowHosts)
 	})
@@ -93,7 +93,7 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 		f.fail("sandbox: the sidecar does not answer: it exited: killed")
 
 		for range 2 {
-			err := r.ensureUp(t.Context(), testConfig())
+			err := r.ensureUp(t.Context(), testConfig(), sandbox.PhaseAgent)
 			require.NoError(t, err)
 		}
 
@@ -133,7 +133,7 @@ func TestRelease(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, r.Release(t.Context(), ref, false))
 
-		require.NoError(t, r.ensureUp(t.Context(), testConfig()))
+		require.NoError(t, r.ensureUp(t.Context(), testConfig(), sandbox.PhaseAgent))
 		assert.Equal(t, append(fullOrder, "down", "up/agent"), f.calls())
 		assert.Len(t, f.opened, 1)
 		assert.Equal(t, f.requests(sandbox.PhaseAgent)[0].AllowHosts, f.requests(sandbox.PhaseAgent)[1].AllowHosts,
@@ -156,7 +156,7 @@ func TestRelease(t *testing.T) {
 		c := testConfig()
 		c.Ecosystems = []string{"node"}
 
-		require.NoError(t, r.ensureUp(t.Context(), c))
+		require.NoError(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent))
 		assert.Equal(t, []string{"down", "volumes", "up/agent"}, f.calls())
 
 		agent := f.requests(sandbox.PhaseAgent)
@@ -215,13 +215,13 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 
 		f.results[link] = sandbox.Result{ExitCode: 1, Output: "ln: Permission denied\n"}
 
-		require.Error(t, r.ensureUp(t.Context(), c))
+		require.Error(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent))
 		assert.False(t, r.state(c.RunID).agentUp())
 
 		delete(f.results, link)
 
 		for range 2 {
-			require.NoError(t, r.ensureUp(t.Context(), c))
+			require.NoError(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent))
 		}
 
 		assert.Equal(t, []string{"volumes", "up/agent", "run/" + link, "up/agent", "run/" + link, "run/" + seed}, f.calls())
@@ -233,7 +233,7 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		c := testConfig()
 		c.Ecosystems = []string{"go", "node", "python"}
 
-		require.NoError(t, r.ensureUp(t.Context(), c))
+		require.NoError(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent))
 		assert.Equal(t, []string{"volumes", "up/agent"}, f.calls())
 	})
 }
