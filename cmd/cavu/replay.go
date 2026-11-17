@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/replay"
 	"github.com/mhersson/cavu/internal/store"
 )
@@ -77,6 +78,10 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	if ctx.Err() != nil {
+		if err := a.releaseShadows(ctx, l, r); err != nil {
+			fmt.Fprintf(stderr, "cavu: %v\n", err)
+		}
+
 		fmt.Fprintf(stderr, "interrupted; replay %q is left unended and is no comparison base\n", *name)
 
 		return exitError{code: 130}
@@ -87,6 +92,24 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	return printReplay(ctx, a.store, r, stdout)
+}
+
+// releaseShadows stops the containers of the replay's open runs, keeping their volumes.
+func (a *app) releaseShadows(ctx context.Context, l *engine.Loop, r store.Replay) error {
+	tasks, err := a.store.Tasks(context.WithoutCancel(ctx), true)
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+
+	for _, t := range tasks {
+		if t.ReplayID == r.ID {
+			errs = append(errs, a.releaseOpenRun(ctx, l, t))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // printReplay prints one row per source task: each value of this replay, then

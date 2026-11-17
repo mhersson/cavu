@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
 	"github.com/stretchr/testify/assert"
@@ -153,4 +157,53 @@ func TestReplayVerbChecksTheDefaultImage(t *testing.T) {
 
 	replays, _ := storedReplays(t, dir)
 	assert.Empty(t, replays)
+}
+
+func TestReplayVerbInterruptReleasesTheShadowAndExits130(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	markWithBase(t, dir, id)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	fake.runner.duringWork = cancel
+
+	err := runReplay(ctx, []string{"--name", "cut", "--data-dir", dir}, io.Discard, io.Discard)
+
+	ee, ok := errors.AsType[exitError](err)
+	require.True(t, ok, err)
+	assert.Equal(t, 130, ee.code)
+
+	replays, _ := storedReplays(t, dir)
+	assert.Empty(t, replays, "the cut replay is never ended")
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	all, err := a.store.Tasks(t.Context(), true)
+	require.NoError(t, err)
+
+	var shadow store.Task
+
+	for _, task := range all {
+		if task.ReplayID != 0 {
+			shadow = task
+		}
+	}
+
+	require.NotZero(t, shadow.ID)
+
+	run, ok, err := a.store.OpenRun(t.Context(), shadow.ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	assert.Equal(t, []release{{
+		ref: engine.RunRef{
+			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
+			TaskID: shadow.ID, RunID: run.ID, ProjectID: shadow.ProjectID,
+		},
+		removeVolumes: false,
+	}}, fake.runner.releases)
 }
