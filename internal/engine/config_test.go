@@ -53,7 +53,7 @@ func TestBuildRunConfig(t *testing.T) {
 				want.Agent.Model, want.Agent.Effort = "model-a", "high"
 				want.Agent.Review.Model, want.Agent.Review.Effort = "model-a", "high"
 				want.Agent.Strong.Model, want.Agent.Strong.Effort = "model-a", "high"
-				want.Agent.MaxTurns, want.Agent.Timeout, want.Agent.WebTools = 50, 30*time.Minute, true
+				want.Agent.WebTools = true
 				want.Identity.Name, want.Identity.Email = "CAVU Bot", "bot@example.com"
 				want.Task.Title, want.Task.Body = "Fix the login page", "It fails on submit."
 
@@ -71,8 +71,6 @@ func TestBuildRunConfig(t *testing.T) {
 				assert.Empty(t, got.Endpoint.URL)
 				assert.Empty(t, got.Endpoint.AuthHeader)
 				assert.Empty(t, got.Agent.Effort)
-				assert.Equal(t, 1000, got.Agent.MaxTurns)
-				assert.Equal(t, 300*time.Minute, got.Agent.Timeout)
 				assert.Equal(t, 10*time.Minute, got.Verify.Timeout)
 				assert.Empty(t, got.Repo.Token)
 				assert.Empty(t, got.Endpoint.Credential)

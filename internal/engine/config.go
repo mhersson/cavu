@@ -219,9 +219,9 @@ func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) e
 }
 
 // ReadSettings reads the part of a run's config the settings hold: the
-// instance id, the endpoint but its credential, the agent but its web tools,
-// the identity and the verify timeout. Its error names every required setting
-// not set, else the first value that does not parse.
+// instance id, the endpoint but its credential, the agent's models and
+// efforts, the identity and the verify timeout. Its error names every required
+// setting not set, else the first value that does not parse.
 func ReadSettings(values map[string]string) (RunConfig, error) {
 	required := []string{"instance_id", "endpoint_mode", keyModelWork, "commit_name", "commit_email"}
 	if values["endpoint_mode"] == "key" {
@@ -383,8 +383,9 @@ func (s *settingsReader) read() RunConfig {
 	c.Agent.Model, c.Agent.Effort = s.values[keyModelWork], s.values[keyEffortWork]
 	c.Agent.Review.Model, c.Agent.Review.Effort = cmp.Or(s.values["model_review"], c.Agent.Model), cmp.Or(s.values["effort_review"], c.Agent.Effort)
 	c.Agent.Strong.Model, c.Agent.Strong.Effort = cmp.Or(s.values["model_strong"], c.Agent.Model), cmp.Or(s.values["effort_strong"], c.Agent.Effort)
-	l := s.limits()
-	c.Agent.MaxTurns, c.Agent.Timeout = l.Turns, l.SessionTime
+	// Read only to refuse a bad value: a session's turns and time are what is
+	// left of the task's, which work and review set.
+	s.limits()
 	c.Verify.Timeout = s.minutes("verify_timeout_minutes", 10, 0.5, 120)
 	c.Identity.Name, c.Identity.Email = s.values["commit_name"], s.values["commit_email"]
 
