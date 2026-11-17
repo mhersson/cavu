@@ -44,7 +44,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep t
    cavu doctor
    ```
 
-5. Add a project, then check its environment. The check builds the workspace, runs the setup and verify commands once and stores the result as the project's baseline. A task runs only against a project that has a baseline.
+5. Add a project, then check its environment. The check builds the workspace, runs the setup and verify commands once and stores the result as the project's baseline. A task runs only against a project with a passed baseline, or with verify waived.
 
    ```
    cavu project add web --repo https://github.com/OWNER/REPO.git --verify "make test"
