@@ -800,3 +800,19 @@ func TestSchedulerStopTakesNoSlot(t *testing.T) {
 	h.eventually(func() bool { return h.inReview(h.task.ID) })
 	assert.Empty(t, s.errs())
 }
+
+func TestSchedulerDrivingCoversARelease(t *testing.T) {
+	h := newHarness(t)
+	g := h.gate("release")
+
+	s := h.schedule(nil)
+
+	h.eventually(func() bool { return slices.Equal(g.held("release"), []int64{h.task.ID}) })
+	assert.Equal(t, engine.StatusInReview, h.statusOf(h.task.ID), "the task rests while its run is released")
+	assert.True(t, s.Driving())
+
+	g.free("release")
+	h.eventually(func() bool { return !s.Driving() })
+	assert.True(t, h.inReview(h.task.ID))
+	assert.Empty(t, s.errs())
+}

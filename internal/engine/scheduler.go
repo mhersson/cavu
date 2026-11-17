@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -26,9 +27,10 @@ type Scheduler struct {
 	Checks  bool                          // also run requested environment checks
 	OnError func(taskID int64, err error) // an error met, not the end of ctx; taskID 0 when no task's; nil drops it
 
-	once   sync.Once
-	nudge  chan struct{}
-	passed func() // a test's hook, called at the end of each pass
+	once    sync.Once
+	nudge   chan struct{}
+	passed  func()       // a test's hook, called at the end of each pass
+	driving atomic.Int64 // drives in flight
 
 	mu      sync.Mutex
 	waiting map[int64]string   // why a task does not act
@@ -121,6 +123,10 @@ func (s *Scheduler) nudges() chan struct{} {
 
 	return s.nudge
 }
+
+// Driving reports whether a drive is in flight. A task can rest before its
+// drive ends, while the drive still releases the task's run.
+func (s *Scheduler) Driving() bool { return s.driving.Load() > 0 }
 
 // Waiting is why the task is not acting: a wait's reason, WaitingForSlot, or "".
 func (s *Scheduler) Waiting(taskID int64) string {
@@ -274,6 +280,8 @@ func (s *Scheduler) drive(ctx context.Context, r *round, snap Snapshot) {
 	r.loose[id] = true
 	ends := r.ends
 
+	s.driving.Add(1)
+
 	go func() {
 		defer cancel()
 
@@ -293,6 +301,7 @@ func (s *Scheduler) drive(ctx context.Context, r *round, snap Snapshot) {
 
 func (s *Scheduler) ended(ctx context.Context, r *round, e end) {
 	delete(r.drives, e.id)
+	s.driving.Add(-1)
 
 	switch {
 	case e.cut: // the next pass, or the end of Run, takes the task up
