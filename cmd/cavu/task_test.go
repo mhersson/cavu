@@ -590,7 +590,15 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 
 	t.Run("a cancel from another terminal", func(t *testing.T) {
 		dir, id, fake := runSetup(t)
-		fake.runner.duringWork = func() { cavuIn(t, dir, "task", "cancel", id) }
+		// The session runs on after the cancel, as a real one does, until the scheduler cuts it.
+		fake.runner.duringWork = func(ctx context.Context) {
+			cavuIn(t, dir, "task", "cancel", id)
+
+			select {
+			case <-ctx.Done():
+			case <-time.After(within):
+			}
+		}
 
 		code, stdout, _ := runCavu("task", "run", id, "--data-dir", dir)
 
@@ -714,7 +722,7 @@ func TestTaskRunInterruptReleasesAndExits130(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	fake.runner.duringWork = cancel // as Ctrl-C cancels run's context
+	fake.runner.duringWork = func(context.Context) { cancel() } // as Ctrl-C cancels run's context
 
 	err := runTask(ctx, []string{"run", id, "--data-dir", dir}, nil, io.Discard, io.Discard)
 

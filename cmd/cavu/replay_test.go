@@ -166,7 +166,7 @@ func TestReplayVerbInterruptReleasesTheShadowAndExits130(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	fake.runner.duringWork = cancel
+	fake.runner.duringWork = func(context.Context) { cancel() }
 
 	err := runReplay(ctx, []string{"--name", "cut", "--data-dir", dir}, io.Discard, io.Discard)
 

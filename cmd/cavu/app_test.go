@@ -91,7 +91,7 @@ type fakeRunner struct {
 
 	actions    []engine.ActionKind // prepare, work, verify and export, in the order asked
 	work       engine.WorkResult
-	duringWork func() // runs inside Work, as a person might act while a session runs
+	duringWork func(ctx context.Context) // runs inside Work with its context, as a person might act while a session runs
 	releases   []release
 }
 
@@ -120,7 +120,7 @@ func (r *fakeRunner) Work(ctx context.Context, _ engine.RunConfig, _ engine.Work
 	progress(engine.Progress{Type: engine.AgentText, Payload: engine.AgentTextPayload{Text: "Reading the login handler."}})
 
 	if r.duringWork != nil {
-		r.duringWork()
+		r.duringWork(ctx)
 	}
 
 	if err := ctx.Err(); err != nil {
