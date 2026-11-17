@@ -1,5 +1,6 @@
-// Package auth holds the master key, the AES-256-GCM sealing built on it and
-// the vault that keeps named secrets sealed in the store.
+// Package auth holds the master key, the AES-256-GCM sealing built on it, the
+// vault that keeps named secrets sealed in the store, argon2id password
+// hashing, random tokens kept as hashes and the login limiter.
 package auth
 
 import (
