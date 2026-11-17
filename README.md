@@ -16,7 +16,7 @@ Pre-release. The verbs today:
 - `cavu image build` builds the sandbox image on Docker or Podman.
 - `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge.
 - `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
-- `cavu task` adds tasks, each with the tasks it depends on, lists and shows them, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
+- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts, lists and shows them, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 
 ## Try it
@@ -77,6 +77,12 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    ```
    cavu task add web --title "Test the login redirect" --depends-on ID --start
+   ```
+
+   `cavu task edit ID` changes only the title, body or dependencies it is given, until the task's first run starts; `--depends-on ""` removes every dependency.
+
+   ```
+   cavu task edit ID --depends-on 3,4
    ```
 
    `task run` drives only the task it names, so run a dependency first: on a task that waits for one, `task run` prints why and waits until that task is done or you interrupt it.

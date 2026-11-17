@@ -1002,6 +1002,55 @@ func TestTaskAddDependsOnAndStart(t *testing.T) {
 	assert.Len(t, tasks, 3, "no task is created")
 }
 
+func TestTaskEdit(t *testing.T) {
+	dir, dep, fake := runSetup(t)
+	bodyFile := filepath.Join(t.TempDir(), "body.md")
+	require.NoError(t, os.WriteFile(bodyFile, []byte("A new body."), 0o600))
+
+	id := strings.TrimSpace(cavuIn(t, dir, "task", "add", "web", "--title", "Second", "--depends-on", dep, "--body-file", bodyFile, "--start"))
+
+	cavuIn(t, dir, "task", "edit", id, "--title", "Renamed")
+
+	got := storedTask(t, dir, id)
+	assert.Equal(t, "Renamed", got.Title)
+	assert.Equal(t, "A new body.", got.Body, "the body is as stored")
+	assert.Equal(t, []int64{taskID(t, dep)}, storedDeps(t, dir, id), "the dependencies are as stored")
+
+	cavuIn(t, dir, "task", "cancel", dep)
+
+	code, _, _ := runCavu("task", "run", id, "--data-dir", dir)
+	require.Equal(t, 3, code, "a cancelled dependency stops the task")
+
+	cavuIn(t, dir, "task", "edit", id, "--depends-on", "")
+	assert.Empty(t, storedDeps(t, dir, id))
+
+	cavuIn(t, dir, "task", "retry", id)
+
+	fake.runner.actions = nil
+
+	cavuIn(t, dir, "task", "run", id)
+	assert.Equal(t, engine.KindPrepare, fake.runner.actions[0])
+
+	code, _, stderr := runCavu("task", "edit", id, "--title", "Too late", "--data-dir", dir)
+	assert.Equal(t, 1, code)
+	assert.NotEmpty(t, stderr)
+	assert.Equal(t, "Renamed", storedTask(t, dir, id).Title, "an edit after the first run is refused")
+}
+
+func storedDeps(t *testing.T, dir, id string) []int64 {
+	t.Helper()
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	deps, err := a.store.TaskDeps(t.Context(), taskID(t, id))
+	require.NoError(t, err)
+
+	return deps
+}
+
 func TestTaskDone(t *testing.T) {
 	dir := webData(t)
 
