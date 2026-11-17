@@ -207,11 +207,13 @@ for my $i (0 .. ord(substr($d, 6, 1)) - 1) { my ($id, $at) = unpack("a4 Q>", sub
 my $n = 0; $n++ while $c{OIDL} + 20 * $n < $c{CDAT} && substr($d, $c{OIDL} + 20 * $n, 20) ne pack("H*", $ARGV[1]);
 seek(F, $c{CDAT} + 36 * $n, 0); print F pack("H*", $ARGV[2])' "$g" "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD~1^{tree}')"`
 
-// The diff and the summary show the committed change whatever diff drivers, replace refs or commit-graph the agent left.
+// The diff and the summary show the committed change whatever diff drivers, replace refs, commit-graph or submodule setting the agent left.
 func TestExportShowsCommittedChange(t *testing.T) {
 	r, c, _ := agentRun(t, bash("git config --global diff.external true && "+
 		"echo 'notes.txt diff=silent' >> .git/info/attributes && git config diff.silent.textconv true && "+
-		"echo CAVU-ADDED-LINE >> notes.txt && git commit -qam 'docs(notes): add a line' && "+
+		"echo CAVU-ADDED-LINE >> notes.txt && "+
+		`mkdir sub && git update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",sub && git config diff.ignoreSubmodules all && `+
+		"git commit -qam 'docs(notes): add a line' && "+
 		"git replace \"$(git rev-parse HEAD:notes.txt)\" \"$(git rev-parse HEAD~1:notes.txt)\""), done)
 
 	res := work(t, r, c, newSession(t))
@@ -222,7 +224,8 @@ func TestExportShowsCommittedChange(t *testing.T) {
 
 	ex := export(t, r, c, res)
 	assert.Contains(t, string(ex.Diff), "\n+CAVU-ADDED-LINE\n")
-	assert.Equal(t, []string{"notes.txt | 1 +", "1 file changed, 1 insertion(+)"}, ex.DiffStat)
+	assert.Contains(t, string(ex.Diff), "\n+Subproject commit ")
+	assert.Equal(t, []string{"notes.txt | 1 +", "sub       | 1 +", "2 files changed, 2 insertions(+)"}, ex.DiffStat)
 }
 
 func TestVerifyRunsInFreshContainer(t *testing.T) {
