@@ -1166,6 +1166,15 @@ func TestEventLine(t *testing.T) {
 		{engine.PrepareFailed, engine.PrepareFailedPayload{Step: "setup", Output: "npm ERR!"}, []string{"setup"}},
 		{engine.Stopped, engine.StoppedPayload{Reason: engine.StopQuestion, Explanation: "Which API version?"}, []string{engine.StopQuestion, "Which API version?"}},
 		{engine.Prepared, engine.PreparedPayload{BaseCommit: "base123"}, []string{"base123"}},
+		{engine.ReviewStarted, engine.ReviewStartedPayload{SessionID: "r1", Scoped: true, Head: "fed789", Why: "A fix changed the code."}, nil},
+		{
+			engine.ReviewEnded,
+			engine.ReviewEndedPayload{
+				Outcome: engine.ReviewReviewed, Scoped: true, Turns: 17, Findings: slices.Repeat([]engine.Finding{{Severity: engine.SeverityImportant}}, 4),
+				Addressed: []bool{true, false, true, false, false, false},
+			},
+			[]string{engine.ReviewReviewed, "17", "4", "2", "6"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -1185,6 +1194,19 @@ func TestEventLine(t *testing.T) {
 			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
 		})
 	}
+
+	t.Run("a review's start tells its scope", func(t *testing.T) {
+		line := func(p engine.ReviewStartedPayload) string {
+			raw, err := json.Marshal(p)
+			require.NoError(t, err)
+
+			return eventLine(store.Event{At: at, Type: engine.ReviewStarted, Payload: raw})
+		}
+
+		full := line(engine.ReviewStartedPayload{SessionID: "r1", Head: "def456", Why: "Not reviewed yet."})
+		assert.Equal(t, full, line(engine.ReviewStartedPayload{SessionID: "r2", Head: "fed789", Why: "Another reason."}), "the scope alone sets the line")
+		assert.NotEqual(t, full, line(engine.ReviewStartedPayload{SessionID: "r1", Scoped: true, Head: "def456", Why: "Not reviewed yet."}))
+	})
 
 	t.Run("control characters", func(t *testing.T) {
 		raw, err := json.Marshal(engine.AgentToolPayload{Name: "Bash", Summary: "printf '\x1b[2J\x1b[31mred\x1b[0m\x07\u009b'"})

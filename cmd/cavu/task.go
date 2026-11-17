@@ -631,6 +631,26 @@ func eventLine(e store.Event) string {
 	case engine.SessionEnded:
 		p := decoded[engine.SessionEndedPayload](e.Payload)
 		tell = fmt.Sprintf("%s after %d turns", p.Outcome, p.Turns)
+	case engine.ReviewStarted:
+		tell = "the whole change"
+		if decoded[engine.ReviewStartedPayload](e.Payload).Scoped {
+			tell = "the fix and the findings it was to address"
+		}
+	case engine.ReviewEnded:
+		p := decoded[engine.ReviewEndedPayload](e.Payload)
+		tell = fmt.Sprintf("%s after %d turns with %d findings", p.Outcome, p.Turns, len(p.Findings))
+
+		if p.Scoped && p.Outcome == engine.ReviewReviewed {
+			addressed := 0
+
+			for _, a := range p.Addressed {
+				if a {
+					addressed++
+				}
+			}
+
+			tell += fmt.Sprintf("; %d of the %d open ones addressed", addressed, len(p.Addressed))
+		}
 	case engine.VerifyEnded:
 		tell = decoded[engine.VerifyEndedPayload](e.Payload).Result
 	case engine.PrepareFailed:
