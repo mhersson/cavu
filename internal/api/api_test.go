@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -50,17 +51,19 @@ func (c *clock) add(d time.Duration) {
 
 // fixture is the handler over a real store with one user, served on a port the kernel picks.
 type fixture struct {
-	url     string
-	store   *store.Store
-	auth    *auth.Service
-	clock   *clock
-	session *http.Cookie // the cookie of the newest login
+	url   string
+	db    string // the store's file
+	store *store.Store
+	auth  *auth.Service
+	clock *clock
 }
 
 func newServer(t *testing.T) *fixture {
 	t.Helper()
 
-	s, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "cavu.db"))
+	db := filepath.Join(t.TempDir(), "cavu.db")
+
+	s, err := store.Open(t.Context(), db)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
@@ -71,7 +74,7 @@ func newServer(t *testing.T) *fixture {
 	srv := httptest.NewServer(api.New(api.Deps{Store: s, Auth: svc, Version: "1.2.3"}))
 	t.Cleanup(srv.Close)
 
-	return &fixture{url: srv.URL, store: s, auth: svc, clock: c}
+	return &fixture{url: srv.URL, db: db, store: s, auth: svc, clock: c}
 }
 
 // request builds a request to route, "METHOD /path", with body.
@@ -110,16 +113,29 @@ func credentials(name, pass string) string {
 	return string(b)
 }
 
-// login logs the user in, keeps the session's cookie and returns it.
+// login logs the user in and returns the session's cookie.
 func (f *fixture) login(t *testing.T) *http.Cookie {
 	t.Helper()
 
 	resp, body := send(t, f.request(t, "POST /api/auth/login", credentials(user, password)))
 	require.Equal(t, http.StatusNoContent, resp.StatusCode, body)
 
-	f.session = sessionCookie(t, resp)
+	return sessionCookie(t, resp)
+}
 
-	return f.session
+// sessions counts the stored sessions, live or not.
+func (f *fixture) sessions(t *testing.T) int {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", f.db)
+	require.NoError(t, err)
+
+	defer func() { _ = db.Close() }()
+
+	var n int
+	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM sessions").Scan(&n))
+
+	return n
 }
 
 // withCookie adds the session cookie with value to r, and the CSRF header when csrfHeader is set.
@@ -299,14 +315,13 @@ func TestRequestsWithoutAuthority(t *testing.T) {
 		body  string
 		add   func(t *testing.T, f *fixture, r *http.Request) // what the request carries
 		want  int
-		kept  bool // the session of the newest login is still alive afterwards
 	}{
 		{
 			name: "the cookie and the CSRF header on a POST", route: logout, want: http.StatusNoContent,
 			add: func(t *testing.T, f *fixture, r *http.Request) { withCookie(r, f.login(t).Value, true) },
 		},
 		{
-			name: "the cookie and no CSRF header on a POST", route: logout, want: http.StatusForbidden, kept: true,
+			name: "the cookie and no CSRF header on a POST", route: logout, want: http.StatusForbidden,
 			add: func(t *testing.T, f *fixture, r *http.Request) { withCookie(r, f.login(t).Value, false) },
 		},
 		{
@@ -338,8 +353,16 @@ func TestRequestsWithoutAuthority(t *testing.T) {
 			body: credentials(strings.Repeat("a", 5<<20), password),
 		},
 		{
+			name: "valid credentials followed by more than 1 MiB", route: login, want: http.StatusRequestEntityTooLarge,
+			body: credentials(user, password) + strings.Repeat(" ", 1<<20),
+		},
+		{
 			name: "JSON with an unknown field", route: login, want: http.StatusBadRequest,
 			body: `{"name": "ada", "password": "correct horse battery", "admin": true}`,
+		},
+		{
+			name: "two JSON objects", route: login, want: http.StatusBadRequest,
+			body: credentials(user, password) + credentials(user, password),
 		},
 	}
 
@@ -352,16 +375,15 @@ func TestRequestsWithoutAuthority(t *testing.T) {
 				tc.add(t, f, r)
 			}
 
+			before := f.sessions(t)
+
 			resp, body := send(t, r)
 			require.Equal(t, tc.want, resp.StatusCode, body)
 
 			if tc.want >= http.StatusBadRequest {
 				assertError(t, body)
 				assert.Empty(t, resp.Cookies(), "a refused request sets no cookie")
-			}
-
-			if tc.kept {
-				assert.True(t, f.alive(t, f.session), "nothing is written")
+				assert.Equal(t, before, f.sessions(t), "a refused request creates and ends no session")
 			}
 		})
 	}

@@ -23,7 +23,7 @@ An error is a JSON object with one field, a line saying what went wrong:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes: not JSON, the wrong shape, or a field the route does not take. |
+| 400 | The body is not the JSON the route takes: not JSON, the wrong shape, a field the route does not take, or more than one value. |
 | 401 | The request has neither a known API token nor a live session cookie, or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path. |

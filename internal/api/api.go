@@ -5,6 +5,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -124,15 +125,22 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 	dec.DisallowUnknownFields()
 
 	err := dec.Decode(v)
+	if err == nil {
+		// Decode stops at the end of the first value, so what follows it is read here.
+		if err = dec.Decode(new(json.RawMessage)); errors.Is(err, io.EOF) {
+			return nil
+		}
+
+		if err == nil {
+			err = errors.New("more than one value")
+		}
+	}
+
 	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		return &apiError{http.StatusRequestEntityTooLarge, "the body is larger than 1 MiB"}
 	}
 
-	if err != nil {
-		return &apiError{http.StatusBadRequest, "the body is not the JSON this route takes: " + err.Error()}
-	}
-
-	return nil
+	return &apiError{http.StatusBadRequest, "the body is not the JSON this route takes: " + err.Error()}
 }
 
 // authorize is the one check of authority: a bearer token the login service
