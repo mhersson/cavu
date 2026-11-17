@@ -38,6 +38,10 @@ import (
 // RunID is unique to this test binary and labels everything it creates.
 var RunID = strings.ToLower(rand.Text()[:12])
 
+// CavuVersion is the version CavuBinary stamps, so the images a child cavu
+// builds are named for this test binary alone.
+var CavuVersion = "test-" + RunID
+
 // Runtime is the runtime named by CAVU_TEST_RUNTIME, docker by default.
 func Runtime(t *testing.T) sandbox.Runtime {
 	t.Helper()
@@ -106,8 +110,8 @@ func Cleanup() {
 	}
 }
 
-// CavuBinary is this tree's cavu built once for a Linux container on the
-// host's architecture.
+// CavuBinary is this tree's cavu, stamped with CavuVersion, built once for a
+// Linux container on the host's architecture.
 func CavuBinary(t *testing.T) string {
 	t.Helper()
 
@@ -131,7 +135,7 @@ func CavuBinary(t *testing.T) string {
 		}
 
 		bin := filepath.Join(dir, "cavu")
-		cmd := exec.CommandContext(context.Background(), "go", "build", "-trimpath", "-o", bin, "./cmd/cavu")
+		cmd := exec.CommandContext(context.Background(), "go", "build", "-trimpath", "-ldflags", "-X main.version="+CavuVersion, "-o", bin, "./cmd/cavu") //nolint:gosec // this tree, stamped with our own version
 		cmd.Dir = strings.TrimSpace(string(root))
 
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
