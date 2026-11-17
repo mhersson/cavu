@@ -44,6 +44,21 @@ are replaced: `session_id`, each line's `uuid`, the assistant's `message.id`,
 hour and the time zone (`7pm (UTC)`, the event's reset time in UTC). Every other
 byte is as recorded.
 
+## Live findings on 2.1.325
+
+Checked with a subscription on the pinned release; no line of them is recorded
+here.
+
+- `rate_limit_event` carries `status`, `resetsAt`, `rateLimitType`,
+  `overageStatus`, `overageDisabledReason`, `isUsingOverage` and
+  `unifiedWindows` with each window's `utilization`, `resetsAt` and `status`,
+  the shape of 2.1.322 and 2.1.326 (`TestLiveRateLimitEventShape`).
+- A run asks for no host beyond `api.anthropic.com` (`TestLiveSubscriptionHosts`).
+- `--max-budget-usd` stops a subscription run: an error `result` with
+  `subtype: "error_max_budget_usd"`, `terminal_reason: "budget_exhausted"`, the
+  limit in `errors`, and a per-model cost whose `costBasis` is `list`
+  (`TestLiveBudgetFlagUnderSubscription`). The mapper maps it to `crashed`.
+
 ## synthetic/
 
 | File | Derived from | Change |
