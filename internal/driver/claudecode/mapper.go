@@ -515,7 +515,7 @@ func (m *mapper) outcome(l streamLine) {
 	switch {
 	case m.authFailed || (l.IsError && strings.HasPrefix(l.Result, "Not logged in")) || (l.IsError && status == 401):
 		reason = driver.ReasonAuth
-	case l.IsError && status == 429 && isUsageLimitText(l.Result):
+	case l.IsError && (l.APIError == usageLimitCode || status == 429 && isUsageLimitText(l.Result)):
 		reason = driver.ReasonUsageLimit
 	case l.Subtype == "error_max_turns":
 		reason = driver.ReasonMaxTurns
