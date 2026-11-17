@@ -265,6 +265,7 @@ type spyStore struct {
 	failUpdate func(r store.Run) error
 	createRuns int
 	runWrites  []store.Run
+	usageTies  []string // per append with usage rows, the type of its last event, which the rows are tied to
 }
 
 func (s *spyStore) Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error) {
@@ -276,6 +277,11 @@ func (s *spyStore) Append(ctx context.Context, taskID, expectLast int64, events 
 	}
 
 	n := s.claims
+
+	if len(usage) > 0 && len(events) > 0 {
+		s.usageTies = append(s.usageTies, events[len(events)-1].Type)
+	}
+
 	s.mu.Unlock()
 
 	if fail != nil {
@@ -1368,6 +1374,43 @@ func TestLoopRunnerFaultStops(t *testing.T) {
 
 			assert.Empty(t, h.eventsOf(engine.RunEnded))
 			assert.Empty(t, h.spy.ended(), "the run keeps its volumes and stays open")
+		})
+	}
+}
+
+// What a session a runner fault cut used is recorded with its stop.
+func TestUsageOfAFaultedSessionIsRecorded(t *testing.T) {
+	daemon := errors.New("the sidecar ended")
+	used := []store.Usage{
+		{Source: "proxy", Model: "model-a", Input: 10, Output: 5},
+		{Source: "proxy", Model: "model-b", Input: 3, Output: 1, CacheRead: 2},
+	}
+
+	tests := map[string]func(h *harness){
+		"a session": func(h *harness) {
+			h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Turns: 4, Usage: used}, err: daemon}}
+		},
+		"a review": func(h *harness) {
+			h.withReview()
+			h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456"}}}
+			h.runner.reviews = []step[engine.ReviewResult]{{res: engine.ReviewResult{Turns: 4, Usage: used}, err: daemon}}
+		},
+	}
+
+	for name, script := range tests {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			script(h)
+
+			_, err := h.run(t.Context())
+			require.NoError(t, err)
+
+			assert.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+			assert.Equal(t, []string{engine.Stopped}, h.spy.usageTies, "the rows are tied to the stop")
+
+			totals, err := h.store.UsageTotals(t.Context(), h.task.ID)
+			require.NoError(t, err)
+			assert.Equal(t, used, totals)
 		})
 	}
 }

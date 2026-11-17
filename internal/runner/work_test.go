@@ -551,6 +551,38 @@ func TestWorkFaults(t *testing.T) {
 	})
 }
 
+// A session the sidecar's end cuts still used what the proxy counted, which
+// comes back with the fault for the record.
+func TestWorkReturnsUsageWithAFault(t *testing.T) {
+	cut := func(f *fakeSandbox) *fakeAgent {
+		return &fakeAgent{results: []driver.Result{{Reason: driver.ReasonInterrupted, Turns: 4}}, during: func(ctx context.Context, _ func(driver.Event)) {
+			f.send(sidecar.Line{Type: "usage", Usage: &proxy.Usage{Model: "claude-opus", Input: 10, Output: 5}})
+			f.send(sidecar.Line{Type: "usage", Usage: &proxy.Usage{Model: "claude-opus", Input: 20, Output: 7, CacheRead: 3}})
+			f.fail("sandbox: the sidecar does not answer: it exited: killed")
+			<-ctx.Done()
+		}}
+	}
+	want := []store.Usage{{Source: "proxy", Model: "claude-opus", Input: 30, Output: 12, CacheRead: 3}}
+
+	t.Run("work", func(t *testing.T) {
+		f := newFake()
+
+		res, err := f.workRunner(cut(f)).Work(t.Context(), workConfig(), startWork, noProgress)
+		require.Error(t, err)
+		assert.Equal(t, want, res.Usage)
+		assert.Equal(t, 4, res.Turns)
+	})
+
+	t.Run("review", func(t *testing.T) {
+		f := newFake()
+
+		res, err := f.workRunner(cut(f)).Review(t.Context(), workConfig(), fullReview(), noProgress)
+		require.Error(t, err)
+		assert.Equal(t, want, res.Usage)
+		assert.Equal(t, 4, res.Turns)
+	})
+}
+
 func TestWorkForwardsProgress(t *testing.T) {
 	resets := time.Date(2026, 11, 16, 18, 0, 0, 0, time.UTC)
 	f := newFake()

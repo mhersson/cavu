@@ -351,7 +351,7 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 			run = &v.run
 		}
 
-		return p.halt(ctx, v.LastEventID, v.Task, run, stopPayload(a))
+		return p.halt(ctx, v.LastEventID, v.Task, run, stopPayload(a), nil)
 	case KindFinish:
 		if err := p.write(ctx, v.LastEventID, v.run.ID, nil,
 			draft{RunEnded, actorEngine, RunEndedPayload{Outcome: RunExported, Why: a.Why}}); err != nil {
@@ -426,7 +426,7 @@ func (p *pass) unconfigured(ctx context.Context, v view, a Action, row store.Run
 	return p.halt(ctx, v.LastEventID, v.Task, run, StoppedPayload{
 		Reason: StopSandbox, Explanation: line(p.mask("The run cannot be configured: " + cause.Error())), Action: ClearRetry,
 		Detail: cause.Error(),
-	})
+	}, nil)
 }
 
 // abandon ends a new run row whose claim was never written, then returns cause.
@@ -459,7 +459,7 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 
 	res, err := p.Runner.Prepare(ctx, o.cfg)
 	if err != nil {
-		return p.fault(ctx, o, err)
+		return p.fault(ctx, o, nil, err)
 	}
 
 	// A failed baseline is an environment stop even when the runner names no step.
@@ -569,7 +569,7 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 	p.hold(stop())
 
 	if err != nil {
-		return p.fault(ctx, o, err)
+		return p.fault(ctx, o, runUsage(o.row.ID, res.Usage), err)
 	}
 
 	return p.result(ctx, o, runUsage(o.row.ID, res.Usage), draft{SessionEnded, actorRunner, SessionEndedPayload{
@@ -702,7 +702,7 @@ func (p *pass) verify(ctx context.Context, v view, a Action, o openRun) error {
 	}
 
 	if err != nil {
-		return p.fault(ctx, o, err)
+		return p.fault(ctx, o, nil, err)
 	}
 
 	return p.result(ctx, o, nil, draft{VerifyEnded, actorRunner, VerifyEndedPayload{
@@ -721,14 +721,14 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 
 	res, err := p.Runner.Export(ctx, o.cfg, s.HeadCommit)
 	if err != nil {
-		return p.fault(ctx, o, err)
+		return p.fault(ctx, o, nil, err)
 	}
 
 	if res.Problem != "" {
 		return p.halt(ctx, -1, o.task, &o.row, StoppedPayload{
 			Reason: StopAgentError, Explanation: lineOr(p.mask(res.Problem), "Exporting the change failed."), Action: ClearRetry,
 			Detail: res.Problem,
-		})
+		}, nil)
 	}
 
 	// A failed write is not a stop: the claim stays pending and the next RunTask exports again.
@@ -761,9 +761,10 @@ func writeArtifact(dir, name string, data []byte) (string, error) {
 	return path, os.WriteFile(path, data, 0o600)
 }
 
-// fault records a runner error as a sandbox stop. While ctx is done the error
-// is not a fault: the claim stays pending and the next RunTask redoes it.
-func (p *pass) fault(ctx context.Context, o openRun, cause error) error {
+// fault records a runner error as a sandbox stop, with the usage of the
+// session it cut. While ctx is done the error is not a fault: the claim stays
+// pending and the next RunTask redoes it.
+func (p *pass) fault(ctx context.Context, o openRun, usage []store.Usage, cause error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -771,17 +772,17 @@ func (p *pass) fault(ctx context.Context, o openRun, cause error) error {
 	return p.halt(ctx, -1, o.task, &o.row, StoppedPayload{
 		Reason: StopSandbox, Explanation: line(p.mask("The runner failed: " + cause.Error())), Action: ClearRetry,
 		Detail: cause.Error(),
-	})
+	}, usage)
 }
 
 func stopPayload(a Action) StoppedPayload {
 	return StoppedPayload{Reason: a.Stop, Explanation: a.Explain, Action: a.Clear, ResetsAt: a.ResetsAt, Why: a.Why}
 }
 
-// halt records a stop, with the run's end when the stop ends it, then releases
-// the run. run is nil when no run is open. A stop that is a runner call's
-// result passes expectLast -1 and is recorded even after ctx ends.
-func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *store.Run, sp StoppedPayload) error {
+// halt records a stop and usage tied to it, with the run's end when the stop
+// ends it, then releases the run. run is nil when no run is open. A stop that
+// is a runner call's result passes expectLast -1 and is recorded even after ctx ends.
+func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *store.Run, sp StoppedPayload, usage []store.Usage) error {
 	// A sandbox stop keeps the run, so a retry redoes the cut action on its volumes.
 	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment
 	drafts := []draft{{Stopped, actorEngine, sp}}
@@ -805,7 +806,7 @@ func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *st
 		defer cancel()
 	}
 
-	if err := p.write(wctx, expectLast, runID, nil, drafts...); err != nil {
+	if err := p.write(wctx, expectLast, runID, usage, drafts...); err != nil {
 		return err
 	}
 

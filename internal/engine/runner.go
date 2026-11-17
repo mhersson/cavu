@@ -57,14 +57,15 @@ type Runner interface {
 	// themselves when they are not running, so a restart needs no second prepare.
 	Prepare(ctx context.Context, c RunConfig) (PrepareResult, error)
 	// Work returns how the session ended as a result, endpoint failures and
-	// usage limits included; an error means the sandbox itself failed. A
-	// resumed session that does not exist is started under its id with the
-	// task's opening prompt, whatever the mode: the process died, ctx ended or
-	// the sandbox failed between the claim and the start. progress is never
-	// called after Work returns.
+	// usage limits included; an error means the sandbox itself failed, and
+	// comes with the session's Usage and Turns so far. A resumed session that
+	// does not exist is started under its id with the task's opening prompt,
+	// whatever the mode: the process died, ctx ended or the sandbox failed
+	// between the claim and the start. progress is never called after Work returns.
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
-	// Review runs one read-only review session on the frozen head and changes nothing.
+	// Review runs one read-only review session on the frozen head and changes
+	// nothing. An error comes with the session's Usage and Turns so far.
 	Review(ctx context.Context, c RunConfig, r ReviewRequest, progress func(Progress)) (ReviewResult, error)
 	// Export exports commit, the work a session froze, never the working tree.
 	// It is safe to repeat for the same run.

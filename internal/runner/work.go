@@ -62,7 +62,8 @@ func (r *Runner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequ
 }
 
 // runSession builds a session, runs it with the sidecar's lines watched, and
-// returns its result with the usage it reported. The usage is nil on error.
+// returns its result with the usage it reported, also with an error, so what
+// a cut session used is recorded.
 func runSession[T any](st *run, c engine.RunConfig, mask func(string) string, progress func(engine.Progress), do func(*session) (T, []driver.Usage, error)) (T, []store.Usage, error) {
 	s := &session{c: c, st: st, mask: mask, progress: progress, proxied: map[string]store.Usage{}}
 
@@ -71,13 +72,7 @@ func runSession[T any](st *run, c engine.RunConfig, mask func(string) string, pr
 
 	st.watching(nil)
 
-	if err != nil {
-		var zero T
-
-		return zero, nil, err
-	}
-
-	return res, s.usage(totals), nil
+	return res, s.usage(totals), err
 }
 
 // session is one agent session of a Work or Review call, and what the sidecar reported during it.
@@ -90,8 +85,9 @@ type session struct {
 }
 
 // run runs the session under the agent's time limit, maps how it ended and
-// freezes the work of one that ended done. It also returns the agent's usage.
-// A fresh fix of a review's findings first gets the diff the review read.
+// freezes the work of one that ended done. It also returns the agent's usage,
+// and with an error the turns and usage so far. A fresh fix of a review's
+// findings first gets the diff the review read.
 func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest) (engine.WorkResult, []driver.Usage, error) {
 	if w.Mode == engine.ModeFixReview && !w.Resume {
 		problem, err := writeDiffs(ctx, s.st, s.c, s.c.Repo.BaseCommit, "refs/heads/"+s.c.Repo.Branch, reviewPatch)
@@ -116,7 +112,7 @@ func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest
 	}
 
 	if err != nil {
-		return engine.WorkResult{}, nil, err
+		return engine.WorkResult{Turns: dr.Turns}, dr.Usage, err
 	}
 
 	res := s.result(dr, w.Mode)
@@ -126,7 +122,7 @@ func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest
 
 	if res.Outcome == engine.OutcomeDone {
 		if err := s.freeze(ctx, &res); err != nil {
-			return engine.WorkResult{}, nil, err
+			return engine.WorkResult{Turns: dr.Turns}, dr.Usage, err
 		}
 	}
 
@@ -134,7 +130,8 @@ func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest
 }
 
 // drive runs one session of spec under the agent's time limit and reports
-// whether the limit ended it. An error is the sandbox's or the call's.
+// whether the limit ended it. An error is the sandbox's or the call's; when
+// ctx ended, the result is what the interrupted driver reported.
 func (s *session) drive(ctx context.Context, d driver.Driver, spec driver.Spec) (driver.Result, bool, error) {
 	sctx, cancel := context.WithTimeoutCause(ctx, s.c.Agent.Timeout, errSessionTimeout)
 	defer cancel()
@@ -143,7 +140,7 @@ func (s *session) drive(ctx context.Context, d driver.Driver, spec driver.Spec) 
 
 	switch {
 	case ctx.Err() != nil:
-		return driver.Result{}, false, ctx.Err()
+		return dr, false, ctx.Err()
 	case err != nil:
 		return driver.Result{}, false, err
 	}

@@ -233,7 +233,7 @@ func (st *run) watching(watch func(sidecar.Line)) {
 
 // act brings the session phase up and runs do as the run's action in flight,
 // with the run's mask, which also holds its stand-in token: a sidecar error
-// during it fails the call. The error is masked.
+// during it fails the call, with what do returned. The error is masked.
 func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, phase sandbox.Phase,
 	do func(context.Context, *run, func(string) string) (T, error),
 ) (T, error) {
@@ -258,7 +258,7 @@ func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, phase sandbo
 
 	res, err := do(ctx, st, mask)
 	if fault := end(); fault != nil {
-		return zero, maskErr(fault, mask)
+		return res, maskErr(fault, mask)
 	}
 
 	return res, maskErr(err, mask)

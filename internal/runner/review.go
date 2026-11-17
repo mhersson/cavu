@@ -74,7 +74,8 @@ func writeDiffs(ctx context.Context, st *run, c engine.RunConfig, args ...string
 }
 
 // review runs the review session under the agent's time limit and maps how it
-// ended. It also returns the agent's usage.
+// ended. It also returns the agent's usage, and with an error the turns and
+// usage so far.
 func (s *session) review(ctx context.Context, d driver.Driver, rq engine.ReviewRequest) (engine.ReviewResult, []driver.Usage, error) {
 	text, err := reviewPrompt(s.c, rq)
 	if err != nil {
@@ -96,7 +97,7 @@ func (s *session) review(ctx context.Context, d driver.Driver, rq engine.ReviewR
 
 	dr, timedOut, err := s.drive(ctx, d, spec)
 	if err != nil {
-		return engine.ReviewResult{}, nil, err
+		return engine.ReviewResult{Turns: dr.Turns}, dr.Usage, err
 	}
 
 	res := s.reviewResult(dr, rq)
