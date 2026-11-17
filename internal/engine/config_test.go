@@ -3,6 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -366,4 +367,150 @@ func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture)
 	require.NoError(t, err)
 
 	return &engine.Loop{Store: s, Vault: v, Runner: &fakeRunner{}, Now: func() time.Time { return now }, Image: "cavu-sandbox:test"}, fx
+}
+
+// writeFile writes content at p with mode, making its directories.
+func writeFile(t *testing.T, p, content string, mode os.FileMode) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte(content), mode))
+	require.NoError(t, os.Chmod(p, mode))
+}
+
+// sparseFile makes a file of size at p without writing its bytes.
+func sparseFile(t *testing.T, p string, size int64) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+
+	f, err := os.Create(p)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(size))
+	require.NoError(t, f.Close())
+}
+
+func TestCheckSettingInstancePaths(t *testing.T) {
+	root := t.TempDir()
+	dir, file, missing := filepath.Join(root, "skills"), filepath.Join(root, "AGENTS.md"), filepath.Join(root, "missing")
+	writeFile(t, filepath.Join(dir, "one", "SKILL.md"), "one\n", 0o644)
+	writeFile(t, file, "instructions\n", 0o644)
+	require.NoError(t, os.Symlink(dir, filepath.Join(root, "linked-skills")))
+	require.NoError(t, os.Symlink(file, filepath.Join(root, "linked.md")))
+
+	for _, tt := range []struct {
+		key, value string
+		ok         bool
+	}{
+		{"skills_path", dir, true},
+		{"skills_path", filepath.Join(root, "linked-skills"), true},
+		{"skills_path", "", true},
+		{"skills_path", file, false},
+		{"skills_path", missing, false},
+		{"instructions_path", file, true},
+		{"instructions_path", filepath.Join(root, "linked.md"), true},
+		{"instructions_path", "", true},
+		{"instructions_path", dir, false},
+		{"instructions_path", missing, false},
+	} {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			err := engine.CheckSetting(tt.key, tt.value)
+			if tt.ok {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.key)
+		})
+	}
+}
+
+func TestBuildRunConfigInstanceFiles(t *testing.T) {
+	build := func(t *testing.T, set map[string]string) (engine.RunConfig, error) {
+		t.Helper()
+
+		loop, fx := configFixtureFor(t, configCase{set: set})
+
+		return loop.BuildRunConfig(t.Context(), fx.task, fx.run, nil)
+	}
+
+	t.Run("the instruction file and the skills, links followed, are in the config", func(t *testing.T) {
+		root := t.TempDir()
+		instructions, skills, shared := filepath.Join(root, "AGENTS.md"), filepath.Join(root, "skills"), filepath.Join(root, "shared")
+		writeFile(t, instructions, "Work in small commits.\n", 0o644)
+		writeFile(t, filepath.Join(skills, "one", "SKILL.md"), "one\n", 0o644)
+		writeFile(t, filepath.Join(skills, "one", "scripts", "run.sh"), "echo run\n", 0o755)
+		writeFile(t, filepath.Join(shared, "two", "SKILL.md"), "two\n", 0o600)
+		writeFile(t, filepath.Join(shared, "note.md"), "note\n", 0o644)
+		require.NoError(t, os.Symlink(filepath.Join(shared, "two"), filepath.Join(skills, "two")))
+		require.NoError(t, os.Symlink(filepath.Join(shared, "note.md"), filepath.Join(skills, "one", "note.md")))
+
+		got, err := build(t, map[string]string{"instructions_path": instructions, "skills_path": skills})
+		require.NoError(t, err)
+		assert.Equal(t, "Work in small commits.\n", got.Agent.Instance.Instructions)
+		assert.Equal(t, map[string]engine.File{
+			"one/SKILL.md":       {Data: []byte("one\n")},
+			"one/scripts/run.sh": {Data: []byte("echo run\n"), Executable: true},
+			"one/note.md":        {Data: []byte("note\n")},
+			"two/SKILL.md":       {Data: []byte("two\n")},
+		}, got.Agent.Instance.Skills)
+	})
+
+	t.Run("unset settings give none", func(t *testing.T) {
+		got, err := build(t, nil)
+		require.NoError(t, err)
+		assert.Zero(t, got.Agent.Instance)
+	})
+
+	for _, tc := range []struct {
+		name, key string
+		path      func(t *testing.T) string
+	}{
+		{"a skills directory that does not exist", "skills_path", func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") }},
+		{"an instruction file that does not exist", "instructions_path", func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") }},
+		{"a skills directory over the bound", "skills_path", func(t *testing.T) string {
+			dir := t.TempDir()
+			sparseFile(t, filepath.Join(dir, "one", "data.bin"), 10<<20)
+			sparseFile(t, filepath.Join(dir, "two", "data.bin"), 7<<20)
+
+			return dir
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := build(t, map[string]string{tc.key: tc.path(t)})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.key)
+		})
+	}
+
+	t.Run("a broken path stops the task with the setting named", func(t *testing.T) {
+		h := newHarness(t)
+		require.NoError(t, h.store.SetSetting(t.Context(), "skills_path", filepath.Join(t.TempDir(), "missing")))
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status)
+		assert.Empty(t, h.runner.trace())
+
+		stop := h.lastStop()
+		assert.Equal(t, engine.StopSandbox, stop.Reason)
+		assert.Equal(t, engine.ClearRetry, stop.Action)
+		assert.Contains(t, stop.Explanation, "skills_path")
+	})
+
+	t.Run("an environment check reads neither", func(t *testing.T) {
+		h := newHarness(t)
+		missing := filepath.Join(t.TempDir(), "missing")
+		require.NoError(t, h.store.SetSetting(t.Context(), "skills_path", missing))
+		require.NoError(t, h.store.SetSetting(t.Context(), "instructions_path", missing))
+
+		_, _, err := h.loop.CheckProject(t.Context(), h.task.ProjectID)
+		require.NoError(t, err)
+
+		checks := h.runner.callsOf("check")
+		require.Len(t, checks, 1)
+		assert.Zero(t, checks[0].cfg.Agent.Instance)
+	})
 }

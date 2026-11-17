@@ -1,12 +1,14 @@
 package claudecode
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"path"
 	"slices"
@@ -119,8 +121,25 @@ func stageFake(t *testing.T, tree fakeTree) *fakeRun {
 
 // requireWrite fails unless f's staging ran one write for its config dir, dir
 // and base commit, and returns the CLAUDE.md it was given, empty for none,
-// and the paths it unpacks.
+// and the paths it unpacks from the commit.
 func requireWrite(t *testing.T, f *fakeRun) (memory string, unpack []string) {
+	t.Helper()
+
+	files, unpack := requireStaged(t, f)
+
+	return files["CLAUDE.md"].content, unpack
+}
+
+// stagedFile is one file of the stream the write unpacks.
+type stagedFile struct {
+	content string
+	mode    int64
+}
+
+// requireStaged fails unless f's staging ran one write for its config dir,
+// dir and base commit, and returns the files of the stream it unpacks, by
+// name, and the paths it unpacks from the commit after them.
+func requireStaged(t *testing.T, f *fakeRun) (map[string]stagedFile, []string) {
 	t.Helper()
 
 	writes := f.target.rec.ofKind(kindWrite)
@@ -128,13 +147,35 @@ func requireWrite(t *testing.T, f *fakeRun) (memory string, unpack []string) {
 
 	argv := writes[0].Argv
 	require.GreaterOrEqual(t, len(argv), 8)
-	assert.Equal(t, []string{f.spec.ConfigDir, f.spec.Dir, testBase}, argv[4:7])
+	assert.Equal(t, []string{f.spec.ConfigDir, f.spec.Dir, f.spec.BaseCommit}, argv[4:7])
 
 	if argv[7] == "" {
-		assert.Empty(t, writes[0].stdin, "stdin carries a CLAUDE.md the write leaves unwritten")
+		assert.Empty(t, writes[0].stdin, "stdin carries files the write leaves unwritten")
+
+		return nil, argv[8:]
 	}
 
-	return string(writes[0].stdin), argv[8:]
+	files := map[string]stagedFile{}
+	tr := tar.NewReader(bytes.NewReader(writes[0].stdin))
+
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		require.NoError(t, err)
+
+		data, err := io.ReadAll(tr)
+		require.NoError(t, err)
+		assert.Equal(t, byte(tar.TypeReg), h.Typeflag, h.Name)
+
+		files[h.Name] = stagedFile{content: string(data), mode: h.Mode}
+	}
+
+	require.NotEmpty(t, files, "the write unpacks an empty stream")
+
+	return files, argv[8:]
 }
 
 // startedKinds names each command f started, in order: a staging command by
@@ -369,6 +410,89 @@ func TestClearWithoutBaseCommit(t *testing.T) {
 	assert.Equal(t, []string{kindClear, "claude"}, startedKinds(f))
 }
 
+const testInstanceInstr = "INSTANCE-INSTRUCTIONS-7e2a"
+
+// The instance's instructions open the staged CLAUDE.md, before the
+// repository's, and its skills go into the stream the write unpacks, a script
+// executable. The same write then unpacks the commit's skills, so a
+// repository skill of the same name is written over the instance's.
+func TestStageInstanceFiles(t *testing.T) {
+	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
+	f.spec.BaseCommit, f.spec.InstanceInstructions = testBase, testInstanceInstr+"\n"
+	f.spec.InstanceSkills = map[string]driver.File{
+		"shared/SKILL.md":       {Data: []byte("shared skill\n")},
+		"shared/scripts/run.sh": {Data: []byte("echo run\n"), Executable: true},
+		"one/SKILL.md":          {Data: []byte("the instance's one\n")},
+	}
+	f.target.rec.tree = fakeTree{
+		"CLAUDE.md":                   regular("root claude\n"),
+		".claude/skills/one/SKILL.md": regular("the repository's one\n"),
+	}
+
+	runFake(t, f)
+
+	assert.Equal(t, []string{kindClear, kindListing, kindNested, kindBatch, kindWrite, "claude"}, startedKinds(f))
+
+	files, unpack := requireStaged(t, f)
+	memory := files["CLAUDE.md"].content
+	assert.Equal(t, rendered(memoryFile{Instance: testInstanceInstr, Sections: []memorySection{section("root claude", "CLAUDE.md")}}), memory)
+	assert.Less(t, strings.Index(memory, testInstanceInstr), strings.Index(memory, "root claude"))
+	assert.Equal(t, map[string]stagedFile{
+		"CLAUDE.md":                    {memory, 0o644},
+		"skills/shared/SKILL.md":       {"shared skill\n", 0o644},
+		"skills/shared/scripts/run.sh": {"echo run\n", 0o755},
+		"skills/one/SKILL.md":          {"the instance's one\n", 0o644},
+	}, files)
+	assert.Equal(t, []string{".claude/skills"}, unpack)
+
+	var unpacks []string
+
+	for l := range strings.Lines(writeScript) {
+		if strings.Contains(l, "tar -x") {
+			unpacks = append(unpacks, l)
+		}
+	}
+
+	require.Len(t, unpacks, 2)
+	assert.NotContains(t, unpacks[0], " archive ", "the write unpacks the commit's paths before the stream")
+	assert.Contains(t, unpacks[1], " archive ")
+}
+
+// Without a base commit the instance's files are staged all the same, and no
+// git read runs.
+func TestStageInstanceFilesWithoutBaseCommit(t *testing.T) {
+	skills := map[string]driver.File{"shared/SKILL.md": {Data: []byte("shared skill\n")}}
+
+	for _, tc := range []struct {
+		name         string
+		instructions string
+		skills       map[string]driver.File
+		want         map[string]stagedFile
+	}{
+		{"instructions alone", testInstanceInstr, nil, map[string]stagedFile{
+			"CLAUDE.md": {rendered(memoryFile{Instance: testInstanceInstr}), 0o644},
+		}},
+		{"skills alone", "", skills, map[string]stagedFile{"skills/shared/SKILL.md": {"shared skill\n", 0o644}}},
+		{"both", testInstanceInstr, skills, map[string]stagedFile{
+			"CLAUDE.md":              {rendered(memoryFile{Instance: testInstanceInstr}), 0o644},
+			"skills/shared/SKILL.md": {"shared skill\n", 0o644},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
+			f.spec.InstanceInstructions, f.spec.InstanceSkills = tc.instructions, tc.skills
+
+			runFake(t, f)
+
+			assert.Equal(t, []string{kindClear, kindWrite, "claude"}, startedKinds(f))
+
+			files, unpack := requireStaged(t, f)
+			assert.Equal(t, tc.want, files)
+			assert.Empty(t, unpack)
+		})
+	}
+}
+
 // The clear and the write each run alone behind the marker check, with the
 // paths only as their arguments, and neither carries Files.
 func TestSandboxedComposition(t *testing.T) {
@@ -440,6 +564,28 @@ func TestMemoryFileRender(t *testing.T) {
 
 	assert.Equal(t, 1, strings.Count(got, "FIRST-CONTENT"))
 	assert.True(t, strings.HasSuffix(got, "internal/api/CLAUDE.md\n"), "the list ends the file")
+}
+
+// The instance's instructions open the staged CLAUDE.md, and alone they are
+// all of it.
+func TestMemoryFileRenderInstance(t *testing.T) {
+	assert.Equal(t, "INSTANCE-CONTENT\n", rendered(memoryFile{Instance: "INSTANCE-CONTENT"}))
+
+	got := rendered(memoryFile{
+		Instance: "INSTANCE-CONTENT", Sections: []memorySection{section("FIRST-CONTENT", "CLAUDE.md")}, Nested: []string{"web/AGENTS.md"},
+	})
+	assert.True(t, strings.HasPrefix(got, "INSTANCE-CONTENT\n"), "the instance's instructions do not open the file")
+
+	at := -1
+
+	for _, s := range []string{"INSTANCE-CONTENT", "CLAUDE.md", "FIRST-CONTENT", "web/AGENTS.md"} {
+		i := strings.Index(got[at+1:], s)
+		require.GreaterOrEqual(t, i, 0, "%s missing or out of order", s)
+
+		at += i + 1
+	}
+
+	assert.Equal(t, 1, strings.Count(got, "INSTANCE-CONTENT"))
 }
 
 func TestFilterNested(t *testing.T) {

@@ -1,12 +1,14 @@
 package claudecode
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	_ "embed" // the staged text
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path"
 	"slices"
 	"strconv"
@@ -64,16 +66,18 @@ cd -P -- "$d" || exit 1
 [ "$(pwd -P)" = "$d" ] || { echo "cavu: the config dir resolves elsewhere; nothing deleted" >&2; exit 1; }
 find . -mindepth 1 -maxdepth 1 ! -name ` + keptEntry + ` -exec rm -rf -- {} +`
 
-// writeScript writes its stdin to CLAUDE.md when $4 is set, and unpacks the
+// writeScript unpacks the tar stream on its stdin when $4 is set, then the
 // paths after $4 from commit $3 of the repository $2 without their .claude/,
-// into the config dir $1 under the clear's checks. It runs under bash for
-// pipefail: tar takes an empty or cut stream from a failed git archive as whole.
+// into the config dir $1 under the clear's checks; with -m the stream's files,
+// which carry no time of their own, get the time they are written. It runs
+// under bash for pipefail: tar takes an empty or cut stream from a failed git
+// archive as whole.
 var writeScript = `set -o pipefail
-d=$1 repo=$2 commit=$3 memory=$4
+d=$1 repo=$2 commit=$3 stream=$4
 shift 4
 mkdir -p -- "$d" && cd -P -- "$d" || exit 1
 [ "$(pwd -P)" = "$d" ] || { echo "cavu: the config dir resolves elsewhere; nothing written" >&2; exit 1; }
-if [ -n "$memory" ]; then cat > CLAUDE.md || exit 1; fi
+if [ -n "$stream" ]; then tar -x -m -f - || exit 1; fi
 [ $# -eq 0 ] || git -C "$repo" archive "$commit" -- "$@" | head -c ` + strconv.Itoa(stageLimit) + ` | tar -x -f - --strip-components=1 ||
 	{ echo "cavu: .claude/rules and .claude/skills did not unpack; together they may hold at most ` + strconv.Itoa(stageLimit) + ` bytes" >&2; exit 1; }`
 
@@ -102,8 +106,10 @@ type memorySection struct {
 	Content string
 }
 
-// memoryFile is the staged CLAUDE.md.
+// memoryFile is the staged CLAUDE.md: the instance's instructions, then the
+// repository's files.
 type memoryFile struct {
+	Instance string
 	Sections []memorySection
 	Nested   []string
 }
@@ -111,7 +117,7 @@ type memoryFile struct {
 // render returns nil for a file with nothing in it. The template and its data
 // are fixed, so only a broken template fails, which the unit tests catch.
 func (m memoryFile) render() []byte {
-	if len(m.Sections) == 0 && len(m.Nested) == 0 {
+	if m.Instance == "" && len(m.Sections) == 0 && len(m.Nested) == 0 {
 		return nil
 	}
 
@@ -123,9 +129,10 @@ func (m memoryFile) render() []byte {
 	return b.Bytes()
 }
 
-// prepare clears s.ConfigDir but for keptEntry and, when s names a base
-// commit, stages its instruction files there. Every command runs in the
-// target, and Run has validated the paths they take.
+// prepare clears s.ConfigDir but for keptEntry and stages there the
+// instance's files and, when s names a base commit, the repository's
+// instruction files. Every command runs in the target, and Run has validated
+// the paths they take.
 func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) error {
 	ctx, cancel := context.WithTimeout(ctx, stageTimeout)
 	defer cancel()
@@ -134,13 +141,87 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 		return fmt.Errorf("clear the config dir: %w", err)
 	}
 
-	if s.BaseCommit == "" {
+	m := memoryFile{Instance: strings.TrimRight(s.InstanceInstructions, "\n")}
+
+	var trees []string
+
+	if s.BaseCommit != "" {
+		var err error
+		if trees, err = c.readRepository(ctx, t, s, &m); err != nil {
+			return err
+		}
+	}
+
+	stream, err := stagedStream(m.render(), s.InstanceSkills)
+	if err != nil {
+		return fmt.Errorf("pack the instruction files: %w", err)
+	}
+
+	if stream == nil && len(trees) == 0 {
 		return nil
 	}
 
+	flag := ""
+	if stream != nil {
+		flag = "1"
+	}
+
+	if err := c.sandboxed(ctx, t, s, "bash", writeScript, stream, append([]string{s.ConfigDir, s.Dir, s.BaseCommit, flag}, trees...)...); err != nil {
+		return fmt.Errorf("write the instruction files: %w", err)
+	}
+
+	return nil
+}
+
+// stagedStream is the tar stream the write unpacks before the repository's
+// rules and skills: memory as CLAUDE.md and the instance's skills under
+// skills/. It is nil when there is neither.
+func stagedStream(memory []byte, skills map[string]driver.File) ([]byte, error) {
+	if memory == nil && len(skills) == 0 {
+		return nil, nil
+	}
+
+	files := map[string]driver.File{}
+	if memory != nil {
+		files["CLAUDE.md"] = driver.File{Data: memory}
+	}
+
+	for p, f := range skills {
+		files["skills/"+p] = f
+	}
+
+	var b bytes.Buffer
+
+	tw := tar.NewWriter(&b)
+
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		f, mode := files[name], int64(0o644)
+		if f.Executable {
+			mode = 0o755
+		}
+
+		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: mode, Size: int64(len(f.Data))}); err != nil {
+			return nil, err
+		}
+
+		if _, err := tw.Write(f.Data); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+
+	return b.Bytes(), nil
+}
+
+// readRepository reads the root files and the nested list of the base commit
+// into m and returns the rules and skills directories it holds.
+func (c claudeCode) readRepository(ctx context.Context, t proc.Target, s driver.Spec, m *memoryFile) ([]string, error) {
 	listing, err := c.capture(ctx, t, s, slices.Concat([]string{"git", "ls-tree", "-z", s.BaseCommit, "--"}, memoryNames, archiveNames), nil)
 	if err != nil {
-		return fmt.Errorf("list %s: %w", s.BaseCommit, err)
+		return nil, fmt.Errorf("list %s: %w", s.BaseCommit, err)
 	}
 
 	types := map[string]string{}
@@ -155,10 +236,10 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 
 	nested, err := c.capture(ctx, t, s, []string{"bash", "-c", nestedScript, "bash", s.BaseCommit}, nil)
 	if err != nil {
-		return fmt.Errorf("list the nested instruction files of %s: %w", s.BaseCommit, err)
+		return nil, fmt.Errorf("list the nested instruction files of %s: %w", s.BaseCommit, err)
 	}
 
-	m := memoryFile{Nested: filterNested(strings.FieldsFunc(string(nested), func(r rune) bool { return r == 0 }))}
+	m.Nested = filterNested(strings.FieldsFunc(string(nested), func(r rune) bool { return r == 0 }))
 
 	var roots, trees []string
 
@@ -174,25 +255,9 @@ func (c claudeCode) prepare(ctx context.Context, t proc.Target, s driver.Spec) e
 		}
 	}
 
-	if m.Sections, err = c.readRoots(ctx, t, s, roots); err != nil {
-		return err
-	}
+	m.Sections, err = c.readRoots(ctx, t, s, roots)
 
-	memory := m.render()
-	if memory == nil && len(trees) == 0 {
-		return nil
-	}
-
-	write := ""
-	if memory != nil {
-		write = "1"
-	}
-
-	if err := c.sandboxed(ctx, t, s, "bash", writeScript, memory, append([]string{s.ConfigDir, s.Dir, s.BaseCommit, write}, trees...)...); err != nil {
-		return fmt.Errorf("write the instruction files: %w", err)
-	}
-
-	return nil
+	return trees, err
 }
 
 // readRoots reads the root files through one cat-file --batch, which follows

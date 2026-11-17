@@ -793,6 +793,68 @@ git rev-parse HEAD`))
 	assert.Equal(t, "{}\n", b.readConfig(transcript))
 }
 
+// TestInstanceInstructionsAndSkillsReachTheAgent: the instance's instructions
+// reach the first model call ahead of the repository's root CLAUDE.md, and its
+// skills are listed by name and description, but for one of the name of the
+// repository's skill, whose own is listed. The staging keeps an instance
+// script executable and its other files not.
+func TestInstanceInstructionsAndSkillsReachTheAgent(t *testing.T) {
+	const (
+		markerInstance      = "CONFORMANCE-INSTANCE-INSTRUCTIONS-2b8e"
+		instanceSkill       = "conformance-instance"
+		markerInstanceSkill = "CONFORMANCE-INSTANCE-SKILL-DESCRIPTION-5a3c"
+		markerShadowed      = "CONFORMANCE-INSTANCE-SHADOWED-DESCRIPTION-8f1d"
+	)
+
+	skill := func(name, description string) driver.File {
+		return driver.File{Data: []byte("---\nname: " + name + "\ndescription: " + description + "\n---\n\nUse it.\n")}
+	}
+
+	b := keyBox(t, mockapi.Step{Text: "done"})
+
+	s := b.spec()
+	s.InstanceInstructions = "# Every task\n\n" + markerInstance + "\n"
+	s.InstanceSkills = map[string]driver.File{
+		instanceSkill + "/SKILL.md":       skill(instanceSkill, markerInstanceSkill),
+		instanceSkill + "/scripts/run.sh": {Data: []byte("echo run\n"), Executable: true},
+		"conformance-marker/SKILL.md":     skill("conformance-marker", markerShadowed),
+	}
+
+	requireDone(t, b.run(conformanceDriver(), s))
+
+	calls := modelCalls(b.mock)
+	require.NotEmpty(t, calls)
+
+	instance, root := bytes.Index(calls[0].Body, []byte(markerInstance)), bytes.Index(calls[0].Body, []byte(markerRootClaude))
+	require.GreaterOrEqual(t, instance, 0, "the instance's instructions are not in the first model call")
+	require.GreaterOrEqual(t, root, 0, "the repository's CLAUDE.md is not in the first model call")
+	assert.Less(t, instance, root, "the repository's CLAUDE.md comes first")
+
+	for _, m := range []string{instanceSkill, markerInstanceSkill, markerSkill} {
+		assert.True(t, carries(calls[0], m), "%s is not in the first model call", m)
+	}
+
+	assert.Empty(t, carriedBy(b.mock, markerShadowed), "the instance's skill of the repository's name reached a request")
+
+	require.NoError(t, b.prepare(s))
+
+	res := b.sh("cd " + confConfig + "/skills/" + instanceSkill + " && find . -type f -printf '%P %m\\n' | sort")
+	require.Equal(t, 0, res.ExitCode, res.Output)
+
+	files := map[string]bool{}
+
+	for line := range strings.Lines(res.Output) {
+		name, mode, _ := strings.Cut(strings.TrimSpace(line), " ")
+		perm, err := strconv.ParseUint(mode, 8, 32)
+		require.NoError(t, err, line)
+
+		files[name] = perm&0o100 != 0
+	}
+
+	assert.Equal(t, map[string]bool{"SKILL.md": false, "scripts/run.sh": true}, files)
+	assert.Contains(t, b.readConfig("skills/conformance-marker/SKILL.md"), markerSkill, "the repository's skill was not written over the instance's")
+}
+
 // confIdentity names the committer of the checks' own commits.
 const confIdentity = "-c user.name=conformance -c user.email=conformance@example.com"
 
