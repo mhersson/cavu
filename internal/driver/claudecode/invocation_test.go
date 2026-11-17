@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -163,6 +164,58 @@ func TestWebToolsSwitch(t *testing.T) {
 		rec := runFake(t, f)
 		assert.Equal(t, !on, slices.Contains(rec.Args, "--disallowedTools"), "web tools %v", on)
 		assert.Equal(t, !on, slices.Contains(rec.EnvNames, "CLAUDE_CODE_DISABLE_WEB_FETCH"), "web tools %v", on)
+	}
+}
+
+// splitDisallowed returns the --disallowedTools list, which like the CLI's
+// variadic option ends at the next flag, and the rest of argv with the
+// invocation's own directory as a placeholder.
+func splitDisallowed(t *testing.T, argv []string) (tools, rest []string) {
+	t.Helper()
+
+	dir := path.Dir(flagValue(t, argv, "--settings"))
+
+	for i := 0; i < len(argv); i++ {
+		if argv[i] != "--disallowedTools" {
+			rest = append(rest, strings.ReplaceAll(argv[i], dir, "<dir>"))
+
+			continue
+		}
+
+		for i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "--") {
+			i++
+			tools = append(tools, argv[i])
+		}
+	}
+
+	return tools, rest
+}
+
+// TestInvocationReadOnly: a read-only spec's argv differs from the same spec's
+// without the flag only in the editing tools it disallows.
+func TestInvocationReadOnly(t *testing.T) {
+	for _, web := range []bool{false, true} {
+		t.Run("web tools "+strconv.FormatBool(web), func(t *testing.T) {
+			d := claudeCode{binary: "claude", runRoot: runRoot}
+			s := driver.Spec{
+				Auth: driver.Auth{Mode: modeSubscription, Token: testToken}, Model: testModel, MaxTurns: 1,
+				SessionID: testSessionID, Prompt: testPrompt, Instructions: testInstr, WebTools: web,
+				OutputSchema: json.RawMessage(`{"type":"object"}`), Home: "/home/agent", ConfigDir: "/home/agent/.claude-cavu",
+			}
+
+			plain, err := d.newInvocation(s)
+			require.NoError(t, err)
+
+			s.ReadOnly = true
+
+			readOnly, err := d.newInvocation(s)
+			require.NoError(t, err)
+
+			plainTools, plainRest := splitDisallowed(t, plain.argv)
+			tools, rest := splitDisallowed(t, readOnly.argv)
+			assert.Equal(t, plainRest, rest)
+			assert.Equal(t, append(plainTools, "Edit", "Write", "NotebookEdit"), tools)
+		})
 	}
 }
 

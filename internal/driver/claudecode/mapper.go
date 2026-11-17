@@ -213,6 +213,7 @@ func (m *mapper) finish(exitCode int, stderrTail string) driver.Result {
 	m.res.Usage = m.usageTotals()
 	m.res.RateLimit = m.rateLimit
 	m.res.IsError = true
+	m.res.CostMissing = true
 
 	switch {
 	case m.authFailed:

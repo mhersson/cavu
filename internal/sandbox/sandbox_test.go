@@ -81,7 +81,7 @@ func reported(s *Sandbox, phase Phase) fakeContainer {
 		},
 	}
 
-	if phase == PhaseAgent {
+	if phase != PhaseSetup {
 		c.mounts = append(c.mounts, MountInfo{Type: "volume", Source: s.name("home"), Target: "/home/agent"})
 	}
 
@@ -120,7 +120,7 @@ func fakeSandbox(t *testing.T, mutate ...func(*Options)) (*Sandbox, *fake) {
 
 	f.set(t, "out."+probeArgv[len(probeArgv)-1], []byte("403"))
 
-	for _, phase := range []Phase{PhaseSetup, PhaseAgent} {
+	for _, phase := range phases {
 		setReported(t, f, s, phase, reported(s, phase))
 	}
 
@@ -232,6 +232,7 @@ func TestNamesFollowTheScheme(t *testing.T) {
 		"cache":     "cavu-01234567-cache-3",
 		"mirror":    "cavu-01234567-mirror-3",
 		"agent":     "cavu-01234567-agent-7",
+		"readonly":  "cavu-01234567-readonly-7",
 		"sidecar":   "cavu-01234567-sidecar-7",
 		"setup":     "cavu-01234567-setup-7",
 		"clone":     "cavu-01234567-clone-7",
@@ -548,15 +549,34 @@ func TestSetupPhaseHasNoHomeMount(t *testing.T) {
 	}, mountFlags(setup.argv))
 }
 
+// TestPhaseSpecReadOnly: the read-only phase is the agent phase with the
+// workspace mounted read-only.
+func TestPhaseSpecReadOnly(t *testing.T) {
+	r, _ := fakeRuntime(t, "docker")
+	s, err := Open(goodOptions(r))
+	require.NoError(t, err)
+
+	agent, readOnly := s.phaseSpec(PhaseAgent), s.phaseSpec(PhaseReadOnly)
+	assert.Equal(t, s.name("readonly"), readOnly.Name)
+
+	i := slices.IndexFunc(agent.Mounts, func(m Mount) bool { return m.Path == "/workspace" })
+	require.GreaterOrEqual(t, i, 0)
+	require.False(t, agent.Mounts[i].ReadOnly)
+
+	agent.Name = readOnly.Name
+	agent.Mounts[i].ReadOnly = true
+	assert.Equal(t, agent, readOnly)
+}
+
 func TestEveryContainerIsHardened(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		totalMB int
 		want    map[string]string // container kind: its memory flag
 	}{
-		{"a large runtime", 32 << 10, map[string]string{"clone": "--memory=2048m", "sidecar": "--memory=1024m", "setup": "--memory=8192m", "agent": "--memory=8192m"}},
-		{"a runtime below the phase limit", 1536, map[string]string{"clone": "--memory=1536m", "sidecar": "--memory=1024m", "setup": "--memory=1536m", "agent": "--memory=1536m"}},
-		{"a runtime below every limit", 768, map[string]string{"clone": "--memory=768m", "sidecar": "--memory=768m", "setup": "--memory=768m", "agent": "--memory=768m"}},
+		{"a large runtime", 32 << 10, map[string]string{"clone": "--memory=2048m", "sidecar": "--memory=1024m", "setup": "--memory=8192m", "agent": "--memory=8192m", "readonly": "--memory=8192m"}},
+		{"a runtime below the phase limit", 1536, map[string]string{"clone": "--memory=1536m", "sidecar": "--memory=1024m", "setup": "--memory=1536m", "agent": "--memory=1536m", "readonly": "--memory=1536m"}},
+		{"a runtime below every limit", 768, map[string]string{"clone": "--memory=768m", "sidecar": "--memory=768m", "setup": "--memory=768m", "agent": "--memory=768m", "readonly": "--memory=768m"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, f := ensured(t)
@@ -565,7 +585,7 @@ func TestEveryContainerIsHardened(t *testing.T) {
 			_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: "https://git.example/repo.git"})
 			require.NoError(t, err)
 
-			for _, phase := range []Phase{PhaseSetup, PhaseAgent} {
+			for _, phase := range phases {
 				_, err := s.Up(t.Context(), phase, sidecar.ProxyRequest{}, nil)
 				require.NoError(t, err)
 			}
@@ -725,7 +745,7 @@ func TestCredentialOnlyOnSidecarStdin(t *testing.T) {
 }
 
 func TestUpChecksNetworkNone(t *testing.T) {
-	for _, phase := range []Phase{PhaseSetup, PhaseAgent} {
+	for _, phase := range phases {
 		t.Run(string(phase), func(t *testing.T) {
 			s, f := ensured(t)
 
@@ -741,7 +761,7 @@ func TestUpChecksNetworkNone(t *testing.T) {
 }
 
 func TestUpRefusesAStoppedPhaseContainer(t *testing.T) {
-	for _, phase := range []Phase{PhaseSetup, PhaseAgent} {
+	for _, phase := range phases {
 		t.Run(string(phase), func(t *testing.T) {
 			s, f := ensured(t)
 
@@ -1073,6 +1093,17 @@ func TestUpReusesWhatRuns(t *testing.T) {
 	assert.Contains(t, removedAfter(calls, runsOf(calls, s.name("setup"))[0]), s.name("setup"))
 	assert.Len(t, runsOf(calls, s.name("agent")), 1)
 
+	for _, phase := range []Phase{PhaseReadOnly, PhaseAgent} {
+		_, err = s.Up(t.Context(), phase, req, nil)
+		require.NoError(t, err)
+	}
+
+	calls = f.calls(t)
+	assert.Len(t, runsOf(calls, s.name("sidecar")), 1, "a change of phase restarted the sidecar")
+	assert.Len(t, runsOf(calls, s.name("readonly")), 1)
+	assert.Contains(t, removedAfter(calls, runsOf(calls, s.name("readonly"))[0]), s.name("readonly"))
+	assert.Len(t, runsOf(calls, s.name("agent")), 2)
+
 	_, err = s.Up(t.Context(), PhaseAgent, sidecar.ProxyRequest{AllowHosts: []string{"other.example"}}, nil)
 	require.NoError(t, err)
 
@@ -1080,7 +1111,7 @@ func TestUpReusesWhatRuns(t *testing.T) {
 	sides := runsOf(calls, s.name("sidecar"))
 	require.Len(t, sides, 2, "another request kept the old sidecar")
 	assert.True(t, calls[sides[0]].stdinRead, "the old sidecar's stdin is still open")
-	assert.Len(t, runsOf(calls, s.name("agent")), 1)
+	assert.Len(t, runsOf(calls, s.name("agent")), 2)
 }
 
 func TestUpKeepsASidecarOlderThanTheReadyWindow(t *testing.T) {
@@ -1134,7 +1165,7 @@ func TestDownAndDestroyOutliveACancelledContext(t *testing.T) {
 		require.NoError(t, s.Down(cancelled(t)))
 
 		removed := removedAfter(f.calls(t), n-1)
-		for _, k := range []string{"agent", "setup", "sidecar", "clone"} {
+		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone"} {
 			assert.Contains(t, removed, s.name(k))
 		}
 	})
@@ -1167,7 +1198,7 @@ func TestDownAndDestroy(t *testing.T) {
 		calls := f.calls(t)
 		removed := removedAfter(calls, n-1)
 
-		for _, k := range []string{"agent", "setup", "sidecar", "clone"} {
+		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone"} {
 			assert.Contains(t, removed, s.name(k))
 		}
 

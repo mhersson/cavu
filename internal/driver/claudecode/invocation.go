@@ -145,8 +145,19 @@ func (c claudeCode) newInvocation(s driver.Spec) (invocation, error) {
 		"--settings", settingsPath,
 	}
 
+	var disallowed []string
 	if !s.WebTools {
-		argv = append(argv, "--disallowedTools", "WebFetch", "WebSearch")
+		disallowed = append(disallowed, "WebFetch", "WebSearch")
+	}
+
+	// The workspace is mounted read-only, so an edit would fail; without the
+	// editing tools no turn goes to one. The shell stays: the agent searches with it.
+	if s.ReadOnly {
+		disallowed = append(disallowed, "Edit", "Write", "NotebookEdit")
+	}
+
+	if len(disallowed) > 0 {
+		argv = append(append(argv, "--disallowedTools"), disallowed...)
 	}
 
 	if s.Instructions != "" {

@@ -67,6 +67,7 @@ type Spec struct {
 	ConfigDir     string
 	Env           []string // extra environment: proxy variables, CA path, toolchain paths
 	WebTools      bool
+	ReadOnly      bool // the workspace is read-only: the agent gets no editing tool
 }
 
 // Event is one normalised step of a session; only the fields of its Kind are set.
@@ -117,6 +118,7 @@ type Result struct {
 	SessionID       string
 	Turns           int
 	CostEstimateUSD float64
+	CostMissing     bool    // the session ended without a result line, so no cost estimate covers it
 	Usage           []Usage // totals per model, sorted by model
 	RateLimit       *RateLimit
 	Detail          string // the stderr tail, or the error text with the upstream status when known
