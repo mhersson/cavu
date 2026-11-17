@@ -62,7 +62,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep t
    cavu task diff ID
    ```
 
-   A task in `in_review` has its change ready: read the diff, push the branch and merge it yourself.
+   A task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself.
 
 When a task stops, `task run` exits 3 and prints the reason, what it means and what clears it:
 
