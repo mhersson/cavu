@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -44,6 +45,39 @@ var image struct {
 	once sync.Once
 	res  result
 	bin  string
+}
+
+// host is the child built for a host that is not Linux.
+var host struct {
+	once sync.Once
+	bin  string
+	err  error
+}
+
+// child is the cavu the tests run on this host: on Linux the CavuBinary that
+// also goes into the image, elsewhere the same tree with the same version
+// stamp built for this host, beside it in the directory sandboxtest removes.
+func child(t *testing.T) string {
+	t.Helper()
+
+	if runtime.GOOS == "linux" {
+		return sandboxtest.CavuBinary(t)
+	}
+
+	host.once.Do(func() {
+		host.bin = filepath.Join(filepath.Dir(sandboxtest.CavuBinary(t)), "cavu-"+runtime.GOOS)
+
+		cmd := exec.CommandContext(context.Background(), "go", "build", "-trimpath", "-ldflags", "-X main.version="+sandboxtest.CavuVersion, "-o", host.bin, "github.com/mhersson/cavu/cmd/cavu") //nolint:gosec // this tree, stamped with the test version
+		cmd.Env = append(cmd.Environ(), "CGO_ENABLED=0")
+
+		if out, err := cmd.CombinedOutput(); err != nil {
+			host.err = fmt.Errorf("build cavu for %s: %w: %s", runtime.GOOS, err, out)
+		}
+	})
+
+	require.NoError(t, host.err)
+
+	return host.bin
 }
 
 func TestMain(m *testing.M) {
@@ -84,7 +118,7 @@ func (in *instance) cavu(stdin string, args ...string) result {
 
 	var stdout, stderr bytes.Buffer
 
-	cmd := exec.CommandContext(in.t.Context(), sandboxtest.CavuBinary(in.t), args...)
+	cmd := exec.CommandContext(in.t.Context(), child(in.t), args...)
 	cmd.Env = append(os.Environ(), "CAVU_DATA_DIR="+in.dir)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &stdout, &stderr
 
@@ -148,7 +182,13 @@ func setup(t *testing.T, endpoint string) *instance {
 	sandboxtest.RemoveInstanceAfter(t, rt, in.id)
 
 	image.once.Do(func() {
-		if image.res = in.cavu("", "image", "build"); image.res.code == 0 {
+		// What a person off Linux types: the host's cavu cannot run in the image.
+		args := []string{"image", "build"}
+		if runtime.GOOS != "linux" {
+			args = append(args, "--cavu-binary", sandboxtest.CavuBinary(t))
+		}
+
+		if image.res = in.cavu("", args...); image.res.code == 0 {
 			image.bin = rt.Bin
 		}
 	})
