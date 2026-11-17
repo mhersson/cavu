@@ -6,7 +6,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Status
 
-Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, and `cavu project` adds, changes and lists projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, prints a task's diff, and records a person's answer, retry, cancel and mark. Nothing runs a task yet.
+Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, and `cavu project` adds, changes and lists projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark.
 
 ## Licence
 

@@ -23,10 +23,11 @@ import (
 
 // app is a verb's handle on the data directory.
 type app struct {
-	dir   string
-	store *store.Store
-	vault *auth.Vault
-	held  *os.File // the lock file, while the lock is held
+	dir        string
+	store      *store.Store
+	vault      *auth.Vault
+	instanceID string
+	held       *os.File // the lock file, while the lock is held
 }
 
 // openApp opens the data directory, creating it, the master key and the
@@ -50,7 +51,7 @@ func openApp(ctx context.Context, dir string) (*app, error) {
 	a := &app{dir: dir, store: s}
 
 	if a.vault, err = auth.NewVault(s, key); err == nil {
-		err = ensureInstanceID(ctx, s)
+		a.instanceID, err = ensureInstanceID(ctx, s)
 	}
 
 	if err != nil {
@@ -62,15 +63,16 @@ func openApp(ctx context.Context, dir string) (*app, error) {
 	return a, nil
 }
 
-func ensureInstanceID(ctx context.Context, s *store.Store) error {
-	if _, ok, err := s.Setting(ctx, "instance_id"); err != nil || ok {
-		return err
+func ensureInstanceID(ctx context.Context, s *store.Store) (string, error) {
+	if id, ok, err := s.Setting(ctx, "instance_id"); err != nil || ok {
+		return id, err
 	}
 
-	id := make([]byte, 8)
-	_, _ = rand.Read(id) // never returns an error
+	b := make([]byte, 8)
+	_, _ = rand.Read(b) // never returns an error
+	id := hex.EncodeToString(b)
 
-	return s.SetSetting(ctx, "instance_id", hex.EncodeToString(id))
+	return id, s.SetSetting(ctx, "instance_id", id)
 }
 
 // lock holds the data directory's lock until close or the process exits.
@@ -98,6 +100,7 @@ func (a *app) lock() error {
 type containerRuntime interface {
 	BuildImage(ctx context.Context, o sandbox.BuildOptions, out io.Writer) error
 	ImageInfo(ctx context.Context, name string) (sandbox.ImageLabels, bool, error)
+	RemoveOrphans(ctx context.Context, instanceID string, keepRuns []int64) error
 	Runner() engine.Runner
 }
 
@@ -105,6 +108,10 @@ type containerRuntime interface {
 type hostRuntime struct{ sandbox.Runtime }
 
 func (r hostRuntime) Runner() engine.Runner { return runner.New(r.Runtime, claudecode.New()) }
+
+func (r hostRuntime) RemoveOrphans(ctx context.Context, instanceID string, keepRuns []int64) error {
+	return sandbox.RemoveOrphans(ctx, r.Runtime, instanceID, keepRuns)
+}
 
 // detectRuntime is the one seam to the container runtime: the unit tests
 // replace it, so they start no container and run no runtime binary.
@@ -140,6 +147,36 @@ func (a *app) caBundle(ctx context.Context) ([]byte, error) {
 	}
 
 	return b, nil
+}
+
+// drive takes what a verb needs before it starts a container: the lock, the
+// runtime, and this binary's image with the configured CA bundle.
+func (a *app) drive(ctx context.Context) (containerRuntime, error) {
+	if err := a.lock(); err != nil {
+		return nil, err
+	}
+
+	rt, err := a.runtime(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := a.checkImage(ctx, rt); err != nil {
+		return nil, err
+	}
+
+	return rt, nil
+}
+
+// removeOrphans removes the instance's containers and the volumes of every run
+// that is not open. With the lock held, no container of the instance is in use.
+func (a *app) removeOrphans(ctx context.Context, rt containerRuntime) error {
+	keep, err := a.store.OpenRunIDs(ctx)
+	if err != nil {
+		return err
+	}
+
+	return rt.RemoveOrphans(ctx, a.instanceID, keep)
 }
 
 // checkImage stops a verb before any container starts unless this binary's

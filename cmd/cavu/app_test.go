@@ -44,12 +44,25 @@ func TestMain(m *testing.M) {
 
 // fakeRuntime records what the verbs ask of the container runtime.
 type fakeRuntime struct {
-	name   string // the runtime detected
-	builds []sandbox.BuildOptions
-	image  string              // the image whose labels were read
-	labels sandbox.ImageLabels // the image's, when found
-	found  bool
-	runner *fakeRunner
+	name     string // the runtime detected
+	builds   []sandbox.BuildOptions
+	image    string              // the image whose labels were read
+	labels   sandbox.ImageLabels // the image's, when found
+	found    bool
+	removals []removal
+	runner   *fakeRunner
+}
+
+// removal is one RemoveOrphans call.
+type removal struct {
+	instanceID string
+	keepRuns   []int64
+}
+
+func (f *fakeRuntime) RemoveOrphans(_ context.Context, instanceID string, keepRuns []int64) error {
+	f.removals = append(f.removals, removal{instanceID, keepRuns})
+
+	return nil
 }
 
 func (f *fakeRuntime) BuildImage(_ context.Context, o sandbox.BuildOptions, _ io.Writer) error {
@@ -66,21 +79,71 @@ func (f *fakeRuntime) ImageInfo(_ context.Context, name string) (sandbox.ImageLa
 
 func (f *fakeRuntime) Runner() engine.Runner { return f.runner }
 
-// fakeRunner answers a project check and records its configs. A method it
-// does not define panics on the nil Runner it embeds.
+// fakeRunner answers a project check and a run's actions as a test sets them,
+// records what it is asked, and runs no command.
 type fakeRunner struct {
-	engine.Runner
-
 	checks     []engine.RunConfig
 	check      engine.PrepareResult
 	suggestion string
 	checkErr   error
+
+	actions    []engine.ActionKind // prepare, work, verify and export, in the order asked
+	work       engine.WorkResult
+	duringWork func() // runs inside Work, as a person might act while a session runs
+	releases   []release
+}
+
+// release is one Release call, with its context's error at the call.
+type release struct {
+	ref           engine.RunRef
+	removeVolumes bool
+	ctxErr        error
 }
 
 func (r *fakeRunner) CheckEnvironment(_ context.Context, c engine.RunConfig) (engine.PrepareResult, string, error) {
 	r.checks = append(r.checks, c)
 
 	return r.check, r.suggestion, r.checkErr
+}
+
+func (r *fakeRunner) Prepare(context.Context, engine.RunConfig) (engine.PrepareResult, error) {
+	r.actions = append(r.actions, engine.KindPrepare)
+
+	return engine.PrepareResult{BaseCommit: "base123", Tools: []string{"go@1.27"}, Baseline: engine.ResultPassed}, nil
+}
+
+func (r *fakeRunner) Work(ctx context.Context, _ engine.RunConfig, _ engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
+	r.actions = append(r.actions, engine.KindWork)
+
+	progress(engine.Progress{Type: engine.AgentText, Payload: engine.AgentTextPayload{Text: "Reading the login handler."}})
+
+	if r.duringWork != nil {
+		r.duringWork()
+	}
+
+	if err := ctx.Err(); err != nil {
+		return engine.WorkResult{}, err
+	}
+
+	return r.work, nil
+}
+
+func (r *fakeRunner) Verify(context.Context, engine.RunConfig) (engine.VerifyResult, error) {
+	r.actions = append(r.actions, engine.KindVerify)
+
+	return engine.VerifyResult{Result: engine.ResultPassed, Command: "make test"}, nil
+}
+
+func (r *fakeRunner) Export(_ context.Context, _ engine.RunConfig, commit string) (engine.ExportResult, error) {
+	r.actions = append(r.actions, engine.KindExport)
+
+	return engine.ExportResult{HeadCommit: commit, Diff: []byte("diff --git a/login.go b/login.go\n"), Bundle: []byte("bundle"), FilesChanged: 1}, nil
+}
+
+func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
+	r.releases = append(r.releases, release{ref, removeVolumes, ctx.Err()})
+
+	return nil
 }
 
 func useFakeRuntime(t *testing.T, fake *fakeRuntime) {

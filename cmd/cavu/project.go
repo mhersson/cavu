@@ -291,16 +291,8 @@ func projectCheck(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	// Every check runs under run and task id 0, and a task run removes the
 	// containers it does not own: one verb drives containers at a time.
-	if err := a.lock(); err != nil {
-		return err
-	}
-
-	rt, err := a.runtime(ctx)
+	rt, err := a.drive(ctx)
 	if err != nil {
-		return err
-	}
-
-	if err := a.checkImage(ctx, rt); err != nil {
 		return err
 	}
 

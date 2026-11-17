@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -18,7 +19,7 @@ import (
 
 func init() {
 	commands["task"] = command{
-		summary: "task add | list | show | diff | answer | retry | cancel | mark: add a task, read one, or act on one",
+		summary: "task add | list | show | diff | run | answer | retry | cancel | mark: add a task, read one, run one, or act on one",
 		run:     runTask,
 	}
 }
@@ -28,6 +29,7 @@ const (
 	taskListUsage   = "cavu task list [--data-dir DIR]"
 	taskShowUsage   = "cavu task show ID [--events] [--data-dir DIR]"
 	taskDiffUsage   = "cavu task diff ID [--data-dir DIR]"
+	taskRunUsage    = "cavu task run ID [--data-dir DIR]"
 	taskAnswerUsage = "cavu task answer ID [--data-dir DIR] < FILE"
 	taskRetryUsage  = "cavu task retry ID [--data-dir DIR]"
 	taskCancelUsage = "cavu task cancel ID [--data-dir DIR]"
@@ -47,6 +49,8 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return taskShow(ctx, rest, stdout, stderr)
 		case "diff":
 			return taskDiff(ctx, rest, stdout, stderr)
+		case "run":
+			return taskRun(ctx, rest, stdout, stderr)
 		case "answer":
 			return taskAnswer(ctx, rest, stdin, stderr)
 		case "retry":
@@ -58,7 +62,9 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	}
 
-	usage := strings.Join([]string{taskAddUsage, taskListUsage, taskShowUsage, taskDiffUsage, taskAnswerUsage, taskRetryUsage, taskCancelUsage, taskMarkUsage}, "\n       ")
+	usage := strings.Join([]string{
+		taskAddUsage, taskListUsage, taskShowUsage, taskDiffUsage, taskRunUsage, taskAnswerUsage, taskRetryUsage, taskCancelUsage, taskMarkUsage,
+	}, "\n       ")
 
 	return newVerbFlags(usage, stderr).usageError()
 }
@@ -202,20 +208,11 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 
-		facts := engine.Reduce(events)
-		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\nstatus:  %s\n", t.ID, p.Name, t.Title, engine.StatusOf(facts))
-
-		if facts.OpenStop != nil {
-			s, _ := newest[engine.StoppedPayload](events, engine.Stopped)
-			fmt.Fprintf(stdout, "stop:    %s\nwhy:     %s\naction:  %s\n", s.Reason, s.Explanation, s.Action)
-		}
+		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
+		printState(stdout, events)
 
 		if err := printUsage(ctx, stdout, a.store, id); err != nil {
 			return err
-		}
-
-		if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
-			fmt.Fprintf(stdout, "diff:    %s\nbundle:  %s\n", x.DiffPath, x.BundlePath)
 		}
 
 		if *withEvents {
@@ -224,6 +221,26 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 
 		return nil
 	})
+}
+
+// printState prints the task's status, its open stop and its newest export,
+// and returns the status.
+func printState(w io.Writer, events []store.Event) engine.Status {
+	facts := engine.Reduce(events)
+	status := engine.StatusOf(facts)
+
+	fmt.Fprintf(w, "status:  %s\n", status)
+
+	if facts.OpenStop != nil {
+		s, _ := newest[engine.StoppedPayload](events, engine.Stopped)
+		fmt.Fprintf(w, "stop:    %s\nwhy:     %s\naction:  %s\n", s.Reason, s.Explanation, s.Action)
+	}
+
+	if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
+		fmt.Fprintf(w, "diff:    %s\nbundle:  %s\n", x.DiffPath, x.BundlePath)
+	}
+
+	return status
 }
 
 // newest decodes the newest event of the type, if any.
@@ -290,6 +307,115 @@ func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 
 		return err
 	})
+}
+
+// releaseTimeout bounds stopping an interrupted run's containers.
+const releaseTimeout = time.Minute
+
+// taskRun starts the task, removes the instance's orphans, and runs the loop
+// until the task rests, printing each event as it is recorded.
+func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return onTask(ctx, newVerbFlags(taskRunUsage, stderr), args, func(a *app, id int64) error {
+		rt, err := a.drive(ctx)
+		if err != nil {
+			return err
+		}
+
+		l := a.loop(rt)
+		l.Store = printingStore{Store: l.Store, out: stdout}
+
+		if err := l.Start(ctx, id); err != nil {
+			return err
+		}
+
+		if err := a.removeOrphans(ctx, rt); err != nil {
+			return err
+		}
+
+		_, err = l.RunTask(ctx, id)
+
+		if ctx.Err() != nil {
+			if err := a.releaseOpenRun(ctx, l, id); err != nil {
+				fmt.Fprintf(stderr, "cavu: %v\n", err)
+			}
+
+			fmt.Fprintf(stderr, "interrupted; cavu task run %d carries on where this run stopped\n", id)
+
+			return exitError{code: 130}
+		}
+
+		if err != nil {
+			return err
+		}
+
+		events, err := a.store.Events(ctx, id, 0, 0)
+		if err != nil {
+			return err
+		}
+
+		if s := printState(stdout, events); s == engine.StatusBlocked || s == engine.StatusCancelled {
+			return exitError{code: 3}
+		}
+
+		return nil
+	})
+}
+
+// releaseOpenRun stops the containers of the task's open run and keeps its
+// volumes, on a context that outlives the interrupt that ended ctx.
+func (a *app) releaseOpenRun(ctx context.Context, l *engine.Loop, taskID int64) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+
+	t, err := a.store.Task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+
+	row, ok, err := a.store.OpenRun(ctx, taskID)
+	if err != nil || !ok {
+		return err
+	}
+
+	return l.Runner.Release(ctx, engine.RunRef{
+		InstanceID: a.instanceID, Image: l.Image, TaskID: t.ID, RunID: row.ID, ProjectID: t.ProjectID,
+	}, false)
+}
+
+// printingStore prints each event once its append succeeded. The engine's
+// write masked every payload before the append, so nothing here masks again.
+type printingStore struct {
+	engine.Store
+
+	out io.Writer
+}
+
+func (s printingStore) Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error) {
+	last, err := s.Store.Append(ctx, taskID, expectLast, events, usage)
+	if err == nil {
+		for _, e := range events {
+			fmt.Fprintf(s.out, "%s %s %s\n", e.At.Format(time.TimeOnly), e.Type, summary(e.Payload))
+		}
+	}
+
+	return last, err
+}
+
+// summary is the head of a payload, short enough for one line on a terminal.
+// The payload is JSON, which escapes line breaks and control characters.
+func summary(payload []byte) string {
+	const n = 80
+
+	if len(payload) <= n {
+		return string(payload)
+	}
+
+	i := n
+	for i > 0 && !utf8.RuneStart(payload[i]) {
+		i--
+	}
+
+	return string(payload[:i]) + "..."
 }
 
 func taskAnswer(ctx context.Context, args []string, stdin io.Reader, stderr io.Writer) error {

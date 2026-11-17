@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,8 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -423,4 +427,220 @@ func TestTaskUsageErrors(t *testing.T) {
 
 		assert.Equal(t, tc.code, code, tc.args)
 	}
+}
+
+// runSetup is a data directory with the project web, which has a passed
+// baseline, a draft task on it, and a fake runtime whose image is this
+// binary's and whose runner finishes a session with a change.
+func runSetup(t *testing.T) (dir, id string, fake *fakeRuntime) {
+	t.Helper()
+
+	dir, fake = checkSetup(t, "--verify", "make test")
+	storeBaseline(t, dir, "web")
+
+	fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456", Title: "Fix the login"}
+
+	return dir, addTask(t, dir, "Fix the login"), fake
+}
+
+// eventLines splits task run's output into one line per stored event and
+// the lines after them, and checks that each event line is that event's.
+func eventLines(t *testing.T, stdout string, events []store.Event) (tail []string) {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.Greater(t, len(lines), len(events), stdout)
+
+	for i, e := range events {
+		f := strings.Fields(lines[i])
+		require.GreaterOrEqual(t, len(f), 2, lines[i])
+		assert.Equal(t, []string{e.At.Format(time.TimeOnly), e.Type}, f[:2], "event %d is printed as it is stored", e.ID)
+	}
+
+	return lines[len(events):]
+}
+
+// refusedRun runs the task and checks that it is refused before any container:
+// exit 1, no event, no runner call and no orphan removed. It returns stderr.
+func refusedRun(t *testing.T, dir, id string, fake *fakeRuntime) string {
+	t.Helper()
+
+	before := storedEvents(t, dir, id)
+
+	code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
+
+	assert.Equal(t, 1, code)
+	assert.Empty(t, stdout)
+	assert.Equal(t, before, storedEvents(t, dir, id), "no event is appended")
+	assert.Empty(t, fake.runner.actions, "no container starts")
+	assert.Empty(t, fake.runner.releases)
+	assert.Empty(t, fake.removals)
+
+	return stderr
+}
+
+func TestTaskRunPrintsEventsAndStatus(t *testing.T) {
+	dir, id, fake := runSetup(t)
+
+	code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
+
+	require.Equal(t, 0, code, stderr)
+	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork, engine.KindVerify, engine.KindExport}, fake.runner.actions)
+	require.Len(t, fake.runner.releases, 1)
+	assert.True(t, fake.runner.releases[0].removeVolumes, "the exported run ends")
+
+	events := storedEvents(t, dir, id)
+	assert.Equal(t, engine.TaskStarted, events[0].Type, "the draft is started")
+	assert.True(t, slices.ContainsFunc(events, func(e store.Event) bool { return e.Type == engine.AgentText }),
+		"progress is recorded, so it is printed with the rest")
+
+	tail := eventLines(t, stdout, events)
+
+	x, ok := newest[engine.ExportedPayload](events, engine.Exported)
+	require.True(t, ok)
+	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+	assert.Contains(t, strings.Join(tail, "\n"), x.DiffPath)
+	assert.True(t, strings.HasPrefix(x.DiffPath, filepath.Join(dir, "artifacts")), "the artifacts are in the data directory")
+
+	diff, err := os.ReadFile(x.DiffPath)
+	require.NoError(t, err)
+	assert.Equal(t, "diff --git a/login.go b/login.go\n", string(diff))
+}
+
+func TestTaskRunBlockedExitCode(t *testing.T) {
+	t.Run("a question", func(t *testing.T) {
+		dir, id, fake := runSetup(t)
+		fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: []string{"Which API version?"}}
+
+		code, stdout, _ := runCavu("task", "run", id, "--data-dir", dir)
+
+		assert.Equal(t, 3, code)
+		assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork}, fake.runner.actions)
+		require.Len(t, fake.runner.releases, 1)
+		assert.False(t, fake.runner.releases[0].removeVolumes, "a question keeps the run")
+
+		events := storedEvents(t, dir, id)
+		tail := strings.Join(eventLines(t, stdout, events), "\n")
+
+		s, ok := newest[engine.StoppedPayload](events, engine.Stopped)
+		require.True(t, ok)
+		assert.Equal(t, engine.StopQuestion, s.Reason)
+
+		for _, v := range []string{string(engine.StatusBlocked), s.Reason, s.Explanation, s.Action} {
+			assert.Contains(t, tail, v)
+		}
+	})
+
+	t.Run("a cancel from another terminal", func(t *testing.T) {
+		dir, id, fake := runSetup(t)
+		fake.runner.duringWork = func() { cavuIn(t, dir, "task", "cancel", id) }
+
+		code, stdout, _ := runCavu("task", "run", id, "--data-dir", dir)
+
+		assert.Equal(t, 3, code)
+		require.Len(t, fake.runner.releases, 1)
+		assert.True(t, fake.runner.releases[0].removeVolumes, "a cancel ends the run")
+		// The other terminal appended the cancel, so this run prints every event but that one.
+		mine := slices.DeleteFunc(storedEvents(t, dir, id), func(e store.Event) bool { return e.Type == engine.HumanCancelled })
+		assert.Contains(t, strings.Join(eventLines(t, stdout, mine), "\n"), string(engine.StatusCancelled))
+	})
+}
+
+func TestTaskRunRefusesWithoutBaseline(t *testing.T) {
+	dir, fake := checkSetup(t, "--verify", "make test")
+	id := addTask(t, dir, "Fix the login")
+
+	assert.Contains(t, refusedRun(t, dir, id, fake), strconv.Quote("web"))
+}
+
+func TestTaskRunRefusesACancelledTask(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	cavuIn(t, dir, "task", "cancel", id)
+
+	refusedRun(t, dir, id, fake)
+}
+
+func TestTaskRunRefusesAStaleImage(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	fake.labels.CavuVersion = "0.0.1"
+
+	assert.Contains(t, refusedRun(t, dir, id, fake), "cavu image build")
+	assert.Equal(t, sandbox.ImageName(version), fake.image)
+}
+
+func TestSecondTaskRunIsRefusedByLock(t *testing.T) {
+	dir, id, fake := runSetup(t)
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+	require.NoError(t, a.lock())
+	t.Cleanup(a.close)
+
+	assert.Contains(t, refusedRun(t, dir, id, fake), filepath.Join(dir, "lock"))
+}
+
+func TestTaskRunRemovesOrphansKeepingOpenRuns(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	other := addTask(t, dir, "Another task")
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	n, err := strconv.ParseInt(other, 10, 64)
+	require.NoError(t, err)
+
+	open, err := a.store.CreateRun(t.Context(), store.Run{TaskID: n, Reason: "initial"})
+	require.NoError(t, err)
+
+	ended, err := a.store.CreateRun(t.Context(), store.Run{TaskID: n, Reason: "retry"})
+	require.NoError(t, err)
+
+	at := time.Now()
+	ended.EndedAt = &at
+	require.NoError(t, a.store.UpdateRun(t.Context(), ended))
+	a.close()
+
+	cavuIn(t, dir, "task", "run", id)
+
+	assert.Equal(t, []removal{{instanceID: storedSettings(t, dir)["instance_id"], keepRuns: []int64{open.ID}}}, fake.removals)
+}
+
+func TestTaskRunInterruptReleasesAndExits130(t *testing.T) {
+	dir, id, fake := runSetup(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	fake.runner.duringWork = cancel // as Ctrl-C cancels run's context
+
+	err := runTask(ctx, []string{"run", id, "--data-dir", dir}, nil, io.Discard, io.Discard)
+
+	ee, ok := errors.AsType[exitError](err)
+	require.True(t, ok, err)
+	assert.Equal(t, 130, ee.code)
+
+	events := storedEvents(t, dir, id)
+	facts := engine.Reduce(events)
+	assert.Nil(t, facts.OpenStop, "an interrupt is no stop: the cut session is redone")
+	assert.True(t, facts.RunOpen)
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	task, err := a.store.Task(t.Context(), events[0].TaskID)
+	require.NoError(t, err)
+
+	run, ok, err := a.store.OpenRun(t.Context(), task.ID)
+	require.NoError(t, err)
+	require.True(t, ok, "the run stays open")
+
+	assert.Equal(t, []release{{
+		ref: engine.RunRef{
+			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
+			TaskID: task.ID, RunID: run.ID, ProjectID: task.ProjectID,
+		},
+		removeVolumes: false,
+	}}, fake.runner.releases, "the run's containers stop and its volumes stay, on a context the interrupt did not cancel")
 }
