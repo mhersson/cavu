@@ -108,6 +108,17 @@ cavu task cancel ID                 # give up on it
 
 Then `cavu task run ID` again for an answer or a retry. A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock.
 
+### Skills and instructions for every task
+
+Every agent session of a task, readiness turns and reviews included, can have skills and instructions of your own beside the repository's. Put each skill's directory, with its `SKILL.md`, into one directory and name that directory; name one instruction file, whose text comes before the repository's own instruction files:
+
+```
+cavu settings set skills_path ~/cavu/skills
+cavu settings set instructions_path ~/cavu/AGENTS.md
+```
+
+Both are read on the machine `cavu` runs on, again at each step of a run, so a change reaches the next step. Links in the directory are followed, a `.git` directory in it is left out, and its files hold at most 16 MiB together. A repository's skill of the same name is written over yours. A path that cannot be read stops the task with the setting named; fix it and retry. The turns of subagents an agent starts do not count toward `work_max_turns`, a session's turn limit; `work_timeout_minutes`, a session's time limit, bounds them, since it ends the session with its subagents.
+
 ### Running the server
 
 `cavu serve` drives every started task, as `task run` drives one, and serves the HTTP API of [docs/api.md](docs/api.md) on the `listen_address` setting (default `127.0.0.1:7117`). Set the user first, with the password in a file, then start it:

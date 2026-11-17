@@ -68,6 +68,16 @@ type Spec struct {
 	Env           []string // extra environment: proxy variables, CA path, toolchain paths
 	WebTools      bool
 	ReadOnly      bool // the workspace is read-only: the agent gets no editing tool
+	// The instance's instruction file and its skills, by their path under the
+	// skills directory, for every session, a read-only one too.
+	InstanceInstructions string
+	InstanceSkills       map[string]File
+}
+
+// File is one file of the instance's skills.
+type File struct {
+	Data       []byte
+	Executable bool
 }
 
 // Event is one normalised step of a session; only the fields of its Kind are set.

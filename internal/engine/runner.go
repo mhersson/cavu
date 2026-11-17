@@ -33,12 +33,24 @@ type RunConfig struct {
 		MaxTurns       int
 		Timeout        time.Duration
 		WebTools       bool
+		// Instance is what the instance gives every session: its instruction
+		// file's text, and its skills directory's files by their path under it.
+		Instance struct {
+			Instructions string
+			Skills       map[string]File
+		}
 	}
 	Identity struct{ Name, Email string }
 	Task     struct{ Title, Body string }
 	// Ecosystems are what the run's prepare detected, for Work, Verify and
 	// Export; never a setting, and empty for Prepare.
 	Ecosystems []string
+}
+
+// File is one file of the instance's skills directory.
+type File struct {
+	Data       []byte
+	Executable bool
 }
 
 // RunRef names a run's containers and volumes. It holds no secret and no

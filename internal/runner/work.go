@@ -239,6 +239,14 @@ func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (drive
 		Instructions: instructions, OutputSchema: prompts.ResultSchema(),
 		Dir: workspace, BaseCommit: c.Repo.BaseCommit, Home: home, ConfigDir: configDir,
 		Env: withProjectVars(sessionEnv(ecosystems, c.Repo.BaseCommit), c), WebTools: c.Agent.WebTools,
+		InstanceInstructions: c.Agent.Instance.Instructions,
+	}
+
+	if c.Agent.Instance.Skills != nil {
+		spec.InstanceSkills = make(map[string]driver.File, len(c.Agent.Instance.Skills))
+		for p, f := range c.Agent.Instance.Skills {
+			spec.InstanceSkills[p] = driver.File(f)
+		}
 	}
 
 	if c.Endpoint.Mode == modeKey {
