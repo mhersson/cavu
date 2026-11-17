@@ -63,7 +63,8 @@ func (a *Service) SetUser(ctx context.Context, name, password string) error {
 
 // Login returns a new session's cookie value and when it expires.
 func (a *Service) Login(ctx context.Context, name, password, remote string) (cookie string, expires time.Time, err error) {
-	if err := a.check(ctx, name, password, name+"|"+remote); err != nil {
+	// The limiter keeps a failed login's key for an hour, so it holds the name's digest, not the name.
+	if err := a.check(ctx, name, password, HashToken(name)+"|"+remote); err != nil {
 		return "", time.Time{}, err
 	}
 
