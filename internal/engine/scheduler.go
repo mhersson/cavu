@@ -216,6 +216,11 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 		acts = append(acts, snap)
 	}
 
+	// A requested check takes the first free slot, before any task.
+	if s.Checks && !r.checking && r.busy() < slots {
+		s.check(ctx, r)
+	}
+
 	for _, snap := range acts {
 		id := snap.Task.ID
 		snap.Pause = s.paused(id) // now from every stop this pass read
@@ -239,10 +244,6 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 			delete(s.waiting, id)
 		}
 		s.mu.Unlock()
-	}
-
-	if s.Checks && !r.checking && r.busy() < slots {
-		s.check(ctx, r)
 	}
 }
 

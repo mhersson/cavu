@@ -707,7 +707,8 @@ func TestSchedulerFirstPassSeesEveryStop(t *testing.T) {
 	}
 }
 
-// A check waits for a free slot, then holds it from the tasks while it runs.
+// A requested check takes the first free slot, before any task, and holds it
+// while it runs; while every slot is taken, it waits.
 func TestSchedulerCheckTakesASlot(t *testing.T) {
 	h := newHarness(t)
 	h.set("concurrency", "1")
@@ -716,23 +717,21 @@ func TestSchedulerCheckTakesASlot(t *testing.T) {
 
 	s := h.schedule(func(s *engine.Scheduler) { s.Checks = true })
 
+	h.eventually(func() bool { return slices.Equal(g.held("check"), []int64{h.task.ProjectID}) }, "the check starts before the task")
+	h.eventually(func() bool { return s.Waiting(h.task.ID) == engine.WaitingForSlot })
+	s.passes(t, 2)
+	assert.Empty(t, h.runner.callsFor(h.task.ID), "the check holds the slot")
+
+	g.let(t, "check", h.task.ProjectID)
 	h.eventually(func() bool { return slices.Equal(g.held("work"), []int64{h.task.ID}) })
+
+	require.NoError(t, h.loop.RequestCheck(t.Context(), h.task.ProjectID))
 	s.passes(t, 2)
-	assert.Empty(t, h.runner.callsOf("check"), "the check waits for the slot")
-
-	g.let(t, "work", h.task.ID)
-	h.eventually(func() bool { return slices.Equal(g.held("check"), []int64{h.task.ProjectID}) })
-
-	second := h.started()
-
-	s.Nudge()
-	h.eventually(func() bool { return s.Waiting(second.ID) == engine.WaitingForSlot })
-	s.passes(t, 2)
-	assert.Empty(t, h.runner.callsFor(second.ID), "the check holds the slot")
+	assert.Len(t, h.runner.callsOf("check"), 1, "the check waits for the slot")
 
 	g.free("work")
+	h.eventually(func() bool { return slices.Equal(g.held("check"), []int64{h.task.ProjectID}) })
 	g.let(t, "check", h.task.ProjectID)
-	h.eventually(func() bool { return h.inReview(second.ID) })
-	assert.True(t, h.checkCleared(h.task.ProjectID))
+	h.eventually(func() bool { return h.inReview(h.task.ID) && h.checkCleared(h.task.ProjectID) })
 	assert.Empty(t, s.errs())
 }
