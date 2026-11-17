@@ -112,4 +112,26 @@ CREATE TABLE replay_items (
 	PRIMARY KEY (replay_id, source_task_id)
 );
 `},
+	{Version: 4, SQL: `
+CREATE TABLE users (
+	id            INTEGER PRIMARY KEY CHECK (id = 1),
+	name          TEXT NOT NULL,
+	password_hash TEXT NOT NULL,
+	created_at    INTEGER NOT NULL
+);
+
+CREATE TABLE sessions (
+	token_hash TEXT PRIMARY KEY,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE api_tokens (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	name         TEXT NOT NULL UNIQUE,
+	token_hash   TEXT NOT NULL UNIQUE,
+	created_at   INTEGER NOT NULL,
+	last_used_at INTEGER
+);
+`},
 }
