@@ -407,6 +407,31 @@ func values(out, prefix string) []string {
 	return vs
 }
 
+// sessionStart is what the tests read of a session_started event.
+type sessionStart struct {
+	Mode   string
+	Resume bool
+}
+
+// sessionStarts returns every session_started event in out, the output of
+// task show --events, where an event line is its id, time, type, actor and
+// payload.
+func sessionStarts(t *testing.T, out string) []sessionStart {
+	t.Helper()
+
+	var ss []sessionStart
+
+	for line := range strings.Lines(out) {
+		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == "session_started" {
+			var s sessionStart
+			require.NoError(t, json.Unmarshal([]byte(e[4]), &s))
+			ss = append(ss, s)
+		}
+	}
+
+	return ss
+}
+
 func TestPipelineEndToEnd(t *testing.T) {
 	mock := mockapi.Start(t, []mockapi.Step{change, done})
 	in := setup(t, mock.HostURL())
@@ -590,15 +615,9 @@ func TestVerifyGateBlocks(t *testing.T) {
 	assert.Equal(t, []string{"blocked"}, values(show, "status:"))
 	assert.Equal(t, []string{"verify_failed"}, values(show, "stop:"))
 
-	// An event line is its id, time, type, actor and payload.
 	modes := map[string]int{}
-
-	for line := range strings.Lines(show) {
-		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == "session_started" {
-			var p struct{ Mode string }
-			require.NoError(t, json.Unmarshal([]byte(e[4]), &p))
-			modes[p.Mode]++
-		}
+	for _, s := range sessionStarts(t, show) {
+		modes[s.Mode]++
 	}
 
 	assert.Equal(t, map[string]int{"start": 1, "fix_verify": 2}, modes)
@@ -633,6 +652,9 @@ func TestGatewayBehindCustomCA(t *testing.T) {
 	assert.Empty(t, in.containers())
 }
 
+// resumed is a session cut off in its first model call, then resumed.
+var resumed = []sessionStart{{Mode: "start"}, {Mode: "continue", Resume: true}}
+
 func TestKilledProcessResumes(t *testing.T) {
 	// The held call takes the first step, which the killed run never receives.
 	mock := mockapi.Start(t, []mockapi.Step{change, change, done})
@@ -647,7 +669,10 @@ func TestKilledProcessResumes(t *testing.T) {
 
 	run := in.cavu("", "task", "run", id)
 	require.Zero(t, run.code, run)
-	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+
+	show := in.ok("task", "show", id, "--events")
+	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
+	assert.Equal(t, resumed, sessionStarts(t, show))
 	assert.Equal(t, 1, in.runs(id))
 	assert.Empty(t, in.containers())
 }
@@ -672,7 +697,10 @@ func TestKilledSidecarResumes(t *testing.T) {
 
 	run = in.cavu("", "task", "run", id)
 	require.Zero(t, run.code, run)
-	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+
+	show := in.ok("task", "show", id, "--events")
+	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
+	assert.Equal(t, resumed, sessionStarts(t, show))
 	assert.Equal(t, 1, in.runs(id))
 	assert.Empty(t, in.containers())
 }
