@@ -149,8 +149,13 @@ func TestBridgeRejectsAnExtraArgument(t *testing.T) {
 
 func TestVerbHelpPrintsOnStdoutAndExitsZero(t *testing.T) {
 	for _, args := range [][]string{
-		{"task", "-h"}, {"task", "run", "-h"}, {"settings", "set", "--help"},
-		{"project", "set", "-h"}, {"secret", "-h"}, {"image", "build", "-h"}, {"bridge", "-h"},
+		{"task", "-h"},
+		{"task", "run", "-h"},
+		{"settings", "set", "--help"},
+		{"project", "set", "-h"},
+		{"secret", "-h"},
+		{"image", "build", "-h"},
+		{"bridge", "-h"},
 	} {
 		var stdout, stderr bytes.Buffer
 
