@@ -240,6 +240,10 @@ func (f *Facts) sessionStarted(p SessionStartedPayload) {
 		if p.SessionID != "" {
 			f.SessionID = p.SessionID
 		}
+
+		if p.Mode == ModeFixReview {
+			f.Review.FixRan = true
+		}
 	}
 }
 

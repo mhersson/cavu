@@ -121,11 +121,16 @@ func TestReduceReview(t *testing.T) {
 			want: engine.ReviewFact{Head: "def456", Failed: "The reviewer ended without a structured result."},
 		},
 		{
+			name:   "a fix session marks a fix since the review",
+			events: slices.Concat(twoOpen, []store.Event{autoFixReview}),
+			want:   engine.ReviewFact{Head: "def456", FixRan: true, Open: []engine.Finding{critical, important}},
+		},
+		{
 			name: "a usage limit halts the review and leaves the head",
 			events: slices.Concat(twoOpen, []store.Event{autoFixReview, fixedFed, verifying, verifyPassed, reviewingFix, reviewEnd(t, engine.ReviewEndedPayload{
 				Outcome: engine.OutcomeUsageLimit, Head: "fed789", Scoped: true, ResetsAt: resets,
 			})}),
-			want: engine.ReviewFact{Head: "def456", Open: []engine.Finding{critical, important}, Halt: limited},
+			want: engine.ReviewFact{Head: "def456", FixRan: true, Open: []engine.Finding{critical, important}, Halt: limited},
 		},
 		{
 			name:   "the stop a halt gives keeps the halt",
@@ -150,9 +155,11 @@ func TestReduceReview(t *testing.T) {
 			want: engine.ReviewFact{Head: "def456", Open: []engine.Finding{critical, important}},
 		},
 		{
-			name:   "a new run clears the review",
-			events: slices.Concat(twoOpen, []store.Event{ev(engine.RunEnded, `{"outcome":"environment"}`), ev(engine.RunStarted, `{"reason":"retry"}`)}),
-			want:   engine.ReviewFact{},
+			name: "a new run clears the review",
+			events: slices.Concat(twoOpen, []store.Event{
+				autoFixReview, ev(engine.RunEnded, `{"outcome":"environment"}`), ev(engine.RunStarted, `{"reason":"retry"}`),
+			}),
+			want: engine.ReviewFact{},
 		},
 		{
 			name:   "a review that ends after its run is ignored",
@@ -188,7 +195,7 @@ func TestReduceReview(t *testing.T) {
 			ev(engine.SessionEnded, `{"outcome":"max_turns"}`), ev(engine.Stopped, `{"reason":"budget","explanation":"Turns used.","action":"retry"}`), retried,
 		}))
 		assert.Zero(t, f.ReviewFixes)
-		assert.Equal(t, engine.ReviewFact{Head: "fed789", Open: []engine.Finding{critical, important}}, f.Review)
+		assert.Equal(t, engine.ReviewFact{Head: "fed789", FixRan: true, Open: []engine.Finding{critical, important}}, f.Review)
 	})
 
 	t.Run("a fresh fix session sets the role, and a new run clears it", func(t *testing.T) {
@@ -319,6 +326,13 @@ func reviewCases(t *testing.T) []decideCase {
 		on("findings open after three fix rounds", with(engine.ReviewFact{Head: "h1", Open: open}, 3), fix(true)),
 		on("findings open after four fix rounds", with(engine.ReviewFact{Head: "h1", Open: open}, 4), fix(true)),
 		on("findings open after five fix rounds", with(engine.ReviewFact{Head: "h1", Open: open}, 5), export),
+		on("findings open, a fix since left the head the review saw", with(engine.ReviewFact{Head: "h1", FixRan: true, Open: open}, 1), export),
+		on("findings open, a fix since moved the head", with(engine.ReviewFact{Head: "h0", FixRan: true, Open: open}, 1), scoped),
+		reduced("findings open and no fix since the review", reviewedRun(reviewing, fullReview(t, important)), fix(false), false),
+		reduced("a fix that left the head where the review saw it ends the rounds",
+			reviewedRun(reviewing, fullReview(t, important), autoFixReview, doneChanged, verifying, verifyPassed), export, false),
+		reduced("a fix that moved the head and its scoped review start another round",
+			slices.Concat(reviewedRun(reviewing, fullReview(t, important)), fixRound(t, []bool{false})), fix(false), false),
 		on("no verdict on this head", with(engine.ReviewFact{Head: "h1", Open: open, Failed: "No structured result."}, 1), export),
 		on("a review halted by a usage limit", halted(engine.OutcomeUsageLimit, later),
 			engine.Action{Kind: engine.KindStop, Stop: engine.StopUsageLimit, Clear: engine.ClearNone, ResetsAt: later}),
@@ -355,6 +369,7 @@ func reviewCases(t *testing.T) []decideCase {
 		{"no review yet", passedAt("h1")},
 		{"findings open on a new head", with(engine.ReviewFact{Head: "h0", Open: open}, 1)},
 		{"findings open", with(engine.ReviewFact{Head: "h1", Open: open}, 3)},
+		{"findings open, a fix since left the head the review saw", with(engine.ReviewFact{Head: "h1", FixRan: true, Open: open}, 1)},
 		{"no verdict on this head", with(engine.ReviewFact{Head: "h1", Failed: "No structured result."}, 0)},
 		{"a review halted by a usage limit", halted(engine.OutcomeUsageLimit, later)},
 		{"a review halted by the endpoint", halted(engine.OutcomeEndpoint, time.Time{})},
@@ -546,6 +561,26 @@ func TestLoopReviewNeverBlocks(t *testing.T) {
 	require.Len(t, exports, 1)
 	assert.Equal(t, "head5", exports[0].commit)
 	assert.Len(t, h.runner.callsOf("review"), 6, "the last fix is reviewed, and nothing follows")
+
+	snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []engine.Finding{important}, snap.Facts.Review.Open)
+}
+
+// A fix session that leaves the head where the review saw it ends the rounds,
+// and the change goes out with the finding still open.
+func TestLoopReviewFixChangesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.withReview()
+
+	h.runner.works = []step[engine.WorkResult]{frozeAt("head456"), frozeAt("head456")}
+	h.runner.reviews = []step[engine.ReviewResult]{{res: found}}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, []string{"prepare", "work/start", "verify", "review", "work/fix_review", "verify", "export", "release/remove"}, h.runner.trace())
+	assert.Equal(t, "head456", h.runner.callsOf("export")[0].commit)
 
 	snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
 	require.NoError(t, err)

@@ -34,6 +34,7 @@ type Verdict struct {
 // ReviewFact is where the open run's review stands.
 type ReviewFact struct {
 	Head   string       // the commit the newest review that ended reviewed or failed saw
+	FixRan bool         // a fix_review session started since that review
 	Open   []Finding    // critical and important, not addressed
 	Minor  []Finding    // recorded; they never extend the loop
 	Failed string       // why the newest review gave no verdict, "" when it gave one
@@ -54,10 +55,10 @@ func (f *Facts) reviewEnded(p ReviewEndedPayload) {
 			open = []Finding{{Severity: SeverityImportant, What: p.Asked.Reason}}
 		}
 
-		r.Head, r.Failed, r.Open, r.Minor = p.Head, "", open, append(r.Minor, minor...)
+		r.Head, r.FixRan, r.Failed, r.Open, r.Minor = p.Head, false, "", open, append(r.Minor, minor...)
 	case ReviewFailed:
 		// A non-empty Failed is what marks a review without a verdict, so one without a detail still gets a text.
-		r.Head, r.Failed = p.Head, cmp.Or(p.Detail, "The reviewer gave no verdict.")
+		r.Head, r.FixRan, r.Failed = p.Head, false, cmp.Or(p.Detail, "The reviewer gave no verdict.")
 	default:
 		r.Halt = &SessionFact{Outcome: p.Outcome, Detail: p.Detail, ResetsAt: p.ResetsAt}
 	}
@@ -109,6 +110,8 @@ func reviewLoop(s Snapshot, f Facts) Action {
 		return Action{Kind: KindReview, Why: "The change passed verify and has not been reviewed."}
 	case r.Failed != "":
 		return Action{Kind: KindExport, Why: "The review gave no verdict, so the change is exported without one."}
+	case len(r.Open) > 0 && r.FixRan:
+		return Action{Kind: KindExport, Why: "The fix round changed nothing; the findings left open are kept with the change."}
 	case len(r.Open) > 0 && f.ReviewFixes < s.Caps.ReviewFixes:
 		a := work(ModeFixReview, "The review left findings open and a fix round is left.")
 		a.Automatic, a.Fresh = true, f.ReviewFixes >= strongAfter
