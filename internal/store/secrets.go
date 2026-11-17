@@ -37,6 +37,15 @@ func (s *Store) Secret(ctx context.Context, name string) ([]byte, bool, error) {
 	return b, true, nil
 }
 
+// DeleteSecret removes the secret name; an unknown name is a no-op.
+func (s *Store) DeleteSecret(ctx context.Context, name string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE name = ?`, name); err != nil {
+		return fmt.Errorf("delete secret: %w", err)
+	}
+
+	return nil
+}
+
 // SecretNames returns the names of all stored secrets, sorted.
 func (s *Store) SecretNames(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT name FROM secrets ORDER BY name`)
