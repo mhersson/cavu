@@ -95,7 +95,7 @@ cavu task retry ID                  # run it again after fixing the cause
 cavu task cancel ID                 # give up on it
 ```
 
-Then `cavu task run ID` again for an answer or a retry. A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock. A server that holds the lock drives the tasks itself, and `task run` then follows the task instead: it records the start and prints the task's events as the server records them.
+Then `cavu task run ID` again for an answer or a retry. A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock.
 
 ### Replaying tasks
 

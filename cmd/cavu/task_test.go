@@ -592,7 +592,9 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 		dir, id, fake := runSetup(t)
 		// The session runs on after the cancel, as a real one does, until the scheduler cuts it.
 		fake.runner.duringWork = func(ctx context.Context) {
-			cavuIn(t, dir, "task", "cancel", id)
+			// This runs on the scheduler's goroutine, where a failure must not stop it.
+			code, _, stderr := runCavu("task", "cancel", id, "--data-dir", dir)
+			assert.Equal(t, 0, code, stderr)
 
 			select {
 			case <-ctx.Done():
@@ -1072,6 +1074,16 @@ func TestEventLine(t *testing.T) {
 			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
 		})
 	}
+
+	t.Run("control characters", func(t *testing.T) {
+		raw, err := json.Marshal(engine.AgentToolPayload{Name: "Bash", Summary: "printf '\x1b[2J\x1b[31mred\x1b[0m\x07\u009b'"})
+		require.NoError(t, err)
+
+		l := eventLine(store.Event{At: at, Type: engine.AgentTool, Payload: raw})
+
+		assert.False(t, strings.ContainsFunc(l, unicode.IsControl), "%q", l)
+		assert.Contains(t, l, "red")
+	})
 
 	t.Run("a long text", func(t *testing.T) {
 		// One of the two puts a two-byte character across the cut, whatever the line's head.

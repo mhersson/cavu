@@ -469,8 +469,9 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 }
 
 // follow prints each new event of the task as one line, and each wait's reason
-// once, until the task rests. It begins at the newest action of a person. It gives l the pauses the store shows, as a
-// scheduler would, so it decides alike beside a scheduler or a server.
+// once, until the task rests. It begins at the newest action of a person,
+// which is what it carries on from. It gives l the pauses the store shows, as
+// a scheduler would, so it decides alike beside a scheduler or a server.
 func follow(ctx context.Context, l *engine.Loop, taskID int64, out io.Writer) error {
 	var (
 		pauses engine.Pauses
@@ -499,7 +500,6 @@ func follow(ctx context.Context, l *engine.Loop, taskID int64, out io.Writer) er
 			return err
 		}
 
-		// The first lines begin at a person's newest action, which is what this follow carries on from.
 		if after == 0 {
 			for i, e := range slices.Backward(events) {
 				if e.Actor == "user" {
@@ -574,7 +574,13 @@ func eventLine(e store.Event) string {
 
 	l := strings.Join(strings.Fields(e.At.Format(time.TimeOnly)+" "+e.Type+" "+tell), " ")
 
-	if len(l) <= maxLine {
+	// Output that is no terminal is left byte-exact, so the line shows the
+	// agent's control characters itself, as a terminal's output does.
+	var b strings.Builder
+
+	_, _ = (&visibleWriter{w: &b}).Write([]byte(l))
+
+	if l = b.String(); len(l) <= maxLine {
 		return l
 	}
 
