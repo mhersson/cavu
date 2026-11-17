@@ -152,6 +152,18 @@ func switchFields(sw *Switches) map[string]*bool {
 	return map[string]*bool{"continuations": &sw.Continuations, "verify_fix": &sw.VerifyFix, "web_tools": &sw.WebTools}
 }
 
+// ProjectSwitches returns the state of each switch of a project, over the defaults.
+func ProjectSwitches(p store.Project) map[string]bool {
+	sw, _ := resolveSwitches(p, nil)
+	out := map[string]bool{}
+
+	for k, f := range switchFields(&sw) {
+		out[k] = *f
+	}
+
+	return out
+}
+
 // resolveSwitches applies a project's switches over the defaults, then a task's
 // overrides. The snapshot and the run config both resolve through it.
 func resolveSwitches(p store.Project, overrides map[string]string) (Switches, error) {

@@ -6,7 +6,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Status
 
-Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes and lists projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark, and `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
+Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes, lists and shows projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark, and `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 
 ## Try it
 
@@ -51,7 +51,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep t
    cavu project check web
    ```
 
-   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. `cavu project set web` changes a project.
+   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline.
 
 6. Add a task and run it. `task run` prints each event as it happens and ends with the task's status.
 

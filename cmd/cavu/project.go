@@ -1,11 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -15,7 +17,7 @@ import (
 
 func init() {
 	commands["project"] = command{
-		summary: "project add | set | list | check: add a project, change one, list them, or check one's environment",
+		summary: "project add | set | list | show | check: add a project, change one, list them, show one, or check one's environment",
 		run:     runProject,
 	}
 }
@@ -25,6 +27,7 @@ const (
 	projectSetUsage = "cavu project set NAME [--base BRANCH] [--setup CMD] [--verify CMD | --no-verify] [--egress HOST]... [--env K=V]...\n" +
 		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--data-dir DIR]"
 	projectListUsage  = "cavu project list [--data-dir DIR]"
+	projectShowUsage  = "cavu project show NAME [--data-dir DIR]"
 	projectCheckUsage = "cavu project check NAME [--data-dir DIR]"
 )
 
@@ -37,12 +40,14 @@ func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr 
 			return projectSet(ctx, args[1:], stderr)
 		case "list":
 			return projectList(ctx, args[1:], stdout, stderr)
+		case "show":
+			return projectShow(ctx, args[1:], stdout, stderr)
 		case "check":
 			return projectCheck(ctx, args[1:], stdout, stderr)
 		}
 	}
 
-	usage := strings.Join([]string{projectAddUsage, projectSetUsage, projectListUsage, projectCheckUsage}, "\n       ")
+	usage := strings.Join([]string{projectAddUsage, projectSetUsage, projectListUsage, projectShowUsage, projectCheckUsage}, "\n       ")
 
 	return newVerbFlags(usage, stderr).usageError()
 }
@@ -268,6 +273,73 @@ func projectList(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 
 	return w.Flush()
+}
+
+func projectShow(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	f := newVerbFlags(projectShowUsage, stderr)
+
+	name, err := f.parse(args, 1)
+	if err != nil {
+		return err
+	}
+
+	a, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+
+	p, err := a.store.ProjectByName(ctx, name[0])
+	if err != nil {
+		return fmt.Errorf("project %q: %w", name[0], err)
+	}
+
+	verify := "none"
+
+	switch {
+	case p.VerifyWaived:
+		verify = "waived"
+	case p.VerifyCommand != "":
+		verify = p.VerifyCommand
+	}
+
+	baseline := "none"
+
+	if b := p.Baseline; b != nil {
+		baseline = "failed at " + b.Commit
+		if b.Passed {
+			baseline = "passed at " + b.Commit
+		}
+	}
+
+	var env, tools, switches []string
+
+	for _, k := range slices.Sorted(maps.Keys(p.Env)) {
+		env = append(env, k+"="+p.Env[k])
+	}
+
+	for _, k := range slices.Sorted(maps.Keys(p.ToolOverrides)) {
+		tools = append(tools, k+"="+p.ToolOverrides[k])
+	}
+
+	state := engine.ProjectSwitches(p)
+	for _, k := range slices.Sorted(maps.Keys(state)) {
+		switches = append(switches, k+"="+map[bool]string{true: "on", false: "off"}[state[k]])
+	}
+
+	list := func(vs []string) string {
+		if len(vs) == 0 {
+			return "none"
+		}
+
+		return strings.Join(vs, ", ")
+	}
+
+	fmt.Fprintf(stdout, "project:  %s\nrepo:     %s\nbase:     %s\nsetup:    %s\nverify:   %s\negress:   %s\nenv:      %s\nsecrets:  %s\ntools:    %s\nswitches: %s\nbaseline: %s\n",
+		p.Name, p.RepoURL, p.BaseBranch, cmp.Or(p.SetupCommand, "none"), verify, list(p.EgressHosts), list(env),
+		list(p.SecretVars), list(tools), list(switches), baseline)
+
+	return nil
 }
 
 func projectCheck(ctx context.Context, args []string, stdout, stderr io.Writer) error {

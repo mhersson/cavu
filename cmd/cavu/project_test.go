@@ -441,3 +441,19 @@ func TestProjectUsageErrors(t *testing.T) {
 
 	assert.NoDirExists(t, dir)
 }
+
+func TestProjectShowPrintsEveryField(t *testing.T) {
+	dir := t.TempDir()
+	cavuIn(t, dir, "project", "add", "web", "--repo", repo, "--no-verify")
+	cavuIn(t, dir, "project", "set", "web", "--egress", "example.org", "--env", "A=b", "--secret", "TOKEN",
+		"--tool", "go=1.22", "--switch", "web_tools=on")
+
+	out := cavuIn(t, dir, "project", "show", "web")
+
+	for _, want := range []string{repo, "waived", "example.org", "A=b", "TOKEN", "go=1.22", "web_tools=on", "continuations=on"} {
+		assert.Contains(t, out, want)
+	}
+
+	code, _, _ := runCavu("project", "show", "nope", "--data-dir", dir)
+	assert.NotEqual(t, 0, code)
+}
