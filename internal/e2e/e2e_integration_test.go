@@ -5,16 +5,19 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"fmt"
+	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,19 +28,30 @@ import (
 	"github.com/mhersson/cavu/internal/testkit/sandboxtest"
 )
 
-// verify passes on the fixture repository and on every change that keeps its first line.
-const verify = "grep -qx 'first line' notes.txt"
+const (
+	// verify passes on the fixture repository and on every change that keeps its first line.
+	verify = "grep -qx 'first line' notes.txt"
+	// marker is the line the change step adds; title is every task's.
+	marker = "CAVU-E2E-LINE"
+	title  = "Add a line"
+	// endpointKey and forgeToken are the credentials every child holds.
+	endpointKey = "sk-test-REALKEY-0123456789"
+	forgeToken  = "ghp_TESTFORGETOKEN0123456789" //nolint:gosec // a test value
+)
 
 // change and done are one session's model calls: a commit that adds a line to
 // notes.txt, then the structured result of finished work.
 var (
 	change = mockapi.Step{Tool: "Bash", Input: map[string]any{
-		"command": "echo CAVU-E2E-LINE >> notes.txt && git commit -qam 'docs(notes): add a line'",
+		"command": "echo " + marker + " >> notes.txt && git commit -qam 'docs(notes): add a line'",
 	}}
 	done = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
-		"status": "done", "title": "Add a line", "summary": "Added a line to notes.txt.",
+		"status": "done", "title": title, "summary": "Added a line to notes.txt.",
 	}}
 )
+
+// standInForm is the form of the stand-in token: 32 random bytes in hex.
+var standInForm = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // image is the sandbox image the first child builds; bin is the runtime that
 // built it, set once the build succeeded.
@@ -94,14 +108,17 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// instance is a child cavu's data directory, its instance id, the endpoint
-// credential it holds and the fixture repository it is set up for.
+// instance is a child cavu's data directory, its instance id, the runtime it
+// drives and the fixture repository it is set up for. A path set is the
+// child's whole PATH; out keeps what every child printed.
 type instance struct {
 	t    *testing.T
+	rt   sandbox.Runtime
 	dir  string
 	id   string
-	key  string
 	repo string
+	path string
+	out  strings.Builder
 }
 
 // result is what one child printed and its exit code.
@@ -112,22 +129,45 @@ type result struct {
 
 func (r result) String() string { return r.stdout + r.stderr }
 
-// cavu runs the child on the instance's data directory with stdin as its input.
-func (in *instance) cavu(stdin string, args ...string) result {
+// start starts the child on the instance's data directory with stdin as its
+// input; wait waits for it to exit and returns its result.
+func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, wait func() result) {
 	in.t.Helper()
 
 	var stdout, stderr bytes.Buffer
 
-	cmd := exec.CommandContext(in.t.Context(), child(in.t), args...)
+	cmd = exec.CommandContext(in.t.Context(), child(in.t), args...)
 	cmd.Env = append(os.Environ(), "CAVU_DATA_DIR="+in.dir)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &stdout, &stderr
 
-	if err := cmd.Run(); err != nil {
-		var exit *exec.ExitError
-		require.ErrorAs(in.t, err, &exit)
+	if in.path != "" {
+		cmd.Env = append(cmd.Env, "PATH="+in.path)
 	}
 
-	return result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
+	require.NoError(in.t, cmd.Start())
+
+	return cmd, func() result {
+		in.t.Helper()
+
+		if err := cmd.Wait(); err != nil {
+			var exit *exec.ExitError
+			require.ErrorAs(in.t, err, &exit)
+		}
+
+		r := result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
+		in.out.WriteString(r.String())
+
+		return r
+	}
+}
+
+// cavu runs the child to its end.
+func (in *instance) cavu(stdin string, args ...string) result {
+	in.t.Helper()
+
+	_, wait := in.start(stdin, args...)
+
+	return wait()
 }
 
 // ok runs the child, requires exit code 0 and returns its standard output.
@@ -140,8 +180,9 @@ func (in *instance) ok(args ...string) string {
 	return r.stdout
 }
 
-// setup serves the fixture repository and sets a child up in key mode against
-// endpoint, trusting the test CA. The first child builds the image.
+// setup serves the fixture repository to the forge token and sets a child up
+// in key mode against endpoint, trusting the test CA. The first child builds
+// the image.
 func setup(t *testing.T, endpoint string) *instance {
 	t.Helper()
 
@@ -149,10 +190,21 @@ func setup(t *testing.T, endpoint string) *instance {
 
 	rt := sandboxtest.Runtime(t)
 	bare := strings.TrimPrefix(gitrepo.Bare(t, gitrepo.New(t, map[string]string{"notes.txt": "first line\n"})), "file://")
-	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, rt), gitrepo.Handler(t, bare))
+	repo := gitrepo.Handler(t, bare)
+	// The user name is the one CAVU's git credential helper sends.
+	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, rt), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, _ := r.BasicAuth(); u != "x-access-token" || p != forgeToken {
+			w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+
+			return
+		}
+
+		repo.ServeHTTP(w, r)
+	}))
 
 	in := &instance{
-		t: t, dir: t.TempDir(), key: "e2e-key-" + rand.Text(),
+		t: t, rt: rt, dir: t.TempDir(),
 		repo: "https://host.docker.internal:" + port + "/" + filepath.Base(bare),
 	}
 
@@ -173,8 +225,10 @@ func setup(t *testing.T, endpoint string) *instance {
 		in.ok("settings", "set", kv[0], kv[1])
 	}
 
-	secret := in.cavu(in.key, "secret", "set", "endpoint_credential")
-	require.Zero(t, secret.code, secret)
+	for _, s := range [][2]string{{"endpoint_credential", endpointKey}, {"forge_token", forgeToken}} {
+		r := in.cavu(s[1], "secret", "set", s[0])
+		require.Zero(t, r.code, r)
+	}
 
 	ids := values(in.ok("settings", "show"), "instance_id=")
 	require.Len(t, ids, 1)
@@ -197,17 +251,86 @@ func setup(t *testing.T, endpoint string) *instance {
 	return in
 }
 
-// pipeline adds a project on the fixture repository, checks it, and adds and
-// runs a task on it. It returns the task's id and the run's result.
+// project adds a project on the fixture repository and checks it.
+func (in *instance) project(name string) {
+	in.t.Helper()
+
+	in.ok("project", "add", name, "--repo", in.repo, "--verify", verify)
+	in.ok("project", "check", name)
+}
+
+// task adds a task to project and returns its id.
+func (in *instance) task(project string) string {
+	in.t.Helper()
+
+	return strings.TrimSpace(in.ok("task", "add", project, "--title", title))
+}
+
+// pipeline adds and checks a project, then adds and runs a task on it. It
+// returns the task's id and the run's result.
 func (in *instance) pipeline(project string) (string, result) {
 	in.t.Helper()
 
-	in.ok("project", "add", project, "--repo", in.repo, "--verify", verify)
-	in.ok("project", "check", project)
-	id := strings.TrimSpace(in.ok("task", "add", project, "--title", "Add a line"))
+	in.project(project)
+	id := in.task(project)
 
 	return id, in.cavu("", "task", "run", id)
 }
+
+// container is the instance's one container of kind, such as agent or sidecar.
+func (in *instance) container(kind string) string {
+	in.t.Helper()
+
+	all, _, err := in.rt.List(in.t.Context(), "cavu.instance="+in.id)
+	require.NoError(in.t, err)
+
+	named := slices.DeleteFunc(slices.Clone(all), func(c string) bool { return !strings.HasPrefix(c, "cavu-"+in.id[:8]+"-"+kind+"-") })
+	require.Len(in.t, named, 1, all)
+
+	return named[0]
+}
+
+// client runs the runtime's client and returns its standard output.
+func (in *instance) client(args ...string) string {
+	in.t.Helper()
+
+	var stdout, stderr bytes.Buffer
+
+	cmd := exec.CommandContext(in.t.Context(), in.rt.Bin, args...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	require.NoError(in.t, cmd.Run(), stderr.String())
+
+	return stdout.String()
+}
+
+// sh runs script with args in container as uid 1000, the user of every process
+// there and of the files they write: root holds no capability in the container
+// and would read less.
+func (in *instance) sh(container, script string, args ...string) string {
+	in.t.Helper()
+
+	return in.client(append([]string{"exec", "--user=1000:1000", container, "sh", "-c", script, "sh"}, args...)...)
+}
+
+// procScan prints each process environment and command line that matches the
+// extended pattern $1, and fails on one it cannot read while it exists.
+const procScan = `s=0
+for f in /proc/[0-9]*/environ /proc/[0-9]*/cmdline; do
+	grep -qaE -e "$1" "$f" 2>/dev/null
+	case $? in
+	0) echo "$f" ;;
+	2) if test -e "$f"; then echo "cannot read $f" >&2; s=1; fi ;;
+	esac
+done
+exit $s`
+
+// fileScan prints each file under the directories after $1 that matches the
+// extended pattern $1, and fails on one it cannot read.
+const fileScan = `p=$1; shift; grep -rlaE -D skip -e "$p" "$@" || test $? = 1`
+
+// mark is a pattern for v that its own text does not match, so a scan never
+// finds its own command line.
+func mark(v string) string { return "[" + v[:1] + "]" + v[1:] }
 
 // values returns what follows prefix on every line of out that starts with it.
 func values(out, prefix string) []string {
@@ -231,7 +354,7 @@ func TestPipelineEndToEnd(t *testing.T) {
 
 	show := in.ok("task", "show", id)
 	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
-	assert.Contains(t, strings.Split(in.ok("task", "diff", id), "\n"), "+CAVU-E2E-LINE")
+	assert.Contains(t, strings.Split(in.ok("task", "diff", id), "\n"), "+"+marker)
 
 	var sources []string
 	for _, u := range values(show, "usage:") {
@@ -244,7 +367,7 @@ func TestPipelineEndToEnd(t *testing.T) {
 	require.NotEmpty(t, reqs)
 
 	for _, r := range reqs {
-		assert.Equal(t, []string{"Bearer " + in.key}, r.Header.Values("Authorization"), r.Path)
+		assert.Equal(t, []string{"Bearer " + endpointKey}, r.Header.Values("Authorization"), r.Path)
 		assert.Empty(t, r.Header.Values("X-Api-Key"), r.Path)
 	}
 }
@@ -272,4 +395,125 @@ func TestReplayAgainstMock(t *testing.T) {
 
 	// The table's columns are aligned, and a cell after VERIFY may be empty.
 	assert.Equal(t, "passed", strings.Fields(rows[0][strings.Index(lines[header], "VERIFY"):])[0])
+}
+
+func TestCredentialsNeverInSandbox(t *testing.T) {
+	mock := mockapi.Start(t, []mockapi.Step{change, done})
+	in := setup(t, mock.HostURL())
+
+	in.project("notes")
+	id := in.task("notes")
+
+	release := mock.Hold()
+	_, wait := in.start("", "task", "run", id)
+
+	require.Eventually(t, func() bool {
+		return slices.ContainsFunc(mock.Requests(), func(r mockapi.Request) bool { return r.ModelCall })
+	}, 3*time.Minute, 200*time.Millisecond)
+
+	agent := in.container("agent")
+	info, err := in.rt.Inspect(t.Context(), agent)
+	require.NoError(t, err)
+
+	dirs := []string{"/tmp"}
+	for _, m := range info.Mounts {
+		dirs = append(dirs, m.Target)
+	}
+
+	files := func(pattern string) string { return in.sh(agent, fileScan, append([]string{pattern}, dirs...)...) }
+	credentials := mark(endpointKey) + "|" + mark(forgeToken)
+
+	assert.Empty(t, in.sh(agent, procScan, credentials))
+	assert.Empty(t, files(credentials))
+
+	pids := strings.Fields(in.sh(agent, "pgrep -x claude"))
+	require.Len(t, pids, 1)
+
+	var standIns []string
+
+	for kv := range strings.SplitSeq(in.sh(agent, `cat "/proc/$1/environ"`, pids[0]), "\x00") {
+		if _, v, _ := strings.Cut(kv, "="); standInForm.MatchString(v) {
+			standIns = append(standIns, v)
+		}
+	}
+
+	require.Len(t, standIns, 1)
+	standIn := standIns[0]
+
+	assert.Contains(t, strings.Split(in.sh(agent, procScan, mark(standIn)), "\n"), "/proc/"+pids[0]+"/environ")
+	assert.NotEmpty(t, files(mark(title)))
+
+	for _, c := range []string{agent, in.container("sidecar")} {
+		out := in.client("container", "inspect", c)
+		assert.NotContains(t, out, endpointKey, c)
+		assert.NotContains(t, out, forgeToken, c)
+		assert.Contains(t, out, in.id, c)
+	}
+
+	release()
+
+	run := wait()
+	require.Zero(t, run.code, run)
+	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+
+	for _, r := range mock.Requests() {
+		assert.NotContains(t, fmt.Sprint(r.Header)+string(r.Body), standIn, r.Path)
+	}
+
+	var leaks, marked []string
+
+	data := os.DirFS(in.dir)
+	require.NoError(t, fs.WalkDir(data, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+
+		b, err := fs.ReadFile(data, p)
+		if bytes.Contains(b, []byte(endpointKey)) || bytes.Contains(b, []byte(forgeToken)) {
+			leaks = append(leaks, p)
+		}
+
+		if bytes.Contains(b, []byte(marker)) {
+			marked = append(marked, p)
+		}
+
+		return err
+	}))
+	assert.Empty(t, leaks)
+	assert.True(t, slices.ContainsFunc(marked, func(p string) bool { return strings.HasPrefix(p, "artifacts/") }), marked)
+
+	out := in.out.String()
+	assert.NotContains(t, out, endpointKey)
+	assert.NotContains(t, out, forgeToken)
+	assert.Contains(t, out, in.id)
+}
+
+func TestHostRunsNoGit(t *testing.T) {
+	// The first task's session, then the second's.
+	mock := mockapi.Start(t, []mockapi.Step{change, done, change, done})
+	in := setup(t, mock.HostURL())
+
+	in.path = t.TempDir()
+	require.NoError(t, os.Symlink(in.rt.Bin, filepath.Join(in.path, in.rt.Kind)))
+
+	// Rootless Podman looks its network helper up on PATH.
+	if pasta, err := exec.LookPath("pasta"); in.rt.Kind == "podman" && err == nil {
+		require.NoError(t, os.Symlink(pasta, filepath.Join(in.path, "pasta")))
+	}
+
+	id, run := in.pipeline("notes")
+	require.Zero(t, run.code, run)
+	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+
+	// A git first on the inherited PATH records each call and fails it.
+	rec := t.TempDir()
+	calls := filepath.Join(rec, "calls")
+	require.NoError(t, os.WriteFile(filepath.Join(rec, "git"), []byte("#!/bin/sh\necho \"$@\" >> '"+calls+"'\nexit 1\n"), 0o700))
+	in.path = rec + string(os.PathListSeparator) + os.Getenv("PATH")
+
+	id = in.task("notes")
+	run = in.cavu("", "task", "run", id)
+	require.Zero(t, run.code, run)
+	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+	assert.NoFileExists(t, calls)
 }
