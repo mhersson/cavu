@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/testkit/gitrepo"
@@ -131,8 +133,9 @@ type result struct {
 func (r result) String() string { return r.stdout + r.stderr }
 
 // start starts the child on the instance's data directory with stdin as its
-// input; wait waits for it to exit and returns its result.
-func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, wait func() result) {
+// input; ended is closed when it exits, and wait waits for that and returns
+// its result.
+func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-chan struct{}, wait func() result) {
 	in.t.Helper()
 
 	var stdout, stderr bytes.Buffer
@@ -147,10 +150,18 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, wait fun
 
 	require.NoError(in.t, cmd.Start())
 
-	return cmd, func() result {
+	var err error
+
+	done := make(chan struct{})
+
+	go func() { err = cmd.Wait(); close(done) }()
+
+	return cmd, done, func() result {
 		in.t.Helper()
 
-		if err := cmd.Wait(); err != nil {
+		<-done
+
+		if err != nil {
 			var exit *exec.ExitError
 			require.ErrorAs(in.t, err, &exit)
 		}
@@ -166,9 +177,36 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, wait fun
 func (in *instance) cavu(stdin string, args ...string) result {
 	in.t.Helper()
 
-	_, wait := in.start(stdin, args...)
+	_, _, wait := in.start(stdin, args...)
 
 	return wait()
+}
+
+// runHeld starts task run on id with the mock's first model call held, and
+// returns once that call is logged. A run that ends first fails the test with
+// its output.
+func (in *instance) runHeld(mock *mockapi.Server, id string) (release func(), cmd *exec.Cmd, wait func() result) {
+	in.t.Helper()
+
+	release = mock.Hold()
+	cmd, ended, wait := in.start("", "task", "run", id)
+
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+
+	limit := time.After(3 * time.Minute)
+
+	for !slices.ContainsFunc(mock.Requests(), func(r mockapi.Request) bool { return r.ModelCall }) {
+		select {
+		case <-ended:
+			in.t.Fatalf("task run ended before the held model call:\n%s", wait())
+		case <-limit:
+			in.t.Fatal("no model call within 3 minutes")
+		case <-tick.C:
+		}
+	}
+
+	return release, cmd, wait
 }
 
 // ok runs the child, requires exit code 0 and returns its standard output.
@@ -278,17 +316,40 @@ func (in *instance) pipeline(project string) (string, result) {
 	return id, in.cavu("", "task", "run", id)
 }
 
-// container is the instance's one container of kind, such as agent or sidecar.
-func (in *instance) container(kind string) string {
+// containers lists the instance's containers.
+func (in *instance) containers() []string {
 	in.t.Helper()
 
 	all, _, err := in.rt.List(in.t.Context(), "cavu.instance="+in.id)
 	require.NoError(in.t, err)
 
+	return all
+}
+
+// container is the instance's one container of kind, such as agent or sidecar.
+func (in *instance) container(kind string) string {
+	in.t.Helper()
+
+	all := in.containers()
 	named := slices.DeleteFunc(slices.Clone(all), func(c string) bool { return !strings.HasPrefix(c, "cavu-"+in.id[:8]+"-"+kind+"-") })
 	require.Len(in.t, named, 1, all)
 
 	return named[0]
+}
+
+// runs counts the task's run rows in the child's database.
+func (in *instance) runs(task string) int {
+	in.t.Helper()
+
+	db, err := sql.Open("sqlite", filepath.Join(in.dir, "cavu.db"))
+	require.NoError(in.t, err)
+
+	defer func() { _ = db.Close() }()
+
+	var n int
+	require.NoError(in.t, db.QueryRowContext(in.t.Context(), "SELECT count(*) FROM runs WHERE task_id = ?", task).Scan(&n))
+
+	return n
 }
 
 // client runs the runtime's client and returns its standard output.
@@ -405,12 +466,7 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	in.project("notes")
 	id := in.task("notes")
 
-	release := mock.Hold()
-	_, wait := in.start("", "task", "run", id)
-
-	require.Eventually(t, func() bool {
-		return slices.ContainsFunc(mock.Requests(), func(r mockapi.Request) bool { return r.ModelCall })
-	}, 3*time.Minute, 200*time.Millisecond)
+	release, _, wait := in.runHeld(mock, id)
 
 	agent := in.container("agent")
 	info, err := in.rt.Inspect(t.Context(), agent)
@@ -574,8 +630,49 @@ func TestGatewayBehindCustomCA(t *testing.T) {
 	assert.Equal(t, 1, r.code, r)
 	assert.Contains(t, r.stderr, "cavu image build")
 	assert.Equal(t, []string{"draft"}, values(in.ok("task", "show", id), "status:"))
+	assert.Empty(t, in.containers())
+}
 
-	containers, _, err := in.rt.List(t.Context(), "cavu.instance="+in.id)
-	require.NoError(t, err)
-	assert.Empty(t, containers)
+func TestKilledProcessResumes(t *testing.T) {
+	// The held call takes the first step, which the killed run never receives.
+	mock := mockapi.Start(t, []mockapi.Step{change, change, done})
+	in := setup(t, mock.HostURL())
+
+	in.project("notes")
+	id := in.task("notes")
+
+	_, cmd, wait := in.runHeld(mock, id)
+	require.NoError(t, cmd.Process.Kill())
+	wait()
+
+	run := in.cavu("", "task", "run", id)
+	require.Zero(t, run.code, run)
+	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+	assert.Equal(t, 1, in.runs(id))
+	assert.Empty(t, in.containers())
+}
+
+func TestKilledSidecarResumes(t *testing.T) {
+	// The held call takes the first step, which the cut session never receives.
+	mock := mockapi.Start(t, []mockapi.Step{change, change, done})
+	in := setup(t, mock.HostURL())
+
+	in.project("notes")
+	id := in.task("notes")
+
+	_, _, wait := in.runHeld(mock, id)
+	in.client("kill", in.container("sidecar"))
+
+	run := wait()
+	require.Equal(t, 3, run.code, run)
+	assert.Equal(t, []string{"sandbox"}, values(in.ok("task", "show", id), "stop:"))
+	assert.Equal(t, 1, in.runs(id))
+
+	in.ok("task", "retry", id)
+
+	run = in.cavu("", "task", "run", id)
+	require.Zero(t, run.code, run)
+	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+	assert.Equal(t, 1, in.runs(id))
+	assert.Empty(t, in.containers())
 }
