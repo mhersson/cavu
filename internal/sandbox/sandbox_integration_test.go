@@ -5,11 +5,13 @@ package sandbox_test
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -221,6 +223,79 @@ func TestRestartKillsLeftovers(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, processes(t, c), "sleep 1000")
 	assert.Equal(t, "kept\n", run(t, c, "cat", "/workspace/kept").Output)
+}
+
+// containerID is the runtime's id of the container name, which a container
+// started again under the same name does not keep.
+func containerID(t *testing.T, r sandbox.Runtime, name string) string {
+	t.Helper()
+
+	out, err := exec.CommandContext(t.Context(), r.Bin, "container", "inspect", name).Output() //nolint:gosec // our runtime, our container
+	require.NoError(t, err)
+
+	var got []struct {
+		ID string `json:"Id"`
+	}
+
+	require.NoError(t, json.Unmarshal(out, &got))
+	require.Len(t, got, 1)
+	require.NotEmpty(t, got[0].ID)
+
+	return got[0].ID
+}
+
+// TestReadOnlyPhase: the read-only phase refuses a write to the workspace and
+// takes one wherever else the agent phase writes, and a change of phase with
+// the same proxy request replaces the phase container alone.
+func TestReadOnlyPhase(t *testing.T) {
+	t.Parallel()
+
+	r := sandboxtest.Runtime(t)
+	image := sandboxImage(t, r, nil)
+	allowed := "host.docker.internal:" + serveText(t, sandboxtest.HostAddr(t, r), "allowed")
+
+	instance, runID := randomInstance(t), randomID(t)
+	sandboxtest.RemoveInstanceAfter(t, r, instance)
+
+	s := openSandbox(t, r, image, instance, runID, randomID(t), randomID(t))
+	require.NoError(t, s.EnsureVolumes(t.Context()))
+
+	req := sidecar.ProxyRequest{AllowHosts: []string{allowed}}
+	side := schemeName(instance, "sidecar", runID)
+
+	var sideID string
+
+	for i, phase := range []sandbox.Phase{sandbox.PhaseAgent, sandbox.PhaseReadOnly, sandbox.PhaseAgent} {
+		c, err := s.Up(t.Context(), phase, req, nil)
+		require.NoError(t, err, phase)
+
+		containers, _, err := r.List(t.Context(), "cavu.instance="+instance)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{side, schemeName(instance, string(phase), runID)}, containers, "Up %d", i+1)
+
+		if i == 0 {
+			sideID = containerID(t, r, side)
+		}
+
+		assert.Equal(t, sideID, containerID(t, r, side), "Up %d replaced the sidecar", i+1)
+
+		res := run(t, c, "curl", "--silent", "--show-error", "--max-time", "10", "--proxy", viaBridge, "http://"+allowed+"/")
+		assert.Equal(t, "allowed", res.Output, "Up %d", i+1)
+
+		if phase == sandbox.PhaseAgent {
+			res := run(t, c, "sh", "-c", "echo kept > /workspace/kept")
+			assert.Equal(t, 0, res.ExitCode, "Up %d: %s", i+1, res.Output)
+
+			continue
+		}
+
+		assert.Equal(t, "kept\n", run(t, c, "cat", "/workspace/kept").Output)
+
+		for dir, writable := range map[string]bool{"/workspace": false, "/home/agent": true, "/handoff": true, "/run/cavu": true} {
+			res := run(t, c, "touch", dir+"/written")
+			assert.Equal(t, writable, res.ExitCode == 0, "a write under %s: %s", dir, res.Output)
+		}
+	}
 }
 
 func TestRemoveOrphans(t *testing.T) {

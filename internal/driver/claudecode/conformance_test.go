@@ -91,12 +91,13 @@ var repository = map[string]string{
 	"docs-imported-md.txt":      "docs/imported.md",
 }
 
-// box is one check's sandbox: the agent container and its sidecar, the mock
+// box is one check's sandbox: the phase container and its sidecar, the mock
 // behind the proxy, and the fixture repository in the workspace.
 type box struct {
 	t       *testing.T
 	rt      sandbox.Runtime
 	sb      *sandbox.Sandbox
+	req     sidecar.ProxyRequest // kept, so a change of phase keeps the sidecar
 	c       sandbox.Container
 	mock    *mockapi.Server
 	cred    string // the real credential, which only the sidecar holds
@@ -154,10 +155,8 @@ func (b *box) up(image string, req sidecar.ProxyRequest) {
 
 	require.NoError(t, sb.EnsureVolumes(t.Context()))
 
-	c, err := sb.Up(t.Context(), sandbox.PhaseAgent, req, b.sidecar.add)
-	require.NoError(t, err)
-
-	b.sb, b.c = sb, c
+	b.sb, b.req = sb, req
+	b.phase(sandbox.PhaseAgent)
 
 	// The mock answers a side request without a step; no check should need it.
 	if b.mock != nil {
@@ -165,6 +164,16 @@ func (b *box) up(image string, req sidecar.ProxyRequest) {
 			assert.Len(t, modelCalls(b.mock), len(b.mock.Requests()), "a request was not a streaming model call")
 		})
 	}
+}
+
+// phase brings up the phase container of p in place of the current one.
+func (b *box) phase(p sandbox.Phase) {
+	b.t.Helper()
+
+	c, err := b.sb.Up(b.t.Context(), p, b.req, b.sidecar.add)
+	require.NoError(b.t, err)
+
+	b.c = c
 }
 
 // plant writes the fixture repository into the workspace and commits it, as
@@ -189,7 +198,7 @@ func (b *box) plant() {
 	b.base = strings.TrimSpace(res.Output)
 }
 
-// sh runs script in the workspace of the agent container.
+// sh runs script in the workspace of the phase container.
 func (b *box) sh(script string) sandbox.Result {
 	b.t.Helper()
 
@@ -200,7 +209,7 @@ func (b *box) sh(script string) sandbox.Result {
 	return res
 }
 
-// exists reports whether p exists in the agent container.
+// exists reports whether p exists in the phase container.
 func (b *box) exists(p string) bool {
 	return b.sh("test -e "+p).ExitCode == 0
 }
@@ -244,7 +253,7 @@ func conformanceDriver() claudeCode {
 	return New().(claudeCode) //nolint:forcetypeassert // New returns a claudeCode
 }
 
-// run runs s in the agent container with d.
+// run runs s in the phase container with d.
 func (b *box) run(d claudeCode, s driver.Spec) outcome {
 	b.t.Helper()
 
@@ -1079,6 +1088,94 @@ func TestResumeUnknownSession(t *testing.T) {
 	requireDone(t, o)
 	assert.Equal(t, id, o.res.SessionID)
 	assert.Len(t, modelCalls(b.mock), 1)
+}
+
+// verdictSchema asks for a one-field structured result.
+const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string"}},"required":["verdict"],"additionalProperties":false}`
+
+// TestReadOnlySessionChangesNothing: a read-only session in the read-only
+// phase is offered no editing tool, changes nothing in the workspace through
+// the editing tools or the shell, and still searches with the shell.
+func TestReadOnlySessionChangesNothing(t *testing.T) {
+	b := keyBox(t,
+		mockapi.Step{Tool: "Write", Input: map[string]any{"file_path": confDir + "/.conformance-written", "content": "written\n"}},
+		mockapi.Step{Tool: "Edit", Input: map[string]any{
+			"file_path": confDir + "/pkg/notes.txt", "old_string": "conformance fixture file", "new_string": "edited",
+		}},
+		mockapi.Step{Tool: "Bash", Input: map[string]any{"command": "touch probe"}},
+		// The command holds the marker's tail; only its output holds the whole.
+		mockapi.Step{Tool: "Bash", Input: map[string]any{"command": "grep -rh " + strings.TrimPrefix(markerNested, "CONFORMANCE-") + " pkg"}},
+		mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{"verdict": "pass"}},
+	)
+	b.phase(sandbox.PhaseReadOnly)
+
+	s := b.spec()
+	s.ReadOnly = true
+	s.OutputSchema = json.RawMessage(verdictSchema)
+
+	o := b.run(conformanceDriver(), s)
+	requireDone(t, o)
+	assert.JSONEq(t, `{"verdict":"pass"}`, string(o.res.Structured))
+
+	var tools []string
+
+	raw, err := json.Marshal(o.line(t, "system", "init")["tools"])
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &tools))
+
+	calls := modelCalls(b.mock)
+	require.Len(t, calls, 5)
+
+	for _, tool := range []string{"Edit", "Write", "NotebookEdit"} {
+		assert.NotContains(t, tools, tool, "in init")
+
+		for i, r := range calls {
+			assert.NotContains(t, r.Tools, tool, "model call %d", i+1)
+		}
+	}
+
+	for i, r := range calls {
+		assert.Equal(t, i == 4, carries(r, markerNested), "model call %d carries the grep's output", i+1)
+	}
+
+	b.phase(sandbox.PhaseAgent)
+
+	res := b.sh("git status --porcelain")
+	require.Equal(t, 0, res.ExitCode, res.Output)
+	assert.Empty(t, res.Output, "the read-only session changed the workspace")
+}
+
+// TestReadOnlyThenResumeWrites: a read-only session resumed in the agent phase
+// without the flag has its editing tools back.
+func TestReadOnlyThenResumeWrites(t *testing.T) {
+	const written = confDir + "/.conformance-resumed"
+
+	b := keyBox(t,
+		mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{"verdict": "pass"}},
+		mockapi.Step{Tool: "Write", Input: map[string]any{"file_path": written, "content": "resumed\n"}},
+		mockapi.Step{Text: "done"},
+	)
+	d := conformanceDriver()
+
+	b.phase(sandbox.PhaseReadOnly)
+
+	first := b.spec()
+	first.ReadOnly = true
+	first.OutputSchema = json.RawMessage(verdictSchema)
+	requireDone(t, b.run(d, first))
+
+	b.phase(sandbox.PhaseAgent)
+
+	second := b.spec()
+	second.SessionID, second.Resume = "", first.SessionID
+
+	o := b.run(d, second)
+	requireDone(t, o)
+	assert.Equal(t, first.SessionID, o.res.SessionID)
+
+	res := b.sh("cat " + written)
+	require.Equal(t, 0, res.ExitCode, res.Output)
+	assert.Equal(t, "resumed\n", res.Output)
 }
 
 // TestTrustsCustomCAThroughTunnel is a subscription run on a network that
