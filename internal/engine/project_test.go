@@ -197,7 +197,9 @@ func TestCheckProjectStoresTheBaseline(t *testing.T) {
 		passed bool
 		none   bool // the check stores no baseline
 	}{
-		{name: "passed", res: engine.PrepareResult{BaseCommit: "base123", Tools: []string{"go@1.27"}, Baseline: engine.ResultPassed}, passed: true},
+		{name: "passed", res: engine.PrepareResult{
+			BaseCommit: "base123", Tools: []string{"go@1.27"}, IgnoredTools: []string{"node lts"}, Baseline: engine.ResultPassed,
+		}, passed: true},
 		{name: "a failed step", res: engine.PrepareResult{BaseCommit: "base123", FailedStep: "setup", Output: "no rule"}},
 		{name: "a failed baseline", res: engine.PrepareResult{
 			BaseCommit: "base123", Baseline: engine.ResultFailed, FailedStep: "baseline", Output: "FAIL",
@@ -217,11 +219,16 @@ func TestCheckProjectStoresTheBaseline(t *testing.T) {
 
 			h.runner.prepares = []step[engine.PrepareResult]{{res: tc.res}}
 			h.runner.suggestion = "make test"
+			require.NoError(t, h.loop.RequestCheck(t.Context(), p.ID))
 
 			res, suggestion, err := h.loop.CheckProject(t.Context(), p.ID)
 			require.NoError(t, err)
 			assert.Equal(t, tc.res, res)
 			assert.Equal(t, "make test", suggestion)
+			assert.Nil(t, h.project().CheckRequestedAt, "the check clears its request")
+			assert.Equal(t, store.CheckResult{
+				Tools: tc.res.Tools, IgnoredTools: tc.res.IgnoredTools, FailedStep: tc.res.FailedStep, VerifySuggestion: "make test",
+			}, h.project().CheckResult)
 
 			checks := h.runner.callsOf("check")
 			require.Len(t, checks, 1)
@@ -257,20 +264,26 @@ func TestCheckProjectKeepsTheBaselineOnARunnerError(t *testing.T) {
 
 	h.runner.prepares = []step[engine.PrepareResult]{{err: fault}}
 	h.runner.suggestion = "go test ./..."
+	require.NoError(t, h.loop.RequestCheck(t.Context(), p.ID))
 
 	_, suggestion, err := h.loop.CheckProject(t.Context(), p.ID)
 	require.ErrorIs(t, err, fault)
 	assert.Equal(t, "go test ./...", suggestion, "the suggestion comes back with the error")
 	assert.Equal(t, p.Baseline.Commit, h.project().Baseline.Commit)
 	assert.True(t, h.project().Baseline.Passed)
+	assert.Nil(t, h.project().CheckRequestedAt, "a fault clears the request too")
+	assert.Equal(t, store.CheckResult{VerifySuggestion: "go test ./...", Fault: fault.Error()}, h.project().CheckResult)
 }
 
 func TestCheckProjectRefusesAMissingSetting(t *testing.T) {
 	h := newHarness(t)
 	require.NoError(t, h.store.SetSetting(t.Context(), "model_work", ""))
+	require.NoError(t, h.loop.RequestCheck(t.Context(), h.task.ProjectID))
 
 	_, _, err := h.loop.CheckProject(t.Context(), h.task.ProjectID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "model_work")
 	assert.Empty(t, h.runner.callsOf("check"))
+	assert.Nil(t, h.project().CheckRequestedAt, "a broken setting cannot leave the request to run again")
+	assert.Equal(t, err.Error(), h.project().CheckResult.Fault)
 }

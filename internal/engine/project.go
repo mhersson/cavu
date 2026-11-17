@@ -123,40 +123,71 @@ func Runnable(p store.Project) bool {
 	return p.VerifyWaived || p.Baseline != nil && p.Baseline.Passed
 }
 
-// CheckProject prepares a project the way a run does, under run and task id 0,
-// and stores what it found as the project's baseline. It also returns the
-// verify command the repository suggests, or "", even with a runner error,
-// which stores nothing.
+// RequestCheck asks for an environment check of the project. A request still
+// waiting keeps its time, so the oldest request runs first.
+func (l *Loop) RequestCheck(ctx context.Context, projectID int64) error {
+	p, err := l.Store.Project(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("project %d: %w", projectID, err)
+	}
+
+	if p.CheckRequestedAt != nil {
+		return nil
+	}
+
+	at := l.Now()
+	p.CheckRequestedAt = &at
+
+	return l.Store.UpdateProject(ctx, p)
+}
+
+// CheckProject prepares a project the way a run does, under run and task id 0.
+// Whatever the outcome, it stores the project's check result, with any error
+// it met as the fault, clears the check request, and stores the baseline as a
+// run's prepare would. It also returns the verify command the repository
+// suggests, or "", even with an error.
 func (l *Loop) CheckProject(ctx context.Context, projectID int64) (PrepareResult, string, error) {
+	res, suggestion, err := l.checkEnvironment(ctx, projectID)
+
+	return res, suggestion, errors.Join(err, l.storeCheck(ctx, projectID, res, suggestion, err))
+}
+
+func (l *Loop) checkEnvironment(ctx context.Context, projectID int64) (PrepareResult, string, error) {
 	c, err := l.BuildRunConfig(ctx, store.Task{ProjectID: projectID}, store.Run{}, nil)
 	if err != nil {
 		return PrepareResult{}, "", err
 	}
 
-	res, suggestion, err := l.Runner.CheckEnvironment(ctx, c)
-	if err != nil {
-		return res, suggestion, err
-	}
+	return l.Runner.CheckEnvironment(ctx, c)
+}
 
-	// With no verify command nothing was verified: the check stores nothing.
-	if !c.Verify.Waived && strings.TrimSpace(c.Verify.Command) == "" {
-		return res, suggestion, nil
-	}
-
-	var b *store.Baseline // a waived verify runs none, and drops what an earlier check stored
-	if res.Baseline != ResultWaived {
-		b = &store.Baseline{Commit: res.BaseCommit, Passed: res.Baseline == ResultPassed, At: l.Now(), Output: res.Output}
-	}
-
+// storeCheck stores what a check found, or the error it met, and clears the
+// project's check request. An error leaves the baseline as it is, and so does
+// a project with no verify command, since nothing was verified.
+func (l *Loop) storeCheck(ctx context.Context, projectID int64, res PrepareResult, suggestion string, cause error) error {
 	p, err := l.Store.Project(ctx, projectID)
 	if err == nil {
-		p.Baseline = b
+		p.CheckRequestedAt = nil
+		p.CheckResult = store.CheckResult{
+			Tools: res.Tools, IgnoredTools: res.IgnoredTools, FailedStep: res.FailedStep, VerifySuggestion: suggestion,
+		}
+
+		switch {
+		case cause != nil:
+			p.CheckResult.Fault = cause.Error()
+		case p.VerifyWaived || strings.TrimSpace(p.VerifyCommand) != "":
+			p.Baseline = nil // a waived verify runs none, and drops what an earlier check stored
+			if res.Baseline != ResultWaived {
+				p.Baseline = &store.Baseline{Commit: res.BaseCommit, Passed: res.Baseline == ResultPassed, At: l.Now(), Output: res.Output}
+			}
+		}
+
 		err = l.Store.UpdateProject(ctx, p)
 	}
 
 	if err != nil {
-		return res, suggestion, fmt.Errorf("project %d: baseline: %w", projectID, err)
+		return fmt.Errorf("project %d: check result: %w", projectID, err)
 	}
 
-	return res, suggestion, nil
+	return nil
 }

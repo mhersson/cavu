@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -131,20 +134,45 @@ func ReadSettings(values map[string]string) (RunConfig, error) {
 var settableKeys = []string{
 	"runtime", "ca_bundle_path", "endpoint_mode", "endpoint_url", "endpoint_auth_header",
 	keyModelWork, keyEffortWork, "work_timeout_minutes", "work_max_turns", "verify_timeout_minutes",
-	"commit_name", "commit_email",
+	"commit_name", "commit_email", "concurrency", "listen_address",
 }
 
-// CheckSetting refuses a key a person cannot set and a value a run would not
-// read. An empty value unsets the key.
+// SettableKeys lists the settings a person sets.
+func SettableKeys() []string {
+	return slices.Clone(settableKeys)
+}
+
+// CheckSetting refuses a key a person cannot set and a value a run or the
+// server would not read. An empty value unsets the key.
 func CheckSetting(key, value string) error {
 	if !slices.Contains(settableKeys, key) {
 		return fmt.Errorf("%s cannot be set; the settings are %s", key, strings.Join(settableKeys, ", "))
 	}
 
-	set := settingsReader{values: map[string]string{key: value}}
+	values := map[string]string{key: value}
+	set := settingsReader{values: values}
 	set.read()
 
-	return set.err
+	_, concurrency := Concurrency(values)
+	_, listen := ListenAddress(values)
+
+	return errors.Join(set.err, concurrency, listen)
+}
+
+// Concurrency reads the concurrency setting: a positive integer, 3 when unset.
+func Concurrency(values map[string]string) (int, error) {
+	set := settingsReader{values: values}
+	n := set.positiveInt("concurrency", 3)
+
+	return n, set.err
+}
+
+// ListenAddress reads the listen_address setting: a host and a port, 127.0.0.1:7117 when unset.
+func ListenAddress(values map[string]string) (string, error) {
+	set := settingsReader{values: values}
+	addr := set.hostPort("listen_address", "127.0.0.1:7117")
+
+	return addr, set.err
 }
 
 // switchFields maps each switch's name to its field in sw.
@@ -248,6 +276,15 @@ func (s *settingsReader) positiveInt(key string, def int) int {
 	}
 
 	return n
+}
+
+func (s *settingsReader) hostPort(key, def string) string {
+	v := cmp.Or(s.values[key], def)
+	if host, port, err := net.SplitHostPort(v); err != nil || host == "" || port == "" {
+		s.fail(key, fmt.Sprintf("%q is not a host and a port", v))
+	}
+
+	return v
 }
 
 // minutes reads a decimal number of minutes, clamped to [lo, hi].

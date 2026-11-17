@@ -61,6 +61,7 @@ func pop[T any](q *[]step[T], def T) (T, error) {
 
 type call struct {
 	method string
+	task   int64
 	runID  int64
 	work   engine.WorkRequest
 	remove bool
@@ -94,9 +95,10 @@ type fakeRunner struct {
 	verifies   []step[engine.VerifyResult]
 	exports    []step[engine.ExportResult]
 	releaseErr error
-	suggestion string            // every check's verify suggestion
-	progress   []engine.Progress // sent during every Work, each from its own goroutine
-	onCall     func(c call)      // runs as a call starts
+	suggestion string                                  // every check's verify suggestion
+	progress   []engine.Progress                       // sent during every Work, each from its own goroutine
+	onCall     func(c call)                            // runs as a call starts
+	gate       func(ctx context.Context, c call) error // runs after onCall; an error is the call's
 }
 
 var (
@@ -112,19 +114,27 @@ var (
 	}
 )
 
-func (r *fakeRunner) begin(c call) {
+func (r *fakeRunner) begin(ctx context.Context, c call) error {
 	r.mu.Lock()
 	r.calls = append(r.calls, c)
-	hook := r.onCall
+	hook, gate := r.onCall, r.gate
 	r.mu.Unlock()
 
 	if hook != nil {
 		hook(c)
 	}
+
+	if gate != nil {
+		return gate(ctx, c)
+	}
+
+	return nil
 }
 
 func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
-	r.begin(call{method: "prepare", runID: c.RunID, eco: c.Ecosystems})
+	if err := r.begin(ctx, call{method: "prepare", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems}); err != nil {
+		return engine.PrepareResult{}, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -134,7 +144,9 @@ func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.Pr
 
 // CheckEnvironment answers from the prepare queue: a check is a prepare.
 func (r *fakeRunner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, string, error) {
-	r.begin(call{method: "check", runID: c.RunID, cfg: c})
+	if err := r.begin(ctx, call{method: "check", runID: c.RunID, cfg: c}); err != nil {
+		return engine.PrepareResult{}, "", err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -145,7 +157,9 @@ func (r *fakeRunner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (
 }
 
 func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
-	r.begin(call{method: "work", runID: c.RunID, work: w, eco: c.Ecosystems})
+	if err := r.begin(ctx, call{method: "work", task: c.TaskID, runID: c.RunID, work: w, eco: c.Ecosystems}); err != nil {
+		return engine.WorkResult{}, err
+	}
 
 	var wg sync.WaitGroup
 	for _, p := range r.progress {
@@ -161,7 +175,9 @@ func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.Work
 }
 
 func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyResult, error) {
-	r.begin(call{method: "verify", runID: c.RunID, eco: c.Ecosystems})
+	if err := r.begin(ctx, call{method: "verify", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems}); err != nil {
+		return engine.VerifyResult{}, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -170,7 +186,9 @@ func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.Ver
 }
 
 func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit string) (engine.ExportResult, error) {
-	r.begin(call{method: "export", runID: c.RunID, commit: commit, eco: c.Ecosystems})
+	if err := r.begin(ctx, call{method: "export", task: c.TaskID, runID: c.RunID, commit: commit, eco: c.Ecosystems}); err != nil {
+		return engine.ExportResult{}, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -179,7 +197,9 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit stri
 }
 
 func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
-	r.begin(call{method: "release", runID: ref.RunID, remove: removeVolumes, ref: ref})
+	if err := r.begin(ctx, call{method: "release", task: ref.TaskID, runID: ref.RunID, remove: removeVolumes, ref: ref}); err != nil {
+		return err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1227,7 +1247,7 @@ func TestReleaseOpenRunKeepsVolumes(t *testing.T) {
 	r := h.seed(ev(engine.RunStarted, `{"reason":"initial"}`))
 
 	require.NoError(t, h.loop.ReleaseOpenRun(t.Context(), h.task.ID))
-	assert.Equal(t, []call{{method: "release", runID: r.ID, ref: engine.RunRef{
+	assert.Equal(t, []call{{method: "release", task: h.task.ID, runID: r.ID, ref: engine.RunRef{
 		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: r.ID, ProjectID: h.task.ProjectID,
 	}}}, h.runner.calls)
 	assert.Empty(t, h.spy.ended(), "the run stays open")

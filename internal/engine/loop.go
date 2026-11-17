@@ -38,6 +38,8 @@ type Store interface {
 	OpenRun(ctx context.Context, taskID int64) (store.Run, bool, error)
 	SetTaskDeps(ctx context.Context, taskID int64, dependsOn []int64) error
 	TaskDeps(ctx context.Context, taskID int64) ([]int64, error)
+	LastEventIDs(ctx context.Context) (map[int64]int64, error)
+	Projects(ctx context.Context) ([]store.Project, error)
 }
 
 // Loop carries out the actions Decide chooses, through a Runner.
@@ -811,9 +813,8 @@ func (l *Loop) ReleaseOpenRun(ctx context.Context, taskID int64) error {
 	return nil
 }
 
-// free stops a run's containers once its stop or end is recorded, removing its
-// volumes and ending its row when the run ends. A Release error is held so the
-// row is still ended.
+// free stops a run's containers, removing its volumes and ending its row when
+// the run ends. A Release error is held so the row is still ended.
 func (p *pass) free(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
 	ref, err := p.ref(ctx, t, row)
 	if err != nil {
