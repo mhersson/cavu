@@ -14,6 +14,7 @@ type ProxyRequest struct {
 	Socket     string // /handoff/proxy.sock
 	AllowHosts []string
 	Model      *proxy.ModelRoute
+	Budget     *proxy.Budget // nil: no money cap
 }
 
 // CloneRequest configures the clone op. Token is the forge token.
@@ -25,9 +26,9 @@ type CloneRequest struct {
 
 // Line is one JSON line on standard output.
 type Line struct {
-	Type   string       // "ready", "denied", "usage", "cloned", "error"
+	Type   string       // "ready", "denied", "usage", "budget", "cloned", "error"
 	Host   string       `json:",omitempty"`
 	Usage  *proxy.Usage `json:",omitempty"`
 	Commit string       `json:",omitempty"` // cloned: the base commit
-	Error  string       `json:",omitempty"`
+	Error  string       `json:",omitempty"` // budget: why the spend cannot be counted, "" when the cap is spent
 }

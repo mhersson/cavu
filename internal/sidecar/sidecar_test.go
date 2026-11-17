@@ -247,6 +247,57 @@ func TestProxyOpUsageLines(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
+func TestSidecarWritesTheBudgetLine(t *testing.T) {
+	t.Parallel()
+
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"m1","usage":{"input_tokens":3,"output_tokens":5}}`)
+	}))
+	t.Cleanup(model.Close)
+
+	sock := filepath.Join(shortDir(t), "p.sock")
+	run := start(t, Request{Proxy: &ProxyRequest{
+		Socket: sock,
+		Model:  &proxy.ModelRoute{BaseURL: model.URL, Credential: "real", AuthHeader: "x-api-key", StandIn: "stand-in"},
+		Budget: &proxy.Budget{CapMicroUSD: 8, Prices: map[string]proxy.Price{"m1": {Input: 1, Output: 1}}},
+	}})
+	run.stdout.waitFor(t, "ready")
+
+	c := unixClient(sock, false)
+	ask := func() int {
+		req, err := http.NewRequest(http.MethodPost, "http://model.invalid/v1/messages", strings.NewReader(`{}`))
+		require.NoError(t, err)
+		req.Header.Set("x-api-key", "stand-in")
+
+		resp, err := c.Do(req)
+		require.NoError(t, err)
+
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		return resp.StatusCode
+	}
+
+	assert.Equal(t, http.StatusOK, ask())
+	run.stdout.waitFor(t, "budget")
+	assert.Equal(t, http.StatusPaymentRequired, ask())
+	assert.Equal(t, http.StatusPaymentRequired, ask())
+
+	require.NoError(t, run.stop(t))
+
+	lines := run.stdout.lines()
+
+	var types []string
+	for _, l := range lines {
+		types = append(types, l.Type)
+	}
+
+	// The response that spent the cap is reported before the cap.
+	assert.Equal(t, []string{"ready", "usage", "budget"}, types)
+	assert.Empty(t, lines[2].Error)
+}
+
 func TestProxyOpDrainsInFlightResponsesBeforeReturning(t *testing.T) {
 	t.Parallel()
 
