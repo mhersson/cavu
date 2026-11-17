@@ -31,7 +31,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep t
    cavu settings set endpoint_auth_header x-api-key               # key mode only
    ```
 
-3. Store the secrets from standard input, never as arguments. `forge_token` is for a private repository.
+3. Store the secrets from standard input, never as arguments. `forge_token` is for a private repository. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
 
    ```
    cavu secret set endpoint_credential < credential.txt
