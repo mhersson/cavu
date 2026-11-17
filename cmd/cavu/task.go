@@ -359,7 +359,9 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
 }
 
 // printState prints the task's status, its open stop with every question the
-// agent asked, and its newest export with git's summary of it, and returns the status.
+// agent asked and the answer it suggested, the review's findings left open,
+// its minor ones and why its newest review gave no verdict, and its newest
+// export with git's summary of it, and returns the status.
 func printState(w io.Writer, events []store.Event) engine.Status {
 	facts := engine.Reduce(events)
 	status := engine.StatusOf(facts)
@@ -372,10 +374,28 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 
 		// The stop's explanation holds only the first question.
 		if facts.OpenStop.Reason == engine.StopQuestion && facts.Session != nil {
-			for _, q := range facts.Session.Questions {
+			suggested := facts.Session.SuggestedAnswers
+
+			for i, q := range facts.Session.Questions {
 				fmt.Fprintf(w, "asked:   %s\n", q)
+
+				if i < len(suggested) && suggested[i] != "" {
+					fmt.Fprintf(w, "suggest: %s\n", suggested[i])
+				}
 			}
 		}
+	}
+
+	for _, f := range facts.Review.Open {
+		fmt.Fprintf(w, "open:    %s\n", findingLine(f))
+	}
+
+	for _, f := range facts.Review.Minor {
+		fmt.Fprintf(w, "minor:   %s\n", findingLine(f))
+	}
+
+	if facts.Review.Failed != "" {
+		fmt.Fprintf(w, "review:  no verdict: %s\n", facts.Review.Failed)
 	}
 
 	if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
@@ -389,6 +409,11 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 	}
 
 	return status
+}
+
+// findingLine is a finding's severity, where, what and why, each that is set.
+func findingLine(f engine.Finding) string {
+	return strings.Join(slices.DeleteFunc([]string{f.Severity, f.Where, f.What, f.Why}, func(s string) bool { return s == "" }), " | ")
 }
 
 // newest decodes the newest event of the type, if any.
@@ -606,6 +631,26 @@ func eventLine(e store.Event) string {
 	case engine.SessionEnded:
 		p := decoded[engine.SessionEndedPayload](e.Payload)
 		tell = fmt.Sprintf("%s after %d turns", p.Outcome, p.Turns)
+	case engine.ReviewStarted:
+		tell = "the whole change"
+		if decoded[engine.ReviewStartedPayload](e.Payload).Scoped {
+			tell = "the fix and the findings it was to address"
+		}
+	case engine.ReviewEnded:
+		p := decoded[engine.ReviewEndedPayload](e.Payload)
+		tell = fmt.Sprintf("%s after %d turns with %d findings", p.Outcome, p.Turns, len(p.Findings))
+
+		if p.Scoped && p.Outcome == engine.ReviewReviewed {
+			addressed := 0
+
+			for _, a := range p.Addressed {
+				if a {
+					addressed++
+				}
+			}
+
+			tell += fmt.Sprintf("; %d of the %d open ones addressed", addressed, len(p.Addressed))
+		}
 	case engine.VerifyEnded:
 		tell = decoded[engine.VerifyEndedPayload](e.Payload).Result
 	case engine.PrepareFailed:

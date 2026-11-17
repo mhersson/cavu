@@ -65,6 +65,7 @@ type call struct {
 	task   int64
 	runID  int64
 	work   engine.WorkRequest
+	review engine.ReviewRequest
 	remove bool
 	commit string // the commit an export was given
 	ref    engine.RunRef
@@ -76,6 +77,10 @@ func (c call) String() string {
 	switch c.method {
 	case "work":
 		return "work/" + c.work.Mode
+	case "review":
+		if c.review.FixBase != "" {
+			return "review/scoped"
+		}
 	case "release":
 		if c.remove {
 			return "release/remove"
@@ -95,6 +100,7 @@ type fakeRunner struct {
 	works      []step[engine.WorkResult]
 	verifies   []step[engine.VerifyResult]
 	exports    []step[engine.ExportResult]
+	reviews    []step[engine.ReviewResult]
 	releaseErr error
 	suggestion string                                  // every check's verify suggestion
 	progress   []engine.Progress                       // sent during every Work, each from its own goroutine
@@ -108,8 +114,9 @@ var (
 		Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", Turns: 3, HeadCommit: "head456",
 		Usage: []store.Usage{{Source: "agent", Model: "model-a", Input: 10, Output: 5}},
 	}
-	verifyOK = engine.VerifyResult{Result: engine.ResultPassed, Command: "make test", Output: "ok"}
-	exportOK = engine.ExportResult{
+	verifyOK   = engine.VerifyResult{Result: engine.ResultPassed, Command: "make test", Output: "ok"}
+	reviewedOK = engine.ReviewResult{Outcome: engine.ReviewReviewed, Asked: engine.Verdict{Pass: true}, Built: engine.Verdict{Pass: true}}
+	exportOK   = engine.ExportResult{
 		HeadCommit: "head456", Diff: []byte("diff --git a/x b/x\n"), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 1,
 		DiffStat: []string{"x | 1 +", "1 file changed, 1 insertion(+)"},
 	}
@@ -195,6 +202,17 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit stri
 	defer r.mu.Unlock()
 
 	return pop(&r.exports, exportOK)
+}
+
+func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.ReviewRequest, _ func(engine.Progress)) (engine.ReviewResult, error) {
+	if err := r.begin(ctx, call{method: "review", task: c.TaskID, runID: c.RunID, review: rv, eco: c.Ecosystems}); err != nil {
+		return engine.ReviewResult{}, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return pop(&r.reviews, reviewedOK)
 }
 
 func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
@@ -381,9 +399,10 @@ func newHarness(t *testing.T) *harness {
 		require.NoError(t, s.SetSetting(ctx, k, val))
 	}
 
+	// The readiness turn and the review are off: only the tests that turn them on are about them.
 	p, err := s.CreateProject(ctx, store.Project{
 		Name: "web", RepoURL: "https://example.com/web.git", BaseBranch: "main",
-		SetupCommand: "make setup", VerifyCommand: "make test",
+		SetupCommand: "make setup", VerifyCommand: "make test", Switches: map[string]bool{"readiness": false, "review": false},
 	})
 	require.NoError(t, err)
 
@@ -1925,6 +1944,69 @@ func TestLoopAnswerReachesTheAgent(t *testing.T) {
 	require.Len(t, works, 2)
 	assert.Equal(t, engine.ModeAnswer, works[1].work.Mode)
 	assert.Equal(t, "Use port 8080.", works[1].work.Detail)
+	assert.True(t, works[1].work.Resume)
+	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
+}
+
+// withDefaultSwitches gives the harness's project the default switches, which
+// turn the readiness turn and the review on.
+func (h *harness) withDefaultSwitches() {
+	h.t.Helper()
+
+	p := h.project()
+	p.Switches = nil
+	require.NoError(h.t, h.store.UpdateProject(h.t.Context(), p))
+}
+
+func TestLoopReadinessThenWork(t *testing.T) {
+	h := newHarness(t)
+	h.withDefaultSwitches()
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeReady, Turns: 2}}}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, []string{"prepare", "work/readiness", "work/start", "verify", "review", "export", "release/remove"}, h.runner.trace())
+
+	works := h.runner.callsOf("work")
+	require.Len(t, works, 2)
+	assert.Regexp(t, uuidV4, works[0].work.SessionID)
+	assert.False(t, works[0].work.Resume, "the readiness turn opens the session")
+	assert.True(t, works[1].work.Resume, "the work resumes it")
+	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
+}
+
+func TestLoopReadinessQuestion(t *testing.T) {
+	h := newHarness(t)
+	h.withDefaultSwitches()
+
+	questions, suggested := []string{"Which port?", "Is IPv6 needed?"}, []string{"8080", "No"}
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{
+		Outcome: engine.OutcomeBlocked, Questions: questions, SuggestedAnswers: suggested,
+	}}}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, engine.StatusBlocked, status)
+	assert.Equal(t, engine.StopQuestion, h.lastStop().Reason)
+
+	snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	require.NotNil(t, snap.Facts.Session)
+	assert.Equal(t, questions, snap.Facts.Session.Questions)
+	assert.Equal(t, suggested, snap.Facts.Session.SuggestedAnswers)
+
+	require.NoError(t, h.loop.Answer(t.Context(), h.task.ID, "Port 8080, and no IPv6."))
+
+	status, err = h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+
+	works := h.runner.callsOf("work")
+	require.Len(t, works, 2)
+	assert.Equal(t, engine.ModeReadiness, works[0].work.Mode)
+	assert.Equal(t, engine.ModeAnswer, works[1].work.Mode)
+	assert.Equal(t, "Port 8080, and no IPv6.", works[1].work.Detail)
 	assert.True(t, works[1].work.Resume)
 	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
 }

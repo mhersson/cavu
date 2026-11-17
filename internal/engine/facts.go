@@ -16,13 +16,18 @@ type Facts struct {
 	Ecosystems                 []string // of the open run's prepare, which Work, Verify and Export run with
 	PrepareFailure             *PrepareFailure
 	SessionID                  string       // of the open run, "" before the first session
-	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action other than a sandbox retry came after it, or while a newer session is pending
+	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action other than a retry that is no resume came after it, or while a newer session is pending
 	Verify                     string       // result for the newest ended session; "" while a session or a verify is pending
 	Exported                   bool
-	Resumed                    *Resume // a human retry or answer after a stop, other than a sandbox retry, not yet followed by a finished session or prepare, or by a new run when it came from environment
+	Resumed                    *Resume // a human retry or answer after a stop, other than a retry that is no resume, not yet followed by a finished session or prepare, or by a new run when it came from environment
 	LastVerifyOutput           string  // of the newest verify_ended, for the next fix prompt
 	Continuations, VerifyFixes int     // session starts marked automatic, per mode, since the last human action
+	ReviewFixes                int     // automatic fix_review session starts since the last human action
 	Faults                     int     // sandbox stops since the last human action
+	Review                     ReviewFact
+	Role                       string   // of the run's session, strong after a fresh fix session; "" means work
+	Answers                    []string // every answer a person gave on the task
+	Assumptions                []string // of the open run's sessions
 }
 
 // StopFact is the open stop.
@@ -44,6 +49,7 @@ type SessionFact struct {
 	Title, Summary, Detail string
 	HeadCommit             string // the commit the session froze, which an export takes
 	Questions              []string
+	SuggestedAnswers       []string // one per question, the answer the agent would assume
 	ResetsAt               time.Time
 }
 
@@ -75,6 +81,8 @@ func TurnsAndDuration(events []store.Event) (turns int, d time.Duration) {
 			started = e.At
 		case SessionEnded:
 			turns += decode[SessionEndedPayload](e.Payload).Turns
+		case ReviewEnded:
+			turns += decode[ReviewEndedPayload](e.Payload).Turns
 		}
 	}
 
@@ -93,12 +101,15 @@ func (f *Facts) apply(e store.Event) {
 		f.Started = true
 		f.humanAction()
 	case HumanAnswered:
-		f.resume(decode[HumanAnsweredPayload](e.Payload).Text)
+		text := decode[HumanAnsweredPayload](e.Payload).Text
+		f.resume(text)
 		f.humanAction()
+		f.Answers = append(f.Answers, text)
 	case HumanRetried:
-		// A sandbox stop is a fault that cut an action short, not a session's
-		// result: its retry is no resume and keeps the session, so Decide redoes that action.
-		if f.stoppedFor(StopSandbox) {
+		// A sandbox stop is a fault that cut an action short, and a review's halt
+		// cut a review: neither is the work session's result, so the retry is no
+		// resume and keeps the session, and Decide redoes the cut action.
+		if f.stoppedFor(StopSandbox) || f.Review.Halt != nil {
 			f.clearStop()
 		} else {
 			f.resume("")
@@ -114,12 +125,13 @@ func (f *Facts) apply(e store.Event) {
 		}
 
 		f.resetRun()
-		f.RunOpen = true
+		f.RunOpen, f.Review = true, ReviewFact{}
 	case RunEnded:
 		f.resetRun()
 		f.RunOpen = false
 	case PrepareStarted:
-		f.OpenStop = nil
+		f.claimed()
+
 		if f.RunOpen {
 			f.Prepared, f.PrepareFailure, f.Ecosystems = false, nil, nil
 		}
@@ -143,12 +155,14 @@ func (f *Facts) apply(e store.Event) {
 			p := decode[SessionEndedPayload](e.Payload)
 			f.Verify = ""
 			f.Session = &SessionFact{
-				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary,
-				Detail: p.Detail, HeadCommit: p.HeadCommit, Questions: p.Questions, ResetsAt: p.ResetsAt,
+				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary, Detail: p.Detail,
+				HeadCommit: p.HeadCommit, Questions: p.Questions, SuggestedAnswers: p.SuggestedAnswers, ResetsAt: p.ResetsAt,
 			}
+			f.Assumptions = append(f.Assumptions, p.Assumptions...)
 		}
 	case VerifyStarted:
-		f.OpenStop = nil
+		f.claimed()
+
 		if f.RunOpen {
 			f.Verify = ""
 		}
@@ -157,8 +171,14 @@ func (f *Facts) apply(e store.Event) {
 			p := decode[VerifyEndedPayload](e.Payload)
 			f.Verify, f.LastVerifyOutput = p.Result, p.Output
 		}
+	case ReviewStarted:
+		f.claimed()
+	case ReviewEnded:
+		if f.RunOpen {
+			f.reviewEnded(decode[ReviewEndedPayload](e.Payload))
+		}
 	case ExportStarted:
-		f.OpenStop = nil
+		f.claimed()
 	case Exported:
 		f.Exported = true
 	case Merged:
@@ -180,11 +200,17 @@ func (f *Facts) humanAction() {
 	f.Session = nil
 }
 
-// clearStop closes the open stop and restarts the caps' count, which runs from
-// the last human action.
+// clearStop closes the open stop and the review's halt, and restarts the caps'
+// count, which runs from the last human action.
 func (f *Facts) clearStop() {
-	f.OpenStop = nil
-	f.Continuations, f.VerifyFixes, f.Faults = 0, 0, 0
+	f.OpenStop, f.Review.Halt = nil, nil
+	f.Continuations, f.VerifyFixes, f.ReviewFixes, f.Faults = 0, 0, 0, 0
+}
+
+// claimed closes what an action's claim closes: the open stop, and the
+// review's halt, which is no longer the newest thing that happened.
+func (f *Facts) claimed() {
+	f.OpenStop, f.Review.Halt = nil, nil
 }
 
 // resume records a retry or answer that clears an open stop; it must run
@@ -196,7 +222,7 @@ func (f *Facts) resume(answer string) {
 }
 
 func (f *Facts) sessionStarted(p SessionStartedPayload) {
-	f.OpenStop = nil
+	f.claimed()
 
 	if p.Automatic {
 		switch p.Mode {
@@ -204,20 +230,29 @@ func (f *Facts) sessionStarted(p SessionStartedPayload) {
 			f.Continuations++
 		case ModeFixVerify:
 			f.VerifyFixes++
+		case ModeFixReview:
+			f.ReviewFixes++
 		}
 	}
 
 	if f.RunOpen {
-		f.Session, f.Verify = nil, ""
+		f.Session, f.Verify, f.Role = nil, "", p.Role
 		if p.SessionID != "" {
 			f.SessionID = p.SessionID
+		}
+
+		if p.Mode == ModeFixReview {
+			f.Review.FixRan = true
 		}
 	}
 }
 
+// resetRun forgets the run; the review is kept past the run's end, for the
+// export that ends it, and forgotten when a new run starts.
 func (f *Facts) resetRun() {
 	f.Prepared, f.PrepareFailure, f.Ecosystems = false, nil, nil
 	f.SessionID, f.Session, f.Verify, f.LastVerifyOutput = "", nil, "", ""
+	f.Role, f.Assumptions = "", nil
 }
 
 // decode reads a payload. One that does not decode reads as empty, so the event

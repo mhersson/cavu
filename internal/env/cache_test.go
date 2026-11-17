@@ -185,7 +185,7 @@ func TestMiseInstallsNothingInTheAgentPhase(t *testing.T) {
 	}
 }
 
-// A Python project has uv's variables in both phases; any other project has none.
+// A Python project has uv's variables in every phase; any other project has none.
 func TestUvEnvironment(t *testing.T) {
 	t.Parallel()
 

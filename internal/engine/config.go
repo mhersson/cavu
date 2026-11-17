@@ -30,6 +30,11 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 		return RunConfig{}, fmt.Errorf("project %d: %w", t.ProjectID, err)
 	}
 
+	return l.runConfig(ctx, p, t, r, overrides)
+}
+
+// runConfig builds BuildRunConfig's config from a project already read.
+func (l *Loop) runConfig(ctx context.Context, p store.Project, t store.Task, r store.Run, overrides map[string]string) (RunConfig, error) {
 	sw, err := resolveSwitches(p, overrides)
 	if err != nil {
 		return RunConfig{}, err
@@ -73,21 +78,34 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 	return c, nil
 }
 
+// The names under which the engine reads the vault's global secrets.
+const (
+	// SecretForgeToken is the forge token.
+	SecretForgeToken = "forge_token"
+	// SecretEndpointCredential is the endpoint credential.
+	SecretEndpointCredential = "endpoint_credential" //nolint:gosec // a name, not a credential
+)
+
+// ProjectSecretName is the vault name of the project's secret variable.
+func ProjectSecretName(project, variable string) string {
+	return "project." + project + "." + variable
+}
+
 func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) error {
 	var err error
 
-	if c.Repo.Token, _, err = l.Vault.Get(ctx, "forge_token"); err != nil {
+	if c.Repo.Token, _, err = l.Vault.Get(ctx, SecretForgeToken); err != nil {
 		return err
 	}
 
-	if c.Endpoint.Credential, _, err = l.Vault.Get(ctx, "endpoint_credential"); err != nil {
+	if c.Endpoint.Credential, _, err = l.Vault.Get(ctx, SecretEndpointCredential); err != nil {
 		return err
 	}
 
 	c.Setup.Secrets = make(map[string]string, len(p.SecretVars))
 
 	for _, v := range p.SecretVars {
-		name := "project." + p.Name + "." + v
+		name := ProjectSecretName(p.Name, v)
 
 		val, ok, err := l.Vault.Get(ctx, name)
 		if err != nil {
@@ -133,7 +151,8 @@ func ReadSettings(values map[string]string) (RunConfig, error) {
 // another value would orphan the instance's volumes.
 var settableKeys = []string{
 	"runtime", "ca_bundle_path", "endpoint_mode", "endpoint_url", "endpoint_auth_header",
-	keyModelWork, keyEffortWork, "work_timeout_minutes", "work_max_turns", "verify_timeout_minutes",
+	keyModelWork, keyEffortWork, "model_review", "effort_review", "model_strong", "effort_strong",
+	"work_timeout_minutes", "work_max_turns", "verify_timeout_minutes",
 	"commit_name", "commit_email", "concurrency", "listen_address",
 }
 
@@ -177,7 +196,10 @@ func ListenAddress(values map[string]string) (string, error) {
 
 // switchFields maps each switch's name to its field in sw.
 func switchFields(sw *Switches) map[string]*bool {
-	return map[string]*bool{"continuations": &sw.Continuations, "verify_fix": &sw.VerifyFix, "web_tools": &sw.WebTools}
+	return map[string]*bool{
+		"continuations": &sw.Continuations, "verify_fix": &sw.VerifyFix, "web_tools": &sw.WebTools, "readiness": &sw.Readiness,
+		"review": &sw.Review,
+	}
 }
 
 // ProjectSwitches returns the state of each switch of a project, over the defaults.
@@ -195,7 +217,7 @@ func ProjectSwitches(p store.Project) map[string]bool {
 // resolveSwitches applies a project's switches over the defaults, then a task's
 // overrides. The snapshot and the run config both resolve through it.
 func resolveSwitches(p store.Project, overrides map[string]string) (Switches, error) {
-	sw := Switches{Continuations: true, VerifyFix: true}
+	sw := Switches{Continuations: true, VerifyFix: true, Readiness: true, Review: true}
 	fields := switchFields(&sw)
 
 	for k, on := range p.Switches {
@@ -241,6 +263,8 @@ func (s *settingsReader) read() RunConfig {
 	c.Endpoint.URL = s.values["endpoint_url"]
 	c.Endpoint.AuthHeader = s.oneOf("endpoint_auth_header", "bearer", "x-api-key")
 	c.Agent.Model, c.Agent.Effort = s.values[keyModelWork], s.values[keyEffortWork]
+	c.Agent.Review.Model, c.Agent.Review.Effort = cmp.Or(s.values["model_review"], c.Agent.Model), cmp.Or(s.values["effort_review"], c.Agent.Effort)
+	c.Agent.Strong.Model, c.Agent.Strong.Effort = cmp.Or(s.values["model_strong"], c.Agent.Model), cmp.Or(s.values["effort_strong"], c.Agent.Effort)
 	c.Agent.MaxTurns = s.positiveInt("work_max_turns", 200)
 	c.Agent.Timeout = time.Duration(s.positiveInt("work_timeout_minutes", 60)) * time.Minute
 	c.Verify.Timeout = s.minutes("verify_timeout_minutes", 10, 0.5, 120)

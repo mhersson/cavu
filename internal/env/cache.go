@@ -16,7 +16,7 @@ const (
 
 const defaultPath = cacheDir + "/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-// common is set in both phases. Trust variables make tools that ignore the
+// common is set in every phase. Trust variables make tools that ignore the
 // system store still trust the instance's CA. Pointing mise at an ignored
 // /workspace keeps a repository's own mise file from ever being executed.
 // mise tells its versions host, which the setup phase reaches for version

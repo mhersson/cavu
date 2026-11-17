@@ -27,7 +27,7 @@ type ReplayItem struct {
 	ReplayID, SourceTaskID, TaskID int64
 	Verify                         string // passed, failed, timeout, waived, or "" when the run did not reach verify
 	Stop                           string // stop reason, "" if none
-	Asked                          bool   // the session came back blocked with a question
+	Asked                          int    // the questions the shadow's sessions asked
 	Turns                          int
 	Tokens                         int64
 	CostEstimateUSD                float64

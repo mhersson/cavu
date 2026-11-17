@@ -89,7 +89,7 @@ type fakeRunner struct {
 	suggestion string
 	checkErr   error
 
-	actions    []engine.ActionKind // prepare, work, verify and export, in the order asked
+	actions    []engine.ActionKind // prepare, work, verify, review and export, in the order asked
 	work       engine.WorkResult
 	duringWork func(ctx context.Context) // runs inside Work with its context, as a person might act while a session runs
 	releases   []release
@@ -134,6 +134,12 @@ func (r *fakeRunner) Verify(context.Context, engine.RunConfig) (engine.VerifyRes
 	r.actions = append(r.actions, engine.KindVerify)
 
 	return engine.VerifyResult{Result: engine.ResultPassed, Command: "make test"}, nil
+}
+
+func (r *fakeRunner) Review(context.Context, engine.RunConfig, engine.ReviewRequest, func(engine.Progress)) (engine.ReviewResult, error) {
+	r.actions = append(r.actions, engine.KindReview)
+
+	return engine.ReviewResult{Outcome: engine.ReviewReviewed, Asked: engine.Verdict{Pass: true}, Built: engine.Verdict{Pass: true}}, nil
 }
 
 func (r *fakeRunner) Export(_ context.Context, _ engine.RunConfig, commit string) (engine.ExportResult, error) {

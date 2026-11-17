@@ -7,6 +7,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/doctor"
 	"github.com/mhersson/cavu/internal/driver/claudecode"
+	"github.com/mhersson/cavu/internal/engine"
 )
 
 func init() {
@@ -75,11 +76,11 @@ func (a *app) doctorDeps(ctx context.Context) (doctor.Deps, error) {
 		Driver:       claudecode.New(),
 	}
 
-	if d.Credential, _, err = a.vault.Get(ctx, "endpoint_credential"); err != nil {
+	if d.Credential, _, err = a.vault.Get(ctx, engine.SecretEndpointCredential); err != nil {
 		return doctor.Deps{}, err
 	}
 
-	if d.ForgeToken, _, err = a.vault.Get(ctx, "forge_token"); err != nil {
+	if d.ForgeToken, _, err = a.vault.Get(ctx, engine.SecretForgeToken); err != nil {
 		return doctor.Deps{}, err
 	}
 

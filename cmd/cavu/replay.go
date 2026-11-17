@@ -22,7 +22,7 @@ func init() {
 	}
 }
 
-const replayUsage = "cavu replay --name NAME [--model ID] [--effort LEVEL] [--no-continuations] [--no-verify-fix] [--web-tools] [--image TAG] [--data-dir DIR]"
+const replayUsage = "cavu replay --name NAME [--model ID] [--effort LEVEL] [--no-continuations] [--no-verify-fix] [--no-readiness] [--no-review] [--web-tools] [--image TAG] [--data-dir DIR]"
 
 func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	f := newVerbFlags(replayUsage, stderr)
@@ -31,6 +31,8 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	effort := f.String("effort", "", "the work effort for the replay")
 	noContinuations := f.Bool("no-continuations", false, "turn the continuations switch off")
 	noVerifyFix := f.Bool("no-verify-fix", false, "turn the verify_fix switch off")
+	noReadiness := f.Bool("no-readiness", false, "turn the readiness switch off")
+	noReview := f.Bool("no-review", false, "turn the review switch off")
 	webTools := f.Bool("web-tools", false, "turn the web_tools switch on")
 	image := f.String("image", "", "the sandbox image to replay on, not checked (default: this binary's image)")
 
@@ -49,6 +51,14 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	if *noVerifyFix {
 		cfg.VerifyFix = new(bool)
+	}
+
+	if *noReadiness {
+		cfg.Readiness = new(bool)
+	}
+
+	if *noReview {
+		cfg.Review = new(bool)
 	}
 
 	if *webTools {
@@ -143,28 +153,29 @@ func printReplay(ctx context.Context, s *store.Store, r store.Replay, w io.Write
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TASK\tTITLE\tVERIFY\tPREV\tTURNS\tPREV\tTOKENS\tPREV\tCOST (ESTIMATE)\tPREV\tDURATION\tPREV\tDIFF")
+	fmt.Fprintln(tw, "TASK\tTITLE\tVERIFY\tPREV\tASKED\tPREV\tTURNS\tPREV\tTOKENS\tPREV\tCOST (ESTIMATE)\tPREV\tDURATION\tPREV\tDIFF")
 
 	for _, row := range replay.Compare(now, before, titles) {
 		n, p := cells(row.Now), cells(row.Before)
 
 		fmt.Fprintf(tw, "%d\t%s", row.SourceTaskID, row.Title)
 
-		for i := range n[:5] {
+		last := len(n) - 1
+		for i := range n[:last] {
 			fmt.Fprintf(tw, "\t%s\t%s", n[i], p[i])
 		}
 
-		fmt.Fprintf(tw, "\t%s\n", n[5])
+		fmt.Fprintf(tw, "\t%s\n", n[last])
 	}
 
 	return tw.Flush()
 }
 
-// cells are an item's verify (else its stop), turns, tokens, cost, duration and
-// diff path; all empty when the replay has no item for the task.
-func cells(i *store.ReplayItem) [6]string {
+// cells are an item's verify (else its stop), questions asked, turns, tokens,
+// cost, duration and diff path; all empty when the replay has no item for the task.
+func cells(i *store.ReplayItem) [7]string {
 	if i == nil {
-		return [6]string{}
+		return [7]string{}
 	}
 
 	verify := i.Verify
@@ -172,8 +183,8 @@ func cells(i *store.ReplayItem) [6]string {
 		verify = i.Stop
 	}
 
-	return [6]string{
-		verify, fmt.Sprint(i.Turns), fmt.Sprint(i.Tokens), fmt.Sprintf("$%.4f", i.CostEstimateUSD),
+	return [7]string{
+		verify, fmt.Sprint(i.Asked), fmt.Sprint(i.Turns), fmt.Sprint(i.Tokens), fmt.Sprintf("$%.4f", i.CostEstimateUSD),
 		i.Duration.Round(time.Second).String(), i.DiffPath,
 	}
 }

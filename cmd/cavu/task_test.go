@@ -353,6 +353,66 @@ func labelled(out, label string) []string {
 	return vs
 }
 
+func TestTaskShowPrintsSuggestedAnswers(t *testing.T) {
+	dir := webData(t)
+	id := addTask(t, dir, "Fix")
+
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}),
+		event(engine.SessionEnded, "runner", engine.SessionEndedPayload{
+			Outcome: engine.OutcomeBlocked, Questions: []string{"Which port?", "Is IPv6 needed?"}, SuggestedAnswers: []string{"8080", ""},
+		}),
+		question())
+
+	var lines []string
+
+	for line := range strings.Lines(cavuIn(t, dir, "task", "show", id)) {
+		if strings.HasPrefix(line, "asked:") || strings.HasPrefix(line, "suggest:") {
+			lines = append(lines, strings.Join(strings.Fields(line), " "))
+		}
+	}
+
+	assert.Equal(t, []string{"asked: Which port?", "suggest: 8080", "asked: Is IPv6 needed?"}, lines,
+		"each suggested answer under its question, and none for a question without one")
+}
+
+func TestTaskShowPrintsTheReview(t *testing.T) {
+	trimmed := engine.Finding{Severity: engine.SeverityCritical, Where: "login.go:12", What: "The password is trimmed.", Why: "Valid passwords fail."}
+	typo := engine.Finding{Severity: engine.SeverityMinor, Where: "README.md", What: "A typo.", Why: "It reads badly."}
+
+	dir := webData(t)
+	id := addTask(t, dir, "Fix")
+
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}),
+		event(engine.ReviewEnded, "runner", engine.ReviewEndedPayload{
+			Outcome: engine.ReviewReviewed, Head: "head1", Built: engine.Verdict{Pass: true}, Findings: []engine.Finding{trimmed, typo},
+		}))
+
+	out := cavuIn(t, dir, "task", "show", id)
+
+	for label, f := range map[string]engine.Finding{"open:": trimmed, "minor:": typo} {
+		lines := labelled(out, label)
+		require.Len(t, lines, 1, out)
+
+		for _, v := range []string{f.Severity, f.Where, f.What, f.Why} {
+			assert.Contains(t, lines[0], v)
+		}
+	}
+
+	assert.Empty(t, labelled(out, "review:"), "the review gave a verdict")
+
+	seedEvents(t, dir, id, nil, event(engine.ReviewEnded, "runner", engine.ReviewEndedPayload{
+		Outcome: engine.ReviewFailed, Head: "head2", Detail: "The session crashed: exit 1.",
+	}))
+
+	out = cavuIn(t, dir, "task", "show", id)
+	lines := labelled(out, "review:")
+	require.Len(t, lines, 1, out)
+	assert.Contains(t, lines[0], "The session crashed: exit 1.")
+	assert.Len(t, labelled(out, "open:"), 1, "what the last verdict left open stays open")
+}
+
 func TestTaskShowPrintsTheNewestExport(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix")
@@ -487,6 +547,8 @@ func runSetup(t *testing.T) (dir, id string, fake *fakeRuntime) {
 
 	dir, fake = checkSetup(t, "--verify", "make test")
 	storeBaseline(t, dir, "web")
+	// The fake answers every session alike, so the readiness turn is off: no test here is about it.
+	cavuIn(t, dir, "project", "set", "web", "--switch", "readiness=off")
 
 	fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456", Title: "Fix the login"}
 
@@ -534,7 +596,7 @@ func TestTaskRunDrivesWhenTheLockIsFree(t *testing.T) {
 	code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
 
 	require.Equal(t, 0, code, stderr)
-	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork, engine.KindVerify, engine.KindExport}, fake.runner.actions)
+	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork, engine.KindVerify, engine.KindReview, engine.KindExport}, fake.runner.actions)
 	require.Len(t, fake.runner.releases, 1)
 	assert.True(t, fake.runner.releases[0].removeVolumes, "the exported run ends")
 
@@ -1104,6 +1166,15 @@ func TestEventLine(t *testing.T) {
 		{engine.PrepareFailed, engine.PrepareFailedPayload{Step: "setup", Output: "npm ERR!"}, []string{"setup"}},
 		{engine.Stopped, engine.StoppedPayload{Reason: engine.StopQuestion, Explanation: "Which API version?"}, []string{engine.StopQuestion, "Which API version?"}},
 		{engine.Prepared, engine.PreparedPayload{BaseCommit: "base123"}, []string{"base123"}},
+		{engine.ReviewStarted, engine.ReviewStartedPayload{SessionID: "r1", Scoped: true, Head: "fed789", Why: "A fix changed the code."}, nil},
+		{
+			engine.ReviewEnded,
+			engine.ReviewEndedPayload{
+				Outcome: engine.ReviewReviewed, Scoped: true, Turns: 17, Findings: slices.Repeat([]engine.Finding{{Severity: engine.SeverityImportant}}, 4),
+				Addressed: []bool{true, false, true, false, false, false},
+			},
+			[]string{engine.ReviewReviewed, "17", "4", "2", "6"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -1123,6 +1194,19 @@ func TestEventLine(t *testing.T) {
 			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
 		})
 	}
+
+	t.Run("a review's start tells its scope", func(t *testing.T) {
+		line := func(p engine.ReviewStartedPayload) string {
+			raw, err := json.Marshal(p)
+			require.NoError(t, err)
+
+			return eventLine(store.Event{At: at, Type: engine.ReviewStarted, Payload: raw})
+		}
+
+		full := line(engine.ReviewStartedPayload{SessionID: "r1", Head: "def456", Why: "Not reviewed yet."})
+		assert.Equal(t, full, line(engine.ReviewStartedPayload{SessionID: "r2", Head: "fed789", Why: "Another reason."}), "the scope alone sets the line")
+		assert.NotEqual(t, full, line(engine.ReviewStartedPayload{SessionID: "r1", Scoped: true, Head: "def456", Why: "Not reviewed yet."}))
+	})
 
 	t.Run("control characters", func(t *testing.T) {
 		raw, err := json.Marshal(engine.AgentToolPayload{Name: "Bash", Summary: "printf '\x1b[2J\x1b[31mred\x1b[0m\x07\u009b'"})

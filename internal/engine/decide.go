@@ -9,10 +9,10 @@ import (
 )
 
 // Switches turn a project's removable steps on or off.
-type Switches struct{ Continuations, VerifyFix, WebTools bool }
+type Switches struct{ Continuations, VerifyFix, WebTools, Readiness, Review bool }
 
 // Caps bound the automatic rounds counted in Facts.
-type Caps struct{ Continuations, VerifyFixes, FaultRetries int }
+type Caps struct{ Continuations, VerifyFixes, ReviewFixes, FaultRetries int }
 
 // Pause is what other tasks' open stops mean for a task that wants a session.
 type Pause struct {
@@ -48,6 +48,7 @@ const (
 	KindPrepare ActionKind = "prepare"
 	KindWork    ActionKind = "work"
 	KindVerify  ActionKind = "verify"
+	KindReview  ActionKind = "review"
 	KindExport  ActionKind = "export"
 	KindFinish  ActionKind = "finish"
 	KindWait    ActionKind = "wait"
@@ -94,6 +95,8 @@ type Action struct {
 	Why       string    // one line, recorded with the claim
 	WorkMode  string    // work: a Mode value
 	Automatic bool      // work: an automatic round, recorded on session_started and counted toward its cap
+	Fresh     bool      // work fix_review: a new session in role strong
+	Scoped    bool      // review: a re-review of the open findings and of what the fix broke
 	Detail    string    // work: the answer text, or empty
 	NewRun    bool      // prepare: open a new run first
 	Until     time.Time // wait
@@ -108,7 +111,7 @@ type Action struct {
 // snapshot always gives the same action.
 func Decide(s Snapshot) Action {
 	a := decide(s)
-	if a.Kind != KindPrepare && a.Kind != KindWork {
+	if a.Kind != KindPrepare && a.Kind != KindWork && a.Kind != KindReview {
 		return a
 	}
 
@@ -145,7 +148,13 @@ func decide(s Snapshot) Action {
 	}
 
 	if f.stoppedFor(StopUsageLimit) {
-		return work(ModeContinue, "The usage limit has reset.")
+		if h := f.Review.Halt; h == nil || h.Outcome != OutcomeUsageLimit {
+			return work(ModeContinue, "The usage limit has reset.")
+		}
+
+		// The limit ended a review. The claim decided below closes the stop; the
+		// halt goes with it here, or it would give the same stop again.
+		f.OpenStop, f.Review.Halt = nil, nil
 	}
 
 	if f.stoppedFor(StopSandbox) && f.Faults <= s.Caps.FaultRetries {
@@ -217,6 +226,10 @@ func decide(s Snapshot) Action {
 		return work(ModeContinue, "A person asked the agent to carry on.")
 	}
 
+	if f.Session == nil && f.SessionID == "" && s.Switches.Readiness {
+		return work(ModeReadiness, "The agent has not yet checked the task for missing facts.")
+	}
+
 	if f.Session == nil {
 		mode := ModeStart
 		if f.SessionID != "" {
@@ -229,31 +242,10 @@ func decide(s Snapshot) Action {
 	sess := f.Session
 	cut := sess.Outcome == OutcomeUnfinished || sess.Outcome == OutcomeCrashed
 	failed := f.Verify == ResultFailed || f.Verify == ResultTimeout
+	passed := f.Verify == ResultPassed || f.Verify == ResultWaived
 
-	if sess.Outcome == OutcomeUsageLimit {
-		resets := sess.ResetsAt
-		if !resets.After(s.Now) {
-			resets = s.Now.Add(UsageLimitFallback)
-		}
-
-		a := halt(StopUsageLimit, ClearNone, "The session hit a usage limit.",
-			withDetail("The model's usage limit was reached; work resumes at "+resets.UTC().Format(time.RFC3339), sess.Detail))
-		a.ResetsAt = resets
-
+	if a, ok := sessionStop(sess, s.Now); ok {
 		return a
-	}
-
-	if sess.Outcome == OutcomeEndpoint {
-		return halt(StopEndpoint, ClearRetry, "The session could not use the model endpoint.",
-			withDetail("The model endpoint failed or refused the agent's requests", sess.Detail))
-	}
-
-	if sess.Outcome == OutcomeTimeout {
-		return halt(StopTimeout, ClearRetry, "The session timed out.", "The agent session ran past its time limit.")
-	}
-
-	if sess.Outcome == OutcomeMaxTurns {
-		return halt(StopBudget, ClearRetry, "The session used all its turns.", "The agent session used all of its turns.")
 	}
 
 	if sess.Outcome == OutcomeBlocked {
@@ -264,6 +256,10 @@ func decide(s Snapshot) Action {
 	if sess.Outcome == OutcomeFailed {
 		return halt(StopAgentError, ClearRetry, "The agent reported a failure.",
 			lineOr(sess.Summary, "The agent reported that it could not do the task."))
+	}
+
+	if sess.Outcome == OutcomeReady {
+		return work(ModeStart, "The agent found nothing missing in the task.")
 	}
 
 	if cut && s.Switches.Continuations && f.Continuations < s.Caps.Continuations {
@@ -297,12 +293,43 @@ func decide(s Snapshot) Action {
 		return halt(StopVerifyFailed, ClearRetry, "Verify failed.", "The change did not pass the verify command.")
 	}
 
-	if f.Verify == ResultPassed || f.Verify == ResultWaived {
+	if passed && s.Switches.Review {
+		return reviewLoop(s, f)
+	}
+
+	if passed {
 		return Action{Kind: KindExport, Why: "The change passed verify, or verify is waived."}
 	}
 
 	return halt(StopAgentError, ClearRetry, "No rule matches the task's facts.",
 		"The task reached a state CAVU has no rule for.")
+}
+
+// sessionStop is the stop a session that ended as sess calls for, when its
+// outcome is one that stops the task; a review's halt is decided by it too.
+func sessionStop(sess *SessionFact, now time.Time) (Action, bool) {
+	switch sess.Outcome {
+	case OutcomeUsageLimit:
+		resets := sess.ResetsAt
+		if !resets.After(now) {
+			resets = now.Add(UsageLimitFallback)
+		}
+
+		a := halt(StopUsageLimit, ClearNone, "The session hit a usage limit.",
+			withDetail("The model's usage limit was reached; work resumes at "+resets.UTC().Format(time.RFC3339), sess.Detail))
+		a.ResetsAt = resets
+
+		return a, true
+	case OutcomeEndpoint:
+		return halt(StopEndpoint, ClearRetry, "The session could not use the model endpoint.",
+			withDetail("The model endpoint failed or refused the agent's requests", sess.Detail)), true
+	case OutcomeTimeout:
+		return halt(StopTimeout, ClearRetry, "The session timed out.", "The agent session ran past its time limit."), true
+	case OutcomeMaxTurns:
+		return halt(StopBudget, ClearRetry, "The session used all its turns.", "The agent session used all of its turns."), true
+	}
+
+	return Action{}, false
 }
 
 func (f Facts) stoppedFor(reason string) bool {

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -66,7 +67,7 @@ const (
 )
 
 // defaultCaps bounds the automatic continuations, fix rounds and fault retries Decide allows.
-var defaultCaps = Caps{Continuations: 2, VerifyFixes: 2, FaultRetries: 2}
+var defaultCaps = Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2}
 
 var (
 	// ErrActionCap is returned when RunTask decides maxActions times and the task has neither rested nor waited.
@@ -392,6 +393,8 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		return p.work(ctx, v, a, o)
 	case KindVerify:
 		return p.verify(ctx, v, a, o)
+	case KindReview:
+		return p.review(ctx, v, a, o)
 	case KindExport:
 		return p.export(ctx, v, a, o)
 	}
@@ -523,8 +526,18 @@ func (p *pass) setBaseCommit(ctx context.Context, commit string) error {
 	return nil
 }
 
+// work starts or resumes the task's session, which every later work action
+// resumes in its role; a fresh action starts a new one in role strong instead.
 func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
-	w := WorkRequest{Mode: a.WorkMode, SessionID: v.Facts.SessionID, Resume: v.Facts.SessionID != ""}
+	w := WorkRequest{
+		Mode: a.WorkMode, SessionID: v.Facts.SessionID, Resume: v.Facts.SessionID != "" && !a.Fresh,
+		Role: cmp.Or(v.Facts.Role, RoleWork),
+	}
+
+	if a.Fresh {
+		w.Role = RoleStrong
+	}
+
 	if !w.Resume {
 		w.SessionID = NewSessionID()
 	}
@@ -534,10 +547,12 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 		w.Detail = v.Facts.LastVerifyOutput
 	case ModeAnswer:
 		w.Detail = a.Detail
+	case ModeFixReview:
+		w.Findings = v.Facts.Review.Open
 	}
 
 	if err := p.claim(ctx, v, o, draft{SessionStarted, actorEngine, SessionStartedPayload{
-		Mode: w.Mode, SessionID: w.SessionID, Resume: w.Resume, Automatic: a.Automatic, Why: a.Why,
+		Mode: w.Mode, SessionID: w.SessionID, Resume: w.Resume, Automatic: a.Automatic, Role: w.Role, Why: a.Why,
 	}}); err != nil {
 		return err
 	}
@@ -557,21 +572,22 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 		return p.fault(ctx, o, err)
 	}
 
-	usage := make([]store.Usage, len(res.Usage))
-	for i, u := range res.Usage {
-		u.RunID = o.row.ID
-		usage[i] = u
-	}
-
-	if err := p.result(ctx, o, usage, draft{SessionEnded, actorRunner, SessionEndedPayload{
+	return p.result(ctx, o, runUsage(o.row.ID, res.Usage), draft{SessionEnded, actorRunner, SessionEndedPayload{
 		Outcome: res.Outcome, Title: res.Title, Summary: res.Summary, Assumptions: res.Assumptions,
-		Questions: res.Questions, Changed: res.Changed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD,
-		ResetsAt: res.ResetsAt, Detail: res.Detail, HeadCommit: res.HeadCommit,
-	}}); err != nil {
-		return err
+		Questions: res.Questions, SuggestedAnswers: res.SuggestedAnswers, Changed: res.Changed, Turns: res.Turns,
+		CostEstimateUSD: res.CostEstimateUSD, ResetsAt: res.ResetsAt, Detail: res.Detail, HeadCommit: res.HeadCommit,
+	}})
+}
+
+// runUsage is a session's usage rows, each carrying the run's id.
+func runUsage(runID int64, usage []store.Usage) []store.Usage {
+	out := make([]store.Usage, len(usage))
+	for i, u := range usage {
+		u.RunID = runID
+		out[i] = u
 	}
 
-	return nil
+	return out
 }
 
 // progress returns the callback a session reports through, which may be called

@@ -45,13 +45,22 @@ const (
 )
 
 // change and done are one session's model calls: a commit that adds a line to
-// notes.txt, then the structured result of finished work.
+// notes.txt, then the structured result of finished work. ready is a
+// readiness turn's one model call, which finds nothing missing. readDiff and
+// passed are a review's: it reads the diff CAVU wrote for it, then passes the
+// change.
 var (
 	change = mockapi.Step{Tool: "Bash", Input: map[string]any{
 		"command": "echo " + marker + " >> notes.txt && git commit -qam 'docs(notes): add a line'",
 	}}
 	done = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
 		"status": "done", "title": title, "summary": "Added a line to notes.txt.",
+	}}
+	ready    = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{"status": "ready"}}
+	readDiff = mockapi.Step{Tool: "Bash", Input: map[string]any{"command": "cat /run/cavu/review.patch"}}
+	passed   = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
+		"asked": map[string]any{"pass": true, "reason": "It adds the line."}, "built": map[string]any{"pass": true, "reason": "One line."},
+		"findings": []any{},
 	}}
 )
 
@@ -293,11 +302,20 @@ func setup(t *testing.T, endpoint string) *instance {
 	return in
 }
 
-// project adds a project on the fixture repository and checks it.
-func (in *instance) project(name string) {
+// project adds a project on the fixture repository and checks it. The
+// readiness turn and the review are off, since no test but the pipeline's is
+// about them, unless switches, each NAME=on or NAME=off, turn them on.
+func (in *instance) project(name string, switches ...string) {
 	in.t.Helper()
 
 	in.ok("project", "add", name, "--repo", in.repo, "--verify", verify)
+
+	set := []string{"project", "set", name, "--switch", "readiness=off", "--switch", "review=off"}
+	for _, s := range switches {
+		set = append(set, "--switch", s)
+	}
+
+	in.ok(set...)
 	in.ok("project", "check", name)
 }
 
@@ -308,12 +326,12 @@ func (in *instance) task(project string) string {
 	return strings.TrimSpace(in.ok("task", "add", project, "--title", title))
 }
 
-// pipeline adds and checks a project, then adds and runs a task on it. It
-// returns the task's id and the run's result.
-func (in *instance) pipeline(project string) (string, result) {
+// pipeline adds and checks a project with switches, then adds and runs a task
+// on it. It returns the task's id and the run's result.
+func (in *instance) pipeline(project string, switches ...string) (string, result) {
 	in.t.Helper()
 
-	in.project(project)
+	in.project(project, switches...)
 	id := in.task(project)
 
 	return id, in.cavu("", "task", "run", id)
@@ -428,35 +446,61 @@ type sessionStart struct {
 	Resume bool
 }
 
-// sessionStarts returns every session_started event in out, the output of
-// task show --events, where an event line is its id, time, type, actor and
-// payload.
-func sessionStarts(t *testing.T, out string) []sessionStart {
+// eventPayloads decodes into T the payload of every event of kind in out, the
+// output of task show --events, where an event line is its id, time, type,
+// actor and payload.
+func eventPayloads[T any](t *testing.T, out, kind string) []T {
 	t.Helper()
 
-	var ss []sessionStart
+	var ps []T
 
 	for line := range strings.Lines(out) {
-		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == "session_started" {
-			var s sessionStart
-			require.NoError(t, json.Unmarshal([]byte(e[4]), &s))
-			ss = append(ss, s)
+		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == kind {
+			var p T
+			require.NoError(t, json.Unmarshal([]byte(e[4]), &p))
+			ps = append(ps, p)
 		}
 	}
 
-	return ss
+	return ps
+}
+
+// sessionStarts returns every session_started event in out.
+func sessionStarts(t *testing.T, out string) []sessionStart {
+	t.Helper()
+
+	return eventPayloads[sessionStart](t, out, "session_started")
 }
 
 func TestPipelineEndToEnd(t *testing.T) {
-	mock := mockapi.Start(t, []mockapi.Step{change, done})
+	// The readiness turn, then the work that resumes its session, then a review.
+	mock := mockapi.Start(t, []mockapi.Step{ready, change, done, readDiff, passed})
 	in := setup(t, mock.HostURL())
 
-	id, run := in.pipeline("notes")
+	id, run := in.pipeline("notes", "readiness=on", "review=on")
 	require.Zero(t, run.code, run)
 
-	show := in.ok("task", "show", id)
+	show := in.ok("task", "show", id, "--events")
 	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
+	assert.Equal(t, []sessionStart{{Mode: "readiness"}, {Mode: "start", Resume: true}}, sessionStarts(t, show))
 	assert.Contains(t, strings.Split(in.ok("task", "diff", id), "\n"), "+"+marker)
+
+	var reviews []string
+
+	for _, r := range eventPayloads[struct{ Outcome string }](t, show, "review_ended") {
+		reviews = append(reviews, r.Outcome)
+	}
+
+	assert.Equal(t, []string{"reviewed"}, reviews, show)
+
+	// The review's second model call carries what its shell read, so the diff
+	// was written in its read-only container; the added line is in no earlier call.
+	calls := slices.DeleteFunc(mock.Requests(), func(r mockapi.Request) bool { return !r.ModelCall })
+	require.Len(t, calls, 5)
+
+	for i, r := range calls {
+		assert.Equal(t, i == 4, bytes.Contains(r.Body, []byte("+"+marker)), "model call %d", i+1)
+	}
 
 	changed := values(show, "changed:")
 	require.NotEmpty(t, changed, show)
@@ -525,7 +569,8 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	require.Equal(t, 1, r.code, r)
 	assert.Equal(t, []string{"setup"}, values(r.stdout, "failed step:"))
 
-	in.ok("project", "set", "notes", "--env", "E2E_PLANTED="+planted)
+	// The readiness turn and the review are off: the held call must be the agent phase's.
+	in.ok("project", "set", "notes", "--env", "E2E_PLANTED="+planted, "--switch", "readiness=off", "--switch", "review=off")
 	in.ok("project", "check", "notes")
 
 	// The run's prepare runs the setup command again, so its exit 0 covers that setup container too.

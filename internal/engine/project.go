@@ -91,7 +91,7 @@ func checkProject(p store.Project) error {
 
 	for k := range p.Switches {
 		if known[k] == nil {
-			return refuse("switches %q: want continuations, verify_fix or web_tools", k)
+			return refuse("switches %q: want continuations, verify_fix, web_tools, readiness or review", k)
 		}
 	}
 
@@ -145,18 +145,29 @@ func (l *Loop) RequestCheck(ctx context.Context, projectID int64) error {
 // or the project has no verify command. It also returns the verify command the
 // repository suggests, or "", even with an error.
 func (l *Loop) CheckProject(ctx context.Context, projectID int64) (PrepareResult, string, error) {
-	res, suggestion, err := l.checkEnvironment(ctx, projectID)
+	started, res, suggestion, err := l.checkEnvironment(ctx, projectID)
 
-	return res, suggestion, errors.Join(err, l.storeCheck(ctx, projectID, time.Time{}, res, suggestion, err))
+	return res, suggestion, errors.Join(err, l.storeCheck(ctx, started, time.Time{}, res, suggestion, err))
 }
 
-func (l *Loop) checkEnvironment(ctx context.Context, projectID int64) (PrepareResult, string, error) {
-	c, err := l.BuildRunConfig(ctx, store.Task{ProjectID: projectID}, store.Run{}, nil)
+var errChangedDuringCheck = errors.New("the project changed during the check, run it again")
+
+// checkEnvironment runs the check and returns the project it started on, the
+// one its config was built from, for storeCheck to compare with.
+func (l *Loop) checkEnvironment(ctx context.Context, projectID int64) (store.Project, PrepareResult, string, error) {
+	started, err := l.Store.Project(ctx, projectID)
 	if err != nil {
-		return PrepareResult{}, "", err
+		return started, PrepareResult{}, "", fmt.Errorf("project %d: %w", projectID, err)
 	}
 
-	return l.Runner.CheckEnvironment(ctx, c)
+	c, err := l.runConfig(ctx, started, store.Task{ProjectID: projectID}, store.Run{}, nil)
+	if err != nil {
+		return started, PrepareResult{}, "", err
+	}
+
+	res, suggestion, err := l.Runner.CheckEnvironment(ctx, c)
+
+	return started, res, suggestion, err
 }
 
 // storeCheck stores what a check found, or the error it met. It clears the
@@ -164,8 +175,17 @@ func (l *Loop) checkEnvironment(ctx context.Context, projectID int64) (PrepareRe
 // request replaced it. A zero answers clears none.
 // An error leaves the baseline as it is, and so does a project with no verify
 // command, since nothing was verified.
-func (l *Loop) storeCheck(ctx context.Context, projectID int64, answers time.Time, res PrepareResult, suggestion string, cause error) error {
+// A project that changed under the check, in what a baseline rests on, gets
+// nothing stored and no request cleared: the result is of the old ground, and
+// the request makes the next check run on the new.
+func (l *Loop) storeCheck(ctx context.Context, started store.Project, answers time.Time, res PrepareResult, suggestion string, cause error) error {
+	projectID := started.ID
+
 	p, err := l.Store.Project(ctx, projectID)
+	if err == nil && !sameBaselineGround(started, p) {
+		return fmt.Errorf("project %d: %w", projectID, errChangedDuringCheck)
+	}
+
 	if err == nil {
 		if r := p.CheckRequestedAt; r != nil && r.Equal(answers) {
 			p.CheckRequestedAt = nil

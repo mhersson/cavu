@@ -12,7 +12,7 @@ var toolchainHosts = []string{
 	"sh.rustup.rs", "static.rust-lang.org", "tuf-repo-cdn.sigstore.dev",
 }
 
-// registryHosts are the package registries of each ecosystem; both phases reach them.
+// registryHosts are the package registries of each ecosystem; every phase reaches them.
 var registryHosts = map[string][]string{
 	"go":     {"proxy.golang.org", "sum.golang.org"},
 	"node":   {"registry.npmjs.org"},

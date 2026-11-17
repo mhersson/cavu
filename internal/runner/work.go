@@ -42,28 +42,45 @@ g update-ref "refs/heads/$2" HEAD && g rev-parse HEAD`)
 
 var errSessionTimeout = errors.New("runner: the session ran past its time limit")
 
-// Work runs one session of the agent in the agent phase and, when it ends
-// done, freezes its work into a commit on the task branch.
+// Work runs one session of the agent, a readiness turn in the read-only phase
+// and any other in the agent phase, and, when it ends done, freezes its work
+// into a commit on the task branch.
 func (r *Runner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
-	return act(ctx, r, c, func(ctx context.Context, st *run, mask func(string) string) (engine.WorkResult, error) {
-		s := &session{c: c, st: st, mask: mask, progress: progress, proxied: map[string]store.Usage{}}
+	phase := sandbox.PhaseAgent
+	if w.Mode == engine.ModeReadiness {
+		phase = sandbox.PhaseReadOnly
+	}
 
-		st.watching(s.line)
-		res, totals, err := s.run(ctx, r.driver, w)
+	return act(ctx, r, c, phase, func(ctx context.Context, st *run, mask func(string) string) (engine.WorkResult, error) {
+		res, usage, err := runSession(st, c, mask, progress, func(s *session) (engine.WorkResult, []driver.Usage, error) {
+			return s.run(ctx, r.driver, w)
+		})
+		res.Usage = usage
 
-		st.watching(nil)
-
-		if err != nil {
-			return engine.WorkResult{}, err
-		}
-
-		res.Usage = s.usage(totals)
-
-		return res, nil
+		return res, err
 	})
 }
 
-// session is one Work call, and what the sidecar reported during it.
+// runSession builds a session, runs it with the sidecar's lines watched, and
+// returns its result with the usage it reported. The usage is nil on error.
+func runSession[T any](st *run, c engine.RunConfig, mask func(string) string, progress func(engine.Progress), do func(*session) (T, []driver.Usage, error)) (T, []store.Usage, error) {
+	s := &session{c: c, st: st, mask: mask, progress: progress, proxied: map[string]store.Usage{}}
+
+	st.watching(s.line)
+	res, totals, err := do(s)
+
+	st.watching(nil)
+
+	if err != nil {
+		var zero T
+
+		return zero, nil, err
+	}
+
+	return res, s.usage(totals), nil
+}
+
+// session is one agent session of a Work or Review call, and what the sidecar reported during it.
 type session struct {
 	c        engine.RunConfig
 	st       *run
@@ -74,32 +91,36 @@ type session struct {
 
 // run runs the session under the agent's time limit, maps how it ended and
 // freezes the work of one that ended done. It also returns the agent's usage.
+// A fresh fix of a review's findings first gets the diff the review read.
 func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest) (engine.WorkResult, []driver.Usage, error) {
+	if w.Mode == engine.ModeFixReview && !w.Resume {
+		problem, err := writeDiffs(ctx, s.st, s.c, s.c.Repo.BaseCommit, "refs/heads/"+s.c.Repo.Branch, reviewPatch)
+		if err != nil || problem != "" {
+			problem = s.mask(problem)
+
+			return engine.WorkResult{Outcome: engine.OutcomeFailed, Summary: problem, Detail: problem}, nil, err
+		}
+	}
+
 	spec, err := s.spec(w)
 	if err != nil {
 		return engine.WorkResult{}, nil, err
 	}
 
-	sctx, cancel := context.WithTimeoutCause(ctx, s.c.Agent.Timeout, errSessionTimeout)
-	defer cancel()
-
-	dr, err := d.Run(sctx, s.st.agent, spec, s.event)
+	dr, timedOut, err := s.drive(ctx, d, spec)
 	if err == nil && dr.Reason == driver.ReasonResumeRefused {
 		// A new session under the engine's id, which every later step resumes.
-		if spec, err = s.spec(engine.WorkRequest{Mode: engine.ModeStart, SessionID: w.SessionID}); err == nil {
-			dr, err = d.Run(sctx, s.st.agent, spec, s.event)
+		if spec, err = s.spec(engine.WorkRequest{Mode: engine.ModeStart, SessionID: w.SessionID, Role: w.Role}); err == nil {
+			dr, timedOut, err = s.drive(ctx, d, spec)
 		}
 	}
 
-	switch {
-	case ctx.Err() != nil:
-		return engine.WorkResult{}, nil, ctx.Err()
-	case err != nil:
+	if err != nil {
 		return engine.WorkResult{}, nil, err
 	}
 
-	res := s.result(dr)
-	if sctx.Err() != nil {
+	res := s.result(dr, w.Mode)
+	if timedOut {
 		res.Outcome = engine.OutcomeTimeout
 	}
 
@@ -112,15 +133,38 @@ func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest
 	return res, dr.Usage, nil
 }
 
-func (s *session) spec(w engine.WorkRequest) (driver.Spec, error) {
-	spec, err := sessionSpec(s.c, s.st.ecosystems, s.st.standIn)
-	text, perr := prompt(s.c, w.Mode, w.Detail)
+// drive runs one session of spec under the agent's time limit and reports
+// whether the limit ended it. An error is the sandbox's or the call's.
+func (s *session) drive(ctx context.Context, d driver.Driver, spec driver.Spec) (driver.Result, bool, error) {
+	sctx, cancel := context.WithTimeoutCause(ctx, s.c.Agent.Timeout, errSessionTimeout)
+	defer cancel()
 
-	if err := errors.Join(err, perr); err != nil {
+	dr, err := d.Run(sctx, s.st.agent, spec, s.event)
+
+	switch {
+	case ctx.Err() != nil:
+		return driver.Result{}, false, ctx.Err()
+	case err != nil:
+		return driver.Result{}, false, err
+	}
+
+	return dr, sctx.Err() != nil, nil
+}
+
+func (s *session) spec(w engine.WorkRequest) (driver.Spec, error) {
+	text, err := prompt(s.c, w)
+	if err != nil {
 		return driver.Spec{}, err
 	}
 
-	spec.Prompt = text
+	spec, err := s.newSpec(text, w.Role)
+	if err != nil {
+		return driver.Spec{}, err
+	}
+
+	if w.Mode == engine.ModeReadiness {
+		readOnly(&spec, prompts.ReadinessSchema())
+	}
 
 	if w.Resume {
 		spec.Resume = w.SessionID
@@ -129,6 +173,32 @@ func (s *session) spec(w engine.WorkRequest) (driver.Spec, error) {
 	}
 
 	return spec, nil
+}
+
+// newSpec is the spec of a session in role with prompt text, but its id.
+func (s *session) newSpec(text, role string) (driver.Spec, error) {
+	spec, err := sessionSpec(s.c, s.st.ecosystems, s.st.standIn)
+	if err != nil {
+		return driver.Spec{}, err
+	}
+
+	spec.Prompt = text
+
+	switch role {
+	case engine.RoleReview:
+		spec.Model, spec.Effort = s.c.Agent.Review.Model, s.c.Agent.Review.Effort
+	case engine.RoleStrong:
+		spec.Model, spec.Effort = s.c.Agent.Strong.Model, s.c.Agent.Strong.Effort
+	}
+
+	return spec, nil
+}
+
+// readOnly makes spec a read-only session's that ends with schema. It gets no
+// instructions, which tell a session to commit its work and how to end: its
+// prompt says what a session that changes nothing needs.
+func readOnly(spec *driver.Spec, schema json.RawMessage) {
+	spec.ReadOnly, spec.Instructions, spec.OutputSchema = true, "", schema
 }
 
 // AgentPhase is the proxy request a run starts c's agent phase with, and the
@@ -156,7 +226,7 @@ func agentProxy(c engine.RunConfig, ecosystems []string, d driver.Driver) (sidec
 	return req, standIn
 }
 
-// sessionSpec is a session's spec but its prompt and id.
+// sessionSpec is a writing session's spec in the work role but its prompt and id.
 func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (driver.Spec, error) {
 	instructions, err := prompts.Render(prompts.Instructions, nil)
 	if err != nil {
@@ -179,19 +249,36 @@ func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (drive
 	return spec, nil
 }
 
-// prompt is the user message that opens a session in mode; detail is the
-// verify output of a fix and the text of an answer.
-func prompt(c engine.RunConfig, mode, detail string) (string, error) {
-	switch mode {
+// prompt is the user message that opens or resumes a session in w's mode;
+// w's detail is the verify output of a fix and the text of an answer.
+func prompt(c engine.RunConfig, w engine.WorkRequest) (string, error) {
+	task := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}
+
+	switch w.Mode {
+	case engine.ModeReadiness:
+		return prompts.Render(prompts.Readiness, task)
+	case engine.ModeStart:
+		// Only a readiness turn that found nothing missing leaves a session to start by resuming.
+		if w.Resume {
+			return prompts.Render(prompts.Proceed, nil)
+		}
 	case engine.ModeContinue:
 		return prompts.Render(prompts.Continue, nil)
 	case engine.ModeFixVerify:
-		return prompts.Render(prompts.FixVerify, prompts.FixVerifyData{Command: c.Verify.Command, Output: detail})
+		return prompts.Render(prompts.FixVerify, prompts.FixVerifyData{Command: c.Verify.Command, Output: w.Detail})
 	case engine.ModeAnswer:
-		return prompts.Render(prompts.Answer, prompts.AnswerData{Answer: detail})
+		return prompts.Render(prompts.Answer, prompts.AnswerData{Answer: w.Detail})
+	case engine.ModeFixReview:
+		if w.Resume {
+			return prompts.Render(prompts.FixReview, prompts.FixReviewData{Findings: numberFindings(w.Findings)})
+		}
+
+		return prompts.Render(prompts.FixReviewFresh, prompts.FixReviewFreshData{
+			Title: c.Task.Title, Body: c.Task.Body, Findings: numberFindings(w.Findings), DiffFile: reviewPatch,
+		})
 	}
 
-	return prompts.Render(prompts.Work, prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body})
+	return prompts.Render(prompts.Work, task)
 }
 
 // event forwards what a person follows a session by. Every string is masked:
@@ -226,22 +313,41 @@ func (s *session) line(l sidecar.Line) {
 	}
 }
 
-// result maps how the session ended.
-func (s *session) result(dr driver.Result) engine.WorkResult {
-	res := engine.WorkResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, Detail: s.mask(dr.Detail)}
-
+// stopped is the outcome of a session end that stops the task whatever the
+// session was for, with a usage limit's reset time; "" for any other end.
+func stopped(dr driver.Result) (string, time.Time) {
 	switch dr.Reason {
 	case driver.ReasonUsageLimit:
-		res.Outcome = engine.OutcomeUsageLimit
-
 		if dr.RateLimit != nil {
-			res.ResetsAt = dr.RateLimit.ResetsAt
+			return engine.OutcomeUsageLimit, dr.RateLimit.ResetsAt
 		}
+
+		return engine.OutcomeUsageLimit, time.Time{}
 	case driver.ReasonMaxTurns:
-		res.Outcome = engine.OutcomeMaxTurns
+		return engine.OutcomeMaxTurns, time.Time{}
 	case driver.ReasonAuth, driver.ReasonEndpoint:
-		res.Outcome = engine.OutcomeEndpoint
+		return engine.OutcomeEndpoint, time.Time{}
+	}
+
+	return "", time.Time{}
+}
+
+// result maps how the session in mode ended.
+func (s *session) result(dr driver.Result, mode string) engine.WorkResult {
+	res := engine.WorkResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, Detail: s.mask(dr.Detail)}
+
+	if res.Outcome, res.ResetsAt = stopped(dr); res.Outcome != "" {
+		return res
+	}
+
+	switch dr.Reason {
 	case driver.ReasonDone:
+		if mode == engine.ModeReadiness {
+			s.readiness(dr.Structured, &res)
+
+			break
+		}
+
 		var out struct {
 			Status, Title, Summary string
 			Assumptions, Questions []string
@@ -261,6 +367,37 @@ func (s *session) result(dr driver.Result) engine.WorkResult {
 	}
 
 	return res
+}
+
+// readiness maps a readiness turn's structured result: ready, or blocked with
+// at least one question and the answer the agent would assume for each.
+// Anything else is unfinished.
+func (s *session) readiness(structured json.RawMessage, res *engine.WorkResult) {
+	var out struct {
+		Status    string
+		Questions []struct {
+			Question        string
+			SuggestedAnswer string `json:"suggested_answer"`
+		}
+	}
+
+	res.Outcome = engine.OutcomeUnfinished
+
+	if json.Unmarshal(structured, &out) != nil {
+		return
+	}
+
+	switch {
+	case out.Status == engine.OutcomeReady:
+		res.Outcome = engine.OutcomeReady
+	case out.Status == engine.OutcomeBlocked && len(out.Questions) > 0:
+		res.Outcome = engine.OutcomeBlocked
+
+		for _, q := range out.Questions {
+			res.Questions = append(res.Questions, s.mask(q.Question))
+			res.SuggestedAnswers = append(res.SuggestedAnswers, s.mask(q.SuggestedAnswer))
+		}
+	}
 }
 
 // freeze commits the session's work and points the task branch at it. A

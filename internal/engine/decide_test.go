@@ -29,7 +29,7 @@ func snap(f engine.Facts) engine.Snapshot {
 }
 
 func snapWith(f engine.Facts, sw engine.Switches) engine.Snapshot {
-	return engine.Snapshot{Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, FaultRetries: 2}}
+	return engine.Snapshot{Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2}}
 }
 
 func withDeps(f engine.Facts, deps ...engine.Dep) engine.Snapshot {
@@ -116,6 +116,7 @@ func decideCases() []decideCase {
 	none := engine.Action{Kind: engine.KindNone}
 	contOff := engine.Switches{VerifyFix: true}
 	fixOff := engine.Switches{Continuations: true}
+	readiness := engine.Switches{Continuations: true, VerifyFix: true, Readiness: true}
 
 	cancelledStop := openStop(engine.StopCancelled, time.Time{})
 	cancelledStop.Cancelled = true
@@ -204,6 +205,8 @@ func decideCases() []decideCase {
 		{name: "resumed from verify failed", snap: snap(resumed(engine.StopVerifyFailed, "")), want: work(engine.ModeFixVerify, false)},
 		{name: "resumed from an agent error", snap: snap(resumed(engine.StopAgentError, "")), want: work(engine.ModeContinue, false)},
 		{name: "resumed from a question without an answer", snap: snap(resumed(engine.StopQuestion, "")), want: work(engine.ModeContinue, false)},
+		{name: "no ended session, readiness on", snap: snapWith(prepared(), readiness), want: work(engine.ModeReadiness, false)},
+		{name: "no ended session with a session id, readiness on", snap: snapWith(withSession, readiness), want: work(engine.ModeContinue, false)},
 		{name: "no ended session", snap: snap(prepared()), want: work(engine.ModeStart, false)},
 		{name: "no ended session with a session id", snap: snap(withSession), want: work(engine.ModeContinue, false)},
 		{
@@ -245,6 +248,8 @@ func decideCases() []decideCase {
 			name: "session failed with a long summary", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeFailed, Summary: longSummary})),
 			want: halt(engine.StopAgentError, engine.ClearRetry), explainHas: "日本語",
 		},
+		{name: "session ready", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeReady})), want: work(engine.ModeStart, false)},
+		{name: "session ready, readiness on", snap: snapWith(ended(engine.SessionFact{Outcome: engine.OutcomeReady}), readiness), want: work(engine.ModeStart, false)},
 		{name: "unfinished with no continuation yet", snap: snap(cut(engine.OutcomeUnfinished, 0)), want: work(engine.ModeContinue, true)},
 		{name: "unfinished with one continuation", snap: snap(cut(engine.OutcomeUnfinished, 1)), want: work(engine.ModeContinue, true)},
 		{name: "unfinished at the continuation cap", snap: snap(cut(engine.OutcomeUnfinished, 2)), want: halt(engine.StopAgentError, engine.ClearRetry)},
@@ -277,31 +282,35 @@ func decideCases() []decideCase {
 
 func TestDecide(t *testing.T) {
 	for _, tc := range decideCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			got := engine.Decide(tc.snap)
-
-			assert.NotEmpty(t, got.Why)
-			assert.NotContains(t, got.Why, "\n")
-
-			if got.Kind == engine.KindStop {
-				assert.NotEmpty(t, got.Explain)
-				assert.NotContains(t, got.Explain, "\n")
-				assert.LessOrEqual(t, len(got.Explain), 300)
-				assert.True(t, utf8.ValidString(got.Explain))
-			}
-
-			if tc.explainHas != "" {
-				assert.Contains(t, got.Explain, tc.explainHas)
-			}
-
-			if tc.whyHas != "" {
-				assert.Contains(t, got.Why, tc.whyHas)
-			}
-
-			got.Why, got.Explain = "", ""
-			assert.Equal(t, tc.want, got)
-		})
+		t.Run(tc.name, func(t *testing.T) { assertDecides(t, tc) })
 	}
+}
+
+func assertDecides(t *testing.T, tc decideCase) {
+	t.Helper()
+
+	got := engine.Decide(tc.snap)
+
+	assert.NotEmpty(t, got.Why)
+	assert.NotContains(t, got.Why, "\n")
+
+	if got.Kind == engine.KindStop {
+		assert.NotEmpty(t, got.Explain)
+		assert.NotContains(t, got.Explain, "\n")
+		assert.LessOrEqual(t, len(got.Explain), 300)
+		assert.True(t, utf8.ValidString(got.Explain))
+	}
+
+	if tc.explainHas != "" {
+		assert.Contains(t, got.Explain, tc.explainHas)
+	}
+
+	if tc.whyHas != "" {
+		assert.Contains(t, got.Why, tc.whyHas)
+	}
+
+	got.Why, got.Explain = "", ""
+	assert.Equal(t, tc.want, got)
 }
 
 func TestDecideFallback(t *testing.T) {
@@ -326,7 +335,7 @@ func TestDecideFallback(t *testing.T) {
 }
 
 func TestDecideIsPure(t *testing.T) {
-	for _, tc := range decideCases() {
+	for _, tc := range append(decideCases(), reviewCases(t)...) {
 		t.Run(tc.name, func(t *testing.T) {
 			first := engine.Decide(tc.snap)
 			for range 100 {

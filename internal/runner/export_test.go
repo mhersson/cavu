@@ -43,7 +43,7 @@ func TestExportScript(t *testing.T) {
 		DiffStat: []string{"login.go | 2 +-", "logo.png | Bin 0 -> 3 bytes", "2 files changed, 1 insertion(+), 1 deletion(-)"},
 	}, res)
 
-	assert.Equal(t, []string{"volumes", "up/agent", "restart", "run/" + name, "copyout " + diffFile, "copyout " + bundleFile}, f.calls())
+	assert.Equal(t, []string{"volumes", "up/agent", "run/" + name, "copyout " + diffFile, "copyout " + bundleFile}, f.calls())
 
 	run := f.run(t, name)
 	assert.Equal(t, sandbox.PhaseAgent, run.phase)

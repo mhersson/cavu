@@ -126,12 +126,44 @@ func TestReplayVerbPrintsOneRowPerSource(t *testing.T) {
 	assert.Equal(t, items[2][0].DiffPath, second[0][len(second[0])-1], "the diff path is this replay's")
 }
 
+func TestReplayTablePrintsTheQuestionsAsked(t *testing.T) {
+	dir, id, _ := runSetup(t)
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	task, err := strconv.ParseInt(id, 10, 64)
+	require.NoError(t, err)
+
+	var r store.Replay
+
+	for _, asked := range []int{2, 3} {
+		r, err = a.store.CreateReplay(t.Context(), store.Replay{Name: "r", Config: map[string]string{}})
+		require.NoError(t, err)
+		require.NoError(t, a.store.PutReplayItem(t.Context(), store.ReplayItem{ReplayID: r.ID, SourceTaskID: task, TaskID: task, Asked: asked}))
+		require.NoError(t, a.store.EndReplay(t.Context(), r.ID, time.Now()))
+	}
+
+	var out strings.Builder
+	require.NoError(t, printReplay(t.Context(), a.store, r, &out))
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2, out.String())
+
+	// The columns are aligned, so a cell starts where its heading does.
+	col := strings.Index(lines[0], "ASKED")
+	require.GreaterOrEqual(t, col, 0, out.String())
+	assert.Equal(t, []string{"3", "2"}, strings.Fields(lines[1][col:])[:2], "this replay's value, then the previous one's")
+}
+
 func TestReplayVerbFlagsReachConfig(t *testing.T) {
 	dir, id, fake := runSetup(t)
 	markWithBase(t, dir, id)
 
 	code, _, stderr := runCavu("replay", "--name", "tuned", "--model", "model-b", "--effort", "high",
-		"--no-continuations", "--no-verify-fix", "--web-tools", "--image", "cavu-sandbox:other", "--data-dir", dir)
+		"--no-continuations", "--no-verify-fix", "--no-readiness", "--web-tools", "--image", "cavu-sandbox:other", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
 
 	replays, _ := storedReplays(t, dir)
@@ -140,6 +172,7 @@ func TestReplayVerbFlagsReachConfig(t *testing.T) {
 	assert.Equal(t, "cavu-sandbox:other", replays[0].Image)
 	assert.Equal(t, map[string]string{
 		"model_work": "model-b", "effort_work": "high", "continuations": "false", "verify_fix": "false", "web_tools": "true",
+		"readiness": "false",
 	}, replays[0].Config)
 	assert.Empty(t, fake.image, "an explicit image is not checked")
 	require.NotEmpty(t, fake.runner.releases)
@@ -147,6 +180,41 @@ func TestReplayVerbFlagsReachConfig(t *testing.T) {
 	for _, r := range fake.runner.releases {
 		assert.Equal(t, "cavu-sandbox:other", r.ref.Image, "the runs drive on the image named")
 	}
+}
+
+func TestReplayNoReview(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		args    []string
+		config  map[string]string
+		reviews int
+	}{
+		{name: "the default", reviews: 1, config: map[string]string{}},
+		{name: "--no-review", args: []string{"--no-review"}, config: map[string]string{"review": "false"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, id, fake := runSetup(t)
+			markWithBase(t, dir, id)
+
+			code, _, stderr := runCavu(append([]string{"replay", "--name", "x", "--data-dir", dir}, tt.args...)...)
+			require.Equal(t, 0, code, stderr)
+
+			replays, _ := storedReplays(t, dir)
+			require.Len(t, replays, 1)
+			assert.Equal(t, tt.config, replays[0].Config)
+			assert.Equal(t, tt.reviews, countOf(fake.runner.actions, engine.KindReview))
+		})
+	}
+}
+
+func countOf[T comparable](all []T, v T) (n int) {
+	for _, x := range all {
+		if x == v {
+			n++
+		}
+	}
+
+	return n
 }
 
 func TestReplayVerbChecksTheDefaultImage(t *testing.T) {

@@ -3,6 +3,7 @@ package replay_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -86,6 +87,10 @@ func (r *fakeRunner) Verify(context.Context, engine.RunConfig) (engine.VerifyRes
 	return res, nil
 }
 
+func (r *fakeRunner) Review(context.Context, engine.RunConfig, engine.ReviewRequest, func(engine.Progress)) (engine.ReviewResult, error) {
+	return engine.ReviewResult{Outcome: engine.ReviewReviewed, Asked: engine.Verdict{Pass: true}, Built: engine.Verdict{Pass: true}}, nil
+}
+
 func (r *fakeRunner) Export(_ context.Context, c engine.RunConfig, _ string) (engine.ExportResult, error) {
 	return engine.ExportResult{HeadCommit: "head", Diff: fmt.Appendf(nil, "diff of task %d", c.TaskID), FilesChanged: 1}, nil
 }
@@ -129,9 +134,11 @@ func newEnv(t *testing.T) *env {
 		require.NoError(t, s.SetSetting(ctx, k, val))
 	}
 
+	// The readiness turn is off: only the tests that turn it on are about it.
 	p, err := s.CreateProject(ctx, store.Project{
 		Name: "web", RepoURL: "https://example.com/web.git", BaseBranch: "main",
 		SetupCommand: "make setup", VerifyCommand: "make test", Baseline: &store.Baseline{Commit: "tip", Passed: true},
+		Switches: map[string]bool{"readiness": false},
 	})
 	require.NoError(t, err)
 
@@ -337,7 +344,7 @@ func TestReplayRecordsItems(t *testing.T) {
 	assert.Equal(t, src.ID, got.SourceTaskID)
 	assert.Equal(t, engine.ResultPassed, got.Verify)
 	assert.Empty(t, got.Stop)
-	assert.False(t, got.Asked)
+	assert.Zero(t, got.Asked)
 	assert.Equal(t, 4, got.Turns)
 	assert.Equal(t, int64(145), got.Tokens)
 	assert.InDelta(t, 0.75, got.CostEstimateUSD, 1e-9)
@@ -361,10 +368,66 @@ func TestReplayQuestionCountsAsAsked(t *testing.T) {
 
 	_, items, _ := e.run(t, replay.Config{Name: "x"})
 
-	assert.True(t, items[0].Asked)
+	assert.Equal(t, 1, items[0].Asked)
 	assert.Equal(t, "question", items[0].Stop)
 	assert.Empty(t, items[0].Verify)
 	assert.Empty(t, items[0].DiffPath)
+}
+
+func TestReplayAnswersReadinessQuestions(t *testing.T) {
+	t.Parallel()
+
+	questions := []string{"Which port?", "Is IPv6 needed?"}
+
+	t.Run("every question with a suggested answer", func(t *testing.T) {
+		t.Parallel()
+
+		e := newEnv(t)
+		e.task(t, "one", true, "aaa")
+		e.runner.works = []engine.WorkResult{{Outcome: engine.OutcomeBlocked, Questions: questions, SuggestedAnswers: []string{"8080", "No"}}}
+
+		_, items, _ := e.run(t, replay.Config{Name: "x", Readiness: new(true)})
+
+		var answers []engine.HumanAnsweredPayload
+
+		for _, ev := range e.events(t, e.shadows(t)[0].ID) {
+			if ev.Type == engine.HumanAnswered {
+				var p engine.HumanAnsweredPayload
+				require.NoError(t, json.Unmarshal(ev.Payload, &p))
+				answers = append(answers, p)
+			}
+		}
+
+		require.Len(t, answers, 1, "one answer holds every pair")
+
+		for _, v := range []string{"Which port?", "8080", "Is IPv6 needed?", "No"} {
+			assert.Contains(t, answers[0].Text, v)
+		}
+
+		assert.Less(t, strings.Index(answers[0].Text, "8080"), strings.Index(answers[0].Text, "Is IPv6 needed?"), "each answer follows its question")
+		assert.Equal(t, []string{engine.ModeReadiness, engine.ModeAnswer}, e.runner.modes)
+		assert.Equal(t, 2, items[0].Asked)
+		assert.Equal(t, engine.ResultPassed, items[0].Verify, "the shadow runs on to verify")
+		assert.Empty(t, items[0].Stop)
+	})
+
+	t.Run("a question without one", func(t *testing.T) {
+		t.Parallel()
+
+		e := newEnv(t)
+		e.task(t, "one", true, "aaa")
+		e.runner.works = []engine.WorkResult{{Outcome: engine.OutcomeBlocked, Questions: questions, SuggestedAnswers: []string{"8080", ""}}}
+
+		_, items, _ := e.run(t, replay.Config{Name: "x", Readiness: new(true)})
+
+		evs := e.events(t, e.shadows(t)[0].ID)
+		assert.False(t, slices.ContainsFunc(evs, func(ev store.Event) bool { return ev.Type == engine.HumanAnswered }))
+		assert.Equal(t, engine.StatusCancelled, engine.StatusOf(engine.Reduce(evs)))
+		assert.Equal(t, []string{engine.ModeReadiness}, e.runner.modes)
+		assert.Equal(t, engine.StopQuestion, items[0].Stop)
+		assert.Equal(t, 2, items[0].Asked)
+		assert.Empty(t, items[0].Verify)
+	})
 }
 
 func TestReplayShadowTaskStopsAreRecorded(t *testing.T) {
