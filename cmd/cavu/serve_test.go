@@ -114,6 +114,8 @@ func TestServeRefusedWhenLocked(t *testing.T) {
 
 			assert.Equal(t, 1, code)
 			assert.Empty(t, stdout, "nothing listens")
+			// The directory holds the test's name, and so the role, too.
+			assert.Contains(t, strings.ReplaceAll(stderr, dir, ""), role, "the holder's role is named")
 
 			lock := filepath.Join(dir, "lock")
 			if role == roleServe {

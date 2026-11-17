@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/mhersson/cavu/internal/api"
@@ -38,6 +41,8 @@ func runServe(ctx context.Context, args []string, _ io.Reader, stdout, stderr io
 
 	if err := a.lock(roleServe); a.serverHolds(err) {
 		return fmt.Errorf("a cavu server is already running on %s", a.dir)
+	} else if errors.Is(err, syscall.EWOULDBLOCK) {
+		return fmt.Errorf("a cavu %s holds %s; wait for it to end", roleVerb, filepath.Join(a.dir, "lock"))
 	} else if err != nil {
 		return err
 	}
