@@ -145,6 +145,11 @@ func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay,
 		return store.ReplayItem{}, fmt.Errorf("replay: run shadow %d of task %d: %w", shadow.ID, src.ID, err)
 	}
 
+	// A shadow cancelled outside the replay has no outcome to compare, so the replay is no comparison base.
+	if status == engine.StatusCancelled {
+		return store.ReplayItem{}, fmt.Errorf("replay: shadow %d of task %d was cancelled outside the replay", shadow.ID, src.ID)
+	}
+
 	item, err := record(ctx, s, shadow)
 	if err != nil {
 		return store.ReplayItem{}, fmt.Errorf("replay: record shadow %d of task %d: %w", shadow.ID, src.ID, err)

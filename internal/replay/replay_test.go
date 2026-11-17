@@ -616,3 +616,32 @@ func TestReplayRefusedWithoutBaseline(t *testing.T) {
 		assert.Empty(t, e.events(t, sh.ID))
 	}
 }
+
+func TestShadowCancelledFromOutsideEndsTheReplay(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	e.task(t, "one", true, "aaa")
+	e.task(t, "two", true, "bbb")
+
+	// As a person, or another replay, cancels the shadow while it is driven.
+	drive := func(ctx context.Context, id int64) (engine.Status, error) {
+		require.NoError(t, e.loop.Cancel(ctx, id))
+
+		return e.drive(ctx, id)
+	}
+
+	r, err := replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x"}, drive, io.Discard)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, engine.ErrRefused, "the replay cancels nothing itself")
+	assert.Nil(t, r.EndedAt)
+
+	_, ok, err := e.store.PreviousReplay(t.Context(), r.ID+1)
+	require.NoError(t, err)
+	assert.False(t, ok, "a replay with a shadow cancelled from outside is not a comparison base")
+
+	items, err := e.store.ReplayItems(t.Context(), r.ID)
+	require.NoError(t, err)
+	assert.Empty(t, items)
+	assert.Len(t, e.shadows(t), 1, "the second source never starts")
+}
