@@ -389,7 +389,10 @@ func TestRequestsWithoutAuthority(t *testing.T) {
 		},
 		{
 			name: "the cookie and no CSRF header on a POST", route: create, body: project, want: http.StatusForbidden,
-			add: func(t *testing.T, f *fixture, r *http.Request) { withCookie(r, f.login(t).Value, false) },
+			add: func(t *testing.T, f *fixture, r *http.Request) {
+				withCookie(r, f.login(t).Value, false)
+				f.clock.add(2 * day) // a renewal is due, so a session lookup before the CSRF check would set the cookie
+			},
 		},
 		{
 			name: "the cookie on a GET", route: list, want: http.StatusOK,

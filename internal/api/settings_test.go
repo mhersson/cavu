@@ -67,6 +67,11 @@ func TestSettingsRoundTrip(t *testing.T) {
 			assertError(t, body)
 			assert.JSONEq(t, want, settings(t), "a refused request writes nothing")
 
+			// GET never shows instance_id, so the store is read too.
+			after, err := f.store.Settings(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, stored, after, "a refused request writes no setting")
+
 			names, err := f.store.SecretNames(t.Context())
 			require.NoError(t, err)
 			assert.Equal(t, []string{"forge_token"}, names, "a refused request seals nothing")

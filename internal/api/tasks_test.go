@@ -251,6 +251,43 @@ func TestTaskRequestsRefused(t *testing.T) {
 	}
 }
 
+func TestTaskActions(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	for _, tc := range []struct {
+		action, status, event string
+		seed                  func(t *testing.T, id int64)
+	}{
+		{"start", "queued", engine.TaskStarted, func(*testing.T, int64) {}},
+		{"retry", "running", engine.HumanRetried, func(t *testing.T, id int64) { f.ask(t, id, "Which colour?") }},
+		{"cancel", "cancelled", engine.HumanCancelled, func(*testing.T, int64) {}},
+		{"done", "done", engine.Merged, func(t *testing.T, id int64) {
+			f.add(t, id, engine.TaskStarted, struct{}{})
+			f.add(t, id, engine.Exported, engine.ExportedPayload{HeadCommit: "4b825dc"})
+		}},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+			tc.seed(t, id)
+
+			before, err := f.store.Events(t.Context(), id, 0, 0)
+			require.NoError(t, err)
+
+			status, body := f.call(t, fmt.Sprintf("POST /api/tasks/%d/actions", id), fmt.Sprintf(`{"action": %q}`, tc.action))
+			require.Equal(t, http.StatusOK, status, body)
+			assert.Equal(t, tc.status, object(t, body)["status"])
+			assert.Nil(t, object(t, body)["stop"])
+
+			after, err := f.store.Events(t.Context(), id, 0, 0)
+			require.NoError(t, err)
+			require.Len(t, after, len(before)+1, "one event is written")
+			assert.Equal(t, tc.event, after[len(before)].Type)
+			assert.Equal(t, "user", after[len(before)].Actor)
+		})
+	}
+}
+
 // racer is the store the handler's Loop records through. Before the first
 // Append it is asked for, it lets another event land through the real store,
 // as the scheduler's would between the action's read and its write.
