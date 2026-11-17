@@ -201,7 +201,8 @@ func (in *instance) runHeld(mock *mockapi.Server, id string) (release func(), cm
 		case <-ended:
 			in.t.Fatalf("task run ended before the held model call:\n%s", wait())
 		case <-limit:
-			in.t.Fatal("no model call within 3 minutes")
+			require.NoError(in.t, cmd.Process.Kill())
+			in.t.Fatalf("no model call within 3 minutes:\n%s", wait())
 		case <-tick.C:
 		}
 	}
@@ -392,10 +393,14 @@ const fileScan = `p=$1; shift; grep -rlaE -D skip -e "$p" "$@" || test $? = 1`
 
 // setupScan is a setup command that runs procScan and fileScan in the setup
 // container and prints what they find. It fails on a match of found, on what
-// they cannot read, and when no process holds a match of held.
-func setupScan(found, held string) string {
-	return fmt.Sprintf(`c=$(sh -c '%[1]s' sh '%[3]s') && f=$(sh -c '%[2]s' sh '%[3]s' /workspace /handoff /cache /home/agent /tmp /run/cavu) && echo "$c" "$f" && test -z "$c$f" && p=$(sh -c '%[1]s' sh '%[4]s') && test -n "$p"`,
-		procScan, fileScan, found, held)
+// they cannot read, and when no process holds a match of planted.
+func setupScan(found, planted string) string {
+	return fmt.Sprintf(`c=$(sh -c '%[1]s' sh '%[3]s') &&
+f=$(sh -c '%[2]s' sh '%[3]s' /workspace /handoff /cache /home/agent /tmp /run/cavu) &&
+echo "$c" "$f" &&
+test -z "$c$f" &&
+p=$(sh -c '%[1]s' sh '%[4]s') &&
+test -n "$p"`, procScan, fileScan, found, planted)
 }
 
 // mark is a pattern for v that its own text does not match, so a scan never
@@ -489,7 +494,9 @@ func TestReplayAgainstMock(t *testing.T) {
 	assert.Equal(t, id, strings.Fields(rows[0])[0])
 
 	// The table's columns are aligned, and a cell after VERIFY may be empty.
-	assert.Equal(t, "passed", strings.Fields(rows[0][strings.Index(lines[header], "VERIFY"):])[0])
+	col := strings.Index(lines[header], "VERIFY")
+	require.GreaterOrEqual(t, col, 0, r)
+	assert.Equal(t, "passed", strings.Fields(rows[0][col:])[0])
 }
 
 func TestCredentialsNeverInSandbox(t *testing.T) {
