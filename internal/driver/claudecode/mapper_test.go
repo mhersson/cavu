@@ -242,6 +242,19 @@ func TestMapperNoResultIsNeverSuccess(t *testing.T) {
 	}
 }
 
+// TestFinishMarksAMissingCost: a stream that ends without a result line is
+// marked; one with a result line, an error result too, is not.
+func TestFinishMarksAMissingCost(t *testing.T) {
+	for fixture, missing := range map[string]bool{
+		"synthetic/crash.jsonl": true,
+		"real/t1.jsonl":         false,
+		"real/t2.jsonl":         false, // an error result
+	} {
+		_, res := replay(t, fixture, 1)
+		assert.Equal(t, missing, res.CostMissing, fixture)
+	}
+}
+
 func TestMapperDetailIsStderrTail(t *testing.T) {
 	m := newMapper(func(driver.Event) {})
 	res := m.finish(2, "boom\n")

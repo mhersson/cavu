@@ -91,7 +91,7 @@ type Options struct {
 	Labels                   map[string]string
 }
 
-// Phase is what the phase container is for. Both phases are hardened alike,
+// Phase is what the phase container is for. Every phase is hardened alike,
 // because the setup command runs with the project's secrets.
 type Phase string
 
@@ -101,7 +101,13 @@ const (
 	PhaseSetup Phase = "setup"
 	// PhaseAgent runs the agent: the cache read-only, the home mounted.
 	PhaseAgent Phase = "agent"
+	// PhaseReadOnly runs a session that may change nothing: the agent phase with
+	// the workspace mounted read-only.
+	PhaseReadOnly Phase = "readonly"
 )
+
+// phases are every Phase; one phase container runs at a time.
+var phases = []Phase{PhaseSetup, PhaseAgent, PhaseReadOnly}
 
 // Sandbox is the two containers one run lives in: a phase container with no
 // network, whose one way out is its bridge to the proxy socket, and the
@@ -252,16 +258,16 @@ func (s *Sandbox) sidecarSpec(kind string, memoryMB int, mounts ...Mount) Contai
 }
 
 func (s *Sandbox) phaseSpec(p Phase) ContainerSpec {
-	agent := p == PhaseAgent
+	setup := p == PhaseSetup
 	spec := ContainerSpec{
 		Name:   s.name(string(p)),
 		Image:  s.o.Image,
 		Argv:   []string{"cavu", "bridge", "--listen", bridgeAddr, "--socket", proxySocket},
 		Labels: s.labels(string(p)),
 		Mounts: []Mount{
-			s.mount("workspace", "/workspace", false),
+			s.mount("workspace", "/workspace", p == PhaseReadOnly),
 			s.mount("handoff", "/handoff", false),
-			s.mount("cache", "/cache", agent),
+			s.mount("cache", "/cache", !setup),
 		},
 		// The image's /tmp stays: a tmpfs there would be noexec on Docker, and
 		// go test runs the binaries it builds from TMPDIR.
@@ -271,11 +277,20 @@ func (s *Sandbox) phaseSpec(p Phase) ContainerSpec {
 		MemoryMB: min(phaseMemoryMB, s.totalMB),
 	}
 
-	if agent {
+	if !setup {
 		spec.Mounts = append(spec.Mounts, s.mount("home", "/home/agent", false))
 	}
 
 	return spec
+}
+
+func (s *Sandbox) phaseNames() []string {
+	names := make([]string, 0, len(phases))
+	for _, p := range phases {
+		names = append(names, s.name(string(p)))
+	}
+
+	return names
 }
 
 // Clone runs the sidecar's clone operation in a short-lived container that
@@ -406,18 +421,18 @@ func (s *Sandbox) Scratch(ctx context.Context) (Container, error) {
 }
 
 // Up starts the sidecar and the phase container where they are not running
-// (a sidecar serving another request is replaced), then checks that the phase
-// container has network none, no mount or variable beyond its spec, and
-// reaches the proxy through its bridge. It fails closed: after any error
-// neither container is left, and a failed check is ErrNotIsolated or
-// ErrSidecarDown. lines receives the sidecar's denied and usage lines on a
-// goroutine of its own, so one that blocks holds back the proxy. If the
-// sidecar ends after it got ready and the sandbox did not stop it, lines
-// receives one error line with the reason: the phase container has lost its
-// egress.
+// (a sidecar serving another request is replaced, and so is the phase
+// container of another phase), then checks that the phase container has
+// network none, no mount or variable beyond its spec, and reaches the proxy
+// through its bridge. It fails closed: after any error neither container is
+// left, and a failed check is ErrNotIsolated or ErrSidecarDown. lines receives
+// the sidecar's denied and usage lines on a goroutine of its own, so one that
+// blocks holds back the proxy. If the sidecar ends after it got ready and the
+// sandbox did not stop it, lines receives one error line with the reason: the
+// phase container has lost its egress.
 func (s *Sandbox) Up(ctx context.Context, phase Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (Container, error) {
-	if phase != PhaseSetup && phase != PhaseAgent {
-		return Container{}, fmt.Errorf("sandbox: phase %q: want setup or agent", phase)
+	if !slices.Contains(phases, phase) {
+		return Container{}, fmt.Errorf("sandbox: phase %q: want one of %q", phase, phases)
 	}
 
 	if !s.volumes {
@@ -491,7 +506,7 @@ func (s *Sandbox) Down(ctx context.Context) error {
 	cleanup, cancel := cleanupContext(ctx)
 	defer cancel()
 
-	if err := s.o.Runtime.Remove(cleanup, s.name("agent"), s.name("setup"), s.name("sidecar"), s.name("clone"), s.name("scratch")); err != nil {
+	if err := s.o.Runtime.Remove(cleanup, append(s.phaseNames(), s.name("sidecar"), s.name("clone"), s.name("scratch"))...); err != nil {
 		return fmt.Errorf("sandbox: %w", err)
 	}
 
@@ -575,7 +590,7 @@ func (s *Sandbox) running(ctx context.Context, phase Phase) bool {
 func (s *Sandbox) startPhase(ctx context.Context, phase Phase) error {
 	s.phase = ""
 
-	if err := s.o.Runtime.Remove(ctx, s.name(string(PhaseSetup)), s.name(string(PhaseAgent))); err != nil {
+	if err := s.o.Runtime.Remove(ctx, s.phaseNames()...); err != nil {
 		return fmt.Errorf("sandbox: %w", err)
 	}
 
