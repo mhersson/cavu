@@ -135,19 +135,7 @@ func (s *Scheduler) paused(taskID int64) Pause {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var p Pause
-
-	for id, st := range s.stops {
-		switch {
-		case id == taskID:
-		case st.Reason == StopEndpoint && (p.EndpointTask == 0 || id < p.EndpointTask):
-			p.EndpointTask = id
-		case st.Reason == StopUsageLimit && st.ResetsAt.After(p.LimitedUntil):
-			p.LimitedUntil = st.ResetsAt
-		}
-	}
-
-	return p
+	return pauseOf(s.stops, taskID)
 }
 
 func (s *Scheduler) pass(ctx context.Context, r *round) {

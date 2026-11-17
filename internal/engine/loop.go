@@ -49,7 +49,7 @@ type Loop struct {
 	Runner         Runner
 	Now            func() time.Time
 	DataDir, Image string
-	Paused         func(taskID int64) Pause // nil outside a scheduler
+	Paused         func(taskID int64) Pause // what other tasks' open stops mean for the task; nil: nothing
 }
 
 // Run row outcomes besides the stop reasons that end a run.
