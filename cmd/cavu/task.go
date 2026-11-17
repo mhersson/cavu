@@ -317,7 +317,7 @@ const releaseTimeout = time.Minute
 // until the task rests, printing each event as it is recorded.
 func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return onTask(ctx, newVerbFlags(taskRunUsage, stderr), args, func(a *app, id int64) error {
-		rt, err := a.drive(ctx)
+		rt, err := a.drive(ctx, false)
 		if err != nil {
 			return err
 		}

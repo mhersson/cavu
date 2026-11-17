@@ -150,8 +150,9 @@ func (a *app) caBundle(ctx context.Context) ([]byte, error) {
 }
 
 // drive takes what a verb needs before it starts a container: the lock, the
-// runtime, and this binary's image with the configured CA bundle.
-func (a *app) drive(ctx context.Context) (containerRuntime, error) {
+// runtime, and this binary's image with the configured CA bundle. An image the
+// person named is their own choice, so skipImage leaves it unchecked.
+func (a *app) drive(ctx context.Context, skipImage bool) (containerRuntime, error) {
 	if err := a.lock(); err != nil {
 		return nil, err
 	}
@@ -161,8 +162,10 @@ func (a *app) drive(ctx context.Context) (containerRuntime, error) {
 		return nil, err
 	}
 
-	if err := a.checkImage(ctx, rt); err != nil {
-		return nil, err
+	if !skipImage {
+		if err := a.checkImage(ctx, rt); err != nil {
+			return nil, err
+		}
 	}
 
 	return rt, nil
