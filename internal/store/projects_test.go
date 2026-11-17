@@ -85,3 +85,33 @@ func TestProjectNameUnique(t *testing.T) {
 	b.Name = "a"
 	require.ErrorIs(t, s.UpdateProject(ctx, b), ErrConflict)
 }
+
+func TestProjectCheckFields(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+
+	at := time.UnixMilli(1_700_000_000_456)
+	p := fullProject()
+	p.CheckRequestedAt = &at
+	p.CheckResult = CheckResult{
+		Tools: []string{"go"}, IgnoredTools: []string{"zig"}, BaseCommit: "base123",
+		FailedStep: "setup", Output: "no rule", VerifySuggestion: "make check", Fault: "boom",
+	}
+
+	created, err := s.CreateProject(ctx, p)
+	require.NoError(t, err)
+
+	got, err := s.Project(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, created, got)
+
+	created.CheckRequestedAt = nil
+	require.NoError(t, s.UpdateProject(ctx, created))
+
+	got, err = s.Project(ctx, created.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.CheckRequestedAt)
+	require.Equal(t, created.CheckResult, got.CheckResult)
+}

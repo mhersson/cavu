@@ -88,15 +88,75 @@ func (s *Store) Append(ctx context.Context, taskID, expectLast int64, events []E
 	return last, nil
 }
 
+const eventsSelect = `SELECT id, task_id, run_id, at, type, actor, payload FROM events `
+
 // Events returns the task's events with id greater than afterID, oldest first.
 // limit 0 returns all.
 func (s *Store) Events(ctx context.Context, taskID, afterID int64, limit int) ([]Event, error) {
+	return s.EventsAfter(ctx, afterID, taskID, limit)
+}
+
+// EventsAfter returns events with an id above afterID, of every task or of
+// taskID when it is not 0, in id order, at most limit (0 or less: no limit).
+func (s *Store) EventsAfter(ctx context.Context, afterID, taskID int64, limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = -1
 	}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT id, task_id, run_id, at, type, actor, payload
-		FROM events WHERE task_id = ? AND id > ? ORDER BY id LIMIT ?`, taskID, afterID, limit)
+	return s.queryEvents(ctx, eventsSelect+`WHERE id > ? AND (? = 0 OR task_id = ?) ORDER BY id LIMIT ?`, afterID, taskID, taskID, limit)
+}
+
+// EventsOmitting returns the task's events but those of the given types, oldest first.
+func (s *Store) EventsOmitting(ctx context.Context, taskID int64, omit ...string) ([]Event, error) {
+	if omit == nil {
+		omit = []string{}
+	}
+
+	b, err := json.Marshal(omit)
+	if err != nil {
+		return nil, fmt.Errorf("list events: %w", err)
+	}
+
+	return s.queryEvents(ctx, eventsSelect+`WHERE task_id = ? AND type NOT IN (SELECT value FROM json_each(?)) ORDER BY id`, taskID, string(b))
+}
+
+// LastEventID returns the id of the task's newest event, 0 when it has none.
+func (s *Store) LastEventID(ctx context.Context, taskID int64) (int64, error) {
+	var id int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM events WHERE task_id = ?`, taskID).Scan(&id); err != nil {
+		return 0, fmt.Errorf("newest event: %w", err)
+	}
+
+	return id, nil
+}
+
+// LastEventIDs maps every task that has an event to its newest event id. It
+// seeks each task's newest event in the index, so a scheduler's pass does not
+// read the whole event history.
+func (s *Store) LastEventIDs(ctx context.Context) (map[int64]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, last FROM (SELECT id,
+		(SELECT MAX(e.id) FROM events e WHERE e.task_id = t.id) AS last FROM tasks t) WHERE last IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("newest events: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]int64{}
+
+	for rows.Next() {
+		var task, id int64
+		if err := rows.Scan(&task, &id); err != nil {
+			return nil, fmt.Errorf("newest events: %w", err)
+		}
+
+		out[task] = id
+	}
+
+	return out, rows.Err()
+}
+
+func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
 	}

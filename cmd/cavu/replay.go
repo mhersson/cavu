@@ -62,21 +62,25 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	defer a.close()
 
-	rt, err := a.drive(ctx, *image != "")
-	if err != nil {
+	a.image = *image
+	l := a.actions()
+
+	var r store.Replay
+
+	err = a.driven(ctx, func(t store.Task) bool { return t.ReplayID != 0 }, func(ctx context.Context) error {
+		if a.held == nil && a.image != "" { // a server drives, under the lock it holds
+			return errors.New("a cavu server drives the replay on its own image; replay without --image")
+		}
+
+		var err error
+
+		r, err = replay.Run(ctx, a.store, l, cfg, func(ctx context.Context, id int64) (engine.Status, error) {
+			return rest(ctx, l, id, stdout)
+		}, stdout)
+
 		return err
-	}
+	})
 
-	l := a.loop(rt)
-	if *image != "" {
-		l.Image = *image
-	}
-
-	if err := a.removeOrphans(ctx, rt); err != nil {
-		return err
-	}
-
-	r, err := replay.Run(ctx, a.store, l, cfg, stdout)
 	if errors.Is(err, replay.ErrNoReferenceTasks) {
 		_, err = fmt.Fprintln(stdout, "no task is marked for replay with a base commit: mark one that has run with cavu task mark ID")
 
@@ -84,10 +88,6 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	if ctx.Err() != nil {
-		if err := a.releaseShadows(ctx, l, r); err != nil {
-			fmt.Fprintf(stderr, "cavu: %v\n", err)
-		}
-
 		fmt.Fprintf(stderr, "interrupted; replay %q is left unended and is no comparison base\n", *name)
 
 		return exitError{code: 130}
@@ -100,22 +100,18 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	return printReplay(ctx, a.store, r, stdout)
 }
 
-// releaseShadows stops the containers of the replay's open runs, keeping their volumes.
-func (a *app) releaseShadows(ctx context.Context, l *engine.Loop, r store.Replay) error {
-	tasks, err := a.store.Tasks(context.WithoutCancel(ctx), true)
+// rest waits until the task rests, saying on out why it waits, and returns its status.
+func rest(ctx context.Context, l *engine.Loop, taskID int64, out io.Writer) (engine.Status, error) {
+	if err := follow(ctx, l, taskID, io.Discard, out); err != nil {
+		return "", err
+	}
+
+	snap, err := l.Snapshot(ctx, taskID)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	var errs []error
-
-	for _, t := range tasks {
-		if t.ReplayID == r.ID {
-			errs = append(errs, releaseOpenRun(ctx, l, t.ID))
-		}
-	}
-
-	return errors.Join(errs...)
+	return engine.StatusOf(snap.Facts), nil
 }
 
 // printReplay prints one row per source task: each value of this replay, then

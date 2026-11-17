@@ -68,13 +68,16 @@ type Runner struct {
 	// runs holds only runs whose volumes are in place and whose ecosystems
 	// are known; only Prepare and ensureUp add one.
 	runs map[int64]*run
+	// turns holds each project's setup turn: a full channel is a setup in
+	// progress. A channel, not a mutex, so a waiter can give up with its context.
+	turns map[int64]chan struct{}
 }
 
 var _ engine.Runner = (*Runner)(nil)
 
 // New returns a runner that runs sandboxes on rt and agents through d.
 func New(rt sandbox.Runtime, d driver.Driver) *Runner {
-	return &Runner{rt: rt, driver: d, open: openSandbox, runs: map[int64]*run{}}
+	return &Runner{rt: rt, driver: d, open: openSandbox, runs: map[int64]*run{}, turns: map[int64]chan struct{}{}}
 }
 
 // sandboxer is the part of *sandbox.Sandbox the runner uses.
@@ -289,6 +292,27 @@ func (r *Runner) state(runID int64) *run {
 	return r.runs[runID]
 }
 
+// takeTurn waits for projectID's setup turn and returns the function that
+// gives it back, or ctx's error when the action ends first.
+func (r *Runner) takeTurn(ctx context.Context, projectID int64) (func(), error) {
+	r.mu.Lock()
+
+	turn, ok := r.turns[projectID]
+	if !ok {
+		turn = make(chan struct{}, 1)
+		r.turns[projectID] = turn
+	}
+
+	r.mu.Unlock()
+
+	select {
+	case turn <- struct{}{}:
+		return func() { <-turn }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (r *Runner) setState(runID int64, st *run) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -421,6 +445,12 @@ func agentEnv(ecosystems []string, base string) []string {
 // sessionEnv is agentEnv without noProxyEnv, which the driver adds itself.
 func sessionEnv(ecosystems []string, base string) []string {
 	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv, baseEnv(base))
+}
+
+// withProjectVars puts the project's plain variables, taken as written, over
+// a phase's environment. Secrets stay with the setup command.
+func withProjectVars(base []string, c engine.RunConfig) []string {
+	return proc.BuildEnv(base, c.Setup.Env)
 }
 
 func setupEnv(ecosystems []string, base string) []string {

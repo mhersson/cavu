@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -133,7 +134,7 @@ func TestProjectRules(t *testing.T) {
 			tc.edit(&add)
 
 			_, err := engine.AddProject(t.Context(), h.store, add)
-			require.Error(t, err)
+			require.ErrorIs(t, err, engine.ErrRefused)
 			assert.Contains(t, err.Error(), tc.field)
 
 			ps, err := h.store.Projects(t.Context())
@@ -147,11 +148,37 @@ func TestProjectRules(t *testing.T) {
 			tc.edit(&edit)
 
 			err = engine.EditProject(t.Context(), h.store, edit)
-			require.Error(t, err)
+			require.ErrorIs(t, err, engine.ErrRefused)
 			assert.Contains(t, err.Error(), tc.field)
 			assert.Equal(t, before, h.project(), "nothing is changed")
 		})
 	}
+}
+
+// failingWrites is a store whose project writes fail.
+type failingWrites struct {
+	engine.Store
+	err error
+}
+
+func (f failingWrites) CreateProject(context.Context, store.Project) (store.Project, error) {
+	return store.Project{}, f.err
+}
+
+func (f failingWrites) UpdateProject(context.Context, store.Project) error { return f.err }
+
+func TestProjectStoreFailureIsNotARefusal(t *testing.T) {
+	h := newHarness(t)
+	boom := errors.New("disk full")
+	s := failingWrites{Store: h.store, err: boom}
+
+	_, err := engine.AddProject(t.Context(), s, validProject())
+	require.ErrorIs(t, err, boom)
+	require.NotErrorIs(t, err, engine.ErrRefused)
+
+	err = engine.EditProject(t.Context(), s, h.project())
+	require.ErrorIs(t, err, boom)
+	require.NotErrorIs(t, err, engine.ErrRefused)
 }
 
 func TestAddProject(t *testing.T) {
@@ -197,7 +224,9 @@ func TestCheckProjectStoresTheBaseline(t *testing.T) {
 		passed bool
 		none   bool // the check stores no baseline
 	}{
-		{name: "passed", res: engine.PrepareResult{BaseCommit: "base123", Tools: []string{"go@1.27"}, Baseline: engine.ResultPassed}, passed: true},
+		{name: "passed", res: engine.PrepareResult{
+			BaseCommit: "base123", Tools: []string{"go@1.27"}, IgnoredTools: []string{"node lts"}, Baseline: engine.ResultPassed,
+		}, passed: true},
 		{name: "a failed step", res: engine.PrepareResult{BaseCommit: "base123", FailedStep: "setup", Output: "no rule"}},
 		{name: "a failed baseline", res: engine.PrepareResult{
 			BaseCommit: "base123", Baseline: engine.ResultFailed, FailedStep: "baseline", Output: "FAIL",
@@ -217,11 +246,17 @@ func TestCheckProjectStoresTheBaseline(t *testing.T) {
 
 			h.runner.prepares = []step[engine.PrepareResult]{{res: tc.res}}
 			h.runner.suggestion = "make test"
+			require.NoError(t, h.loop.RequestCheck(t.Context(), p.ID))
 
 			res, suggestion, err := h.loop.CheckProject(t.Context(), p.ID)
 			require.NoError(t, err)
 			assert.Equal(t, tc.res, res)
 			assert.Equal(t, "make test", suggestion)
+			assert.NotNil(t, h.project().CheckRequestedAt, "a check a person runs answers no request")
+			assert.Equal(t, store.CheckResult{
+				Tools: tc.res.Tools, IgnoredTools: tc.res.IgnoredTools, BaseCommit: tc.res.BaseCommit, FailedStep: tc.res.FailedStep,
+				Output: tc.res.Output, VerifySuggestion: "make test",
+			}, h.project().CheckResult)
 
 			checks := h.runner.callsOf("check")
 			require.Len(t, checks, 1)
@@ -263,6 +298,7 @@ func TestCheckProjectKeepsTheBaselineOnARunnerError(t *testing.T) {
 	assert.Equal(t, "go test ./...", suggestion, "the suggestion comes back with the error")
 	assert.Equal(t, p.Baseline.Commit, h.project().Baseline.Commit)
 	assert.True(t, h.project().Baseline.Passed)
+	assert.Equal(t, store.CheckResult{VerifySuggestion: "go test ./...", Fault: fault.Error()}, h.project().CheckResult)
 }
 
 func TestCheckProjectRefusesAMissingSetting(t *testing.T) {
@@ -273,4 +309,5 @@ func TestCheckProjectRefusesAMissingSetting(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "model_work")
 	assert.Empty(t, h.runner.callsOf("check"))
+	assert.Equal(t, err.Error(), h.project().CheckResult.Fault)
 }

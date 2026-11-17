@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,6 +32,7 @@ type app struct {
 	vault      *auth.Vault
 	instanceID string
 	held       *os.File // the lock file, while the lock is held
+	image      string   // the image this process drives on, a person's choice and unchecked; "" for this binary's
 }
 
 // openApp opens the data directory, creating it, the master key and the
@@ -77,9 +80,16 @@ func ensureInstanceID(ctx context.Context, s *store.Store) (string, error) {
 	return id, s.SetSetting(ctx, "instance_id", id)
 }
 
-// lock holds the data directory's lock until close or the process exits.
-// The file is never removed: a new file would let a second holder in.
-func (a *app) lock() error {
+// The roles a lock holder writes into the lock file.
+const (
+	roleServe = "serve"
+	roleVerb  = "verb"
+)
+
+// lock takes the data directory's lock and writes role into its file. It holds
+// the lock until close or the process exits. The file is never removed: a new
+// file would let a second holder in.
+func (a *app) lock(role string) error {
 	path := filepath.Join(a.dir, "lock")
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -93,9 +103,37 @@ func (a *app) lock() error {
 		return fmt.Errorf("another cavu holds %s; wait for it to end: %w", path, err)
 	}
 
+	if err = f.Truncate(0); err == nil {
+		_, err = f.WriteAt([]byte(role+"\n"), 0)
+	}
+
+	if err != nil {
+		_ = f.Close()
+
+		return fmt.Errorf("lock: %w", err)
+	}
+
 	a.held = f
 
 	return nil
+}
+
+// lockHolder is the role in the lock file when another process holds the lock.
+func (a *app) lockHolder() (string, error) {
+	b, err := os.ReadFile(filepath.Join(a.dir, "lock"))
+
+	return strings.TrimSpace(string(b)), err
+}
+
+// serverHolds reports whether err is the lock refused because a server holds it.
+func (a *app) serverHolds(err error) bool {
+	if !errors.Is(err, syscall.EWOULDBLOCK) {
+		return false
+	}
+
+	role, _ := a.lockHolder()
+
+	return role == roleServe
 }
 
 // containerRuntime is what the verbs use of the container runtime.
@@ -152,10 +190,10 @@ func (a *app) caBundle(ctx context.Context) ([]byte, error) {
 }
 
 // drive takes what a verb needs before it starts a container: the lock, the
-// runtime, and this binary's image with the configured CA bundle. An image the
-// person named is their own choice, so skipImage leaves it unchecked.
-func (a *app) drive(ctx context.Context, skipImage bool) (containerRuntime, error) {
-	if err := a.lock(); err != nil {
+// runtime, and this binary's image with the configured CA bundle, unless the
+// person named another image.
+func (a *app) drive(ctx context.Context) (containerRuntime, error) {
+	if err := a.lock(roleVerb); err != nil {
 		return nil, err
 	}
 
@@ -164,13 +202,76 @@ func (a *app) drive(ctx context.Context, skipImage bool) (containerRuntime, erro
 		return nil, err
 	}
 
-	if !skipImage {
+	if a.image == "" {
 		if err := a.checkImage(ctx, rt); err != nil {
 			return nil, err
 		}
 	}
 
 	return rt, nil
+}
+
+// pollEvery is how often a verb reads the store, and how often its own
+// scheduler passes, so a task the verb starts beside it waits at most that long.
+var pollEvery = 500 * time.Millisecond
+
+// driven runs wait while something drives the tasks only admits: this
+// process's own scheduler, under the lock, when the lock is free, else the
+// server that holds it. Another verb holding the lock is an error naming it.
+// Driving itself, it takes drive's lock, runtime and image check, then removes the orphans.
+func (a *app) driven(ctx context.Context, only func(store.Task) bool, wait func(context.Context) error) error {
+	rt, err := a.drive(ctx)
+	if a.serverHolds(err) {
+		return wait(ctx)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if err := a.removeOrphans(ctx, rt); err != nil {
+		return err
+	}
+
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+
+	// OnError runs on Run's goroutine, and failed is read once Run has returned.
+	var failed error
+
+	s := &engine.Scheduler{Loop: a.loop(rt), Tick: pollEvery, Only: only, OnError: func(_ int64, err error) {
+		failed = errors.Join(failed, err)
+
+		stop()
+	}}
+
+	ran := make(chan struct{})
+
+	go func() {
+		defer close(ran)
+
+		_ = s.Run(ctx)
+	}()
+
+	err = wait(ctx)
+
+	// A task rests while its drive still releases its run: cut there, the run
+	// would keep its containers, and an exported run its volumes.
+	for err == nil && ctx.Err() == nil && s.Driving() {
+		select {
+		case <-ctx.Done():
+		case <-time.After(pollEvery):
+		}
+	}
+
+	stop()
+	<-ran
+
+	if failed != nil {
+		return failed
+	}
+
+	return err
 }
 
 // removeOrphans removes the instance's containers and the volumes of every run
@@ -183,12 +284,12 @@ func (a *app) removeOrphans(ctx context.Context, rt containerRuntime) error {
 	}
 
 	for _, t := range tasks {
-		events, err := a.store.Events(ctx, t.ID, 0, 0)
+		snap, err := a.loop(rt).Snapshot(ctx, t.ID)
 		if err != nil {
 			return err
 		}
 
-		if f := engine.Reduce(events); f.Cancelled && f.RunOpen {
+		if engine.Decide(snap).Kind == engine.KindStop {
 			if _, err := a.loop(rt).RunTask(ctx, t.ID); err != nil {
 				return err
 			}
@@ -223,7 +324,7 @@ func (a *app) checkImage(ctx context.Context, rt containerRuntime) error {
 	return nil
 }
 
-// loop is the engine over rt's runner and this binary's image.
+// loop is the engine over rt's runner, on the image actions names.
 func (a *app) loop(rt containerRuntime) *engine.Loop {
 	l := a.actions()
 	l.Runner = rt.Runner()
@@ -233,7 +334,7 @@ func (a *app) loop(rt containerRuntime) *engine.Loop {
 
 // actions is the engine without a runner: enough to record what a person does.
 func (a *app) actions() *engine.Loop {
-	return &engine.Loop{Store: a.store, Vault: a.vault, Now: time.Now, DataDir: a.dir, Image: sandbox.ImageName(version)}
+	return &engine.Loop{Store: a.store, Vault: a.vault, Now: time.Now, DataDir: a.dir, Image: cmp.Or(a.image, sandbox.ImageName(version))}
 }
 
 func (a *app) close() {

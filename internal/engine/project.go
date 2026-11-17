@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -55,34 +56,34 @@ func EditProject(ctx context.Context, s Store, p store.Project) error {
 func checkProject(p store.Project) error {
 	switch {
 	case !projectName.MatchString(p.Name):
-		return fmt.Errorf("name %q: want 1 to 40 of a-z, 0-9 and -", p.Name)
+		return refuse("name %q: want 1 to 40 of a-z, 0-9 and -", p.Name)
 	case !strings.HasPrefix(p.RepoURL, "https://") || !plainArg(p.RepoURL):
-		return fmt.Errorf("repo_url %q: want an https:// URL with no whitespace", p.RepoURL)
+		return refuse("repo_url %q: want an https:// URL with no whitespace", p.RepoURL)
 	case !plainArg(p.BaseBranch):
-		return fmt.Errorf("base_branch %q: want a branch name that does not start with - and holds no whitespace", p.BaseBranch)
+		return refuse("base_branch %q: want a branch name that does not start with - and holds no whitespace", p.BaseBranch)
 	case blank(p.SetupCommand):
-		return errors.New("setup_command is blank")
+		return refuse("setup_command is blank")
 	case blank(p.VerifyCommand):
-		return errors.New("verify_command is blank")
+		return refuse("verify_command is blank")
 	case p.VerifyCommand != "" && p.VerifyWaived:
-		return errors.New("verify_command and verify_waived: give one")
+		return refuse("verify_command and verify_waived: give one")
 	}
 
 	for k := range p.Env {
 		if !varName.MatchString(k) {
-			return fmt.Errorf("env %q: want a variable name of letters, digits and _, not starting with a digit", k)
+			return refuse("env %q: want a variable name of letters, digits and _, not starting with a digit", k)
 		}
 	}
 
 	for _, v := range p.SecretVars {
 		if !varName.MatchString(v) {
-			return fmt.Errorf("secret_vars %q: want a variable name of letters, digits and _, not starting with a digit", v)
+			return refuse("secret_vars %q: want a variable name of letters, digits and _, not starting with a digit", v)
 		}
 	}
 
 	for k, v := range p.ToolOverrides {
 		if k == "" || v == "" {
-			return fmt.Errorf("tool_overrides %q=%q: want a tool name and a version", k, v)
+			return refuse("tool_overrides %q=%q: want a tool name and a version", k, v)
 		}
 	}
 
@@ -90,7 +91,7 @@ func checkProject(p store.Project) error {
 
 	for k := range p.Switches {
 		if known[k] == nil {
-			return fmt.Errorf("switches %q: want continuations, verify_fix or web_tools", k)
+			return refuse("switches %q: want continuations, verify_fix or web_tools", k)
 		}
 	}
 
@@ -118,40 +119,79 @@ func sameBaselineGround(a, b store.Project) bool {
 		maps.Equal(a.ToolOverrides, b.ToolOverrides) && maps.Equal(a.Env, b.Env) && slices.Equal(a.SecretVars, b.SecretVars)
 }
 
+// Runnable reports whether a project's tasks may start: a passed baseline or a waived verify.
+func Runnable(p store.Project) bool {
+	return p.VerifyWaived || p.Baseline != nil && p.Baseline.Passed
+}
+
+// RequestCheck asks for an environment check of the project. Every request
+// carries the time it was made, so a check that started before it leaves it.
+func (l *Loop) RequestCheck(ctx context.Context, projectID int64) error {
+	p, err := l.Store.Project(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("project %d: %w", projectID, err)
+	}
+
+	at := l.Now()
+	p.CheckRequestedAt = &at
+
+	return l.Store.UpdateProject(ctx, p)
+}
+
 // CheckProject prepares a project the way a run does, under run and task id 0,
-// and stores what it found as the project's baseline. It also returns the
-// verify command the repository suggests, or "", even with a runner error,
-// which stores nothing.
+// for a person who runs the check: it answers no request, so it clears none.
+// Whatever the outcome, it stores the project's check result, with any error
+// it met as the fault, and stores the baseline it found unless it met an error
+// or the project has no verify command. It also returns the verify command the
+// repository suggests, or "", even with an error.
 func (l *Loop) CheckProject(ctx context.Context, projectID int64) (PrepareResult, string, error) {
+	res, suggestion, err := l.checkEnvironment(ctx, projectID)
+
+	return res, suggestion, errors.Join(err, l.storeCheck(ctx, projectID, time.Time{}, res, suggestion, err))
+}
+
+func (l *Loop) checkEnvironment(ctx context.Context, projectID int64) (PrepareResult, string, error) {
 	c, err := l.BuildRunConfig(ctx, store.Task{ProjectID: projectID}, store.Run{}, nil)
 	if err != nil {
 		return PrepareResult{}, "", err
 	}
 
-	res, suggestion, err := l.Runner.CheckEnvironment(ctx, c)
-	if err != nil {
-		return res, suggestion, err
-	}
+	return l.Runner.CheckEnvironment(ctx, c)
+}
 
-	// With no verify command nothing was verified: the check stores nothing.
-	if !c.Verify.Waived && strings.TrimSpace(c.Verify.Command) == "" {
-		return res, suggestion, nil
-	}
-
-	var b *store.Baseline // a waived verify runs none, and drops what an earlier check stored
-	if res.Baseline != ResultWaived {
-		b = &store.Baseline{Commit: res.BaseCommit, Passed: res.Baseline == ResultPassed, At: l.Now(), Output: res.Output}
-	}
-
+// storeCheck stores what a check found, or the error it met. It clears the
+// request made at answers, the one the check started on, unless a later
+// request replaced it. A zero answers clears none.
+// An error leaves the baseline as it is, and so does a project with no verify
+// command, since nothing was verified.
+func (l *Loop) storeCheck(ctx context.Context, projectID int64, answers time.Time, res PrepareResult, suggestion string, cause error) error {
 	p, err := l.Store.Project(ctx, projectID)
 	if err == nil {
-		p.Baseline = b
+		if r := p.CheckRequestedAt; r != nil && r.Equal(answers) {
+			p.CheckRequestedAt = nil
+		}
+
+		p.CheckResult = store.CheckResult{
+			Tools: res.Tools, IgnoredTools: res.IgnoredTools, BaseCommit: res.BaseCommit, FailedStep: res.FailedStep,
+			Output: res.Output, VerifySuggestion: suggestion,
+		}
+
+		switch {
+		case cause != nil:
+			p.CheckResult.Fault = cause.Error()
+		case p.VerifyWaived || strings.TrimSpace(p.VerifyCommand) != "":
+			p.Baseline = nil // a waived verify runs none, and drops what an earlier check stored
+			if res.Baseline != ResultWaived {
+				p.Baseline = &store.Baseline{Commit: res.BaseCommit, Passed: res.Baseline == ResultPassed, At: l.Now(), Output: res.Output}
+			}
+		}
+
 		err = l.Store.UpdateProject(ctx, p)
 	}
 
 	if err != nil {
-		return res, suggestion, fmt.Errorf("project %d: baseline: %w", projectID, err)
+		return fmt.Errorf("project %d: check result: %w", projectID, err)
 	}
 
-	return res, suggestion, nil
+	return nil
 }

@@ -74,3 +74,36 @@ func TestMigrateAppliesInOrderOnce(t *testing.T) {
 	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version IN (100, 101)`).Scan(&n))
 	require.Equal(t, 2, n)
 }
+
+func TestMigrationThreeKeepsData(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cavu.db")
+	ctx := context.Background()
+
+	old, err := open(ctx, path, migrations[:2])
+	require.NoError(t, err)
+
+	_, err = old.db.Exec(`INSERT INTO projects (name, repo_url, base_branch, setup_command, verify_command,
+		verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches)
+		VALUES ('p', 'r', 'main', '', '', 0, '{}', '[]', '{}', '[]', '{}')`)
+	require.NoError(t, err)
+	_, err = old.db.Exec(`INSERT INTO tasks (project_id, title, body, requester, base_commit, reference,
+		replay_id, overrides, created_at) VALUES (1, 't', '', 'cli', '', 0, 0, '{}', 1)`)
+	require.NoError(t, err)
+	require.NoError(t, old.Close())
+
+	s, err := Open(ctx, path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = s.Close() })
+
+	p, err := s.ProjectByName(ctx, "p")
+	require.NoError(t, err)
+	require.Nil(t, p.CheckRequestedAt)
+	require.Equal(t, CheckResult{}, p.CheckResult)
+
+	task, err := s.Task(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, "t", task.Title)
+}

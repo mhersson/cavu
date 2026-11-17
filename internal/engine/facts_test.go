@@ -27,18 +27,20 @@ func preparedRun(more ...store.Event) []store.Event {
 }
 
 var (
-	firstSession = ev(engine.SessionStarted, `{"mode":"start","session_id":"s1"}`)
-	doneChanged  = ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","summary":"Fixed it.","head_commit":"def456"}`)
-	unfinished   = ev(engine.SessionEnded, `{"outcome":"unfinished"}`)
-	autoContinue = ev(engine.SessionStarted, `{"mode":"continue","session_id":"s1","resume":true,"automatic":true}`)
-	autoFix      = ev(engine.SessionStarted, `{"mode":"fix_verify","session_id":"s1","resume":true,"automatic":true}`)
-	personFix    = ev(engine.SessionStarted, `{"mode":"fix_verify","session_id":"s1","resume":true}`)
-	verifying    = ev(engine.VerifyStarted, "")
-	verifyFailed = ev(engine.VerifyEnded, `{"result":"failed","command":"make test","exit_code":2,"output":"FAIL TestLogin","duration_ms":900}`)
-	verifyPassed = ev(engine.VerifyEnded, `{"result":"passed","command":"make test","exit_code":0}`)
-	retried      = ev(engine.HumanRetried, "")
-	sandboxStop  = ev(engine.Stopped, `{"reason":"sandbox","explanation":"The runner failed.","action":"retry"}`)
-	doneFact     = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", HeadCommit: "def456"}
+	firstSession  = ev(engine.SessionStarted, `{"mode":"start","session_id":"s1"}`)
+	doneChanged   = ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","summary":"Fixed it.","head_commit":"def456"}`)
+	unfinished    = ev(engine.SessionEnded, `{"outcome":"unfinished"}`)
+	autoContinue  = ev(engine.SessionStarted, `{"mode":"continue","session_id":"s1","resume":true,"automatic":true}`)
+	autoFix       = ev(engine.SessionStarted, `{"mode":"fix_verify","session_id":"s1","resume":true,"automatic":true}`)
+	personFix     = ev(engine.SessionStarted, `{"mode":"fix_verify","session_id":"s1","resume":true}`)
+	verifying     = ev(engine.VerifyStarted, "")
+	verifyFailed  = ev(engine.VerifyEnded, `{"result":"failed","command":"make test","exit_code":2,"output":"FAIL TestLogin","duration_ms":900}`)
+	verifyPassed  = ev(engine.VerifyEnded, `{"result":"passed","command":"make test","exit_code":0}`)
+	retried       = ev(engine.HumanRetried, "")
+	stopAt        = time.Date(2030, 1, 1, 11, 0, 0, 0, time.UTC)
+	sandboxStop   = store.Event{Type: engine.Stopped, At: stopAt, Payload: json.RawMessage(`{"reason":"sandbox","explanation":"The runner failed.","action":"retry"}`)}
+	resumeSession = ev(engine.SessionStarted, `{"mode":"continue","session_id":"s1","resume":true}`)
+	doneFact      = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", HeadCommit: "def456"}
 )
 
 // verifyStop ends with a verify_failed stop after one automatic continuation and one automatic fix.
@@ -111,6 +113,46 @@ func TestReduce(t *testing.T) {
 			name:   "a retry after a sandbox stop",
 			events: preparedRun(firstSession, unfinished, autoContinue, doneChanged, verifying, sandboxStop, retried),
 			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact},
+		},
+		{
+			name:   "two sandbox stops",
+			events: preparedRun(firstSession, sandboxStop, resumeSession, sandboxStop),
+			want: engine.Facts{
+				Started: true, RunOpen: true, Prepared: true, SessionID: "s1",
+				OpenStop: &engine.StopFact{Reason: engine.StopSandbox, Explanation: "The runner failed.", At: stopAt}, Faults: 2,
+			},
+		},
+		{
+			name:   "a retry after two sandbox stops",
+			events: preparedRun(firstSession, sandboxStop, resumeSession, sandboxStop, retried),
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1"},
+		},
+		{
+			name: "a prepare claimed after a sandbox stop",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), sandboxStop,
+				ev(engine.PrepareStarted, ""),
+			},
+			want: engine.Facts{Started: true, RunOpen: true, Faults: 1},
+		},
+		{
+			name:   "a verify claimed after a sandbox stop",
+			events: preparedRun(firstSession, doneChanged, verifying, sandboxStop, verifying),
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact, Faults: 1},
+		},
+		{
+			name: "an export claimed after a sandbox stop",
+			events: preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""), sandboxStop,
+				ev(engine.ExportStarted, "")),
+			want: engine.Facts{
+				Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact, Verify: engine.ResultPassed, Faults: 1,
+			},
+		},
+		{
+			name: "a merge after the export",
+			events: preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""),
+				ev(engine.Exported, `{"head_commit":"def456"}`), ev(engine.RunEnded, `{"outcome":"exported"}`), ev(engine.Merged, "")),
+			want: engine.Facts{Started: true, Exported: true, Merged: true},
 		},
 		{
 			name:   "a retry with no open stop",

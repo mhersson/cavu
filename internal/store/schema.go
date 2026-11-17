@@ -112,6 +112,16 @@ CREATE TABLE replay_items (
 	PRIMARY KEY (replay_id, source_task_id)
 );
 `},
+	{Version: 3, SQL: `
+CREATE TABLE task_deps (
+	task_id       INTEGER NOT NULL REFERENCES tasks(id),
+	depends_on_id INTEGER NOT NULL REFERENCES tasks(id),
+	PRIMARY KEY (task_id, depends_on_id)
+);
+
+ALTER TABLE projects ADD COLUMN check_requested_at INTEGER;
+ALTER TABLE projects ADD COLUMN check_result TEXT NOT NULL DEFAULT '{}';
+`},
 	{Version: 4, SQL: `
 CREATE TABLE users (
 	id            INTEGER PRIMARY KEY CHECK (id = 1),

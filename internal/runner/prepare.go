@@ -186,8 +186,15 @@ type stepFailure struct{ step, output string }
 
 // setup installs the tools and runs the setup command with the detected
 // hosts, then makes the shims for what it added. Only the setup command gets
-// the project's variables and secrets.
+// the project's secrets. A project's setups take turns, so runs beside each
+// other do not install into the shared caches at once.
 func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailure, error) {
+	release, err := p.r.takeTurn(ctx, p.c.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	req := sidecar.ProxyRequest{
 		AllowHosts: allowlist(env.SetupHosts(det.Ecosystems), p.c.Setup.EgressHosts),
 	}
@@ -310,7 +317,7 @@ func runVerify(ctx context.Context, st *run, c engine.RunConfig) (engine.VerifyR
 		return engine.VerifyResult{}, errors.New("runner: the verify command is blank and the project does not waive it")
 	}
 
-	cmd := proc.Command{Argv: verify.Argv(c.Verify.Command), Env: agentEnv(st.ecosystems, c.Repo.BaseCommit), Dir: workspace}
+	cmd := proc.Command{Argv: verify.Argv(c.Verify.Command), Env: withProjectVars(agentEnv(st.ecosystems, c.Repo.BaseCommit), c), Dir: workspace}
 	start := time.Now()
 
 	st.resetDenied()

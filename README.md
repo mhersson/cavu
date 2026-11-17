@@ -6,7 +6,18 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Status
 
-Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu user set` sets the one user and their password, read from standard input, `cavu token` adds, lists and removes API tokens, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes, lists and shows projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark, and `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
+Pre-release. The verbs today:
+
+- `cavu version` prints the version.
+- `cavu settings` sets and shows the settings.
+- `cavu secret set` stores a secret read from standard input.
+- `cavu user set` sets the one user and their password, read from standard input.
+- `cavu token` adds, lists and removes API tokens.
+- `cavu image build` builds the sandbox image on Docker or Podman.
+- `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge.
+- `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
+- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts, lists and shows them, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
+- `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 
 ## Try it
 
@@ -51,9 +62,9 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu project check web
    ```
 
-   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline.
+   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline, and the tools the newest check found and the verify command it suggested.
 
-6. Add a task and run it. `task run` prints each event as it happens and ends with the task's status. `task show` also prints the turns, the duration and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
+6. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. `task show` also prints the task's dependencies and why it waits, the turns, the duration and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
 
    ```
    cavu task add web --title "Fix the login redirect" --body-file task.md
@@ -62,7 +73,25 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu task diff ID
    ```
 
-   A task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself.
+   A task can wait for others: `--depends-on ID[,ID]` makes it wait until every task it names is done, and stops it when one of them is cancelled. `--start` starts it as it is added.
+
+   ```
+   cavu task add web --title "Test the login redirect" --depends-on ID --start
+   ```
+
+   `cavu task edit ID` changes only the title, body or dependencies it is given, until the task's first run starts; `--depends-on ""` removes every dependency.
+
+   ```
+   cavu task edit ID --depends-on 3,4
+   ```
+
+   `task run` drives only the task it names, so run a dependency first: on a task that waits for one, `task run` prints why and waits until that task is done or you interrupt it.
+
+   A task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
+
+   ```
+   cavu task done ID
+   ```
 
 When a task stops, `task run` exits 3 and prints the reason, what it means and what clears it:
 
@@ -72,7 +101,7 @@ cavu task retry ID                  # run it again after fixing the cause
 cavu task cancel ID                 # give up on it
 ```
 
-Then `cavu task run ID` again for an answer or a retry. Only one `cavu` verb that drives containers runs at a time; a second one is refused with a message naming the lock.
+Then `cavu task run ID` again for an answer or a retry. A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock.
 
 ### Replaying tasks
 
@@ -86,6 +115,8 @@ cavu replay --name no-continuations --no-continuations
 
 `--model ID`, `--effort LEVEL`, `--no-continuations`, `--no-verify-fix` and `--web-tools` (which turns `web_tools` on, whatever the project says) change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
 
+A replayed task starts as a new task does, so its project needs a passed baseline or a waived verify, and the replay says why such a task waits when it does. An interrupted replay cancels the task it was running and is never compared with; the next replay ends what an earlier one left unfinished. Run one replay at a time: a replay started while another runs cancels that one's unfinished shadows.
+
 ### Go projects
 
 Download the modules in the setup command (`go mod download`): the setup phase reaches `storage.googleapis.com`, where the module proxy sends large modules, and the agent phase reads the modules from the project's cache. A task that needs a large module the setup did not fetch is refused with the denied-host line; `cavu project set NAME --egress storage.googleapis.com` allows that host for the project; `--egress` sets the whole list, so repeat it for every host the project already allows.
@@ -94,7 +125,7 @@ Download the modules in the setup command (`go mod download`): the setup phase r
 
 A `uv.lock` at the repository's root installs uv. Use `uv sync --frozen` as the setup command and `uv run` in the verify command (`uv run pytest -q`): every run then has its own `.venv`, which uv keeps out of git. uv runs on the Python that mise installs and never downloads its own.
 
-Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
+Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. A project's open runs share the interpreter's packages, so a bare `pip install` in the setup command changes them under every other open run of the project. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
 
 ## Licence
 

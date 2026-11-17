@@ -124,3 +124,50 @@ func (s *Store) Tasks(ctx context.Context, includeReplays bool) ([]Task, error) 
 
 	return out, rows.Err()
 }
+
+// SetTaskDeps replaces the task's dependencies in one transaction.
+func (s *Store) SetTaskDeps(ctx context.Context, taskID int64, dependsOn []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("set task deps: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM task_deps WHERE task_id = ?`, taskID); err != nil {
+		return fmt.Errorf("set task deps: %w", err)
+	}
+
+	for _, d := range dependsOn {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_deps (task_id, depends_on_id) VALUES (?, ?)`, taskID, d); err != nil {
+			return fmt.Errorf("set task deps: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set task deps: %w", err)
+	}
+
+	return nil
+}
+
+// TaskDeps returns the ids the task depends on, ascending.
+func (s *Store) TaskDeps(ctx context.Context, taskID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT depends_on_id FROM task_deps WHERE task_id = ? ORDER BY depends_on_id`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("task deps: %w", err)
+	}
+	defer rows.Close()
+
+	var out []int64
+
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("task deps: %w", err)
+		}
+
+		out = append(out, id)
+	}
+
+	return out, rows.Err()
+}

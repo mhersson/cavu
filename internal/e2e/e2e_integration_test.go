@@ -727,14 +727,8 @@ func TestKilledSidecarResumes(t *testing.T) {
 	_, _, wait := in.runHeld(mock, id)
 	in.client("kill", in.container("sidecar"))
 
+	// The runner fault stops the task, and the same task run retries it after a pause.
 	run := wait()
-	require.Equal(t, 3, run.code, run)
-	assert.Equal(t, []string{"sandbox"}, values(in.ok("task", "show", id), "stop:"))
-	assert.Equal(t, 1, in.runs(id))
-
-	in.ok("task", "retry", id)
-
-	run = in.cavu("", "task", "run", id)
 	require.Zero(t, run.code, run)
 
 	show := in.ok("task", "show", id, "--events")
@@ -742,4 +736,25 @@ func TestKilledSidecarResumes(t *testing.T) {
 	assert.Equal(t, resumed, sessionStarts(t, show))
 	assert.Equal(t, 1, in.runs(id))
 	assert.Empty(t, in.containers())
+
+	var steps []string
+
+	for line := range strings.Lines(show) {
+		e := strings.SplitN(strings.TrimSpace(line), " ", 5)
+		if len(e) < 5 {
+			continue
+		}
+
+		switch e[2] {
+		case "session_started":
+			steps = append(steps, e[2])
+		case "stopped":
+			var stop struct{ Reason string }
+			require.NoError(t, json.Unmarshal([]byte(e[4]), &stop))
+			steps = append(steps, e[2]+" "+stop.Reason)
+		}
+	}
+
+	assert.Equal(t, []string{"session_started", "stopped sandbox", "session_started"}, steps,
+		"the sandbox stop comes between the cut session and the resumed one")
 }

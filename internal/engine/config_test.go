@@ -196,6 +196,63 @@ func TestCheckSetting(t *testing.T) {
 	}
 }
 
+func TestSettingsLimit(t *testing.T) {
+	assert.LessOrEqual(t, len(engine.SettableKeys())+1, 30, "the settable keys and instance_id")
+}
+
+func TestServerSettings(t *testing.T) {
+	tests := []struct {
+		key, value string
+		ok         bool
+	}{
+		{"concurrency", "1", true},
+		{"concurrency", "12", true},
+		{"concurrency", "", true},
+		{"concurrency", "0", false},
+		{"concurrency", "-1", false},
+		{"concurrency", "x", false},
+		{"listen_address", "127.0.0.1:7117", true},
+		{"listen_address", "0.0.0.0:8080", true},
+		{"listen_address", "[::1]:7117", true},
+		{"listen_address", "localhost:7117", true},
+		{"listen_address", "", true},
+		{"listen_address", "127.0.0.1", false},
+		{"listen_address", "localhost", false},
+		{"listen_address", "127.0.0.1:", false},
+		{"listen_address", ":7117", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			err := engine.CheckSetting(tt.key, tt.value)
+			if tt.ok {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.key)
+		})
+	}
+
+	n, err := engine.Concurrency(map[string]string{})
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+
+	n, err = engine.Concurrency(map[string]string{"concurrency": "5"})
+	require.NoError(t, err)
+	assert.Equal(t, 5, n)
+
+	addr, err := engine.ListenAddress(map[string]string{})
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:7117", addr)
+
+	addr, err = engine.ListenAddress(map[string]string{"listen_address": "0.0.0.0:8080"})
+	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0:8080", addr)
+}
+
 func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture) {
 	t.Helper()
 

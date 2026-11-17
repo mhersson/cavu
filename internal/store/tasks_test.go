@@ -100,3 +100,36 @@ func TestUpdateTaskKeepsCreatedAt(t *testing.T) {
 	require.Equal(t, "changed", got.Title)
 	require.WithinDuration(t, time.Now(), got.CreatedAt, time.Minute)
 }
+
+func TestTaskDeps(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+	first := seedTask(t, s)
+	ids := []int64{first.ID}
+
+	for range 3 {
+		ids = append(ids, seedTaskIn(t, s, first.ProjectID).ID)
+	}
+
+	set := func(deps ...int64) error { return s.SetTaskDeps(ctx, ids[0], deps) }
+	read := func() []int64 {
+		got, err := s.TaskDeps(ctx, ids[0])
+		require.NoError(t, err)
+
+		return got
+	}
+
+	require.NoError(t, set(ids[2], ids[1]))
+	require.Equal(t, []int64{ids[1], ids[2]}, read())
+
+	require.NoError(t, set(ids[3]))
+	require.Equal(t, []int64{ids[3]}, read())
+
+	require.Error(t, set(ids[1], 9999))
+	require.Equal(t, []int64{ids[3]}, read())
+
+	require.NoError(t, set())
+	require.Empty(t, read())
+}

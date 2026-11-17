@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,22 +24,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// clock is a fake clock moved by hand. A moving clock also advances with real
-// time, so a short wait on a real timer reaches the time it waited for.
+// clock is a fake clock moved by hand.
 type clock struct {
-	mu     sync.Mutex
-	at     time.Time
-	moving bool
-	start  time.Time
+	mu sync.Mutex
+	at time.Time
 }
 
 func (c *clock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	if c.moving {
-		return c.at.Add(time.Since(c.start))
-	}
 
 	return c.at
 }
@@ -67,6 +62,7 @@ func pop[T any](q *[]step[T], def T) (T, error) {
 
 type call struct {
 	method string
+	task   int64
 	runID  int64
 	work   engine.WorkRequest
 	remove bool
@@ -100,9 +96,10 @@ type fakeRunner struct {
 	verifies   []step[engine.VerifyResult]
 	exports    []step[engine.ExportResult]
 	releaseErr error
-	suggestion string            // every check's verify suggestion
-	progress   []engine.Progress // sent during every Work, each from its own goroutine
-	onCall     func(c call)      // runs as a call starts
+	suggestion string                                  // every check's verify suggestion
+	progress   []engine.Progress                       // sent during every Work, each from its own goroutine
+	onCall     func(c call)                            // runs as a call starts
+	gate       func(ctx context.Context, c call) error // runs after onCall; an error is the call's
 }
 
 var (
@@ -118,19 +115,27 @@ var (
 	}
 )
 
-func (r *fakeRunner) begin(c call) {
+func (r *fakeRunner) begin(ctx context.Context, c call) error {
 	r.mu.Lock()
 	r.calls = append(r.calls, c)
-	hook := r.onCall
+	hook, gate := r.onCall, r.gate
 	r.mu.Unlock()
 
 	if hook != nil {
 		hook(c)
 	}
+
+	if gate != nil {
+		return gate(ctx, c)
+	}
+
+	return nil
 }
 
 func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
-	r.begin(call{method: "prepare", runID: c.RunID, eco: c.Ecosystems})
+	if err := r.begin(ctx, call{method: "prepare", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems}); err != nil {
+		return engine.PrepareResult{}, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -140,7 +145,9 @@ func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.Pr
 
 // CheckEnvironment answers from the prepare queue: a check is a prepare.
 func (r *fakeRunner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, string, error) {
-	r.begin(call{method: "check", runID: c.RunID, cfg: c})
+	if err := r.begin(ctx, call{method: "check", runID: c.RunID, cfg: c}); err != nil {
+		return engine.PrepareResult{}, "", err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -151,7 +158,9 @@ func (r *fakeRunner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (
 }
 
 func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
-	r.begin(call{method: "work", runID: c.RunID, work: w, eco: c.Ecosystems})
+	if err := r.begin(ctx, call{method: "work", task: c.TaskID, runID: c.RunID, work: w, eco: c.Ecosystems}); err != nil {
+		return engine.WorkResult{}, err
+	}
 
 	var wg sync.WaitGroup
 	for _, p := range r.progress {
@@ -167,7 +176,9 @@ func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.Work
 }
 
 func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyResult, error) {
-	r.begin(call{method: "verify", runID: c.RunID, eco: c.Ecosystems})
+	if err := r.begin(ctx, call{method: "verify", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems}); err != nil {
+		return engine.VerifyResult{}, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -176,7 +187,9 @@ func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.Ver
 }
 
 func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit string) (engine.ExportResult, error) {
-	r.begin(call{method: "export", runID: c.RunID, commit: commit, eco: c.Ecosystems})
+	if err := r.begin(ctx, call{method: "export", task: c.TaskID, runID: c.RunID, commit: commit, eco: c.Ecosystems}); err != nil {
+		return engine.ExportResult{}, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -185,7 +198,9 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit stri
 }
 
 func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
-	r.begin(call{method: "release", runID: ref.RunID, remove: removeVolumes, ref: ref})
+	if err := r.begin(ctx, call{method: "release", task: ref.TaskID, runID: ref.RunID, remove: removeVolumes, ref: ref}); err != nil {
+		return err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -440,7 +455,21 @@ func (h *harness) eventsOf(typ string) []store.Event {
 func (h *harness) lastStop() engine.StoppedPayload {
 	h.t.Helper()
 
-	stops := h.eventsOf(engine.Stopped)
+	return h.lastStopOf(h.task.ID)
+}
+
+// lastStopOf returns the newest stop of the task.
+func (h *harness) lastStopOf(taskID int64) engine.StoppedPayload {
+	h.t.Helper()
+
+	var stops []store.Event
+
+	for _, e := range h.recorded(taskID) {
+		if e.Type == engine.Stopped {
+			stops = append(stops, e)
+		}
+	}
+
 	require.NotEmpty(h.t, stops)
 
 	return payloadOf[engine.StoppedPayload](h.t, stops[len(stops)-1])
@@ -765,6 +794,25 @@ func TestLoopStoresPassedBaseline(t *testing.T) {
 			assert.False(t, p.Baseline.At.IsZero())
 		})
 	}
+}
+
+// A replay's shadow prepares an old commit, whose baseline is no longer the project's.
+func TestShadowBaselineIsNotStored(t *testing.T) {
+	h := newHarness(t)
+	h.withBaseline()
+	before := h.project().Baseline
+
+	h.task.ReplayID = 1
+	require.NoError(t, h.store.UpdateTask(t.Context(), h.task))
+
+	res := preparedOK
+	res.BaseCommit = "old789"
+	h.runner.prepares = []step[engine.PrepareResult]{{res: res}}
+
+	_, err := h.run(t.Context())
+	require.NoError(t, err)
+	require.Len(t, h.runner.callsOf("prepare"), 1)
+	assert.Equal(t, before, h.project().Baseline)
 }
 
 func TestLoopRecordsIgnoredTools(t *testing.T) {
@@ -1219,7 +1267,7 @@ func TestReleaseOpenRunKeepsVolumes(t *testing.T) {
 	r := h.seed(ev(engine.RunStarted, `{"reason":"initial"}`))
 
 	require.NoError(t, h.loop.ReleaseOpenRun(t.Context(), h.task.ID))
-	assert.Equal(t, []call{{method: "release", runID: r.ID, ref: engine.RunRef{
+	assert.Equal(t, []call{{method: "release", task: h.task.ID, runID: r.ID, ref: engine.RunRef{
 		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: r.ID, ProjectID: h.task.ProjectID,
 	}}}, h.runner.calls)
 	assert.Empty(t, h.spy.ended(), "the run stays open")
@@ -1305,8 +1353,9 @@ func TestLoopRunnerFaultStops(t *testing.T) {
 	}
 }
 
-// A retry after a runner fault redoes the action the fault cut on the same run
-// and its volumes; a cancel ends that run and removes them.
+// A runner fault keeps its run: the action it cut is redone on that run and its
+// volumes, by itself after the backoff or at once on a person's retry. A
+// cancel ends that run and removes them.
 func TestLoopRetryAfterRunnerFault(t *testing.T) {
 	daemon := errors.New("the container daemon is unreachable")
 
@@ -1337,41 +1386,48 @@ func TestLoopRetryAfterRunnerFault(t *testing.T) {
 		},
 	}
 
+	resumes := map[string]func(h *harness){
+		"by itself after the backoff": func(h *harness) { h.clock.Advance(30 * time.Second) },
+		"on a person's retry":         func(h *harness) { h.add(0, engine.HumanRetried, "user", "") },
+	}
+
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t)
-			tt.script(h.runner)
+		for how, resume := range resumes {
+			t.Run(tt.name+" "+how, func(t *testing.T) {
+				h := newHarness(t)
+				tt.script(h.runner)
 
-			_, err := h.run(t.Context())
-			require.NoError(t, err)
-			require.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+				_, err := h.run(t.Context())
+				require.NoError(t, err)
+				require.Equal(t, engine.StopSandbox, h.lastStop().Reason)
 
-			before := len(h.runner.calls)
-			h.add(0, engine.HumanRetried, "user", "")
+				before := len(h.runner.calls)
+				resume(h)
 
-			status, err := h.run(t.Context())
-			require.NoError(t, err)
-			assert.Equal(t, engine.StatusInReview, status)
-			assert.Equal(t, tt.next, h.runner.trace()[before:])
+				status, err := h.run(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, engine.StatusInReview, status)
+				assert.Equal(t, tt.next, h.runner.trace()[before:])
 
-			runID := h.runner.calls[0].runID
-			for _, c := range h.runner.calls {
-				assert.Equal(t, runID, c.runID, "%s runs on the first run", c)
-			}
+				runID := h.runner.calls[0].runID
+				for _, c := range h.runner.calls {
+					assert.Equal(t, runID, c.runID, "%s runs on the first run", c)
+				}
 
-			assert.Equal(t, 1, h.spy.created(), "no second run row")
-			assert.Equal(t, map[int64]string{runID: engine.RunExported}, h.spy.ended())
+				assert.Equal(t, 1, h.spy.created(), "no second run row")
+				assert.Equal(t, map[int64]string{runID: engine.RunExported}, h.spy.ended())
 
-			works := h.runner.callsOf("work")
-			for _, w := range works[1:] {
-				assert.True(t, w.work.Resume)
-				assert.Equal(t, works[0].work.SessionID, w.work.SessionID)
-			}
+				works := h.runner.callsOf("work")
+				for _, w := range works[1:] {
+					assert.True(t, w.work.Resume)
+					assert.Equal(t, works[0].work.SessionID, w.work.SessionID)
+				}
 
-			for _, e := range h.runner.callsOf("export") {
-				assert.Equal(t, workDone.HeadCommit, e.commit)
-			}
-		})
+				for _, e := range h.runner.callsOf("export") {
+					assert.Equal(t, workDone.HeadCommit, e.commit)
+				}
+			})
+		}
 	}
 
 	t.Run("a cancel ends the run and removes its volumes", func(t *testing.T) {
@@ -1398,6 +1454,40 @@ func TestLoopRetryAfterRunnerFault(t *testing.T) {
 		require.Len(t, ends, 1)
 		assert.Equal(t, engine.StopCancelled, payloadOf[engine.RunEndedPayload](t, ends[0]).Outcome)
 	})
+}
+
+// A cancel that lands as the session ends is the drive's own to stop on, and a
+// scheduler cuts the drive for the same cancel, here during the stop's release.
+func TestLoopEndsARunWhoseContextIsCutDuringItsRelease(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cut := context.WithCancel(t.Context())
+	defer cut()
+
+	var released error
+
+	h.runner.onCall = func(c call) {
+		if c.method == "work" {
+			h.add(0, engine.HumanCancelled, "user", "")
+		}
+	}
+	h.runner.gate = func(rctx context.Context, c call) error {
+		if c.method != "release" {
+			return nil
+		}
+
+		cut()
+
+		released = rctx.Err()
+
+		return released
+	}
+
+	_, _ = h.run(ctx) // ends with ctx's error, after the run is ended
+
+	assert.Equal(t, []string{"prepare", "work/start", "release/remove"}, h.runner.trace())
+	require.NoError(t, released, "the release runs on past the cut")
+	assert.Equal(t, map[int64]string{h.runner.calls[0].runID: engine.StopCancelled}, h.spy.ended(), "the run row is ended")
 }
 
 func TestLoopClaimConflict(t *testing.T) {
@@ -1594,112 +1684,192 @@ func TestLoopRecordsProgress(t *testing.T) {
 	}
 }
 
-func TestLoopUsageLimitWaits(t *testing.T) {
-	t.Run("a reset later than the deadline returns, and a later call continues", func(t *testing.T) {
-		h := newHarness(t)
-		h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeUsageLimit, ResetsAt: now.Add(2 * time.Hour)}}}
+func TestRunTaskReturnsAtAWait(t *testing.T) {
+	h := newHarness(t)
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeUsageLimit, ResetsAt: now.Add(2 * time.Hour)}}}
 
-		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-		defer cancel()
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusBlocked, status)
+	assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, h.runner.trace())
 
-		status, err := h.run(ctx)
+	stop := h.lastStop()
+	assert.Equal(t, engine.StopUsageLimit, stop.Reason)
+	assert.True(t, now.Add(2*time.Hour).Equal(stop.ResetsAt))
+
+	h.clock.Advance(2*time.Hour + time.Minute)
+
+	status, err = h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, []string{
+		"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/remove",
+	}, h.runner.trace())
+
+	works := h.runner.callsOf("work")
+	assert.True(t, works[1].work.Resume)
+	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
+}
+
+// A pause that begins while the task prepares leaves its run open with no container.
+func TestRunTaskReleasesAtAWait(t *testing.T) {
+	h := newHarness(t)
+
+	limited := false
+	h.loop.Paused = func(int64) engine.Pause {
+		if limited {
+			return engine.Pause{LimitedUntil: now.Add(time.Hour)}
+		}
+
+		return engine.Pause{}
+	}
+	h.runner.onCall = func(c call) {
+		if c.method == "prepare" {
+			limited = true
+		}
+	}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusRunning, status)
+	assert.Equal(t, []string{"prepare", "release/keep"}, h.runner.trace())
+	assert.Equal(t, h.runner.callsOf("prepare")[0].runID, h.runner.callsOf("release")[0].runID)
+	assert.Empty(t, h.spy.ended(), "the run stays open")
+
+	h.clock.Advance(time.Hour)
+
+	status, err = h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, []string{"prepare", "release/keep", "work/start", "verify", "export", "release/remove"}, h.runner.trace())
+	assert.Equal(t, 1, h.spy.created())
+}
+
+// A runner fault is retried by itself on the same run, 30 seconds after the
+// first fault and 2 minutes after the second; a third waits for a person.
+func TestLoopRetriesAFault(t *testing.T) {
+	h := newHarness(t)
+
+	fault := step[engine.WorkResult]{err: errors.New("the container daemon is unreachable")}
+	h.runner.works = []step[engine.WorkResult]{fault, fault, fault, fault, fault}
+
+	// after moves the clock by d, runs the task and returns the runner calls the run made.
+	after := func(d time.Duration, want engine.Status) []string {
+		t.Helper()
+		h.clock.Advance(d)
+
+		before := len(h.runner.calls)
+
+		status, err := h.run(t.Context())
 		require.NoError(t, err)
-		assert.Equal(t, engine.StatusBlocked, status)
-		assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, h.runner.trace())
+		assert.Equal(t, want, status)
 
-		stop := h.lastStop()
-		assert.Equal(t, engine.StopUsageLimit, stop.Reason)
-		assert.True(t, now.Add(2*time.Hour).Equal(stop.ResetsAt))
+		return h.runner.trace()[before:]
+	}
 
-		h.clock.Advance(2*time.Hour + time.Minute)
+	faulted := []string{"work/continue", "release/keep"}
+
+	assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, after(0, engine.StatusBlocked))
+	assert.Empty(t, after(30*time.Second-time.Millisecond, engine.StatusBlocked), "no retry before 30 seconds")
+	assert.Equal(t, faulted, after(time.Millisecond, engine.StatusBlocked))
+	assert.Empty(t, after(2*time.Minute-time.Millisecond, engine.StatusBlocked), "no retry before 2 minutes")
+	assert.Equal(t, faulted, after(time.Millisecond, engine.StatusBlocked))
+	assert.Empty(t, after(time.Hour, engine.StatusBlocked), "a third fault waits for a person")
+
+	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+	assert.Equal(t, faulted, after(0, engine.StatusBlocked))
+	assert.Equal(t, faulted, after(30*time.Second, engine.StatusBlocked))
+	assert.Equal(t, []string{"work/continue", "verify", "export", "release/remove"}, after(2*time.Minute, engine.StatusInReview))
+
+	works := h.runner.callsOf("work")
+	require.Len(t, works, 6)
+
+	for _, w := range works[1:] {
+		assert.True(t, w.work.Resume)
+		assert.Equal(t, works[0].work.SessionID, w.work.SessionID)
+	}
+
+	assert.Equal(t, 1, h.spy.created(), "every retry runs on the first run")
+}
+
+func TestDependencies(t *testing.T) {
+	// dependent adds and starts a task that depends on the harness's task.
+	dependent := func(h *harness) store.Task {
+		h.t.Helper()
+		h.withBaseline()
+
+		b, err := engine.AddTask(h.t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{h.task.ID})
+		require.NoError(h.t, err)
+		require.NoError(h.t, h.loop.Start(h.t.Context(), b.ID))
+
+		return b
+	}
+
+	t.Run("a task is queued until its dependency is done", func(t *testing.T) {
+		h := newHarness(t)
+		b := dependent(h)
+
+		status, err := h.loop.RunTask(t.Context(), b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusQueued, status)
+		assert.Empty(t, h.runner.calls)
 
 		status, err = h.run(t.Context())
 		require.NoError(t, err)
-		assert.Equal(t, engine.StatusInReview, status)
-		assert.Equal(t, []string{
-			"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/remove",
-		}, h.runner.trace())
+		require.Equal(t, engine.StatusInReview, status)
 
-		works := h.runner.callsOf("work")
-		assert.True(t, works[1].work.Resume)
-		assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
-	})
+		status, err = h.loop.RunTask(t.Context(), b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusQueued, status, "a dependency in review is not done")
+		assert.Equal(t, happyTrace, h.runner.trace())
 
-	t.Run("ctx ending during a wait returns its error and writes no stop", func(t *testing.T) {
-		h := newHarness(t)
-		h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeUsageLimit, ResetsAt: now.Add(2 * time.Hour)}}}
+		require.NoError(t, h.loop.Done(t.Context(), h.task.ID))
 
-		status, err := h.run(newCancelAtWait())
-		require.ErrorIs(t, err, context.Canceled)
-		assert.Equal(t, engine.StatusBlocked, status)
-		assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, h.runner.trace())
-
-		stops := h.eventsOf(engine.Stopped)
-		require.Len(t, stops, 1)
-		assert.Equal(t, engine.StopUsageLimit, payloadOf[engine.StoppedPayload](t, stops[0]).Reason)
-	})
-
-	t.Run("a reset sooner than the deadline is waited out", func(t *testing.T) {
-		h := newHarness(t)
-		h.clock.moving, h.clock.start = true, time.Now()
-		h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeUsageLimit, ResetsAt: now.Add(2 * time.Hour)}}}
-
-		// Bring the reset to within a few milliseconds once the stop is recorded.
-		h.runner.onCall = func(c call) {
-			if c.method == "release" && !c.remove {
-				h.clock.Advance(2*time.Hour - 20*time.Millisecond)
-			}
-		}
-
-		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-		defer cancel()
-
-		status, err := h.run(ctx)
+		status, err = h.loop.RunTask(t.Context(), b.ID)
 		require.NoError(t, err)
 		assert.Equal(t, engine.StatusInReview, status)
-		assert.Equal(t, []string{
-			"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/remove",
-		}, h.runner.trace())
+		assert.Equal(t, append(slices.Clone(happyTrace), happyTrace...), h.runner.trace())
+	})
+
+	t.Run("a cancelled dependency stops the task until a person retries", func(t *testing.T) {
+		h := newHarness(t)
+		b := dependent(h)
+		require.NoError(t, h.loop.Cancel(t.Context(), h.task.ID))
+
+		status, err := h.loop.RunTask(t.Context(), b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status)
+		assert.Empty(t, h.runner.calls)
+
+		stop := h.lastStopOf(b.ID)
+		assert.Equal(t, engine.StopDependency, stop.Reason)
+		assert.Equal(t, engine.ClearRetry, stop.Action)
+		assert.Contains(t, stop.Explanation, strconv.FormatInt(h.task.ID, 10))
+
+		require.NoError(t, engine.EditTask(t.Context(), h.store, b, nil))
+		require.NoError(t, h.loop.Retry(t.Context(), b.ID))
+
+		status, err = h.loop.RunTask(t.Context(), b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, happyTrace, h.runner.trace())
 	})
 }
-
-// cancelAtWait is a context that ends when asked for its deadline, which the
-// loop does only as a wait begins, so the wait sees it end without a race.
-type cancelAtWait struct {
-	once sync.Once
-	done chan struct{}
-}
-
-func newCancelAtWait() *cancelAtWait { return &cancelAtWait{done: make(chan struct{})} }
-
-func (c *cancelAtWait) Deadline() (time.Time, bool) {
-	c.once.Do(func() { close(c.done) })
-
-	return time.Time{}, false
-}
-
-func (c *cancelAtWait) Done() <-chan struct{} { return c.done }
-
-func (c *cancelAtWait) Err() error {
-	select {
-	case <-c.done:
-		return context.Canceled
-	default:
-		return nil
-	}
-}
-
-func (c *cancelAtWait) Value(any) any { return nil }
 
 func TestLoopActionCap(t *testing.T) {
 	h := newHarness(t)
 
-	// The frozen clock never reaches a reset a nanosecond away, so the loop waits forever.
-	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeUsageLimit, ResetsAt: now.Add(time.Nanosecond)}}}
+	// A usage limit that has reset by the time its stop is released never lets the task rest.
+	h.runner.works = slices.Repeat([]step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeUsageLimit}}}, 100)
+	h.runner.onCall = func(c call) {
+		if c.method == "release" {
+			h.clock.Advance(time.Hour)
+		}
+	}
 
 	_, err := h.run(t.Context())
 	require.ErrorIs(t, err, engine.ErrActionCap)
-	assert.Len(t, h.eventsOf(engine.Stopped), 1, "hitting the cap writes no stop")
+	assert.Len(t, h.eventsOf(engine.Stopped), len(h.eventsOf(engine.SessionEnded))-1, "hitting the cap writes no stop")
 }
 
 func TestRetryAfterVerifyFailed(t *testing.T) {
@@ -1785,4 +1955,78 @@ func TestLoopStopsWithoutConfig(t *testing.T) {
 		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: r.ID, ProjectID: h.task.ProjectID,
 	}, h.runner.calls[0].ref)
 	assert.Equal(t, map[int64]string{r.ID: engine.StopCancelled}, h.spy.ended())
+}
+
+// A run config that cannot be built is a stop a person clears by fixing the
+// cause and retrying, as a runner fault is; nothing of the runner runs.
+func TestLoopStopsOnABrokenRunConfig(t *testing.T) {
+	const missing = "project.web.NPM_TOKEN" // the vault name of the secret the project names
+
+	// unset makes the project name a secret that is not set.
+	unset := func(h *harness) {
+		p := h.project()
+		p.SecretVars = []string{"NPM_TOKEN"}
+		require.NoError(h.t, h.store.UpdateProject(h.t.Context(), p))
+	}
+
+	// fix sets the secret and records a person's retry.
+	fix := func(h *harness) {
+		require.NoError(h.t, h.vault.Set(h.t.Context(), missing, "npm-secret-value"))
+		require.NoError(h.t, h.loop.Retry(h.t.Context(), h.task.ID))
+	}
+
+	t.Run("before a run", func(t *testing.T) {
+		h := newHarness(t)
+		unset(h)
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status)
+		assert.Empty(t, h.runner.trace())
+
+		stop := h.lastStop()
+		assert.Equal(t, engine.StopSandbox, stop.Reason)
+		assert.Equal(t, engine.ClearRetry, stop.Action)
+		assert.Contains(t, stop.Explanation, missing)
+
+		evs := h.events()
+		assert.Equal(t, []string{engine.Stopped}, types(evs))
+		assert.Zero(t, evs[0].RunID, "the stop carries no run")
+		assert.Equal(t, 1, h.spy.created())
+		assert.Equal(t, []string{engine.RunAbandoned}, slices.Collect(maps.Values(h.spy.ended())), "the new run's row is abandoned")
+
+		fix(h)
+
+		status, err = h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, happyTrace, h.runner.trace())
+	})
+
+	t.Run("with a run open", func(t *testing.T) {
+		h := newHarness(t)
+		r := h.seed(ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`))
+		unset(h)
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status)
+		assert.Equal(t, []string{"release/keep"}, h.runner.trace(), "the run's containers stop and its volumes stay")
+		assert.Equal(t, r.ID, h.runner.callsOf("release")[0].runID)
+		assert.Empty(t, h.spy.ended(), "the run stays open")
+
+		stops := h.eventsOf(engine.Stopped)
+		require.Len(t, stops, 1)
+		assert.Equal(t, r.ID, stops[0].RunID)
+		assert.Contains(t, h.lastStop().Explanation, missing)
+		assert.Empty(t, h.eventsOf(engine.RunEnded))
+
+		fix(h)
+
+		status, err = h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, []string{"release/keep", "work/start", "verify", "export", "release/remove"}, h.runner.trace())
+		assert.Zero(t, h.spy.created(), "the work goes on in the same run")
+	})
 }

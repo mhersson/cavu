@@ -141,7 +141,13 @@ func TestMigrationTwoOnExistingDatabase(t *testing.T) {
 	old, err := open(ctx, path, migrations[:1])
 	require.NoError(t, err)
 
-	task := seedTask(t, old)
+	_, err = old.db.Exec(`INSERT INTO projects (name, repo_url, base_branch, setup_command, verify_command,
+		verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches)
+		VALUES ('p', 'r', 'main', '', '', 0, '{}', '[]', '{}', '[]', '{}')`)
+	require.NoError(t, err)
+	_, err = old.db.Exec(`INSERT INTO tasks (project_id, title, body, requester, base_commit, reference,
+		replay_id, overrides, created_at) VALUES (1, 't', '', 'cli', '', 0, 0, '{}', 1)`)
+	require.NoError(t, err)
 	require.False(t, tableExists(t, old, "replays"))
 	require.NoError(t, old.Close())
 
@@ -153,9 +159,9 @@ func TestMigrationTwoOnExistingDatabase(t *testing.T) {
 	require.True(t, tableExists(t, s, "replays"))
 	require.True(t, tableExists(t, s, "replay_items"))
 
-	got, err := s.Task(ctx, task.ID)
+	got, err := s.Task(ctx, 1)
 	require.NoError(t, err)
-	require.Equal(t, task.Title, got.Title)
+	require.Equal(t, "t", got.Title)
 
 	var versions int
 	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version IN (1, 2)`).Scan(&versions))

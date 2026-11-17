@@ -168,7 +168,7 @@ func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (drive
 		Model: c.Agent.Model, Effort: c.Agent.Effort, MaxTurns: c.Agent.MaxTurns,
 		Instructions: instructions, OutputSchema: prompts.ResultSchema(),
 		Dir: workspace, BaseCommit: c.Repo.BaseCommit, Home: home, ConfigDir: configDir,
-		Env: sessionEnv(ecosystems, c.Repo.BaseCommit), WebTools: c.Agent.WebTools,
+		Env: withProjectVars(sessionEnv(ecosystems, c.Repo.BaseCommit), c), WebTools: c.Agent.WebTools,
 	}
 
 	if c.Endpoint.Mode == modeKey {

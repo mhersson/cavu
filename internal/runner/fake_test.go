@@ -86,6 +86,7 @@ type fakeSandbox struct {
 	readCode int
 	results  map[string]sandbox.Result // by step name
 	runErrs  map[string]error
+	onRead   func()            // runs as the root files are read
 	onRun    func(name string) // runs as a command starts, before its answer
 	downErr  error
 	volErr   error
@@ -318,8 +319,12 @@ func (c fakeContainer) Start(_ context.Context, cmd proc.Command) (proc.Process,
 
 	c.f.mu.Lock()
 	c.f.reads = append(c.f.reads, cmd.Argv[4])
-	files, code := maps.Clone(c.f.files), c.f.readCode
+	files, code, hook := maps.Clone(c.f.files), c.f.readCode, c.f.onRead
 	c.f.mu.Unlock()
+
+	if hook != nil {
+		hook()
+	}
 
 	if cmd.Stdout != nil {
 		_, _ = cmd.Stdout.Write(frame(files))

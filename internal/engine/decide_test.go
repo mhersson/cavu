@@ -20,6 +20,7 @@ type decideCase struct {
 	snap       engine.Snapshot
 	want       engine.Action
 	explainHas string // a value the stop's explanation must carry
+	whyHas     string // a value the action's why must carry
 	clock      bool   // the action changes when Now moves an hour
 }
 
@@ -28,7 +29,21 @@ func snap(f engine.Facts) engine.Snapshot {
 }
 
 func snapWith(f engine.Facts, sw engine.Switches) engine.Snapshot {
-	return engine.Snapshot{Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2}}
+	return engine.Snapshot{Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, FaultRetries: 2}}
+}
+
+func withDeps(f engine.Facts, deps ...engine.Dep) engine.Snapshot {
+	s := snap(f)
+	s.Deps = deps
+
+	return s
+}
+
+func paused(f engine.Facts, p engine.Pause) engine.Snapshot {
+	s := snap(f)
+	s.Pause = p
+
+	return s
 }
 
 func prepared() engine.Facts {
@@ -47,6 +62,16 @@ func resumed(from, answer string) engine.Facts {
 	f := prepared()
 	f.SessionID = "s1"
 	f.Resumed = &engine.Resume{From: from, Answer: answer}
+
+	return f
+}
+
+// faulted is a session claimed and cut by its nth runner fault, recorded at at.
+func faulted(n int, at time.Time) engine.Facts {
+	f := prepared()
+	f.SessionID = "s1"
+	f.OpenStop = &engine.StopFact{Reason: engine.StopSandbox, At: at}
+	f.Faults = n
 
 	return f
 }
@@ -119,18 +144,56 @@ func decideCases() []decideCase {
 
 	longSummary := strings.Repeat("日本語", 200)
 
+	merged := exported
+	merged.Merged = true
+
+	mergedStop := openStop(engine.StopUsageLimit, resets)
+	mergedStop.Exported, mergedStop.Merged = true, true
+
+	continueWork := work(engine.ModeContinue, false)
+	wait := func(until time.Time) engine.Action { return engine.Action{Kind: engine.KindWait, Until: until} }
+	prepare := engine.Action{Kind: engine.KindPrepare, NewRun: true}
+	endpointPause := engine.Pause{EndpointTask: 7}
+	limitPause := engine.Pause{LimitedUntil: now.Add(time.Hour), LimitedBy: 9}
+
 	return []decideCase{
 		{name: "not started", snap: snap(engine.Facts{}), want: none},
 		{name: "cancelled", snap: snap(engine.Facts{Started: true, Cancelled: true, RunOpen: true}), want: halt(engine.StopCancelled, engine.ClearNone)},
 		{name: "cancelled with another stop open", snap: snap(cancelledQuestion), want: halt(engine.StopCancelled, engine.ClearNone)},
+		{name: "merged", snap: snap(merged), want: none},
+		{name: "merged with a stale stop", snap: snap(mergedStop), want: none},
 		{name: "usage limit before its reset", snap: snap(openStop(engine.StopUsageLimit, resets)), want: engine.Action{Kind: engine.KindWait, Until: resets}, clock: true},
 		{name: "usage limit reset reached", snap: snap(openStop(engine.StopUsageLimit, reset)), want: work(engine.ModeContinue, false), clock: true},
 		{name: "usage limit with no reset time", snap: snap(openStop(engine.StopUsageLimit, time.Time{})), want: work(engine.ModeContinue, false)},
+		{name: "a first fault before its backoff", snap: snap(faulted(1, now)), want: wait(now.Add(30 * time.Second)), clock: true},
+		{name: "a first fault after its backoff", snap: snap(faulted(1, now.Add(-30*time.Second-time.Nanosecond))), want: continueWork, clock: true},
+		{name: "a second fault before its backoff", snap: snap(faulted(2, now)), want: wait(now.Add(2 * time.Minute)), clock: true},
+		{name: "a second fault after its backoff", snap: snap(faulted(2, now.Add(-2*time.Minute-time.Nanosecond))), want: continueWork, clock: true},
+		{name: "a third fault", snap: snap(faulted(3, now)), want: none},
 		{name: "another open stop", snap: snap(openStop(engine.StopQuestion, time.Time{})), want: none},
 		{name: "cancelled with its stop recorded", snap: snap(cancelledStop), want: none},
 		{name: "exported with the run open", snap: snap(exportedOpen), want: engine.Action{Kind: engine.KindFinish}},
 		{name: "exported", snap: snap(exported), want: none},
-		{name: "no open run", snap: snap(startedOnly), want: engine.Action{Kind: engine.KindPrepare, NewRun: true}},
+		{
+			name: "a cancelled dependency", explainHas: "42",
+			snap: withDeps(startedOnly, engine.Dep{TaskID: 41, Status: engine.StatusQueued}, engine.Dep{TaskID: 42, Status: engine.StatusCancelled}),
+			want: halt(engine.StopDependency, engine.ClearRetry),
+		},
+		{
+			name: "a dependency in review", whyHas: "41",
+			snap: withDeps(startedOnly, engine.Dep{TaskID: 40, Status: engine.StatusDone}, engine.Dep{TaskID: 41, Status: engine.StatusInReview}),
+			want: wait(time.Time{}),
+		},
+		{name: "dependencies done", snap: withDeps(startedOnly, engine.Dep{TaskID: 40, Status: engine.StatusDone}), want: prepare},
+		{
+			name: "a cancelled dependency with a run open", snap: withDeps(prepared(), engine.Dep{TaskID: 42, Status: engine.StatusCancelled}),
+			want: work(engine.ModeStart, false),
+		},
+		{
+			name: "a dependency not done with a run open", snap: withDeps(prepared(), engine.Dep{TaskID: 41, Status: engine.StatusQueued}),
+			want: work(engine.ModeStart, false),
+		},
+		{name: "no open run", snap: snap(startedOnly), want: prepare},
 		{name: "resumed from environment", snap: snap(resumed(engine.StopEnvironment, "")), want: engine.Action{Kind: engine.KindPrepare, NewRun: true}},
 		{name: "run not prepared", snap: snap(unprepared), want: engine.Action{Kind: engine.KindPrepare}},
 		{name: "prepare failed", snap: snap(prepareFailed), want: halt(engine.StopEnvironment, engine.ClearRetry), explainHas: "setup"},
@@ -198,6 +261,17 @@ func decideCases() []decideCase {
 		{name: "verify timed out at the fix cap", snap: snap(verified(engine.ResultTimeout, 2)), want: halt(engine.StopVerifyFailed, engine.ClearRetry)},
 		{name: "verify passed", snap: snap(verified(engine.ResultPassed, 0)), want: engine.Action{Kind: engine.KindExport}},
 		{name: "verify waived", snap: snap(verified(engine.ResultWaived, 0)), want: engine.Action{Kind: engine.KindExport}},
+		{name: "an endpoint pause holds a session", snap: paused(prepared(), endpointPause), want: wait(time.Time{}), whyHas: "7"},
+		{name: "an endpoint pause holds a prepare", snap: paused(startedOnly, endpointPause), want: wait(time.Time{}), whyHas: "7"},
+		{name: "an endpoint pause leaves a verify alone", snap: paused(verified("", 0), endpointPause), want: engine.Action{Kind: engine.KindVerify}},
+		{name: "an endpoint pause leaves an export alone", snap: paused(verified(engine.ResultPassed, 0), endpointPause), want: engine.Action{Kind: engine.KindExport}},
+		{name: "a usage limit pause holds a session", snap: paused(prepared(), limitPause), want: wait(limitPause.LimitedUntil), whyHas: "9", clock: true},
+		{name: "a usage limit pause holds a prepare", snap: paused(startedOnly, limitPause), want: wait(limitPause.LimitedUntil), whyHas: "9", clock: true},
+		{name: "a usage limit pause leaves a verify alone", snap: paused(verified("", 0), limitPause), want: engine.Action{Kind: engine.KindVerify}},
+		{
+			name: "a usage limit pause already past", snap: paused(prepared(), engine.Pause{LimitedUntil: now.Add(-time.Minute)}),
+			want: work(engine.ModeStart, false), clock: true,
+		},
 	}
 }
 
@@ -218,6 +292,10 @@ func TestDecide(t *testing.T) {
 
 			if tc.explainHas != "" {
 				assert.Contains(t, got.Explain, tc.explainHas)
+			}
+
+			if tc.whyHas != "" {
+				assert.Contains(t, got.Why, tc.whyHas)
 			}
 
 			got.Why, got.Explain = "", ""

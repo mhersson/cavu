@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
@@ -164,7 +166,7 @@ func TestPrepareEnvironments(t *testing.T) {
 	assert.Contains(t, f.run(t, "make setup").cmd.Env, base)
 
 	verifyEnv := f.run(t, "make test").cmd.Env
-	assert.ElementsMatch(t, append(env.AgentEnv([]string{"go"}, "/home/agent"), append(proxyVars, base)...), verifyEnv)
+	assert.ElementsMatch(t, append(env.AgentEnv([]string{"go"}, "/home/agent"), append(proxyVars, base, "APP_ENV=test")...), verifyEnv)
 	assert.Equal(t, "/workspace", f.run(t, "make test").cmd.Dir)
 	assert.Equal(t, "/workspace", f.run(t, "make setup").cmd.Dir)
 }
@@ -191,8 +193,6 @@ func TestSetupSecretsOnlyInSetupPhase(t *testing.T) {
 	}
 
 	for _, r := range f.runsIn(sandbox.PhaseAgent) {
-		assert.NotContains(t, fmt.Sprint(r.cmd), "APP_ENV", r.name)
-
 		for _, secret := range planted {
 			assert.NotContains(t, fmt.Sprint(r.cmd), secret, r.name)
 		}
@@ -617,4 +617,164 @@ func TestCheckEnvironmentWithoutAVerifyCommandReportsTheWorkspace(t *testing.T) 
 
 	_, err = f.runner().Prepare(t.Context(), c)
 	require.Error(t, err, "a task cannot start without a verify command")
+}
+
+func TestSetupsOfOneProjectTakeTurns(t *testing.T) {
+	// block holds each setup command until the test releases it; inside counts
+	// the setups between their install and their reshim.
+	setup := func(f *fakeSandbox) (entered, release chan struct{}, maxInside func() int) {
+		entered, release = make(chan struct{}, 2), make(chan struct{}, 2)
+
+		var (
+			mu      sync.Mutex
+			now, hi int
+		)
+
+		f.onRun = func(name string) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch name {
+			case "mise install":
+				now++
+				hi = max(hi, now)
+			case reshimName:
+				now--
+			case "make setup":
+				mu.Unlock()
+
+				entered <- struct{}{}
+
+				<-release
+
+				mu.Lock()
+			}
+		}
+
+		return entered, release, func() int {
+			mu.Lock()
+			defer mu.Unlock()
+
+			return hi
+		}
+	}
+
+	prepareIn := func(r *Runner, project, run int64) <-chan error {
+		c := testConfig()
+		c.ProjectID, c.RunID = project, run
+		done := make(chan error, 1)
+
+		go func() {
+			_, err := r.Prepare(t.Context(), c)
+			done <- err
+		}()
+
+		return done
+	}
+
+	t.Run("one project", func(t *testing.T) {
+		f := newFake()
+		read := make(chan struct{}, 1)
+		f.onRead = func() { read <- struct{}{} }
+		r := f.runner()
+
+		held, err := r.takeTurn(t.Context(), 3)
+		require.NoError(t, err)
+
+		defer held()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		c := testConfig()
+		c.ProjectID = 3
+		done := make(chan error, 1)
+
+		go func() {
+			_, err := r.Prepare(ctx, c)
+			done <- err
+		}()
+
+		// Past detection the prepare reaches its setup, which only the turn holds back.
+		<-read
+		cancel()
+
+		require.ErrorIs(t, <-done, context.Canceled)
+
+		for _, run := range f.runsIn(sandbox.PhaseSetup) {
+			assert.NotEqual(t, "mise install", run.name, "the install ran while another setup held the turn")
+		}
+	})
+
+	t.Run("two projects", func(t *testing.T) {
+		f := newFake()
+		entered, release, maxInside := setup(f)
+		r := f.runner()
+
+		first, second := prepareIn(r, 3, 7), prepareIn(r, 4, 8)
+
+		// Both sit inside their setup command at once.
+		<-entered
+		<-entered
+
+		release <- struct{}{}
+
+		release <- struct{}{}
+
+		require.NoError(t, <-first)
+		require.NoError(t, <-second)
+		assert.Equal(t, 2, maxInside())
+	})
+
+	t.Run("a wait ends with its context", func(t *testing.T) {
+		r := newFake().runner()
+
+		held, err := r.takeTurn(t.Context(), 3)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		_, err = r.takeTurn(ctx, 3)
+		require.ErrorIs(t, err, context.Canceled)
+
+		held()
+
+		release, err := r.takeTurn(t.Context(), 3)
+		require.NoError(t, err)
+		release()
+	})
+}
+
+func TestPlainVariablesReachEveryPhase(t *testing.T) {
+	f := newFake()
+	c := workConfig()
+	c.Setup.Env = map[string]string{"LINT_HOME": "/x"}
+	c.Setup.Secrets = map[string]string{"TOKEN": "tok-secret"}
+	f.results[freezeName(c, "Fix login")] = sandbox.Result{Output: headCommit + "\n"}
+	d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "done"})}}}
+	r := f.workRunner(d)
+
+	_, err := r.Prepare(t.Context(), c)
+	require.NoError(t, err)
+
+	_, err = r.Work(t.Context(), c, startWork, noProgress)
+	require.NoError(t, err)
+	require.Len(t, d.specs, 1)
+
+	setupEnv := f.run(t, "make setup").cmd.Env
+	assert.Contains(t, setupEnv, "LINT_HOME=/x")
+	assert.Contains(t, setupEnv, "TOKEN=tok-secret")
+
+	for name, got := range map[string][]string{
+		"verify":  f.run(t, "make test").cmd.Env,
+		"session": d.specs[0].Env,
+	} {
+		assert.Contains(t, got, "LINT_HOME=/x", name)
+		assert.NotContains(t, fmt.Sprint(got), "tok-secret", name)
+	}
+
+	freeze := fmt.Sprint(f.run(t, freezeName(c, "Fix login")).cmd.Env)
+	assert.NotContains(t, freeze, "LINT_HOME")
+	assert.NotContains(t, freeze, "tok-secret")
 }

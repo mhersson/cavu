@@ -111,15 +111,23 @@ func TestDoctorWithoutProject(t *testing.T) {
 
 func TestDoctorIsRefusedByLock(t *testing.T) {
 	dir := t.TempDir()
-	fakeDoctor(t, nil)
+	got := fakeDoctor(t, nil)
+	holdLock(t, dir, "verb")
 
-	a, err := openApp(t.Context(), dir)
-	require.NoError(t, err)
-
-	defer a.close()
-
-	require.NoError(t, a.lock())
-
-	code, _, _ := runCavu("doctor", "--data-dir", dir)
+	code, _, stderr := runCavu("doctor", "--data-dir", dir)
 	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr, filepath.Join(dir, "lock"))
+	assert.Empty(t, got.Version, "no check runs")
+}
+
+func TestDoctorRefusedUnderAServer(t *testing.T) {
+	dir := t.TempDir()
+	got := fakeDoctor(t, nil)
+	holdLock(t, dir, "serve")
+
+	code, _, stderr := runCavu("doctor", "--data-dir", dir)
+	assert.Equal(t, 1, code)
+	assert.NotEmpty(t, stderr)
+	assert.NotContains(t, stderr, filepath.Join(dir, "lock"), "the server is named, not the lock")
+	assert.Empty(t, got.Version, "no check runs")
 }

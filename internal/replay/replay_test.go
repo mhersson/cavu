@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -22,12 +24,13 @@ import (
 
 // fakeRunner answers from queues, then with a success, and records what it saw.
 type fakeRunner struct {
-	mu       sync.Mutex
-	configs  []engine.RunConfig
-	modes    []string
-	works    []engine.WorkResult
-	verifies []engine.VerifyResult
-	releases []release
+	mu         sync.Mutex
+	configs    []engine.RunConfig
+	modes      []string
+	works      []engine.WorkResult
+	verifies   []engine.VerifyResult
+	releases   []release
+	duringWork func(n int) // runs inside the nth Work call, counted from 1
 }
 
 // release is one Release call.
@@ -45,11 +48,19 @@ func (r *fakeRunner) Prepare(_ context.Context, c engine.RunConfig) (engine.Prep
 	return engine.PrepareResult{BaseCommit: c.Repo.BaseCommit, Baseline: "passed"}, nil
 }
 
-func (r *fakeRunner) Work(_ context.Context, _ engine.RunConfig, w engine.WorkRequest, _ func(engine.Progress)) (engine.WorkResult, error) {
+func (r *fakeRunner) Work(ctx context.Context, _ engine.RunConfig, w engine.WorkRequest, _ func(engine.Progress)) (engine.WorkResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.modes = append(r.modes, w.Mode)
+
+	if r.duringWork != nil {
+		r.duringWork(len(r.modes))
+	}
+
+	if err := ctx.Err(); err != nil {
+		return engine.WorkResult{}, err
+	}
 
 	if len(r.works) == 0 {
 		return engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, Title: "Done", Turns: 1}, nil
@@ -120,7 +131,7 @@ func newEnv(t *testing.T) *env {
 
 	p, err := s.CreateProject(ctx, store.Project{
 		Name: "web", RepoURL: "https://example.com/web.git", BaseBranch: "main",
-		SetupCommand: "make setup", VerifyCommand: "make test",
+		SetupCommand: "make setup", VerifyCommand: "make test", Baseline: &store.Baseline{Commit: "tip", Passed: true},
 	})
 	require.NoError(t, err)
 
@@ -176,12 +187,17 @@ func (e *env) shadows(t *testing.T) []store.Task {
 	return out
 }
 
+// drive drives the shadow until it rests, as a scheduler would.
+func (e *env) drive(ctx context.Context, taskID int64) (engine.Status, error) {
+	return e.loop.RunTask(ctx, taskID)
+}
+
 func (e *env) run(t *testing.T, c replay.Config) (store.Replay, []store.ReplayItem, string) {
 	t.Helper()
 
 	var out bytes.Buffer
 
-	r, err := replay.Run(t.Context(), e.store, e.loop, c, &out)
+	r, err := replay.Run(t.Context(), e.store, e.loop, c, e.drive, &out)
 	require.NoError(t, err)
 
 	items, err := e.store.ReplayItems(t.Context(), r.ID)
@@ -454,7 +470,7 @@ func TestReplayEmptySet(t *testing.T) {
 
 	var out bytes.Buffer
 
-	_, err := replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x"}, &out)
+	_, err := replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x"}, e.drive, &out)
 	require.ErrorIs(t, err, replay.ErrNoReferenceTasks)
 
 	_, ok, err := e.store.PreviousReplay(t.Context(), 1<<40)
@@ -491,7 +507,7 @@ func TestReplayRunErrorEndsTheReplay(t *testing.T) {
 
 	var out bytes.Buffer
 
-	r, err := replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x"}, &out)
+	r, err := replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x"}, e.drive, &out)
 	require.Error(t, err)
 	assert.NotZero(t, r.ID)
 
@@ -506,4 +522,126 @@ func TestReplayRunErrorEndsTheReplay(t *testing.T) {
 	_, ok, err := e.store.PreviousReplay(t.Context(), r.ID+1)
 	require.NoError(t, err)
 	assert.False(t, ok, "a cut-off replay is not a comparison base")
+}
+
+// events reads the task's events.
+func (e *env) events(t *testing.T, taskID int64) []store.Event {
+	t.Helper()
+
+	evs, err := e.store.Events(t.Context(), taskID, 0, 0)
+	require.NoError(t, err)
+
+	return evs
+}
+
+func TestReplayDrivesItsShadows(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	e.task(t, "one", true, "aaa")
+	e.task(t, "two", true, "bbb")
+	e.runner.verifies = []engine.VerifyResult{{Result: engine.ResultFailed, Command: "make test"}}
+
+	var driven []int64
+
+	r, err := replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x", VerifyFix: new(false)},
+		func(ctx context.Context, id int64) (engine.Status, error) {
+			driven = append(driven, id)
+
+			return e.drive(ctx, id)
+		}, io.Discard)
+	require.NoError(t, err)
+	require.NotNil(t, r.EndedAt)
+
+	shadows := e.shadows(t)
+	require.Len(t, shadows, 2)
+	assert.Equal(t, []int64{shadows[0].ID, shadows[0].ID, shadows[1].ID}, driven,
+		"each shadow is driven once it is started, and a stopped one again once it is cancelled")
+
+	for _, sh := range shadows {
+		assert.Equal(t, engine.TaskStarted, e.events(t, sh.ID)[0].Type, "a shadow starts as any task does")
+	}
+}
+
+func TestInterruptedReplayCancelsItsShadows(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	e.task(t, "one", true, "aaa")
+	e.task(t, "two", true, "bbb")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	e.runner.duringWork = func(n int) {
+		if n == 2 {
+			cancel()
+		}
+	}
+
+	r, err := replay.Run(ctx, e.store, e.loop, replay.Config{Name: "x"}, e.drive, io.Discard)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, r.EndedAt)
+
+	_, ok, err := e.store.PreviousReplay(t.Context(), r.ID+1)
+	require.NoError(t, err)
+	assert.False(t, ok, "an interrupted replay is not a comparison base")
+
+	shadows := e.shadows(t)
+	require.Len(t, shadows, 2)
+
+	for i, want := range []engine.Status{engine.StatusInReview, engine.StatusCancelled} {
+		evs := e.events(t, shadows[i].ID)
+		assert.Equal(t, want, engine.StatusOf(engine.Reduce(evs)))
+		assert.Equal(t, i == 1, slices.ContainsFunc(evs, func(ev store.Event) bool { return ev.Type == engine.HumanCancelled }),
+			"only the shadow the interrupt cut is cancelled")
+	}
+}
+
+func TestReplayRefusedWithoutBaseline(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	e.task(t, "one", true, "aaa")
+
+	e.project.Baseline = nil
+	require.NoError(t, e.store.UpdateProject(t.Context(), e.project))
+
+	r, err := replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x"}, e.drive, io.Discard)
+	require.ErrorIs(t, err, engine.ErrNoBaseline)
+	assert.Nil(t, r.EndedAt)
+	assert.Empty(t, e.runner.configs, "no run starts")
+
+	for _, sh := range e.shadows(t) {
+		assert.Empty(t, e.events(t, sh.ID))
+	}
+}
+
+func TestShadowCancelledFromOutsideEndsTheReplay(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	e.task(t, "one", true, "aaa")
+	e.task(t, "two", true, "bbb")
+
+	// As a person, or another replay, cancels the shadow while it is driven.
+	drive := func(ctx context.Context, id int64) (engine.Status, error) {
+		require.NoError(t, e.loop.Cancel(ctx, id))
+
+		return e.drive(ctx, id)
+	}
+
+	r, err := replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x"}, drive, io.Discard)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, engine.ErrRefused, "the replay cancels nothing itself")
+	assert.Nil(t, r.EndedAt)
+
+	_, ok, err := e.store.PreviousReplay(t.Context(), r.ID+1)
+	require.NoError(t, err)
+	assert.False(t, ok, "a replay with a shadow cancelled from outside is not a comparison base")
+
+	items, err := e.store.ReplayItems(t.Context(), r.ID)
+	require.NoError(t, err)
+	assert.Empty(t, items)
+	assert.Len(t, e.shadows(t), 1, "the second source never starts")
 }
