@@ -24,7 +24,7 @@ func TestProjectsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, fmt.Sprintf(`{"id": 1, "name": "web", "repo_url": "https://example.com/web.git", "base_branch": "main",
 		"setup_command": "", "verify_command": "make test", "verify_waived": false,
-		"tool_overrides": {}, "egress_hosts": [], "env": {}, "secret_vars": [], "switches": %s,
+		"tool_overrides": {}, "egress_hosts": [], "env": {}, "secret_vars": [], "switches": %s, "caps": {},
 		"runnable": false, "baseline": null,
 		"check": {"requested_at": null, "tools": [], "ignored_tools": [], "failed_step": "", "verify_suggestion": "",
 			"fault": "", "commit": "", "output": ""}}`, switches), created)
@@ -183,6 +183,64 @@ func TestProjectSecretsAreWriteOnly(t *testing.T) {
 
 	for _, b := range f.bodies {
 		assert.NotContains(t, b, secret)
+	}
+}
+
+func TestProjectCapsOverREST(t *testing.T) {
+	f := newServer(t)
+
+	status, body := f.call(t, "POST /api/projects", `{"name": "web", "repo_url": "https://example.com/web.git",
+		"caps": {"task_max_turns": "200"}}`)
+	require.Equal(t, http.StatusCreated, status, body)
+	assert.Equal(t, map[string]any{"task_max_turns": "200"}, object(t, body)["caps"])
+
+	stored := func(t *testing.T) []store.Project {
+		t.Helper()
+
+		ps, err := f.store.Projects(t.Context())
+		require.NoError(t, err)
+
+		return ps
+	}
+
+	for _, tc := range []struct {
+		name, patch string
+		want        map[string]string
+	}{
+		{"a cap is added beside the others", `{"caps": {"task_budget_usd": "5"}}`, map[string]string{"task_max_turns": "200", "task_budget_usd": "5"}},
+		{"an empty value removes a cap", `{"caps": {"task_max_turns": ""}}`, map[string]string{"task_budget_usd": "5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := f.call(t, "PATCH /api/projects/1", tc.patch)
+			require.Equal(t, http.StatusOK, status, body)
+
+			assert.Equal(t, tc.want, stored(t)[0].Caps)
+
+			shown := map[string]any{}
+			for k, v := range tc.want {
+				shown[k] = v
+			}
+
+			assert.Equal(t, shown, object(t, body)["caps"])
+		})
+	}
+
+	for _, tc := range []struct{ name, route, body string }{
+		{"a key that is no cap", "PATCH /api/projects/1", `{"caps": {"concurrency": "4"}}`},
+		{"a value the engine refuses", "PATCH /api/projects/1", `{"caps": {"task_max_turns": "-1"}}`},
+		{
+			"a key that is no cap, on a new project", "POST /api/projects",
+			`{"name": "api", "repo_url": "https://example.com/api.git", "caps": {"concurrency": "4"}}`,
+		},
+	} {
+		t.Run("refused: "+tc.name, func(t *testing.T) {
+			before := stored(t)
+
+			status, body := f.call(t, tc.route, tc.body)
+			require.Equal(t, http.StatusBadRequest, status, body)
+			assertError(t, body)
+			assert.Equal(t, before, stored(t), "a refused request writes nothing")
+		})
 	}
 }
 

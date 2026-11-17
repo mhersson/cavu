@@ -1,11 +1,14 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mhersson/cavu/internal/engine"
 )
 
 func TestSettingsRoundTrip(t *testing.T) {
@@ -94,4 +97,50 @@ func TestSettingsRoundTrip(t *testing.T) {
 	for _, b := range f.bodies {
 		assert.NotContains(t, b, secret)
 	}
+}
+
+func TestModelPricesRoundTrip(t *testing.T) {
+	const prices = `{"claude-sonnet-4-5-20250929": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75},
+		"*": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75}}`
+
+	f := newServer(t)
+
+	shown := func(t *testing.T, body string) string {
+		t.Helper()
+
+		settings, ok := object(t, body)["settings"].(map[string]any)
+		require.True(t, ok, body)
+
+		b, err := json.Marshal(settings["model_prices"])
+		require.NoError(t, err)
+
+		return string(b)
+	}
+
+	status, body := f.call(t, "PATCH /api/settings", `{"settings": {"model_prices": `+prices+`}}`)
+	require.Equal(t, http.StatusOK, status, body)
+	assert.JSONEq(t, prices, shown(t, body))
+
+	status, body = f.call(t, "GET /api/settings", "")
+	require.Equal(t, http.StatusOK, status, body)
+	assert.JSONEq(t, prices, shown(t, body), "an object comes back as one")
+
+	stored, err := f.store.Settings(t.Context())
+	require.NoError(t, err)
+
+	got, err := engine.Prices(stored)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]engine.Price{
+		"claude-sonnet-4-5-20250929": {Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75},
+		"*":                          {Input: 15, Output: 75, CacheRead: 1.5, CacheWrite: 18.75},
+	}, got)
+
+	status, body = f.call(t, "PATCH /api/settings", `{"settings": {"model_prices":
+		{"*": {"input": -1, "output": 75, "cache_read": 1.5, "cache_write": 18.75}}}}`)
+	require.Equal(t, http.StatusBadRequest, status, body)
+	assertError(t, body)
+
+	after, err := f.store.Settings(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, stored, after, "a refused price writes nothing")
 }

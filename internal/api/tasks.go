@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"time"
@@ -15,21 +16,24 @@ import (
 // taskJSON is a task as the API shows it. Its lists are never nil, so they go
 // out as [], never null.
 type taskJSON struct {
-	ID              int64          `json:"id"`
-	Project         string         `json:"project"`
-	Title           string         `json:"title"`
-	Body            string         `json:"body"`
-	Requester       string         `json:"requester"`
-	CreatedAt       time.Time      `json:"created_at"`
-	Status          engine.Status  `json:"status"`
-	Waiting         string         `json:"waiting"`
-	DependsOn       []int64        `json:"depends_on"`
-	Stop            *stopJSON      `json:"stop"`
-	Questions       []questionJSON `json:"questions"`
-	Change          *changeJSON    `json:"change"`
-	Turns           int            `json:"turns"`
-	DurationMS      int64          `json:"duration_ms"`
-	CostEstimateUSD float64        `json:"cost_estimate_usd"`
+	ID                  int64          `json:"id"`
+	Project             string         `json:"project"`
+	Title               string         `json:"title"`
+	Body                string         `json:"body"`
+	Requester           string         `json:"requester"`
+	CreatedAt           time.Time      `json:"created_at"`
+	Status              engine.Status  `json:"status"`
+	Waiting             string         `json:"waiting"`
+	DependsOn           []int64        `json:"depends_on"`
+	Stop                *stopJSON      `json:"stop"`
+	Questions           []questionJSON `json:"questions"`
+	Review              *reviewJSON    `json:"review"`
+	Change              *changeJSON    `json:"change"`
+	Turns               int            `json:"turns"`
+	DurationMS          int64          `json:"duration_ms"`
+	CostEstimateUSD     float64        `json:"cost_estimate_usd"`
+	CostMissingSessions int            `json:"cost_missing_sessions"`
+	Budget              budgetJSON     `json:"budget"`
 }
 
 type stopJSON struct {
@@ -40,7 +44,26 @@ type stopJSON struct {
 }
 
 type questionJSON struct {
-	Question string `json:"question"`
+	Question        string `json:"question"`
+	SuggestedAnswer string `json:"suggested_answer"`
+}
+
+type reviewJSON struct {
+	Rounds int              `json:"rounds"`
+	Failed string           `json:"failed"`
+	Open   []engine.Finding `json:"open"`
+	Minor  []engine.Finding `json:"minor"`
+}
+
+// budgetJSON leaves the money out unless the task's own money cap is in force,
+// so that it never shows a limit nobody set.
+type budgetJSON struct {
+	Turns      int      `json:"turns"`
+	MaxTurns   int      `json:"max_turns"`
+	Minutes    int      `json:"minutes"`
+	MaxMinutes int      `json:"max_minutes"`
+	USD        *float64 `json:"usd,omitempty"`
+	MaxUSD     *float64 `json:"max_usd,omitempty"`
 }
 
 type changeJSON struct {
@@ -94,7 +117,12 @@ func (s *server) taskView(ctx context.Context, id int64) (taskJSON, error) {
 	v := taskJSON{
 		ID: t.ID, Project: p.Name, Title: t.Title, Body: t.Body, Requester: t.Requester, CreatedAt: t.CreatedAt.UTC(),
 		Status: engine.StatusOf(f), Waiting: s.waiting(snap), DependsOn: []int64{}, Questions: []questionJSON{},
-		Turns: turns, DurationMS: d.Milliseconds(),
+		Turns: turns, DurationMS: d.Milliseconds(), CostMissingSessions: f.CostMissing,
+		Budget: budgetJSON{
+			Turns: f.Turns, MaxTurns: snap.Limits.Turns,
+			// Rounded to even, as cavu task show's %.0f rounds.
+			Minutes: int(math.RoundToEven(f.SessionTime.Minutes())), MaxMinutes: int(snap.Limits.SessionTime / time.Minute),
+		},
 	}
 
 	for _, dep := range snap.Deps {
@@ -110,10 +138,28 @@ func (s *server) taskView(ctx context.Context, id int64) (taskJSON, error) {
 
 		// The stop's explanation holds only the first question.
 		if st.Reason == engine.StopQuestion && f.Session != nil {
-			for _, q := range f.Session.Questions {
-				v.Questions = append(v.Questions, questionJSON{q})
+			suggested := f.Session.SuggestedAnswers
+
+			for i, q := range f.Session.Questions {
+				var answer string
+				if i < len(suggested) {
+					answer = suggested[i]
+				}
+
+				v.Questions = append(v.Questions, questionJSON{q, answer})
 			}
 		}
+	}
+
+	if r := f.Review; r.Head != "" {
+		v.Review = &reviewJSON{
+			Rounds: f.ReviewFixes, Failed: r.Failed,
+			Open: append([]engine.Finding{}, r.Open...), Minor: append([]engine.Finding{}, r.Minor...),
+		}
+	}
+
+	if c := snap.Limits.TaskMicroUSD; c > 0 {
+		v.Budget.USD, v.Budget.MaxUSD = new(float64(snap.Spent.TaskMicroUSD)/1e6), new(float64(c)/1e6)
 	}
 
 	if x := f.Export; f.Exported {
