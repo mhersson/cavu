@@ -140,6 +140,11 @@ func TestReplayVerbFlagsReachConfig(t *testing.T) {
 		"model_work": "model-b", "effort_work": "high", "continuations": "false", "verify_fix": "false", "web_tools": "true",
 	}, replays[0].Config)
 	assert.Empty(t, fake.image, "an explicit image is not checked")
+	require.NotEmpty(t, fake.runner.releases)
+
+	for _, r := range fake.runner.releases {
+		assert.Equal(t, "cavu-sandbox:other", r.ref.Image, "the runs drive on the image named")
+	}
 }
 
 func TestReplayVerbChecksTheDefaultImage(t *testing.T) {

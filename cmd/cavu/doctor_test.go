@@ -128,5 +128,6 @@ func TestDoctorRefusedUnderAServer(t *testing.T) {
 	code, _, stderr := runCavu("doctor", "--data-dir", dir)
 	assert.Equal(t, 1, code)
 	assert.NotEmpty(t, stderr)
+	assert.NotContains(t, stderr, filepath.Join(dir, "lock"), "the server is named, not the lock")
 	assert.Empty(t, got.Version, "no check runs")
 }

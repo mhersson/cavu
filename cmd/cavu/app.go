@@ -324,7 +324,7 @@ func (a *app) checkImage(ctx context.Context, rt containerRuntime) error {
 	return nil
 }
 
-// loop is the engine over rt's runner and this binary's image.
+// loop is the engine over rt's runner, on the image actions names.
 func (a *app) loop(rt containerRuntime) *engine.Loop {
 	l := a.actions()
 	l.Runner = rt.Runner()

@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
@@ -499,6 +501,29 @@ func TestProjectCheckUnderAServer(t *testing.T) {
 		assert.Equal(t, 1, code)
 		assert.Contains(t, stderr, fake.runner.checkErr.Error())
 	})
+}
+
+func TestProjectCheckInterruptedUnderAServer(t *testing.T) {
+	dir, fake := checkSetup(t, "--verify", "make test")
+	holdLock(t, dir, "serve")
+	refuseRuntime(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var stderr syncBuffer
+
+	done := make(chan error, 1)
+
+	go func() { done <- runProject(ctx, []string{"check", "web", "--data-dir", dir}, nil, io.Discard, &stderr) }()
+
+	require.Eventually(t, func() bool { return storedProject(t, dir, "web").CheckRequestedAt != nil }, within, time.Millisecond)
+	cancel()
+
+	assert.Equal(t, 130, exitCodeOf(t, done))
+	assert.NotEmpty(t, stderr.String())
+	assert.NotNil(t, storedProject(t, dir, "web").CheckRequestedAt, "the request stays for the server")
+	assert.Empty(t, fake.runner.checks)
 }
 
 func TestProjectUsageErrors(t *testing.T) {

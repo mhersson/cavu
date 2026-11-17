@@ -340,7 +340,6 @@ func projectShow(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		p.Name, p.RepoURL, p.BaseBranch, cmp.Or(p.SetupCommand, "none"), verify, list(p.EgressHosts), list(env),
 		list(p.SecretVars), list(tools), list(switches), baseline)
 
-	// What the newest check found.
 	fmt.Fprintf(stdout, "detected: %s\nsuggests: %s\n", list(p.CheckResult.Tools), cmp.Or(p.CheckResult.VerifySuggestion, "none"))
 
 	return nil
@@ -369,7 +368,13 @@ func projectCheck(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// containers it does not own: one process drives containers at a time.
 	rt, err := a.drive(ctx)
 	if a.serverHolds(err) {
-		if p, err = a.checkedByServer(ctx, p); err != nil {
+		if p, err = a.checkedByServer(ctx, p); ctx.Err() != nil {
+			fmt.Fprintf(stderr, "interrupted; the server carries on with the check of %s\n", name[0])
+
+			return exitError{code: 130}
+		}
+
+		if err != nil {
 			return err
 		}
 
