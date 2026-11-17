@@ -198,7 +198,7 @@ Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action
 {"id": 7, "project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "requester": "api",
  "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "waiting": "", "depends_on": [3],
  "stop": {"reason": "question", "explanation": "Which pages should the footer link to?", "action": "answer", "resets_at": null},
- "questions": [{"question": "Which pages should the footer link to?", "suggested_answer": "The privacy and contact pages."},
+ "questions": [{"question": "Which pages should the footer link to?", "suggested_answer": ""},
                {"question": "Should it show the year?", "suggested_answer": ""}],
  "review": {"rounds": 1, "failed": "",
             "open": [{"severity": "important", "where": "footer.html:10", "what": "The footer covers the cookie banner.",
