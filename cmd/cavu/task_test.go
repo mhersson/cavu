@@ -510,7 +510,8 @@ func TestTaskRunPrintsEventsAndStatus(t *testing.T) {
 func TestTaskRunBlockedExitCode(t *testing.T) {
 	t.Run("a question", func(t *testing.T) {
 		dir, id, fake := runSetup(t)
-		fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: []string{"Which API version?"}}
+		questions := []string{"Which API version?", "Should the old route stay?"}
+		fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: questions}
 
 		code, stdout, _ := runCavu("task", "run", id, "--data-dir", dir)
 
@@ -520,14 +521,19 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 		assert.False(t, fake.runner.releases[0].removeVolumes, "a question keeps the run")
 
 		events := storedEvents(t, dir, id)
-		tail := strings.Join(eventLines(t, stdout, events), "\n")
+		tail := eventLines(t, stdout, events)
 
 		s, ok := newest[engine.StoppedPayload](events, engine.Stopped)
 		require.True(t, ok)
 		assert.Equal(t, engine.StopQuestion, s.Reason)
 
 		for _, v := range []string{string(engine.StatusBlocked), s.Reason, s.Explanation, s.Action} {
-			assert.Contains(t, tail, v)
+			assert.Contains(t, strings.Join(tail, "\n"), v)
+		}
+
+		for _, q := range questions {
+			assert.True(t, slices.ContainsFunc(tail, func(l string) bool { return strings.HasSuffix(l, " "+q) }),
+				"each question is on a line of its own: %q", q)
 		}
 	})
 

@@ -224,8 +224,8 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	})
 }
 
-// printState prints the task's status, its open stop and its newest export,
-// and returns the status.
+// printState prints the task's status, its open stop with every question the
+// agent asked, and its newest export, and returns the status.
 func printState(w io.Writer, events []store.Event) engine.Status {
 	facts := engine.Reduce(events)
 	status := engine.StatusOf(facts)
@@ -235,6 +235,13 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 	if facts.OpenStop != nil {
 		s, _ := newest[engine.StoppedPayload](events, engine.Stopped)
 		fmt.Fprintf(w, "stop:    %s\nwhy:     %s\naction:  %s\n", s.Reason, s.Explanation, s.Action)
+
+		// The stop's explanation holds only the first question.
+		if facts.OpenStop.Reason == engine.StopQuestion && facts.Session != nil {
+			for _, q := range facts.Session.Questions {
+				fmt.Fprintf(w, "asked:   %s\n", q)
+			}
+		}
 	}
 
 	if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
