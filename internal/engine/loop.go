@@ -475,8 +475,9 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 		}
 	}
 
-	// A verified baseline is stored before prepared is written, so the next task at this commit reuses it.
-	if res.Baseline == ResultPassed {
+	// A verified baseline is stored before prepared is written, so the next task
+	// at this commit reuses it. A replay's shadow verified an old commit.
+	if res.Baseline == ResultPassed && o.task.ReplayID == 0 {
 		if err := p.setBaseline(ctx, o.task.ProjectID, res.BaseCommit); err != nil {
 			return err
 		}

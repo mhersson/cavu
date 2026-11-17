@@ -796,6 +796,25 @@ func TestLoopStoresPassedBaseline(t *testing.T) {
 	}
 }
 
+// A replay's shadow prepares an old commit, whose baseline is no longer the project's.
+func TestShadowBaselineIsNotStored(t *testing.T) {
+	h := newHarness(t)
+	h.withBaseline()
+	before := h.project().Baseline
+
+	h.task.ReplayID = 1
+	require.NoError(t, h.store.UpdateTask(t.Context(), h.task))
+
+	res := preparedOK
+	res.BaseCommit = "old789"
+	h.runner.prepares = []step[engine.PrepareResult]{{res: res}}
+
+	_, err := h.run(t.Context())
+	require.NoError(t, err)
+	require.Len(t, h.runner.callsOf("prepare"), 1)
+	assert.Equal(t, before, h.project().Baseline)
+}
+
 func TestLoopRecordsIgnoredTools(t *testing.T) {
 	h := newHarness(t)
 
