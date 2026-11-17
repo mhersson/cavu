@@ -246,6 +246,12 @@ func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult, ba
 		return res, nil
 	}
 
+	// A check of a project with no verify command still reports the workspace;
+	// a task prepare reaches runVerify and faults.
+	if p.check && strings.TrimSpace(v.Command) == "" {
+		return res, nil
+	}
+
 	vr, err := runVerify(ctx, p.st, p.c)
 	if err != nil {
 		return engine.PrepareResult{}, err

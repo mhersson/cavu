@@ -6,7 +6,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Status
 
-Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes and lists projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark, and `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
+Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes, lists and shows projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark, and `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 
 ## Try it
 
@@ -31,7 +31,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep t
    cavu settings set endpoint_auth_header x-api-key               # key mode only
    ```
 
-3. Store the secrets from standard input, never as arguments. `forge_token` is for a private repository.
+3. Store the secrets from standard input, never as arguments. `forge_token` is for a private repository. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
 
    ```
    cavu secret set endpoint_credential < credential.txt
@@ -51,7 +51,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep t
    cavu project check web
    ```
 
-   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. `cavu project set web` changes a project.
+   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline.
 
 6. Add a task and run it. `task run` prints each event as it happens and ends with the task's status.
 
@@ -84,7 +84,7 @@ cavu replay --name baseline
 cavu replay --name no-continuations --no-continuations
 ```
 
-`--model ID`, `--effort LEVEL`, `--no-continuations` and `--no-verify-fix` change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
+`--model ID`, `--effort LEVEL`, `--no-continuations`, `--no-verify-fix` and `--web-tools` (which turns `web_tools` on, whatever the project says) change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
 
 ### Python projects
 

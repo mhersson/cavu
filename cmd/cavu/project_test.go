@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -355,20 +354,21 @@ func TestProjectCheck(t *testing.T) {
 
 	t.Run("no verify command prints the suggestion", func(t *testing.T) {
 		dir, fake := checkSetup(t)
-		fake.runner.checkErr = errors.New("runner: the verify command is blank and the project does not waive it")
+		fake.runner.check = engine.PrepareResult{BaseCommit: "base123"}
 		fake.runner.suggestion = "go test ./..."
 
 		code, stdout, stderr := runCavu("project", "check", "web", "--data-dir", dir)
 
 		assert.Equal(t, 1, code)
-		assert.Contains(t, stderr, fake.runner.checkErr.Error())
+		assert.Contains(t, stdout, "base123")
+		assert.Empty(t, stderr)
 		assert.Contains(t, stdout, "cavu project set web --verify 'go test ./...'")
 		assert.Nil(t, storedProject(t, dir, "web").Baseline)
 	})
 
 	t.Run("no verify command and nothing to suggest", func(t *testing.T) {
 		dir, fake := checkSetup(t)
-		fake.runner.checkErr = errors.New("runner: the verify command is blank and the project does not waive it")
+		fake.runner.check = engine.PrepareResult{BaseCommit: "base123"}
 
 		code, stdout, _ := runCavu("project", "check", "web", "--data-dir", dir)
 
@@ -440,4 +440,20 @@ func TestProjectUsageErrors(t *testing.T) {
 	}
 
 	assert.NoDirExists(t, dir)
+}
+
+func TestProjectShowPrintsEveryField(t *testing.T) {
+	dir := t.TempDir()
+	cavuIn(t, dir, "project", "add", "web", "--repo", repo, "--no-verify")
+	cavuIn(t, dir, "project", "set", "web", "--egress", "example.org", "--env", "A=b", "--secret", "TOKEN",
+		"--tool", "go=1.22", "--switch", "web_tools=on")
+
+	out := cavuIn(t, dir, "project", "show", "web")
+
+	for _, want := range []string{repo, "waived", "example.org", "A=b", "TOKEN", "go=1.22", "web_tools=on", "continuations=on"} {
+		assert.Contains(t, out, want)
+	}
+
+	code, _, _ := runCavu("project", "show", "nope", "--data-dir", dir)
+	assert.NotEqual(t, 0, code)
 }

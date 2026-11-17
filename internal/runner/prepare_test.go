@@ -599,3 +599,18 @@ func TestDeniedHostsAreNamedInAFailedStep(t *testing.T) {
 		assert.NotContains(t, res.Output, "earlier.example.test")
 	})
 }
+
+func TestCheckEnvironmentWithoutAVerifyCommandReportsTheWorkspace(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Verify.Command = " "
+
+	res, suggestion, err := f.runner().CheckEnvironment(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, baseCommit, res.BaseCommit)
+	assert.Empty(t, res.Baseline)
+	assert.Equal(t, "make test", suggestion)
+
+	_, err = f.runner().Prepare(t.Context(), c)
+	require.Error(t, err, "a task cannot start without a verify command")
+}

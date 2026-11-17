@@ -133,6 +133,11 @@ func (l *Loop) CheckProject(ctx context.Context, projectID int64) (PrepareResult
 		return res, suggestion, err
 	}
 
+	// With no verify command nothing was verified: the check stores nothing.
+	if !c.Verify.Waived && strings.TrimSpace(c.Verify.Command) == "" {
+		return res, suggestion, nil
+	}
+
 	var b *store.Baseline // a waived verify runs none, and drops what an earlier check stored
 	if res.Baseline != ResultWaived {
 		b = &store.Baseline{Commit: res.BaseCommit, Passed: res.Baseline == ResultPassed, At: l.Now(), Output: res.Output}
