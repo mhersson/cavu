@@ -143,9 +143,9 @@ func (l *Loop) RequestCheck(ctx context.Context, projectID int64) error {
 
 // CheckProject prepares a project the way a run does, under run and task id 0.
 // Whatever the outcome, it stores the project's check result, with any error
-// it met as the fault, clears the check request, and stores the baseline as a
-// run's prepare would. It also returns the verify command the repository
-// suggests, or "", even with an error.
+// it met as the fault, clears the check request, and stores the baseline it
+// found unless it met an error or the project has no verify command. It also
+// returns the verify command the repository suggests, or "", even with an error.
 func (l *Loop) CheckProject(ctx context.Context, projectID int64) (PrepareResult, string, error) {
 	res, suggestion, err := l.checkEnvironment(ctx, projectID)
 
