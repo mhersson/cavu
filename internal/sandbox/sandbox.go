@@ -426,7 +426,7 @@ func (s *Sandbox) Scratch(ctx context.Context) (Container, error) {
 // network none, no mount or variable beyond its spec, and reaches the proxy
 // through its bridge. It fails closed: after any error neither container is
 // left, and a failed check is ErrNotIsolated or ErrSidecarDown. lines receives
-// the sidecar's denied and usage lines on a goroutine of its own, so one that
+// the sidecar's denied, usage and budget lines on a goroutine of its own, so one that
 // blocks holds back the proxy. If the sidecar ends after it got ready and the
 // sandbox did not stop it, lines receives one error line with the reason: the
 // phase container has lost its egress.
@@ -781,7 +781,7 @@ func (sc *sidecarProc) read() {
 			sc.readyOnce.Do(func() { close(sc.ready) })
 		case "error":
 			sc.fail(errors.New("its error: " + l.Error))
-		case "denied", "usage":
+		case "denied", "usage", "budget":
 			if l.Type == "denied" && l.Host == probeHost {
 				continue
 			}
