@@ -10,10 +10,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
+	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/sandbox"
+	"github.com/mhersson/cavu/internal/sidecar"
 )
 
 func TestEnsureUpIsIdempotent(t *testing.T) {
@@ -101,6 +104,105 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 
 		second := f.requests(sandbox.PhaseAgent)[1].Model.StandIn
 		assert.NotEqual(t, first, second, "each start of the agent phase has its own stand-in")
+	})
+}
+
+func TestAgentPhaseCarriesTheBudget(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		c    engine.RunConfig
+		want *proxy.Budget
+	}{
+		{
+			name: "capped", c: cappedConfig(1_800_000),
+			want: &proxy.Budget{CapMicroUSD: 1_800_000, Prices: map[string]proxy.Price{"*": {Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75}}},
+		},
+		{name: "no cap", c: workConfig()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+
+			_, err := f.workRunner(&fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}).Work(t.Context(), tt.c, startWork, noProgress)
+			require.NoError(t, err)
+
+			agent := f.requests(sandbox.PhaseAgent)
+			require.Len(t, agent, 1)
+			assert.Equal(t, tt.want, agent[0].Budget)
+		})
+	}
+}
+
+// One sidecar counts a run's spend while the budget it was given is the
+// action's and its proxy has not refused; otherwise a fresh one starts with
+// a fresh count, and the phase's container stays.
+func TestSidecarFollowsTheBudget(t *testing.T) {
+	// upAll brings up each phase in turn with c and returns every request the sandbox was given.
+	upAll := func(t *testing.T, f *fakeSandbox, r *Runner, c engine.RunConfig, phases ...sandbox.Phase) []sidecar.ProxyRequest {
+		t.Helper()
+
+		for _, p := range phases {
+			require.NoError(t, r.ensureUp(t.Context(), c, p))
+		}
+
+		var reqs []sidecar.ProxyRequest
+		for _, u := range f.ups {
+			reqs = append(reqs, u.req)
+		}
+
+		return reqs
+	}
+
+	agent, readOnly := sandbox.PhaseAgent, sandbox.PhaseReadOnly
+
+	t.Run("an unchanged budget keeps the request across the phases", func(t *testing.T) {
+		f := newFake()
+
+		reqs := upAll(t, f, f.runner(), cappedConfig(5_000_000), agent, agent, readOnly, agent)
+		assert.Equal(t, []string{"volumes", "up/agent", "up/readonly", "up/agent"}, f.calls())
+		require.Len(t, reqs, 3)
+		assert.Equal(t, reqs[0], reqs[1])
+		assert.Equal(t, reqs[0], reqs[2])
+	})
+
+	t.Run("a changed budget gives a new request and keeps the phase", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+
+		upAll(t, f, r, cappedConfig(5_000_000), agent)
+
+		reqs := upAll(t, f, r, cappedConfig(4_000_000), agent)
+		assert.Equal(t, []string{"volumes", "up/agent", "up/agent"}, f.calls())
+		require.Len(t, reqs, 2)
+		assert.NotEqual(t, reqs[0].Model.StandIn, reqs[1].Model.StandIn, "a fresh stand-in starts a fresh sidecar")
+		assert.Equal(t, int64(4_000_000), reqs[1].Budget.CapMicroUSD)
+		assert.True(t, r.state(workConfig().RunID).kept, "the agent's container stays")
+	})
+
+	t.Run("a budget line while no session watches", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+		c := cappedConfig(5_000_000)
+
+		upAll(t, f, r, c, agent)
+		f.send(sidecar.Line{Type: "budget"})
+
+		reqs := upAll(t, f, r, c, agent, agent)
+		require.Len(t, reqs, 2, "the next action's sidecar is fresh, and the one after keeps it")
+		assert.NotEqual(t, reqs[0].Model.StandIn, reqs[1].Model.StandIn)
+		assert.Equal(t, reqs[0].Budget, reqs[1].Budget)
+		assert.True(t, r.state(c.RunID).kept)
+	})
+
+	t.Run("no cap keeps one request across the phases", func(t *testing.T) {
+		f := newFake()
+
+		reqs := upAll(t, f, f.runner(), workConfig(), agent, readOnly, agent, readOnly)
+		require.Len(t, reqs, 4)
+
+		for _, req := range reqs {
+			assert.Equal(t, reqs[0], req)
+			assert.Nil(t, req.Budget)
+		}
 	})
 }
 
@@ -216,7 +318,7 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		f.results[link] = sandbox.Result{ExitCode: 1, Output: "ln: Permission denied\n"}
 
 		require.Error(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent))
-		assert.False(t, r.state(c.RunID).agentUp())
+		assert.False(t, r.state(c.RunID).serves(nil))
 
 		delete(f.results, link)
 

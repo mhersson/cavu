@@ -117,6 +117,17 @@ cavu settings set task_max_turns 400
 cavu project set web --cap task_timeout_minutes=60    # --cap task_timeout_minutes= removes it
 ```
 
+In key mode money can be capped too, and a money cap needs prices. `model_prices` maps a model id to what your endpoint charges for it, in US dollars per million tokens. One price under `*` prices every model without its own and is enough for a rough cap, for instance your most expensive model's. For an exact cap, price each model by the id a response reports: the dated id, not an alias, and Claude Code's small background model too, which answers under its own id. With a cap set, a model without a price, or an answer the proxy cannot count, stops the task as `budget`, and the stop names the model or the problem.
+
+```
+cavu settings set model_prices '{"*": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75}}'
+cavu settings set task_budget_usd 5           # what a task may spend since a person last acted
+cavu settings set daily_budget_usd 40         # what all tasks may spend in the server's local day
+cavu project set web --cap task_budget_usd=0  # no money cap for this project's tasks
+```
+
+There is no money cap unless one is set, and none under a subscription: unset or `0` turns a cap off, and a project's `0` lifts the instance's task cap for its own tasks. A session ends once it spends what the task or the day had left when it began. A task that spent its cap stops as `budget`, and `cavu task retry ID` gives it its whole budget again; once the day spent its cap, tasks wait until the next local midnight. With tasks running side by side, the daily cap can be passed by what the others in flight still spend, at most one task's budget each. `task show` prints what the task spent of its cap and what the day spent of the daily cap.
+
 ### Running the server
 
 `cavu serve` drives every started task, as `task run` drives one, and serves the HTTP API of [docs/api.md](docs/api.md) on the `listen_address` setting (default `127.0.0.1:7117`). Set the user first, with the password in a file, then start it:

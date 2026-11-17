@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
+	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/redact"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
@@ -139,23 +141,29 @@ type run struct {
 	req        sidecar.ProxyRequest // the session phases' proxy request, kept while their sidecar lives
 	standIn    string               // req's stand-in token in key mode
 
-	mu     sync.Mutex // guards the fields below, which the sidecar's reader sets
-	lost   bool       // the sidecar of the phase that is up has ended
-	fault  error      // the sidecar's error during the action in flight
-	cancel context.CancelCauseFunc
-	watch  func(sidecar.Line) // takes the other lines while a session runs
-	denied []string           // hosts the proxy refused while no session watched, in order, once each
+	mu       sync.Mutex // guards the fields below, which the sidecar's reader sets
+	lost     bool       // the sidecar of the phase that is up has ended
+	refusing bool       // that sidecar's proxy sent its budget line, so it refuses every model call
+	fault    error      // the sidecar's error during the action in flight
+	cancel   context.CancelCauseFunc
+	watch    func(sidecar.Line) // takes the other lines while a session runs
+	denied   []string           // hosts the proxy refused while no session watched, in order, once each
 }
 
 // lines takes the sidecar's lines. An error line means the phase lost its
 // egress: it ends the action in flight, and that action's call fails with it.
-// Other lines go to the running session's watch. It never calls the sandbox,
-// which would stall the sidecar's reader.
+// Other lines go to the running session's watch; a budget line also marks the
+// sidecar as refusing. It never calls the sandbox, which would stall the
+// sidecar's reader.
 func (st *run) lines(l sidecar.Line) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
 	if l.Type != "error" {
+		if l.Type == "budget" {
+			st.refusing = true
+		}
+
 		switch {
 		case st.watch != nil:
 			st.watch(l)
@@ -269,9 +277,9 @@ func act[T any](ctx context.Context, r *Runner, c engine.RunConfig, phase sandbo
 func (st *run) up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest) (container, error) {
 	st.agent = nil
 
-	// Cleared first: a sidecar that ends once Up has returned sets it again.
+	// Cleared first: a sidecar that ends or refuses once Up has returned sets them again.
 	st.mu.Lock()
-	st.lost = false
+	st.lost, st.refusing = false, false
 	st.mu.Unlock()
 
 	return st.sb.Up(ctx, phase, p, st.lines)
@@ -283,12 +291,13 @@ func (st *run) down(ctx context.Context) error {
 	return st.sb.Down(ctx)
 }
 
-// agentUp reports whether a session phase is up with its sidecar.
-func (st *run) agentUp() bool {
+// serves reports whether a session phase is up with a sidecar that counts
+// against budget and has not refused.
+func (st *run) serves(budget *proxy.Budget) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	return st.agent != nil && !st.lost
+	return st.agent != nil && !st.lost && !st.refusing && reflect.DeepEqual(st.req.Budget, budget)
 }
 
 func (r *Runner) state(runID int64) *run {
@@ -365,7 +374,7 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig, phase sandbox
 		r.setState(c.RunID, st)
 	}
 
-	live := st.agentUp()
+	live := st.serves(proxyBudget(c))
 	// The phase's container stays when it was up, also when only its sidecar
 	// starts anew, and so does whatever ran in it.
 	st.kept = st.agent != nil && st.phase == phase
@@ -375,7 +384,8 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig, phase sandbox
 	}
 
 	// The sandbox keeps the sidecar for the same request only, so a switch
-	// between the session phases keeps the one the live sidecar serves.
+	// between the session phases keeps the one the live sidecar serves, and
+	// its count; a new request's fresh stand-in starts a fresh count.
 	if !live {
 		st.req, st.standIn = agentProxy(c, st.ecosystems, r.driver)
 	}

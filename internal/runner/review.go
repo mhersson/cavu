@@ -95,15 +95,13 @@ func (s *session) review(ctx context.Context, d driver.Driver, rq engine.ReviewR
 	spec.SessionID = rq.SessionID
 	readOnly(&spec, schema)
 
-	dr, timedOut, err := s.drive(ctx, d, spec)
+	dr, limit, err := s.drive(ctx, d, spec)
 	if err != nil {
 		return engine.ReviewResult{Turns: dr.Turns}, dr.Usage, err
 	}
 
 	res := s.reviewResult(dr, rq)
-	if timedOut {
-		res.Outcome = engine.OutcomeTimeout
-	}
+	res.Outcome, res.Detail = s.limited(limit, res.Outcome, res.Detail)
 
 	return res, dr.Usage, nil
 }

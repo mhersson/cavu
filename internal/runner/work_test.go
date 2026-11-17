@@ -583,6 +583,101 @@ func TestWorkReturnsUsageWithAFault(t *testing.T) {
 	})
 }
 
+// cappedConfig is workConfig under a money cap that leaves microUSD.
+func cappedConfig(microUSD int64) engine.RunConfig {
+	c := workConfig()
+	c.Budget.Capped, c.Budget.MicroUSD = true, microUSD
+	c.Budget.Prices = map[string]engine.Price{"*": {Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75}}
+
+	return c
+}
+
+// The proxy's budget line ends the session in flight at once, and what the
+// responses in flight still used is counted.
+func TestBudgetLineEndsTheSession(t *testing.T) {
+	// cut sends the line with reason during the session, between the usage of
+	// two responses, and keeps the cause its context ended with.
+	cut := func(f *fakeSandbox, reason string, cause *error) *fakeAgent {
+		return &fakeAgent{results: []driver.Result{{Reason: driver.ReasonInterrupted, Turns: 4}}, during: func(ctx context.Context, _ func(driver.Event)) {
+			f.send(sidecar.Line{Type: "usage", Usage: &proxy.Usage{Model: "claude-opus", Input: 10, Output: 5}})
+			f.send(sidecar.Line{Type: "budget", Error: reason})
+			f.send(sidecar.Line{Type: "usage", Usage: &proxy.Usage{Model: "claude-opus", Input: 20, Output: 7}})
+			<-ctx.Done()
+			*cause = context.Cause(ctx)
+		}}
+	}
+	usage := []store.Usage{{Source: "proxy", Model: "claude-opus", Input: 30, Output: 12}}
+	unpriced := `Model "claude-opus" has no price; ` + plantedSetup
+
+	for _, tt := range []struct {
+		name, reason, outcome, detail string
+	}{
+		{name: "the cap is spent", outcome: engine.OutcomeBudget},
+		{name: "the spend cannot be counted", reason: unpriced, outcome: engine.OutcomeUnmetered, detail: masker(workConfig())(unpriced)},
+	} {
+		t.Run("work: "+tt.name, func(t *testing.T) {
+			f := newFake()
+			c := cappedConfig(1_000_000)
+
+			var cause error
+
+			res, err := f.workRunner(cut(f, tt.reason, &cause)).Work(t.Context(), c, startWork, noProgress)
+			require.NoError(t, err)
+			require.Error(t, cause, "the driver's context ends")
+			require.NotErrorIs(t, cause, errSessionTimeout)
+			assert.Equal(t, tt.outcome, res.Outcome)
+			assert.Equal(t, usage, res.Usage)
+			assert.Equal(t, 4, res.Turns)
+			assert.False(t, ran(f, freezeName(c, c.Task.Title)), "nothing is frozen")
+
+			if tt.detail != "" {
+				assert.Equal(t, tt.detail, res.Detail)
+			}
+		})
+
+		t.Run("review: "+tt.name, func(t *testing.T) {
+			f := newFake()
+
+			var cause error
+
+			res, err := f.workRunner(cut(f, tt.reason, &cause)).Review(t.Context(), cappedConfig(1_000_000), fullReview(), noProgress)
+			require.NoError(t, err)
+			require.Error(t, cause, "the driver's context ends")
+			assert.Equal(t, tt.outcome, res.Outcome)
+			assert.Equal(t, usage, res.Usage)
+
+			if tt.detail != "" {
+				assert.Equal(t, tt.detail, res.Detail)
+			}
+		})
+	}
+
+	t.Run("a line after the session's result", func(t *testing.T) {
+		f := newFake()
+		c := cappedConfig(1_000_000)
+		freeze := freezeName(c, c.Task.Title)
+		f.results[freeze] = sandbox.Result{Output: headCommit + "\n"}
+		f.onRun = func(name string) {
+			if name == freeze {
+				f.send(sidecar.Line{Type: "budget"})
+			}
+		}
+		r := f.workRunner(&fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "done"})}}})
+
+		res, err := r.Work(t.Context(), c, startWork, noProgress)
+		require.NoError(t, err)
+		assert.Equal(t, engine.OutcomeDone, res.Outcome)
+		assert.Equal(t, headCommit, res.HeadCommit, "the freeze ran to its end")
+
+		_, err = r.Verify(t.Context(), c)
+		require.NoError(t, err)
+
+		agent := f.requests(sandbox.PhaseAgent)
+		require.Len(t, agent, 2, "the next action's sidecar counts anew")
+		assert.NotEqual(t, agent[0].Model.StandIn, agent[1].Model.StandIn)
+	})
+}
+
 func TestWorkForwardsProgress(t *testing.T) {
 	resets := time.Date(2026, 11, 16, 18, 0, 0, 0, time.UTC)
 	f := newFake()
