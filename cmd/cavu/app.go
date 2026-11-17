@@ -164,9 +164,15 @@ func (a *app) checkImage(ctx context.Context, rt containerRuntime) error {
 
 // loop is the engine over rt's runner and this binary's image.
 func (a *app) loop(rt containerRuntime) *engine.Loop {
-	return &engine.Loop{
-		Store: a.store, Vault: a.vault, Runner: rt.Runner(), Now: time.Now, DataDir: a.dir, Image: sandbox.ImageName(version),
-	}
+	l := a.actions()
+	l.Runner = rt.Runner()
+
+	return l
+}
+
+// actions is the engine without a runner: enough to record what a person does.
+func (a *app) actions() *engine.Loop {
+	return &engine.Loop{Store: a.store, Vault: a.vault, Now: time.Now, DataDir: a.dir, Image: sandbox.ImageName(version)}
 }
 
 func (a *app) close() {

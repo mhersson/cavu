@@ -1,0 +1,331 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"slices"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/store"
+)
+
+func init() {
+	commands["task"] = command{
+		summary: "task add | list | show | diff | answer | retry | cancel | mark: add a task, read one, or act on one",
+		run:     runTask,
+	}
+}
+
+const (
+	taskAddUsage    = "cavu task add PROJECT --title TITLE [--body-file FILE, else the body is read from a pipe] [--data-dir DIR]"
+	taskListUsage   = "cavu task list [--data-dir DIR]"
+	taskShowUsage   = "cavu task show ID [--events] [--data-dir DIR]"
+	taskDiffUsage   = "cavu task diff ID [--data-dir DIR]"
+	taskAnswerUsage = "cavu task answer ID [--data-dir DIR] < FILE"
+	taskRetryUsage  = "cavu task retry ID [--data-dir DIR]"
+	taskCancelUsage = "cavu task cancel ID [--data-dir DIR]"
+	taskMarkUsage   = "cavu task mark ID [--unmark] [--data-dir DIR]"
+)
+
+func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(args) > 0 {
+		rest := args[1:]
+
+		switch args[0] {
+		case "add":
+			return taskAdd(ctx, rest, stdin, stdout, stderr)
+		case "list":
+			return taskList(ctx, rest, stdout, stderr)
+		case "show":
+			return taskShow(ctx, rest, stdout, stderr)
+		case "diff":
+			return taskDiff(ctx, rest, stdout, stderr)
+		case "answer":
+			return taskAnswer(ctx, rest, stdin, stderr)
+		case "retry":
+			return taskAct(ctx, taskRetryUsage, rest, stderr, (*engine.Loop).Retry)
+		case "cancel":
+			return taskAct(ctx, taskCancelUsage, rest, stderr, (*engine.Loop).Cancel)
+		case "mark":
+			return taskMark(ctx, rest, stderr)
+		}
+	}
+
+	usage := strings.Join([]string{taskAddUsage, taskListUsage, taskShowUsage, taskDiffUsage, taskAnswerUsage, taskRetryUsage, taskCancelUsage, taskMarkUsage}, "\n       ")
+
+	return newVerbFlags(usage, stderr).usageError()
+}
+
+// onTask parses the task id, opens the app and calls do with it.
+func onTask(ctx context.Context, f verbFlags, args []string, do func(a *app, id int64) error) error {
+	argv, err := f.parse(args, 1)
+	if err != nil {
+		return err
+	}
+
+	id, err := strconv.ParseInt(argv[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("task id %q: want a number", argv[0])
+	}
+
+	a, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+
+	return do(a, id)
+}
+
+func taskAdd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	f := newVerbFlags(taskAddUsage, stderr)
+	title := f.String("title", "", "what the task asks for, in one line of at most 200 characters")
+	bodyFile := f.String("body-file", "", "a file holding the task's description")
+
+	name, err := f.parse(args, 1)
+	if err != nil {
+		return err
+	}
+
+	body, err := readBody(*bodyFile, stdin)
+	if err != nil {
+		return err
+	}
+
+	a, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+
+	p, err := a.store.ProjectByName(ctx, name[0])
+	if err != nil {
+		return fmt.Errorf("project %q: %w", name[0], err)
+	}
+
+	t, err := engine.AddTask(ctx, a.store, store.Task{ProjectID: p.ID, Title: *title, Body: body, Requester: "cli"})
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(stdout, t.ID)
+
+	return err
+}
+
+// readBody reads the file, else a pipe; typed on a terminal, the task has no body.
+func readBody(file string, stdin io.Reader) (string, error) {
+	if file != "" {
+		b, err := os.ReadFile(file)
+
+		return string(b), err
+	}
+
+	if isTerminal(stdin) {
+		return "", nil
+	}
+
+	b, err := io.ReadAll(stdin)
+	if err != nil {
+		return "", fmt.Errorf("standard input: %w", err)
+	}
+
+	return string(b), nil
+}
+
+func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	f := newVerbFlags(taskListUsage, stderr)
+	if _, err := f.parse(args, 0); err != nil {
+		return err
+	}
+
+	a, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+
+	ps, err := a.store.Projects(ctx)
+	if err != nil {
+		return err
+	}
+
+	names := map[int64]string{}
+	for _, p := range ps {
+		names[p.ID] = p.Name
+	}
+
+	tasks, err := a.store.Tasks(ctx, false)
+	if err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tPROJECT\tSTATUS\tTITLE")
+
+	for _, t := range tasks {
+		events, err := a.store.Events(ctx, t.ID, 0, 0)
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", t.ID, names[t.ProjectID], engine.StatusOf(engine.Reduce(events)), t.Title)
+	}
+
+	return w.Flush()
+}
+
+func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	f := newVerbFlags(taskShowUsage, stderr)
+	withEvents := f.Bool("events", false, "list every event of the task")
+
+	return onTask(ctx, f, args, func(a *app, id int64) error {
+		t, err := a.store.Task(ctx, id)
+		if err != nil {
+			return fmt.Errorf("task %d: %w", id, err)
+		}
+
+		p, err := a.store.Project(ctx, t.ProjectID)
+		if err != nil {
+			return err
+		}
+
+		events, err := a.store.Events(ctx, id, 0, 0)
+		if err != nil {
+			return err
+		}
+
+		facts := engine.Reduce(events)
+		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\nstatus:  %s\n", t.ID, p.Name, t.Title, engine.StatusOf(facts))
+
+		if facts.OpenStop != nil {
+			s, _ := newest[engine.StoppedPayload](events, engine.Stopped)
+			fmt.Fprintf(stdout, "stop:    %s\nwhy:     %s\naction:  %s\n", s.Reason, s.Explanation, s.Action)
+		}
+
+		if err := printUsage(ctx, stdout, a.store, id); err != nil {
+			return err
+		}
+
+		if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
+			fmt.Fprintf(stdout, "diff:    %s\nbundle:  %s\n", x.DiffPath, x.BundlePath)
+		}
+
+		if *withEvents {
+			printEvents(stdout, events)
+		}
+
+		return nil
+	})
+}
+
+// newest decodes the newest event of the type, if any.
+func newest[T any](events []store.Event, typ string) (T, bool) {
+	var v T
+
+	for _, e := range slices.Backward(events) {
+		if e.Type == typ {
+			return v, json.Unmarshal(e.Payload, &v) == nil
+		}
+	}
+
+	return v, false
+}
+
+// printUsage prints a row per source and model and the one cost row, which
+// is an estimate from list prices, not a bill.
+func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64) error {
+	rows, err := s.UsageTotals(ctx, taskID)
+	if err != nil {
+		return err
+	}
+
+	var cost float64
+
+	for _, u := range rows {
+		fmt.Fprintf(w, "usage:   %s %s input=%d output=%d cache_read=%d cache_write=%d\n",
+			u.Source, u.Model, u.Input, u.Output, u.CacheRead, u.CacheWrite)
+
+		cost += u.CostEstimateUSD
+	}
+
+	fmt.Fprintf(w, "cost (estimate): $%.4f\n", cost)
+
+	return nil
+}
+
+func printEvents(w io.Writer, events []store.Event) {
+	fmt.Fprintln(w, "events:")
+
+	for _, e := range events {
+		fmt.Fprintf(w, "  %d %s %s %s %s\n", e.ID, e.At.Format(time.RFC3339), e.Type, e.Actor, e.Payload)
+	}
+}
+
+func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return onTask(ctx, newVerbFlags(taskDiffUsage, stderr), args, func(a *app, id int64) error {
+		events, err := a.store.Events(ctx, id, 0, 0)
+		if err != nil {
+			return err
+		}
+
+		x, ok := newest[engine.ExportedPayload](events, engine.Exported)
+		if !ok {
+			return fmt.Errorf("task %d has no exported change yet", id)
+		}
+
+		diff, err := os.ReadFile(x.DiffPath)
+		if err != nil {
+			return err
+		}
+
+		_, err = stdout.Write(diff)
+
+		return err
+	})
+}
+
+func taskAnswer(ctx context.Context, args []string, stdin io.Reader, stderr io.Writer) error {
+	return onTask(ctx, newVerbFlags(taskAnswerUsage, stderr), args, func(a *app, id int64) error {
+		if isTerminal(stdin) {
+			fmt.Fprintln(stderr, "type the answer, then end the input (Ctrl-D)")
+		}
+
+		text, err := io.ReadAll(stdin)
+		if err != nil {
+			return fmt.Errorf("standard input: %w", err)
+		}
+
+		return a.actions().Answer(ctx, id, string(text))
+	})
+}
+
+// taskAct runs a human action that takes the task id alone.
+func taskAct(ctx context.Context, usage string, args []string, stderr io.Writer, act func(*engine.Loop, context.Context, int64) error) error {
+	return onTask(ctx, newVerbFlags(usage, stderr), args, func(a *app, id int64) error {
+		return act(a.actions(), ctx, id)
+	})
+}
+
+func taskMark(ctx context.Context, args []string, stderr io.Writer) error {
+	f := newVerbFlags(taskMarkUsage, stderr)
+	unmark := f.Bool("unmark", false, "clear the mark")
+
+	return onTask(ctx, f, args, func(a *app, id int64) error {
+		t, err := a.store.Task(ctx, id)
+		if err != nil {
+			return fmt.Errorf("task %d: %w", id, err)
+		}
+
+		t.Reference = !*unmark
+
+		return a.store.UpdateTask(ctx, t)
+	})
+}
