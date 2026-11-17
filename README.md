@@ -123,7 +123,7 @@ In key mode money can be capped too, and a money cap needs prices. `model_prices
 cavu settings set model_prices '{"*": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75}}'
 cavu settings set task_budget_usd 5           # what a task may spend since a person last acted
 cavu settings set daily_budget_usd 40         # what all tasks may spend in the server's local day
-cavu project set web --cap task_budget_usd=0  # no money cap for this project's tasks
+cavu project set web --cap task_budget_usd=0  # no task cap for this project's tasks; the daily cap still holds them
 ```
 
 There is no money cap unless one is set, and none under a subscription: unset or `0` turns a cap off, and a project's `0` lifts the instance's task cap for its own tasks. A session ends once it spends what the task or the day had left when it began. A task that spent its cap stops as `budget`, and `cavu task retry ID` gives it its whole budget again; once the day spent its cap, tasks wait until the next local midnight. With tasks running side by side, the daily cap can be passed by what the others in flight still spend, at most one task's budget each. `task show` prints what the task spent of its cap and what the day spent of the daily cap.
