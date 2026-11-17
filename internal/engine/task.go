@@ -15,6 +15,10 @@ import (
 // action its state makes meaningless, and by nothing else.
 var ErrRefused = errors.New("refused")
 
+// ErrNoBaseline is wrapped, beside ErrRefused, by the refusal to start a task
+// whose project has neither a passed baseline nor a waived verify.
+var ErrNoBaseline = errors.New("neither a passed baseline nor a waived verify")
+
 const maxTitle = 200
 
 // AddTask stores a new draft task that holds only what a task may hold.
@@ -42,7 +46,7 @@ func (l *Loop) Start(ctx context.Context, taskID int64) error {
 		case f.Started:
 			return false, nil
 		case !p.VerifyWaived && (p.Baseline == nil || !p.Baseline.Passed):
-			return false, refuse("project %q has neither a passed baseline nor a waived verify; check the project, or waive verify", p.Name)
+			return false, refuse("project %q has %w", p.Name, ErrNoBaseline)
 		}
 
 		return true, nil

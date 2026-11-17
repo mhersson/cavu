@@ -109,7 +109,9 @@ func TestStart(t *testing.T) {
 		d := h.draft()
 		require.NoError(t, h.loop.Cancel(t.Context(), d.ID))
 
-		require.ErrorIs(t, h.loop.Start(t.Context(), d.ID), engine.ErrRefused)
+		err := h.loop.Start(t.Context(), d.ID)
+		require.ErrorIs(t, err, engine.ErrRefused)
+		require.NotErrorIs(t, err, engine.ErrNoBaseline)
 		assert.Len(t, h.recorded(d.ID), 1)
 	})
 
@@ -117,14 +119,16 @@ func TestStart(t *testing.T) {
 		h := newHarness(t)
 		d := h.draft()
 
-		require.ErrorIs(t, h.loop.Start(t.Context(), d.ID), engine.ErrRefused)
+		err := h.loop.Start(t.Context(), d.ID)
+		require.ErrorIs(t, err, engine.ErrRefused)
+		require.ErrorIs(t, err, engine.ErrNoBaseline)
 		assert.Empty(t, h.recorded(d.ID))
 
 		p := h.project()
 		p.Baseline = &store.Baseline{Commit: "c", Passed: false}
 		require.NoError(t, h.store.UpdateProject(t.Context(), p))
 
-		require.ErrorIs(t, h.loop.Start(t.Context(), d.ID), engine.ErrRefused, "a failed baseline is no baseline")
+		require.ErrorIs(t, h.loop.Start(t.Context(), d.ID), engine.ErrNoBaseline, "a failed baseline is no baseline")
 		assert.Empty(t, h.recorded(d.ID))
 	})
 
