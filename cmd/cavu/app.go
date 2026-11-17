@@ -218,7 +218,7 @@ var pollEvery = 500 * time.Millisecond
 // driven runs wait while something drives the tasks only admits: this
 // process's own scheduler, under the lock, when the lock is free, else the
 // server that holds it. Another verb holding the lock is an error naming it.
-// Driving itself, it first does what drive does: the runtime, the image check, the orphans.
+// Driving itself, it takes drive's lock, runtime and image check, then removes the orphans.
 func (a *app) driven(ctx context.Context, only func(store.Task) bool, wait func(context.Context) error) error {
 	rt, err := a.drive(ctx)
 	if a.serverHolds(err) {
@@ -284,12 +284,12 @@ func (a *app) removeOrphans(ctx context.Context, rt containerRuntime) error {
 	}
 
 	for _, t := range tasks {
-		events, err := a.store.Events(ctx, t.ID, 0, 0)
+		snap, err := a.loop(rt).Snapshot(ctx, t.ID)
 		if err != nil {
 			return err
 		}
 
-		if f := engine.Reduce(events); f.Cancelled && f.RunOpen {
+		if engine.Decide(snap).Kind == engine.KindStop {
 			if _, err := a.loop(rt).RunTask(ctx, t.ID); err != nil {
 				return err
 			}
