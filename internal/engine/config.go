@@ -219,9 +219,9 @@ func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) e
 }
 
 // ReadSettings reads the part of a run's config the settings hold: the
-// instance id, the endpoint but its credential, the agent but its web tools,
-// the identity and the verify timeout. Its error names every required setting
-// not set, else the first value that does not parse.
+// instance id, the endpoint but its credential, the agent's models and
+// efforts, the identity and the verify timeout. Its error names every required
+// setting not set, else the first value that does not parse.
 func ReadSettings(values map[string]string) (RunConfig, error) {
 	required := []string{"instance_id", "endpoint_mode", keyModelWork, "commit_name", "commit_email"}
 	if values["endpoint_mode"] == "key" {
@@ -248,7 +248,7 @@ func ReadSettings(values map[string]string) (RunConfig, error) {
 var settableKeys = []string{
 	"runtime", "ca_bundle_path", "endpoint_mode", "endpoint_url", "endpoint_auth_header",
 	keyModelWork, keyEffortWork, "model_review", "effort_review", "model_strong", "effort_strong",
-	"work_timeout_minutes", "work_max_turns", "verify_timeout_minutes",
+	keyTaskTimeout, keyTaskTurns, keyTaskBudget, keyDayBudget, keyPrices, "verify_timeout_minutes",
 	"commit_name", "commit_email", "concurrency", "listen_address", keySkillsPath, keyInstructionsPath,
 }
 
@@ -270,8 +270,9 @@ func CheckSetting(key, value string) error {
 
 	_, concurrency := Concurrency(values)
 	_, listen := ListenAddress(values)
+	_, prices := Prices(values)
 
-	return errors.Join(set.err, concurrency, listen, checkInstancePath(key, value))
+	return errors.Join(set.err, concurrency, listen, prices, checkInstancePath(key, value))
 }
 
 // checkInstancePath refuses a skills_path that is not a directory and an
@@ -382,12 +383,22 @@ func (s *settingsReader) read() RunConfig {
 	c.Agent.Model, c.Agent.Effort = s.values[keyModelWork], s.values[keyEffortWork]
 	c.Agent.Review.Model, c.Agent.Review.Effort = cmp.Or(s.values["model_review"], c.Agent.Model), cmp.Or(s.values["effort_review"], c.Agent.Effort)
 	c.Agent.Strong.Model, c.Agent.Strong.Effort = cmp.Or(s.values["model_strong"], c.Agent.Model), cmp.Or(s.values["effort_strong"], c.Agent.Effort)
-	c.Agent.MaxTurns = s.positiveInt("work_max_turns", 200)
-	c.Agent.Timeout = time.Duration(s.positiveInt("work_timeout_minutes", 60)) * time.Minute
+	// Read only to refuse a bad value: a session's turns and time are what is
+	// left of the task's, which work and review set.
+	s.limits()
 	c.Verify.Timeout = s.minutes("verify_timeout_minutes", 10, 0.5, 120)
 	c.Identity.Name, c.Identity.Email = s.values["commit_name"], s.values["commit_email"]
 
 	return c
+}
+
+// limits reads the task's budget and the day's money; a session's config gets
+// what is left of the turns and the time.
+func (s *settingsReader) limits() Limits {
+	return Limits{
+		Turns: s.positiveInt(keyTaskTurns, 1000), SessionTime: time.Duration(s.positiveInt(keyTaskTimeout, 300)) * time.Minute,
+		TaskMicroUSD: s.dollars(keyTaskBudget), DayMicroUSD: s.dollars(keyDayBudget),
+	}
 }
 
 func (s *settingsReader) fail(key, problem string) {
@@ -426,6 +437,24 @@ func (s *settingsReader) hostPort(key, def string) string {
 	}
 
 	return v
+}
+
+// dollars reads a decimal number of US dollars that is not negative, in
+// micro-dollars; unset is 0.
+func (s *settingsReader) dollars(key string) int64 {
+	v := s.values[key]
+	if v == "" {
+		return 0
+	}
+
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(f) || f < 0 {
+		s.fail(key, fmt.Sprintf("%q is not a number of dollars of 0 or more", v))
+
+		return 0
+	}
+
+	return int64(math.Round(f * 1e6))
 }
 
 // minutes reads a decimal number of minutes, clamped to [lo, hi].

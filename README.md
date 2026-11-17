@@ -63,9 +63,9 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu project check web
    ```
 
-   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline, and the tools the newest check found and the verify command it suggested.
+   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches, caps and baseline, and the tools the newest check found and the verify command it suggested.
 
-6. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. `task show` also prints the task's dependencies and why it waits, the turns, the duration and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
+6. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. `task show` also prints the task's dependencies and why it waits, the turns, the duration, the budget it used since you last acted, and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
 
    ```
    cavu task add web --title "Fix the login redirect" --body-file task.md
@@ -108,6 +108,26 @@ cavu task cancel ID                 # give up on it
 
 Then `cavu task run ID` again for an answer or a retry. A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock.
 
+### Budgets
+
+A task stops when its sessions and reviews have used `task_max_turns` turns (default 1000) or run for `task_timeout_minutes` minutes (default 300) since a person last started, answered, retried or cancelled it, and each session gets what is left. The stop is `budget` or `timeout`, and `cavu task retry ID` gives the task its whole budget again. The two guard against a runaway, so their defaults are high. A project's cap applies to its own tasks over the setting:
+
+```
+cavu settings set task_max_turns 400
+cavu project set web --cap task_timeout_minutes=60    # --cap task_timeout_minutes= removes it
+```
+
+In key mode money can be capped too, and a money cap needs prices. `model_prices` maps a model id to what your endpoint charges for it, in US dollars per million tokens. One price under `*` prices every model without its own and is enough for a rough cap, for instance your most expensive model's. For an exact cap, price each model by the id a response reports: the dated id, not an alias, and Claude Code's small background model too, which answers under its own id. A subagent can answer under another model than the session's, so with a cap set its model needs a price too; the default under `*` gives it one. With a cap set, a model without a price, or an answer the proxy cannot count, stops the task as `budget`, and the stop names the model or the problem.
+
+```
+cavu settings set model_prices '{"*": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75}}'
+cavu settings set task_budget_usd 5           # what a task may spend since a person last acted
+cavu settings set daily_budget_usd 40         # what all tasks may spend in the server's local day
+cavu project set web --cap task_budget_usd=0  # no task cap for this project's tasks; the daily cap still holds them
+```
+
+There is no money cap unless one is set, and none under a subscription: unset or `0` turns a cap off, and a project's `0` lifts the instance's task cap for its own tasks. A session ends once it spends what the task or the day had left when it began. A task that spent its cap stops as `budget`, and `cavu task retry ID` gives it its whole budget again; once the day spent its cap, tasks wait until the next local midnight. With tasks running side by side, the daily cap can be passed by what the others in flight still spend, at most one task's budget each. `task show` prints what the task spent of its cap and what the day spent of the daily cap.
+
 ### Skills and instructions for every task
 
 Every agent session of a task, readiness turns and reviews included, can have skills and instructions of your own beside the repository's. Put each skill's directory, with its `SKILL.md`, into one directory and name that directory; name one instruction file, whose text comes before the repository's own instruction files:
@@ -117,7 +137,7 @@ cavu settings set skills_path ~/cavu/skills
 cavu settings set instructions_path ~/cavu/AGENTS.md
 ```
 
-Both are read on the machine `cavu` runs on, again at each step of a run, so a change reaches the next step. Links in the directory are followed, a `.git` directory in it is left out, and its files hold at most 16 MiB together. A repository's skill of the same name is written over yours. A path that cannot be read stops the task with the setting named; fix it and retry. The turns of subagents an agent starts do not count toward `work_max_turns`, a session's turn limit; `work_timeout_minutes`, a session's time limit, bounds them, since it ends the session with its subagents.
+Both are read on the machine `cavu` runs on, again at each step of a run, so a change reaches the next step. Links in the directory are followed, a `.git` directory in it is left out, and its files hold at most 16 MiB together. A repository's skill of the same name is written over yours. A path that cannot be read stops the task with the setting named; fix it and retry. The turns of the subagents an agent starts do not count toward `task_max_turns`; the task's time bounds them, since a session gets what is left of it and its end ends its subagents.
 
 ### Running the server
 

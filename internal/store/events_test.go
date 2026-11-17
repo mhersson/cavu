@@ -199,6 +199,73 @@ func TestUsageTotals(t *testing.T) {
 	}, got)
 }
 
+func TestUsageSince(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+	task := seedTask(t, s)
+	other := seedTaskIn(t, s, task.ProjectID)
+	note := []Event{{Type: "note", Actor: "engine", Payload: []byte(`{}`)}}
+
+	_, err := s.Append(ctx, task.ID, -1, note, []Usage{{Source: "proxy", Model: "a", Input: 100}})
+	require.NoError(t, err)
+
+	after, err := s.Append(ctx, task.ID, -1, note, []Usage{{Source: "proxy", Model: "a", Input: 200}})
+	require.NoError(t, err)
+
+	for _, u := range [][]Usage{
+		{{Source: "proxy", Model: "a", Input: 10, Output: 1, CacheRead: 2, CacheWrite: 3}, {Source: "agent", Model: "b", Input: 7}},
+		{{Source: "proxy", Model: "a", Input: 5, Output: 4, CacheRead: 1, CacheWrite: 1}},
+	} {
+		_, err := s.Append(ctx, task.ID, -1, note, u)
+		require.NoError(t, err)
+	}
+
+	_, err = s.Append(ctx, other.ID, -1, note, []Usage{{Source: "proxy", Model: "a", Input: 1000}})
+	require.NoError(t, err)
+
+	got, err := s.UsageSince(ctx, task.ID, after)
+	require.NoError(t, err)
+	require.Equal(t, []Usage{
+		{Source: "agent", Model: "b", Input: 7},
+		{Source: "proxy", Model: "a", Input: 15, Output: 5, CacheRead: 3, CacheWrite: 4},
+	}, got)
+}
+
+func TestUsageBetween(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+	task := seedTask(t, s)
+	other := seedTaskIn(t, s, task.ProjectID)
+	from := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(24 * time.Hour)
+
+	for _, row := range []struct {
+		taskID int64
+		at     time.Time
+		usage  Usage
+	}{
+		{task.ID, from.Add(-time.Millisecond), Usage{Source: "proxy", Model: "a", Input: 100}},
+		{task.ID, from, Usage{Source: "proxy", Model: "a", Input: 10, Output: 1}},
+		{other.ID, from.Add(12 * time.Hour), Usage{Source: "proxy", Model: "a", Input: 5, CacheRead: 2}},
+		{other.ID, to.Add(-time.Millisecond), Usage{Source: "agent", Model: "b", Output: 3}},
+		{task.ID, to, Usage{Source: "proxy", Model: "a", Input: 1000}},
+	} {
+		_, err := s.Append(ctx, row.taskID, -1, []Event{{At: row.at, Type: "note", Actor: "engine", Payload: []byte(`{}`)}}, []Usage{row.usage})
+		require.NoError(t, err)
+	}
+
+	got, err := s.UsageBetween(ctx, from, to)
+	require.NoError(t, err)
+	require.Equal(t, []Usage{
+		{Source: "agent", Model: "b", Output: 3},
+		{Source: "proxy", Model: "a", Input: 15, Output: 1, CacheRead: 2},
+	}, got)
+}
+
 func TestAppendRaceAcrossHandles(t *testing.T) {
 	t.Parallel()
 

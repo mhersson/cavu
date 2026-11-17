@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mhersson/cavu/internal/driver"
@@ -42,6 +43,12 @@ g update-ref "refs/heads/$2" HEAD && g rev-parse HEAD`)
 
 var errSessionTimeout = errors.New("runner: the session ran past its time limit")
 
+// budgetCut ends a session at the proxy's budget line: its cap is spent when
+// reason is empty, else the proxy could not count a model call's spend.
+type budgetCut struct{ reason string }
+
+func (budgetCut) Error() string { return "runner: the proxy stopped the session's model calls" }
+
 // Work runs one session of the agent, a readiness turn in the read-only phase
 // and any other in the agent phase, and, when it ends done, freezes its work
 // into a commit on the task branch.
@@ -62,7 +69,8 @@ func (r *Runner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequ
 }
 
 // runSession builds a session, runs it with the sidecar's lines watched, and
-// returns its result with the usage it reported. The usage is nil on error.
+// returns its result with the usage it reported, also with an error, so what
+// a cut session used is recorded.
 func runSession[T any](st *run, c engine.RunConfig, mask func(string) string, progress func(engine.Progress), do func(*session) (T, []driver.Usage, error)) (T, []store.Usage, error) {
 	s := &session{c: c, st: st, mask: mask, progress: progress, proxied: map[string]store.Usage{}}
 
@@ -71,13 +79,7 @@ func runSession[T any](st *run, c engine.RunConfig, mask func(string) string, pr
 
 	st.watching(nil)
 
-	if err != nil {
-		var zero T
-
-		return zero, nil, err
-	}
-
-	return res, s.usage(totals), nil
+	return res, s.usage(totals), err
 }
 
 // session is one agent session of a Work or Review call, and what the sidecar reported during it.
@@ -87,11 +89,15 @@ type session struct {
 	mask     func(string) string
 	progress func(engine.Progress)
 	proxied  map[string]store.Usage // key mode: the usage lines' sums per model
+
+	mu  sync.Mutex
+	cut context.CancelCauseFunc // ends the driver's run in flight; nil while none runs
 }
 
 // run runs the session under the agent's time limit, maps how it ended and
-// freezes the work of one that ended done. It also returns the agent's usage.
-// A fresh fix of a review's findings first gets the diff the review read.
+// freezes the work of one that ended done. It also returns the agent's usage,
+// and with an error the turns and usage so far. A fresh fix of a review's
+// findings first gets the diff the review read.
 func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest) (engine.WorkResult, []driver.Usage, error) {
 	if w.Mode == engine.ModeFixReview && !w.Resume {
 		problem, err := writeDiffs(ctx, s.st, s.c, s.c.Repo.BaseCommit, "refs/heads/"+s.c.Repo.Branch, reviewPatch)
@@ -107,48 +113,79 @@ func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest
 		return engine.WorkResult{}, nil, err
 	}
 
-	dr, timedOut, err := s.drive(ctx, d, spec)
+	dr, limit, err := s.drive(ctx, d, spec)
 	if err == nil && dr.Reason == driver.ReasonResumeRefused {
 		// A new session under the engine's id, which every later step resumes.
 		if spec, err = s.spec(engine.WorkRequest{Mode: engine.ModeStart, SessionID: w.SessionID, Role: w.Role}); err == nil {
-			dr, timedOut, err = s.drive(ctx, d, spec)
+			dr, limit, err = s.drive(ctx, d, spec)
 		}
 	}
 
 	if err != nil {
-		return engine.WorkResult{}, nil, err
+		return engine.WorkResult{Turns: dr.Turns}, dr.Usage, err
 	}
 
 	res := s.result(dr, w.Mode)
-	if timedOut {
-		res.Outcome = engine.OutcomeTimeout
-	}
+	res.Outcome, res.Detail = s.limited(limit, res.Outcome, res.Detail)
 
 	if res.Outcome == engine.OutcomeDone {
 		if err := s.freeze(ctx, &res); err != nil {
-			return engine.WorkResult{}, nil, err
+			return engine.WorkResult{Turns: dr.Turns}, dr.Usage, err
 		}
 	}
 
 	return res, dr.Usage, nil
 }
 
-// drive runs one session of spec under the agent's time limit and reports
-// whether the limit ended it. An error is the sandbox's or the call's.
-func (s *session) drive(ctx context.Context, d driver.Driver, spec driver.Spec) (driver.Result, bool, error) {
+// drive runs one session of spec under the agent's time limit, until the
+// proxy's budget line if one comes, and returns the limit that ended it, or
+// nil. An error is the sandbox's or the call's; when ctx ended, the result is
+// what the interrupted driver reported.
+func (s *session) drive(ctx context.Context, d driver.Driver, spec driver.Spec) (dr driver.Result, limit, err error) {
 	sctx, cancel := context.WithTimeoutCause(ctx, s.c.Agent.Timeout, errSessionTimeout)
 	defer cancel()
 
-	dr, err := d.Run(sctx, s.st.agent, spec, s.event)
+	sctx, cut := context.WithCancelCause(sctx)
+	defer cut(nil)
+
+	s.mu.Lock()
+	s.cut = cut
+	s.mu.Unlock()
+
+	dr, err = d.Run(sctx, s.st.agent, spec, s.event)
+
+	// A budget line from here on leaves the result as it is.
+	s.mu.Lock()
+	s.cut = nil
+	limit = context.Cause(sctx)
+	s.mu.Unlock()
 
 	switch {
 	case ctx.Err() != nil:
-		return driver.Result{}, false, ctx.Err()
+		return dr, nil, ctx.Err()
 	case err != nil:
-		return driver.Result{}, false, err
+		return driver.Result{}, nil, err
 	}
 
-	return dr, sctx.Err() != nil, nil
+	return dr, limit, nil
+}
+
+// limited is the outcome and detail of a session that mapped to outcome and
+// detail, once limit is known: a limit that ended the session gives its own
+// outcome, and the proxy's reason is the detail when it could not count the spend.
+func (s *session) limited(limit error, outcome, detail string) (string, string) {
+	var b budgetCut
+
+	switch {
+	case errors.Is(limit, errSessionTimeout):
+		return engine.OutcomeTimeout, detail
+	case errors.As(limit, &b) && b.reason == "":
+		return engine.OutcomeBudget, detail
+	case errors.As(limit, &b):
+		return engine.OutcomeUnmetered, s.mask(b.reason)
+	}
+
+	return outcome, detail
 }
 
 func (s *session) spec(w engine.WorkRequest) (driver.Spec, error) {
@@ -222,8 +259,23 @@ func agentProxy(c engine.RunConfig, ecosystems []string, d driver.Driver) (sidec
 
 	standIn := proxy.NewStandIn()
 	req.Model = &proxy.ModelRoute{BaseURL: c.Endpoint.URL, Credential: c.Endpoint.Credential, AuthHeader: c.Endpoint.AuthHeader, StandIn: standIn}
+	req.Budget = proxyBudget(c)
 
 	return req, standIn
+}
+
+// proxyBudget is c's budget as the proxy counts it, nil when no money cap is in force.
+func proxyBudget(c engine.RunConfig) *proxy.Budget {
+	if !c.Budget.Capped {
+		return nil
+	}
+
+	prices := make(map[string]proxy.Price, len(c.Budget.Prices))
+	for model, p := range c.Budget.Prices {
+		prices[model] = proxy.Price(p)
+	}
+
+	return &proxy.Budget{CapMicroUSD: c.Budget.MicroUSD, Prices: prices}
 }
 
 // sessionSpec is a writing session's spec in the work role but its prompt and id.
@@ -318,6 +370,12 @@ func (s *session) line(l sidecar.Line) {
 		u.Input, u.Output = u.Input+l.Usage.Input, u.Output+l.Usage.Output
 		u.CacheRead, u.CacheWrite = u.CacheRead+l.Usage.CacheRead, u.CacheWrite+l.Usage.CacheWrite
 		s.proxied[l.Usage.Model] = u
+	case "budget":
+		s.mu.Lock()
+		if s.cut != nil {
+			s.cut(budgetCut{reason: l.Error})
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -342,7 +400,7 @@ func stopped(dr driver.Result) (string, time.Time) {
 
 // result maps how the session in mode ended.
 func (s *session) result(dr driver.Result, mode string) engine.WorkResult {
-	res := engine.WorkResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, Detail: s.mask(dr.Detail)}
+	res := engine.WorkResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, CostMissing: dr.CostMissing, Detail: s.mask(dr.Detail)}
 
 	if res.Outcome, res.ResetsAt = stopped(dr); res.Outcome != "" {
 		return res

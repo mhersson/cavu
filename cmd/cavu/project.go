@@ -26,7 +26,7 @@ func init() {
 const (
 	projectAddUsage = "cavu project add NAME --repo URL [--base BRANCH, default main] [--setup CMD] [--verify CMD | --no-verify] [--data-dir DIR]"
 	projectSetUsage = "cavu project set NAME [--base BRANCH] [--setup CMD] [--verify CMD | --no-verify] [--egress HOST]... [--env K=V]...\n" +
-		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--data-dir DIR]"
+		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--cap KEY=VALUE]... [--data-dir DIR]"
 	projectListUsage  = "cavu project list [--data-dir DIR]"
 	projectShowUsage  = "cavu project show NAME [--data-dir DIR]"
 	projectCheckUsage = "cavu project check NAME [--data-dir DIR]"
@@ -57,9 +57,9 @@ func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr 
 type projectFlags struct {
 	verbFlags
 
-	base, setup, verify                   string
-	noVerify                              bool
-	egress, env, secrets, tools, switches listFlag
+	base, setup, verify                         string
+	noVerify                                    bool
+	egress, env, secrets, tools, switches, caps listFlag
 }
 
 func newProjectFlags(usage string, stderr io.Writer, lists bool) *projectFlags {
@@ -75,6 +75,7 @@ func newProjectFlags(usage string, stderr io.Writer, lists bool) *projectFlags {
 		f.Var(&f.secrets, "secret", "a variable for the setup command from the secret project.NAME.VAR; repeat for more, '' alone for none")
 		f.Var(&f.tools, "tool", "a tool version NAME=VERSION over the repository's; repeat for more, '' alone for none")
 		f.Var(&f.switches, "switch", "continuations, verify_fix, web_tools, readiness or review, =on or =off; repeat for more")
+		f.Var(&f.caps, "cap", "a cap KEY=VALUE over the setting for this project's tasks, task_max_turns, task_timeout_minutes or task_budget_usd; KEY= removes it; repeat for more")
 	}
 
 	return f
@@ -113,6 +114,11 @@ func (f *projectFlags) apply(p *store.Project) error {
 	}
 
 	tools, err := pairs("--tool", f.tools)
+	if err != nil {
+		return err
+	}
+
+	caps, err := pairs("--cap", f.caps)
 	if err != nil {
 		return err
 	}
@@ -162,6 +168,13 @@ func (f *projectFlags) apply(p *store.Project) error {
 	}
 
 	maps.Copy(p.Switches, switches)
+
+	if len(caps) > 0 && p.Caps == nil {
+		p.Caps = map[string]string{}
+	}
+
+	maps.Copy(p.Caps, caps)
+	maps.DeleteFunc(p.Caps, func(_, v string) bool { return v == "" })
 
 	return nil
 }
@@ -313,15 +326,9 @@ func projectShow(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		}
 	}
 
-	var env, tools, switches []string
+	var switches []string
 
-	for _, k := range slices.Sorted(maps.Keys(p.Env)) {
-		env = append(env, k+"="+p.Env[k])
-	}
-
-	for _, k := range slices.Sorted(maps.Keys(p.ToolOverrides)) {
-		tools = append(tools, k+"="+p.ToolOverrides[k])
-	}
+	env, tools, caps := assignments(p.Env), assignments(p.ToolOverrides), assignments(p.Caps)
 
 	state := engine.ProjectSwitches(p)
 	for _, k := range slices.Sorted(maps.Keys(state)) {
@@ -336,13 +343,24 @@ func projectShow(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		return strings.Join(vs, ", ")
 	}
 
-	fmt.Fprintf(stdout, "project:  %s\nrepo:     %s\nbase:     %s\nsetup:    %s\nverify:   %s\negress:   %s\nenv:      %s\nsecrets:  %s\ntools:    %s\nswitches: %s\nbaseline: %s\n",
+	fmt.Fprintf(stdout, "project:  %s\nrepo:     %s\nbase:     %s\nsetup:    %s\nverify:   %s\negress:   %s\nenv:      %s\nsecrets:  %s\ntools:    %s\nswitches: %s\ncaps:     %s\nbaseline: %s\n",
 		p.Name, p.RepoURL, p.BaseBranch, cmp.Or(p.SetupCommand, "none"), verify, list(p.EgressHosts), list(env),
-		list(p.SecretVars), list(tools), list(switches), baseline)
+		list(p.SecretVars), list(tools), list(switches), list(caps), baseline)
 
 	fmt.Fprintf(stdout, "detected: %s\nsuggests: %s\n", list(p.CheckResult.Tools), cmp.Or(p.CheckResult.VerifySuggestion, "none"))
 
 	return nil
+}
+
+// assignments are m's entries as KEY=VALUE, sorted by key.
+func assignments(m map[string]string) []string {
+	var out []string
+
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, k+"="+m[k])
+	}
+
+	return out
 }
 
 func projectCheck(ctx context.Context, args []string, stdout, stderr io.Writer) error {

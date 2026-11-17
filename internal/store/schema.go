@@ -144,4 +144,10 @@ CREATE TABLE api_tokens (
 	last_used_at INTEGER
 );
 `},
+	{Version: 5, SQL: `
+UPDATE settings SET key = 'task_timeout_minutes' WHERE key = 'work_timeout_minutes';
+UPDATE settings SET key = 'task_max_turns' WHERE key = 'work_max_turns';
+
+ALTER TABLE projects ADD COLUMN caps TEXT NOT NULL DEFAULT '{}';
+`},
 }

@@ -188,13 +188,35 @@ func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]E
 	return out, rows.Err()
 }
 
+// usageSelect and usageGroup sum usage rows per source and model around a
+// query's own clauses; RunID is zero.
+const (
+	usageSelect = `SELECT source, model, SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), SUM(cost_estimate_usd)
+		FROM usage `
+	usageGroup = ` GROUP BY source, model ORDER BY source, model`
+)
+
 // UsageTotals returns the task's usage summed per source and model. RunID is zero.
 func (s *Store) UsageTotals(ctx context.Context, taskID int64) ([]Usage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT source, model, SUM(input), SUM(output),
-		SUM(cache_read), SUM(cache_write), SUM(cost_estimate_usd)
-		FROM usage WHERE task_id = ? GROUP BY source, model ORDER BY source, model`, taskID)
+	return s.sumUsage(ctx, usageSelect+`WHERE task_id = ?`+usageGroup, taskID)
+}
+
+// UsageSince sums the task's usage per source and model over events after afterEventID.
+func (s *Store) UsageSince(ctx context.Context, taskID, afterEventID int64) ([]Usage, error) {
+	return s.sumUsage(ctx, usageSelect+`WHERE task_id = ? AND event_id > ?`+usageGroup, taskID, afterEventID)
+}
+
+// UsageBetween sums every task's usage per source and model over events from
+// from up to, not including, to.
+func (s *Store) UsageBetween(ctx context.Context, from, to time.Time) ([]Usage, error) {
+	return s.sumUsage(ctx, usageSelect+`JOIN events ON events.id = usage.event_id WHERE events.at >= ? AND events.at < ?`+usageGroup,
+		from.UnixMilli(), to.UnixMilli())
+}
+
+func (s *Store) sumUsage(ctx context.Context, query string, args ...any) ([]Usage, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("usage totals: %w", err)
+		return nil, fmt.Errorf("usage: %w", err)
 	}
 	defer rows.Close()
 
@@ -203,7 +225,7 @@ func (s *Store) UsageTotals(ctx context.Context, taskID int64) ([]Usage, error) 
 	for rows.Next() {
 		var u Usage
 		if err := rows.Scan(&u.Source, &u.Model, &u.Input, &u.Output, &u.CacheRead, &u.CacheWrite, &u.CostEstimateUSD); err != nil {
-			return nil, fmt.Errorf("usage totals: %w", err)
+			return nil, fmt.Errorf("usage: %w", err)
 		}
 
 		out = append(out, u)

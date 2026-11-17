@@ -300,14 +300,20 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
 		printState(stdout, events)
 
-		if err := printQueue(ctx, stdout, a, id); err != nil {
+		snap, err := printQueue(ctx, stdout, a, id)
+		if err != nil {
 			return err
 		}
 
 		turns, d := engine.TurnsAndDuration(events)
 		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
 
-		if err := printUsage(ctx, stdout, a.store, id); err != nil {
+		used, limits := snap.Facts, snap.Limits
+		spent, today := money(snap)
+		fmt.Fprintf(stdout, "budget:  %d of %d turns, %.0f of %.0f minutes%s since a person last acted%s\n",
+			used.Turns, limits.Turns, used.SessionTime.Minutes(), limits.SessionTime.Minutes(), spent, today)
+
+		if err := printUsage(ctx, stdout, a.store, id, used.CostMissing); err != nil {
 			return err
 		}
 
@@ -326,12 +332,30 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	})
 }
 
+// money is what the budget line says of the money caps in force: the task's
+// spend of its cap, and the instance's today of the daily cap.
+func money(s engine.Snapshot) (task, day string) {
+	if c := s.Limits.TaskMicroUSD; c > 0 {
+		task = fmt.Sprintf(", %s of %s", dollars(s.Spent.TaskMicroUSD), dollars(c))
+	}
+
+	if c := s.Limits.DayMicroUSD; c > 0 {
+		day = fmt.Sprintf("; %s of the daily %s today", dollars(s.Spent.DayMicroUSD), dollars(c))
+	}
+
+	return task, day
+}
+
+func dollars(microUSD int64) string {
+	return fmt.Sprintf("$%.2f", float64(microUSD)/1e6)
+}
+
 // printQueue prints the task's dependencies, each with its status, and why
-// Decide holds the task while it does.
-func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
+// Decide holds the task while it does, and returns the snapshot it decided.
+func printQueue(ctx context.Context, w io.Writer, a *app, id int64) (engine.Snapshot, error) {
 	var pauses engine.Pauses
 	if err := pauses.Read(ctx, a.store); err != nil {
-		return err
+		return engine.Snapshot{}, err
 	}
 
 	l := a.actions()
@@ -339,7 +363,7 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
 
 	snap, err := l.Snapshot(ctx, id)
 	if err != nil {
-		return err
+		return engine.Snapshot{}, err
 	}
 
 	if len(snap.Deps) > 0 {
@@ -355,7 +379,7 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
 		fmt.Fprintf(w, "wait:    %s\n", waitText(act))
 	}
 
-	return nil
+	return snap, nil
 }
 
 // printState prints the task's status, its open stop with every question the
@@ -429,9 +453,10 @@ func newest[T any](events []store.Event, typ string) (T, bool) {
 	return v, false
 }
 
-// printUsage prints a row per source and model and the one cost row, which
-// is an estimate from list prices, not a bill.
-func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64) error {
+// printUsage prints a row per source and model and the one cost row, an
+// estimate from list prices, not a bill, which ends with how many sessions
+// without a cost it leaves out, when any.
+func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64, missing int) error {
 	rows, err := s.UsageTotals(ctx, taskID)
 	if err != nil {
 		return err
@@ -446,7 +471,13 @@ func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64) 
 		cost += u.CostEstimateUSD
 	}
 
-	fmt.Fprintf(w, "cost (estimate): $%.4f\n", cost)
+	fmt.Fprintf(w, "cost (estimate): $%.4f", cost)
+
+	if missing > 0 {
+		fmt.Fprintf(w, ", leaving out %d sessions that ended without one", missing)
+	}
+
+	fmt.Fprintln(w)
 
 	return nil
 }

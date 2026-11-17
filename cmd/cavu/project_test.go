@@ -174,6 +174,8 @@ func TestProjectSetValidatesInput(t *testing.T) {
 		{"a tool without =", []string{"--tool", "go"}, "--tool"},
 		{"an unknown switch", []string{"--switch", "fast=on"}, "switches"},
 		{"a switch neither on nor off", []string{"--switch", "web_tools=yes"}, "--switch"},
+		{"a cap a project may not hold", []string{"--cap", "concurrency=2"}, "caps"},
+		{"a cap without =", []string{"--cap", "task_max_turns"}, "--cap"},
 	}
 
 	dir := t.TempDir()
@@ -270,6 +272,20 @@ func TestProjectSetVerifyAndSwitches(t *testing.T) {
 
 	assert.Equal(t, map[string]bool{"web_tools": true, "continuations": false, "verify_fix": false},
 		storedProject(t, dir, "web").Switches)
+}
+
+func TestProjectCaps(t *testing.T) {
+	dir := t.TempDir()
+	cavuIn(t, dir, "project", "add", "web", "--repo", repo, "--verify", "make test")
+	assert.Equal(t, []string{"none"}, labelled(cavuIn(t, dir, "project", "show", "web"), "caps:"))
+
+	cavuIn(t, dir, "project", "set", "web", "--cap", "task_max_turns=50", "--cap", "task_timeout_minutes=60")
+	assert.Equal(t, map[string]string{"task_max_turns": "50", "task_timeout_minutes": "60"}, storedProject(t, dir, "web").Caps)
+	assert.Equal(t, []string{"task_max_turns=50, task_timeout_minutes=60"}, labelled(cavuIn(t, dir, "project", "show", "web"), "caps:"))
+
+	cavuIn(t, dir, "project", "set", "web", "--cap", "task_max_turns=")
+	assert.Equal(t, map[string]string{"task_timeout_minutes": "60"}, storedProject(t, dir, "web").Caps, "an empty value removes the cap")
+	assert.Equal(t, []string{"task_timeout_minutes=60"}, labelled(cavuIn(t, dir, "project", "show", "web"), "caps:"))
 }
 
 func TestProjectList(t *testing.T) {

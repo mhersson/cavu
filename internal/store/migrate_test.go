@@ -107,3 +107,34 @@ func TestMigrationThreeKeepsData(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "t", task.Title)
 }
+
+func TestMigrationFiveRenamesTheCaps(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cavu.db")
+	ctx := context.Background()
+
+	old, err := open(ctx, path, migrations[:4])
+	require.NoError(t, err)
+
+	_, err = old.db.Exec(`INSERT INTO settings (key, value) VALUES ('work_timeout_minutes', '30'), ('work_max_turns', '50')`)
+	require.NoError(t, err)
+	_, err = old.db.Exec(`INSERT INTO projects (name, repo_url, base_branch, setup_command, verify_command,
+		verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches)
+		VALUES ('p', 'r', 'main', '', '', 0, '{}', '[]', '{}', '[]', '{}')`)
+	require.NoError(t, err)
+	require.NoError(t, old.Close())
+
+	s, err := Open(ctx, path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = s.Close() })
+
+	settings, err := s.Settings(ctx)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"task_timeout_minutes": "30", "task_max_turns": "50"}, settings)
+
+	p, err := s.ProjectByName(ctx, "p")
+	require.NoError(t, err)
+	require.Empty(t, p.Caps)
+}

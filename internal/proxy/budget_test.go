@@ -288,3 +288,37 @@ func TestNoBudgetRefusesNothing(t *testing.T) {
 
 	assert.Empty(t, stops.all())
 }
+
+func TestBudgetDefaultPrice(t *testing.T) {
+	one := Price{Input: 1, Output: 1, CacheRead: 1, CacheWrite: 1}
+
+	// usageJSON's 202 tokens of claude-x spend a cap of 202 only at one micro-dollar each.
+	for _, tc := range []struct {
+		name   string
+		prices map[string]Price
+		names  string // what the reason for refusing holds; "" when the cap is spent
+	}{
+		{"a model without its own price is counted at the default", map[string]Price{"*": one}, ""},
+		{"a model's own price wins over the default", map[string]Price{"claude-x": one, "*": {}}, ""},
+		{"without a default a model without its own price fails closed", map[string]Price{"claude-y": one}, "claude-x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := serve(t, answer{"application/json", "", usageJSON})
+			p, stops := budgetProxy(t, up.URL, &Budget{CapMicroUSD: 202, Prices: tc.prices})
+
+			resp, _ := ask(t, p, "/v1/messages")
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			reasons := stopsOf(t, stops)
+			require.Len(t, reasons, 1)
+
+			if tc.names == "" {
+				assert.Empty(t, reasons[0])
+			} else {
+				assert.Contains(t, reasons[0], tc.names)
+			}
+
+			requireRefused(t, p, "/v1/messages")
+		})
+	}
+}

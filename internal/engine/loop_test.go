@@ -70,7 +70,7 @@ type call struct {
 	commit string // the commit an export was given
 	ref    engine.RunRef
 	eco    []string         // the config's ecosystems
-	cfg    engine.RunConfig // a check's config
+	cfg    engine.RunConfig // the config of every call but a release
 }
 
 func (c call) String() string {
@@ -140,7 +140,7 @@ func (r *fakeRunner) begin(ctx context.Context, c call) error {
 }
 
 func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
-	if err := r.begin(ctx, call{method: "prepare", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "prepare", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.PrepareResult{}, err
 	}
 
@@ -165,7 +165,7 @@ func (r *fakeRunner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (
 }
 
 func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
-	if err := r.begin(ctx, call{method: "work", task: c.TaskID, runID: c.RunID, work: w, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "work", task: c.TaskID, runID: c.RunID, work: w, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.WorkResult{}, err
 	}
 
@@ -183,7 +183,7 @@ func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.Work
 }
 
 func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyResult, error) {
-	if err := r.begin(ctx, call{method: "verify", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "verify", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.VerifyResult{}, err
 	}
 
@@ -194,7 +194,7 @@ func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.Ver
 }
 
 func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit string) (engine.ExportResult, error) {
-	if err := r.begin(ctx, call{method: "export", task: c.TaskID, runID: c.RunID, commit: commit, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "export", task: c.TaskID, runID: c.RunID, commit: commit, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.ExportResult{}, err
 	}
 
@@ -205,7 +205,7 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit stri
 }
 
 func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.ReviewRequest, _ func(engine.Progress)) (engine.ReviewResult, error) {
-	if err := r.begin(ctx, call{method: "review", task: c.TaskID, runID: c.RunID, review: rv, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "review", task: c.TaskID, runID: c.RunID, review: rv, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.ReviewResult{}, err
 	}
 
@@ -265,6 +265,7 @@ type spyStore struct {
 	failUpdate func(r store.Run) error
 	createRuns int
 	runWrites  []store.Run
+	usageTies  []string // per append with usage rows, the type of its last event, which the rows are tied to
 }
 
 func (s *spyStore) Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error) {
@@ -276,6 +277,11 @@ func (s *spyStore) Append(ctx context.Context, taskID, expectLast int64, events 
 	}
 
 	n := s.claims
+
+	if len(usage) > 0 && len(events) > 0 {
+		s.usageTies = append(s.usageTies, events[len(events)-1].Type)
+	}
+
 	s.mu.Unlock()
 
 	if fail != nil {
@@ -1368,6 +1374,43 @@ func TestLoopRunnerFaultStops(t *testing.T) {
 
 			assert.Empty(t, h.eventsOf(engine.RunEnded))
 			assert.Empty(t, h.spy.ended(), "the run keeps its volumes and stays open")
+		})
+	}
+}
+
+// What a session a runner fault cut used is recorded with its stop.
+func TestUsageOfAFaultedSessionIsRecorded(t *testing.T) {
+	daemon := errors.New("the sidecar ended")
+	used := []store.Usage{
+		{Source: "proxy", Model: "model-a", Input: 10, Output: 5},
+		{Source: "proxy", Model: "model-b", Input: 3, Output: 1, CacheRead: 2},
+	}
+
+	tests := map[string]func(h *harness){
+		"a session": func(h *harness) {
+			h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Turns: 4, Usage: used}, err: daemon}}
+		},
+		"a review": func(h *harness) {
+			h.withReview()
+			h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456"}}}
+			h.runner.reviews = []step[engine.ReviewResult]{{res: engine.ReviewResult{Turns: 4, Usage: used}, err: daemon}}
+		},
+	}
+
+	for name, script := range tests {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			script(h)
+
+			_, err := h.run(t.Context())
+			require.NoError(t, err)
+
+			assert.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+			assert.Equal(t, []string{engine.Stopped}, h.spy.usageTies, "the rows are tied to the stop")
+
+			totals, err := h.store.UsageTotals(t.Context(), h.task.ID)
+			require.NoError(t, err)
+			assert.Equal(t, used, totals)
 		})
 	}
 }

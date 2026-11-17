@@ -74,7 +74,8 @@ func writeDiffs(ctx context.Context, st *run, c engine.RunConfig, args ...string
 }
 
 // review runs the review session under the agent's time limit and maps how it
-// ended. It also returns the agent's usage.
+// ended. It also returns the agent's usage, and with an error the turns and
+// usage so far.
 func (s *session) review(ctx context.Context, d driver.Driver, rq engine.ReviewRequest) (engine.ReviewResult, []driver.Usage, error) {
 	text, err := reviewPrompt(s.c, rq)
 	if err != nil {
@@ -94,15 +95,13 @@ func (s *session) review(ctx context.Context, d driver.Driver, rq engine.ReviewR
 	spec.SessionID = rq.SessionID
 	readOnly(&spec, schema)
 
-	dr, timedOut, err := s.drive(ctx, d, spec)
+	dr, limit, err := s.drive(ctx, d, spec)
 	if err != nil {
-		return engine.ReviewResult{}, nil, err
+		return engine.ReviewResult{Turns: dr.Turns}, dr.Usage, err
 	}
 
 	res := s.reviewResult(dr, rq)
-	if timedOut {
-		res.Outcome = engine.OutcomeTimeout
-	}
+	res.Outcome, res.Detail = s.limited(limit, res.Outcome, res.Detail)
 
 	return res, dr.Usage, nil
 }
@@ -136,7 +135,7 @@ func numberFindings(findings []engine.Finding) []prompts.ReviewFinding {
 // the schema, a session outcome that stops the task, and otherwise failed
 // with the session's detail, so no other outcome reaches the record.
 func (s *session) reviewResult(dr driver.Result, rq engine.ReviewRequest) engine.ReviewResult {
-	res := engine.ReviewResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, Detail: s.mask(dr.Detail)}
+	res := engine.ReviewResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, CostMissing: dr.CostMissing, Detail: s.mask(dr.Detail)}
 
 	if res.Outcome, res.ResetsAt = stopped(dr); res.Outcome != "" {
 		return res

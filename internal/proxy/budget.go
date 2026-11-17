@@ -14,7 +14,7 @@ type Price struct{ Input, Output, CacheRead, CacheWrite float64 }
 // Budget is what a run may still spend at the model route.
 type Budget struct {
 	CapMicroUSD int64
-	Prices      map[string]Price // by the model id a response reports
+	Prices      map[string]Price // by the model id a response reports; "*" prices any model without its own
 }
 
 // Why a response's spend cannot be counted, in words a person can act on.
@@ -23,7 +23,7 @@ const (
 	whyType    = "The model endpoint answered with neither JSON nor an event stream, so the run's spend cannot be counted; use an endpoint that answers in the Messages API format."
 	whyLarge   = "A model response was too large for the proxy to read its usage, so the run's spend cannot be counted; run without a money cap."
 	whyNoUsage = "A model response ended without usage, so the run's spend cannot be counted; use an endpoint that reports usage."
-	whyNoPrice = "Model %q has no price, so the run's spend cannot be counted; add a price for that model."
+	whyNoPrice = "Model %q has no price, so the run's spend cannot be counted; add a price for that model, or a default price under *."
 )
 
 const refusal = `{"type":"error","error":{"type":"billing_error","message":"This run's money cap stops its model requests."}}`
@@ -50,6 +50,10 @@ func (l *ledger) refusing() bool {
 // unknown. Either can start the refusing, which then lasts.
 func (l *ledger) count(u Usage, why string) {
 	p, priced := l.Prices[u.Model]
+	if !priced {
+		p, priced = l.Prices["*"]
+	}
+
 	if why == "" && !priced {
 		why = fmt.Sprintf(whyNoPrice, u.Model)
 	}

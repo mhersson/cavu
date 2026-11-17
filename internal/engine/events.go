@@ -47,7 +47,9 @@ const (
 	OutcomeTimeout    = "timeout"
 	OutcomeUsageLimit = "usage_limit"
 	OutcomeEndpoint   = "endpoint"
-	OutcomeReady      = "ready" // a readiness turn found nothing missing
+	OutcomeReady      = "ready"     // a readiness turn found nothing missing
+	OutcomeBudget     = "budget"    // the proxy's count reached the budget the session was given
+	OutcomeUnmetered  = "unmetered" // the proxy could not price or meter a model call; the detail says why
 )
 
 // Verify results.
@@ -148,6 +150,7 @@ type (
 		HeadCommit       string    `json:"head_commit,omitempty"`
 		Turns            int       `json:"turns"`
 		CostEstimateUSD  float64   `json:"cost_estimate_usd"`
+		CostMissing      bool      `json:"cost_missing,omitempty"` // the estimate does not cover the session
 		ResetsAt         time.Time `json:"resets_at,omitzero"`
 		Detail           string    `json:"detail"`
 	}
@@ -181,6 +184,7 @@ type (
 		Addressed       []bool    `json:"addressed,omitempty"` // scoped: one per finding that was open, in their order
 		Turns           int       `json:"turns"`
 		CostEstimateUSD float64   `json:"cost_estimate_usd"`
+		CostMissing     bool      `json:"cost_missing,omitempty"` // the estimate does not cover the review
 		ResetsAt        time.Time `json:"resets_at,omitzero"`
 		Detail          string    `json:"detail"`
 	}

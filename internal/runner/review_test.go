@@ -250,8 +250,9 @@ func TestReviewResultMapping(t *testing.T) {
 			want: engine.ReviewResult{Outcome: engine.ReviewFailed, Turns: 4, CostEstimateUSD: 0.25},
 		},
 		{
-			name: "a crashed session, with its detail", r: fullReview(), res: driver.Result{Reason: driver.ReasonCrashed, Detail: "exit 1" + leak},
-			want: engine.ReviewResult{Outcome: engine.ReviewFailed, Detail: mask("exit 1" + leak)},
+			name: "a crashed session, with its detail and without a cost", r: fullReview(),
+			res:  driver.Result{Reason: driver.ReasonCrashed, Detail: "exit 1" + leak, CostMissing: true},
+			want: engine.ReviewResult{Outcome: engine.ReviewFailed, Detail: mask("exit 1" + leak), CostMissing: true},
 		},
 		{
 			name: "a usage limit with its reset", r: fullReview(),

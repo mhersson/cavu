@@ -98,7 +98,7 @@ func reviewLoop(s Snapshot, f Facts) Action {
 	r := f.Review
 
 	if r.Halt != nil {
-		if a, ok := sessionStop(r.Halt, s.Now); ok {
+		if a, ok := sessionStop(r.Halt, s); ok {
 			return a
 		}
 	}
@@ -139,6 +139,8 @@ func (p *pass) review(ctx context.Context, v view, a Action, o openRun) error {
 		r.FixBase, r.Findings = f.Review.Head, f.Review.Open
 	}
 
+	o.cfg.Agent.MaxTurns, o.cfg.Agent.Timeout = left(v.Snapshot)
+
 	if err := p.claim(ctx, v, o, draft{ReviewStarted, actorEngine, ReviewStartedPayload{
 		SessionID: r.SessionID, Scoped: a.Scoped, Head: r.Head, Why: a.Why,
 	}}); err != nil {
@@ -150,11 +152,12 @@ func (p *pass) review(ctx context.Context, v view, a Action, o openRun) error {
 	p.hold(stop())
 
 	if err != nil {
-		return p.fault(ctx, o, err)
+		return p.fault(ctx, o, runUsage(o.row.ID, res.Usage), err)
 	}
 
 	return p.result(ctx, o, runUsage(o.row.ID, res.Usage), draft{ReviewEnded, actorRunner, ReviewEndedPayload{
 		Outcome: res.Outcome, Head: r.Head, Scoped: a.Scoped, Asked: res.Asked, Built: res.Built, Findings: res.Findings,
-		Addressed: res.Addressed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD, ResetsAt: res.ResetsAt, Detail: res.Detail,
+		Addressed: res.Addressed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD, CostMissing: res.CostMissing,
+		ResetsAt: res.ResetsAt, Detail: res.Detail,
 	}})
 }

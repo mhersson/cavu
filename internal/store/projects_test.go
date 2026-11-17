@@ -17,6 +17,7 @@ func fullProject() Project {
 		Env:           map[string]string{"CI": "1"},
 		SecretVars:    []string{"NPM_TOKEN"},
 		Switches:      map[string]bool{"continuations": true, "web_tools": false},
+		Caps:          map[string]string{"task_max_turns": "50"},
 	}
 }
 
