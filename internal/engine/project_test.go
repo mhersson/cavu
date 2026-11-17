@@ -92,7 +92,7 @@ func validProject() store.Project {
 	return store.Project{
 		Name: "api", RepoURL: "https://example.com/api.git", BaseBranch: "main", SetupCommand: "make deps", VerifyCommand: "make test",
 		Env: map[string]string{"CI": "1", "_X2": "y"}, SecretVars: []string{"NPM_TOKEN"}, ToolOverrides: map[string]string{"go": "1.27"},
-		Switches: map[string]bool{"continuations": false, "verify_fix": true, "web_tools": true, "readiness": false}, EgressHosts: []string{"proxy.golang.org"},
+		Switches: map[string]bool{"continuations": false, "verify_fix": true, "web_tools": true, "readiness": false, "review": true}, EgressHosts: []string{"proxy.golang.org"},
 	}
 }
 

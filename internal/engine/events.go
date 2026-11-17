@@ -24,6 +24,8 @@ const (
 	SessionEnded   = "session_ended"   // runner
 	VerifyStarted  = "verify_started"  // engine
 	VerifyEnded    = "verify_ended"    // runner
+	ReviewStarted  = "review_started"  // engine
+	ReviewEnded    = "review_ended"    // runner
 	ExportStarted  = "export_started"  // engine
 	Exported       = "exported"        // runner
 	Merged         = "merged"          // user
@@ -63,6 +65,20 @@ const (
 	ModeContinue  = "continue"
 	ModeFixVerify = "fix_verify"
 	ModeAnswer    = "answer"
+	ModeFixReview = "fix_review"
+)
+
+// Roles of a session, each with its model and effort.
+const (
+	RoleWork   = "work"
+	RoleReview = "review"
+	RoleStrong = "strong" // a fresh session that takes over the review's last fix rounds
+)
+
+// Review outcomes besides the session outcomes that stop a task.
+const (
+	ReviewReviewed = "reviewed"
+	ReviewFailed   = "failed" // the reviewer gave no verdict
 )
 
 // Event payloads. A zero time is left out of the JSON. Why is the one line
@@ -98,6 +114,7 @@ type (
 		SessionID string `json:"session_id"`
 		Resume    bool   `json:"resume"`
 		Automatic bool   `json:"automatic"` // counted toward its mode's cap
+		Role      string `json:"role,omitempty"`
 		Why       string `json:"why,omitempty"`
 	}
 
@@ -145,6 +162,27 @@ type (
 		ExitCode   int    `json:"exit_code"`
 		Output     string `json:"output"`
 		DurationMS int64  `json:"duration_ms"`
+	}
+
+	ReviewStartedPayload struct {
+		SessionID string `json:"session_id"`
+		Scoped    bool   `json:"scoped"`
+		Head      string `json:"head"`
+		Why       string `json:"why"`
+	}
+
+	ReviewEndedPayload struct {
+		Outcome         string    `json:"outcome"` // reviewed, failed, or a session outcome that stops
+		Head            string    `json:"head"`
+		Scoped          bool      `json:"scoped"`
+		Asked           Verdict   `json:"asked"`               // does it do what the task asked
+		Built           Verdict   `json:"built"`               // is it well built
+		Findings        []Finding `json:"findings"`            // a full review's findings; a scoped one's breakage in the fix
+		Addressed       []bool    `json:"addressed,omitempty"` // scoped: one per finding that was open, in their order
+		Turns           int       `json:"turns"`
+		CostEstimateUSD float64   `json:"cost_estimate_usd"`
+		ResetsAt        time.Time `json:"resets_at,omitzero"`
+		Detail          string    `json:"detail"`
 	}
 
 	ExportStartedPayload struct {

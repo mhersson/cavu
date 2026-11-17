@@ -29,7 +29,7 @@ func snap(f engine.Facts) engine.Snapshot {
 }
 
 func snapWith(f engine.Facts, sw engine.Switches) engine.Snapshot {
-	return engine.Snapshot{Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, FaultRetries: 2}}
+	return engine.Snapshot{Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2}}
 }
 
 func withDeps(f engine.Facts, deps ...engine.Dep) engine.Snapshot {
@@ -282,31 +282,35 @@ func decideCases() []decideCase {
 
 func TestDecide(t *testing.T) {
 	for _, tc := range decideCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			got := engine.Decide(tc.snap)
-
-			assert.NotEmpty(t, got.Why)
-			assert.NotContains(t, got.Why, "\n")
-
-			if got.Kind == engine.KindStop {
-				assert.NotEmpty(t, got.Explain)
-				assert.NotContains(t, got.Explain, "\n")
-				assert.LessOrEqual(t, len(got.Explain), 300)
-				assert.True(t, utf8.ValidString(got.Explain))
-			}
-
-			if tc.explainHas != "" {
-				assert.Contains(t, got.Explain, tc.explainHas)
-			}
-
-			if tc.whyHas != "" {
-				assert.Contains(t, got.Why, tc.whyHas)
-			}
-
-			got.Why, got.Explain = "", ""
-			assert.Equal(t, tc.want, got)
-		})
+		t.Run(tc.name, func(t *testing.T) { assertDecides(t, tc) })
 	}
+}
+
+func assertDecides(t *testing.T, tc decideCase) {
+	t.Helper()
+
+	got := engine.Decide(tc.snap)
+
+	assert.NotEmpty(t, got.Why)
+	assert.NotContains(t, got.Why, "\n")
+
+	if got.Kind == engine.KindStop {
+		assert.NotEmpty(t, got.Explain)
+		assert.NotContains(t, got.Explain, "\n")
+		assert.LessOrEqual(t, len(got.Explain), 300)
+		assert.True(t, utf8.ValidString(got.Explain))
+	}
+
+	if tc.explainHas != "" {
+		assert.Contains(t, got.Explain, tc.explainHas)
+	}
+
+	if tc.whyHas != "" {
+		assert.Contains(t, got.Why, tc.whyHas)
+	}
+
+	got.Why, got.Explain = "", ""
+	assert.Equal(t, tc.want, got)
 }
 
 func TestDecideFallback(t *testing.T) {
@@ -331,7 +335,7 @@ func TestDecideFallback(t *testing.T) {
 }
 
 func TestDecideIsPure(t *testing.T) {
-	for _, tc := range decideCases() {
+	for _, tc := range append(decideCases(), reviewCases(t)...) {
 		t.Run(tc.name, func(t *testing.T) {
 			first := engine.Decide(tc.snap)
 			for range 100 {

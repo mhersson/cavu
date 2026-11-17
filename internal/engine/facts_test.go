@@ -174,13 +174,13 @@ func TestReduce(t *testing.T) {
 			events: questionAnswered(),
 			want: engine.Facts{
 				Started: true, RunOpen: true, Prepared: true, SessionID: "s1",
-				Resumed: &engine.Resume{From: engine.StopQuestion, Answer: "Use 8080."},
+				Resumed: &engine.Resume{From: engine.StopQuestion, Answer: "Use 8080."}, Answers: []string{"Use 8080."},
 			},
 		},
 		{
 			name:   "a finished session after an answer",
 			events: append(questionAnswered(), ev(engine.SessionStarted, `{"mode":"answer","session_id":"s1","resume":true}`), doneChanged),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact},
+			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact, Answers: []string{"Use 8080."}},
 		},
 		{
 			name: "a failed prepare",
@@ -442,15 +442,16 @@ func TestTurnsAndDuration(t *testing.T) {
 		{name: "nothing", events: nil},
 		{name: "never started", events: []store.Event{at(ev(engine.HumanCancelled, ""), 5)}},
 		{
-			name: "every session's turns, timed from the newest start to the last event",
+			name: "every session's turns, reviews' too, timed from the newest start to the last event",
 			events: []store.Event{
 				at(ev(engine.TaskStarted, ""), 0),
 				at(ev(engine.SessionEnded, `{"outcome":"unfinished","turns":3}`), 10),
 				at(ev(engine.TaskStarted, ""), 20),
 				at(ev(engine.SessionEnded, `{"outcome":"done","turns":4}`), 30),
+				at(ev(engine.ReviewEnded, `{"outcome":"reviewed","turns":2}`), 31),
 				at(ev(engine.Exported, `{}`), 32),
 			},
-			turns: 7, duration: 12 * time.Minute,
+			turns: 9, duration: 12 * time.Minute,
 		},
 	}
 

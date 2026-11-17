@@ -74,7 +74,7 @@ func newProjectFlags(usage string, stderr io.Writer, lists bool) *projectFlags {
 		f.Var(&f.env, "env", "a variable K=V for the setup command; repeat for more, '' alone for none")
 		f.Var(&f.secrets, "secret", "a variable for the setup command from the secret project.NAME.VAR; repeat for more, '' alone for none")
 		f.Var(&f.tools, "tool", "a tool version NAME=VERSION over the repository's; repeat for more, '' alone for none")
-		f.Var(&f.switches, "switch", "continuations, verify_fix, web_tools or readiness, =on or =off; repeat for more")
+		f.Var(&f.switches, "switch", "continuations, verify_fix, web_tools, readiness or review, =on or =off; repeat for more")
 	}
 
 	return f

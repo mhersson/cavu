@@ -133,7 +133,8 @@ func ReadSettings(values map[string]string) (RunConfig, error) {
 // another value would orphan the instance's volumes.
 var settableKeys = []string{
 	"runtime", "ca_bundle_path", "endpoint_mode", "endpoint_url", "endpoint_auth_header",
-	keyModelWork, keyEffortWork, "work_timeout_minutes", "work_max_turns", "verify_timeout_minutes",
+	keyModelWork, keyEffortWork, "model_review", "effort_review", "model_strong", "effort_strong",
+	"work_timeout_minutes", "work_max_turns", "verify_timeout_minutes",
 	"commit_name", "commit_email", "concurrency", "listen_address",
 }
 
@@ -179,6 +180,7 @@ func ListenAddress(values map[string]string) (string, error) {
 func switchFields(sw *Switches) map[string]*bool {
 	return map[string]*bool{
 		"continuations": &sw.Continuations, "verify_fix": &sw.VerifyFix, "web_tools": &sw.WebTools, "readiness": &sw.Readiness,
+		"review": &sw.Review,
 	}
 }
 
@@ -243,6 +245,8 @@ func (s *settingsReader) read() RunConfig {
 	c.Endpoint.URL = s.values["endpoint_url"]
 	c.Endpoint.AuthHeader = s.oneOf("endpoint_auth_header", "bearer", "x-api-key")
 	c.Agent.Model, c.Agent.Effort = s.values[keyModelWork], s.values[keyEffortWork]
+	c.Agent.Review.Model, c.Agent.Review.Effort = cmp.Or(s.values["model_review"], c.Agent.Model), cmp.Or(s.values["effort_review"], c.Agent.Effort)
+	c.Agent.Strong.Model, c.Agent.Strong.Effort = cmp.Or(s.values["model_strong"], c.Agent.Model), cmp.Or(s.values["effort_strong"], c.Agent.Effort)
 	c.Agent.MaxTurns = s.positiveInt("work_max_turns", 200)
 	c.Agent.Timeout = time.Duration(s.positiveInt("work_timeout_minutes", 60)) * time.Minute
 	c.Verify.Timeout = s.minutes("verify_timeout_minutes", 10, 0.5, 120)

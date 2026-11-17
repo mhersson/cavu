@@ -65,6 +65,7 @@ type call struct {
 	task   int64
 	runID  int64
 	work   engine.WorkRequest
+	review engine.ReviewRequest
 	remove bool
 	commit string // the commit an export was given
 	ref    engine.RunRef
@@ -76,6 +77,10 @@ func (c call) String() string {
 	switch c.method {
 	case "work":
 		return "work/" + c.work.Mode
+	case "review":
+		if c.review.FixBase != "" {
+			return "review/scoped"
+		}
 	case "release":
 		if c.remove {
 			return "release/remove"
@@ -95,6 +100,7 @@ type fakeRunner struct {
 	works      []step[engine.WorkResult]
 	verifies   []step[engine.VerifyResult]
 	exports    []step[engine.ExportResult]
+	reviews    []step[engine.ReviewResult]
 	releaseErr error
 	suggestion string                                  // every check's verify suggestion
 	progress   []engine.Progress                       // sent during every Work, each from its own goroutine
@@ -108,8 +114,9 @@ var (
 		Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", Turns: 3, HeadCommit: "head456",
 		Usage: []store.Usage{{Source: "agent", Model: "model-a", Input: 10, Output: 5}},
 	}
-	verifyOK = engine.VerifyResult{Result: engine.ResultPassed, Command: "make test", Output: "ok"}
-	exportOK = engine.ExportResult{
+	verifyOK   = engine.VerifyResult{Result: engine.ResultPassed, Command: "make test", Output: "ok"}
+	reviewedOK = engine.ReviewResult{Outcome: engine.ReviewReviewed, Asked: engine.Verdict{Pass: true}, Built: engine.Verdict{Pass: true}}
+	exportOK   = engine.ExportResult{
 		HeadCommit: "head456", Diff: []byte("diff --git a/x b/x\n"), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 1,
 		DiffStat: []string{"x | 1 +", "1 file changed, 1 insertion(+)"},
 	}
@@ -195,6 +202,17 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit stri
 	defer r.mu.Unlock()
 
 	return pop(&r.exports, exportOK)
+}
+
+func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.ReviewRequest, _ func(engine.Progress)) (engine.ReviewResult, error) {
+	if err := r.begin(ctx, call{method: "review", task: c.TaskID, runID: c.RunID, review: rv, eco: c.Ecosystems}); err != nil {
+		return engine.ReviewResult{}, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return pop(&r.reviews, reviewedOK)
 }
 
 func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {

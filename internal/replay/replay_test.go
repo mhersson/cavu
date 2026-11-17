@@ -87,6 +87,10 @@ func (r *fakeRunner) Verify(context.Context, engine.RunConfig) (engine.VerifyRes
 	return res, nil
 }
 
+func (r *fakeRunner) Review(context.Context, engine.RunConfig, engine.ReviewRequest, func(engine.Progress)) (engine.ReviewResult, error) {
+	return engine.ReviewResult{Outcome: engine.ReviewReviewed, Asked: engine.Verdict{Pass: true}, Built: engine.Verdict{Pass: true}}, nil
+}
+
 func (r *fakeRunner) Export(_ context.Context, c engine.RunConfig, _ string) (engine.ExportResult, error) {
 	return engine.ExportResult{HeadCommit: "head", Diff: fmt.Appendf(nil, "diff of task %d", c.TaskID), FilesChanged: 1}, nil
 }

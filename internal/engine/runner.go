@@ -28,10 +28,11 @@ type RunConfig struct {
 	}
 	Endpoint struct{ Mode, URL, AuthHeader, Credential string }
 	Agent    struct {
-		Model, Effort string
-		MaxTurns      int
-		Timeout       time.Duration
-		WebTools      bool
+		Model, Effort  string
+		Review, Strong struct{ Model, Effort string } // each falls back on the work model and effort
+		MaxTurns       int
+		Timeout        time.Duration
+		WebTools       bool
 	}
 	Identity struct{ Name, Email string }
 	Task     struct{ Title, Body string }
@@ -63,6 +64,8 @@ type Runner interface {
 	// called after Work returns.
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
+	// Review runs one read-only review session on the frozen head and changes nothing.
+	Review(ctx context.Context, c RunConfig, r ReviewRequest, progress func(Progress)) (ReviewResult, error)
 	// Export exports commit, the work a session froze, never the working tree.
 	// It is safe to repeat for the same run.
 	Export(ctx context.Context, c RunConfig, commit string) (ExportResult, error)
@@ -89,7 +92,19 @@ type PrepareResult struct {
 type WorkRequest struct {
 	Mode, SessionID string
 	Resume          bool
-	Detail          string // the verify output for fix_verify, the answer for answer
+	Role            string    // work or strong, which picks the model and effort
+	Detail          string    // the verify output for fix_verify, the answer for answer
+	Findings        []Finding // fix_review: the open findings
+}
+
+// ReviewRequest starts a review session, which never resumes.
+type ReviewRequest struct {
+	SessionID            string    // new
+	Head                 string    // the frozen commit under review
+	FixBase              string    // scoped: the commit the previous review saw
+	Findings             []Finding // scoped: the open findings to rule on
+	Answers, Assumptions []string
+	Summary              string // the working session's own summary: claims, not facts
 }
 
 // Progress is something a session reported before it ended.
@@ -111,6 +126,19 @@ type WorkResult struct {
 	CostEstimateUSD        float64
 	ResetsAt               time.Time
 	Usage                  []store.Usage
+}
+
+// ReviewResult is how a review ended: reviewed, failed, or a session outcome that stops.
+type ReviewResult struct {
+	Outcome         string
+	Asked, Built    Verdict
+	Findings        []Finding
+	Addressed       []bool
+	Detail          string
+	Turns           int
+	CostEstimateUSD float64
+	ResetsAt        time.Time
+	Usage           []store.Usage
 }
 
 // VerifyResult is the outcome of the verify command.

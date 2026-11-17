@@ -422,6 +422,11 @@ func homeStep(ctx context.Context, a container, script string, pairs map[string]
 	return nil
 }
 
+// Review is not built: no review session runs yet.
+func (r *Runner) Review(context.Context, engine.RunConfig, engine.ReviewRequest, func(engine.Progress)) (engine.ReviewResult, error) {
+	return engine.ReviewResult{}, errors.New("runner: review is not built")
+}
+
 // Release stops the run's containers and, when removeVolumes is set, removes
 // its run volumes and the task's home. It succeeds when nothing exists.
 // Without the run's state it releases through a sandbox it does not keep,

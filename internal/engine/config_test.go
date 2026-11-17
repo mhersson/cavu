@@ -50,6 +50,8 @@ func TestBuildRunConfig(t *testing.T) {
 				want.Endpoint.Mode, want.Endpoint.URL = "key", "https://llm.example.com"
 				want.Endpoint.AuthHeader, want.Endpoint.Credential = "x-api-key", "sk-credential-value"
 				want.Agent.Model, want.Agent.Effort = "model-a", "high"
+				want.Agent.Review.Model, want.Agent.Review.Effort = "model-a", "high"
+				want.Agent.Strong.Model, want.Agent.Strong.Effort = "model-a", "high"
 				want.Agent.MaxTurns, want.Agent.Timeout, want.Agent.WebTools = 50, 30*time.Minute, true
 				want.Identity.Name, want.Identity.Email = "CAVU Bot", "bot@example.com"
 				want.Task.Title, want.Task.Body = "Fix the login page", "It fails on submit."
@@ -106,7 +108,7 @@ func TestBuildRunConfig(t *testing.T) {
 		},
 		{
 			name:      "overrides replace the model, the effort and the switches",
-			overrides: map[string]string{"model_work": "model-b", "effort_work": "low", "web_tools": "false", "verify_fix": "false"},
+			overrides: map[string]string{"model_work": "model-b", "effort_work": "low", "web_tools": "false", "verify_fix": "false", "review": "true"},
 			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
 				assert.Equal(t, "model-b", got.Agent.Model)
 				assert.Equal(t, "low", got.Agent.Effort)
@@ -124,6 +126,51 @@ func TestBuildRunConfig(t *testing.T) {
 		{name: "an unknown override", overrides: map[string]string{"max_turns": "5"}, errHas: "max_turns"},
 		{name: "a switch override that does not parse", overrides: map[string]string{"web_tools": "maybe"}, errHas: "web_tools"},
 	}
+
+	runConfigCases(t, tests)
+}
+
+func TestBuildRunConfigRoles(t *testing.T) {
+	// roles is the model and effort of the review role, then of the strong role.
+	roles := func(c engine.RunConfig) [4]string {
+		return [4]string{c.Agent.Review.Model, c.Agent.Review.Effort, c.Agent.Strong.Model, c.Agent.Strong.Effort}
+	}
+
+	runConfigCases(t, []configCase{
+		{
+			name: "unset review and strong settings take the work values",
+			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
+				assert.Equal(t, [4]string{"model-a", "high", "model-a", "high"}, roles(got))
+			},
+		},
+		{
+			name: "set review and strong settings are used",
+			set:  map[string]string{"model_review": "model-r", "effort_review": "low", "model_strong": "model-s", "effort_strong": "max"},
+			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
+				assert.Equal(t, [4]string{"model-r", "low", "model-s", "max"}, roles(got))
+				assert.Equal(t, "model-a", got.Agent.Model)
+				assert.Equal(t, "high", got.Agent.Effort)
+			},
+		},
+		{
+			name: "each unset value falls back on its own",
+			set:  map[string]string{"model_strong": "model-s", "effort_review": "low"},
+			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
+				assert.Equal(t, [4]string{"model-a", "low", "model-s", "high"}, roles(got))
+			},
+		},
+		{
+			name:      "a replay's work model is what unset roles fall back on",
+			overrides: map[string]string{"model_work": "model-b", "effort_work": "low"},
+			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
+				assert.Equal(t, [4]string{"model-b", "low", "model-b", "low"}, roles(got))
+			},
+		},
+	})
+}
+
+func runConfigCases(t *testing.T, tests []configCase) {
+	t.Helper()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -171,6 +218,10 @@ func TestCheckSetting(t *testing.T) {
 		{"verify_timeout_minutes", "soon", false},
 		{"endpoint_mode", "", true},
 		{"model_work", "any-model", true},
+		{"model_review", "any-model", true},
+		{"effort_review", "low", true},
+		{"model_strong", "any-model", true},
+		{"effort_strong", "", true},
 		{"runtime", "podman", true},
 		{"runtime", "docker", true},
 		{"runtime", "", true},
