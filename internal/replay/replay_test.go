@@ -27,6 +27,13 @@ type fakeRunner struct {
 	modes    []string
 	works    []engine.WorkResult
 	verifies []engine.VerifyResult
+	releases []release
+}
+
+// release is one Release call.
+type release struct {
+	runID         int64
+	removeVolumes bool
 }
 
 func (r *fakeRunner) Prepare(_ context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
@@ -72,7 +79,14 @@ func (r *fakeRunner) Export(_ context.Context, c engine.RunConfig, _ string) (en
 	return engine.ExportResult{HeadCommit: "head", Diff: fmt.Appendf(nil, "diff of task %d", c.TaskID), FilesChanged: 1}, nil
 }
 
-func (r *fakeRunner) Release(context.Context, engine.RunRef, bool) error { return nil }
+func (r *fakeRunner) Release(_ context.Context, ref engine.RunRef, removeVolumes bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.releases = append(r.releases, release{ref.RunID, removeVolumes})
+
+	return nil
+}
 
 func (r *fakeRunner) CheckEnvironment(context.Context, engine.RunConfig) (engine.PrepareResult, string, error) {
 	return engine.PrepareResult{}, "", nil
@@ -352,6 +366,41 @@ func TestReplayShadowTaskStopsAreRecorded(t *testing.T) {
 	assert.Equal(t, engine.ResultFailed, items[0].Verify)
 	assert.Equal(t, b.ID, items[1].SourceTaskID)
 	assert.Empty(t, items[1].Stop)
+}
+
+func TestReplayEndsTheRunOfAStoppedShadow(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	e.task(t, "one", true, "aaa")
+	e.task(t, "two", true, "bbb")
+	e.runner.verifies = []engine.VerifyResult{{Result: engine.ResultFailed, Command: "make test"}}
+
+	_, items, _ := e.run(t, replay.Config{Name: "x", VerifyFix: new(false)})
+
+	require.Len(t, items, 2)
+	assert.Equal(t, engine.StopVerifyFailed, items[0].Stop, "the item keeps the stop the shadow ended on")
+
+	var runs []int64
+
+	for i, want := range []engine.Status{engine.StatusCancelled, engine.StatusInReview} {
+		evs, err := e.store.Events(t.Context(), e.shadows(t)[i].ID, 0, 0)
+		require.NoError(t, err)
+
+		facts := engine.Reduce(evs)
+		assert.Equal(t, want, engine.StatusOf(facts))
+		assert.False(t, facts.RunOpen)
+
+		for _, ev := range evs {
+			if ev.Type == engine.RunStarted {
+				runs = append(runs, ev.RunID)
+			}
+		}
+	}
+
+	require.Len(t, runs, 2)
+	assert.Equal(t, []release{{runs[0], false}, {runs[0], true}, {runs[1], true}}, e.runner.releases,
+		"the stopped shadow's run ends once it is recorded, and its volumes go")
 }
 
 func TestReplayExcludedFromTaskList(t *testing.T) {
