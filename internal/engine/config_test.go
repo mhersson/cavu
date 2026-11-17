@@ -458,6 +458,17 @@ func TestBuildRunConfigInstanceFiles(t *testing.T) {
 		}, got.Agent.Instance.Skills)
 	})
 
+	t.Run("a .git directory is left out at any depth", func(t *testing.T) {
+		skills := t.TempDir()
+		writeFile(t, filepath.Join(skills, "one", "SKILL.md"), "one\n", 0o644)
+		writeFile(t, filepath.Join(skills, "one", ".git", "HEAD"), "ref: refs/heads/main\n", 0o644)
+		sparseFile(t, filepath.Join(skills, ".git", "objects", "pack", "pack.pack"), 17<<20)
+
+		got, err := build(t, map[string]string{"skills_path": skills})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]engine.File{"one/SKILL.md": {Data: []byte("one\n")}}, got.Agent.Instance.Skills)
+	})
+
 	t.Run("unset settings give none", func(t *testing.T) {
 		got, err := build(t, nil)
 		require.NoError(t, err)

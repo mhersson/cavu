@@ -71,9 +71,10 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 	return c, nil
 }
 
-// readSkills reads every file below root, following links, by its slash
-// path under root. The bound is checked before each read, so a link to a
-// large tree fails early; a link loop ends in the system's path error.
+// readSkills reads every file below root but those in a .git directory,
+// following links, by its slash path under root. The bound is checked
+// before each read, so a link to a large tree fails early; a link loop ends
+// in the system's path error.
 func readSkills(root string) (map[string]File, error) {
 	skills := map[string]File{}
 
@@ -98,6 +99,11 @@ func readSkills(root string) (map[string]File, error) {
 			}
 
 			if fi.IsDir() {
+				// A checkout's history is no part of a skill and can pass the bound alone.
+				if e.Name() == ".git" {
+					continue
+				}
+
 				if err := walk(name); err != nil {
 					return err
 				}

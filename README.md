@@ -117,7 +117,7 @@ cavu settings set skills_path ~/cavu/skills
 cavu settings set instructions_path ~/cavu/AGENTS.md
 ```
 
-Both are read on the machine `cavu` runs on, again at each step of a run, so a change reaches the next step. Links in the directory are followed, and its files hold at most 16 MiB together. A repository's skill of the same name is written over yours. A path that cannot be read stops the task with the setting named; fix it and retry. The turns of subagents an agent starts do not count toward `work_max_turns`, a session's turn limit; `work_timeout_minutes`, a session's time limit, bounds them, since it ends the session with its subagents.
+Both are read on the machine `cavu` runs on, again at each step of a run, so a change reaches the next step. Links in the directory are followed, a `.git` directory in it is left out, and its files hold at most 16 MiB together. A repository's skill of the same name is written over yours. A path that cannot be read stops the task with the setting named; fix it and retry. The turns of subagents an agent starts do not count toward `work_max_turns`, a session's turn limit; `work_timeout_minutes`, a session's time limit, bounds them, since it ends the session with its subagents.
 
 ### Running the server
 
