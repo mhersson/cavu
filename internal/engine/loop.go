@@ -372,7 +372,7 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 
 	o, err := p.open(ctx, v.Task, row)
 	if err != nil {
-		return p.abandon(ctx, a, row, err)
+		return p.unconfigured(ctx, v, a, row, err)
 	}
 
 	if a.Kind == KindPrepare {
@@ -397,11 +397,29 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 
 func (p *pass) open(ctx context.Context, t store.Task, row store.Run) (openRun, error) {
 	cfg, err := p.BuildRunConfig(ctx, t, row, t.Overrides)
-	if err != nil {
-		return openRun{}, fmt.Errorf("task %d: %w", p.taskID, err)
+
+	return openRun{task: t, row: row, cfg: cfg}, err
+}
+
+// unconfigured stops a task whose run config cannot be built, as a runner
+// fault does, so a person fixes the cause and retries. The stop is claimed
+// like an action. An open run keeps its volumes; a new run's row is abandoned
+// and the stop carries no run.
+func (p *pass) unconfigured(ctx context.Context, v view, a Action, row store.Run, cause error) error {
+	run := &row
+
+	if a.NewRun {
+		if err := p.endRun(ctx, row, RunAbandoned); err != nil {
+			return fmt.Errorf("%w (abandoning after: %v)", err, cause)
+		}
+
+		run = nil
 	}
 
-	return openRun{task: t, row: row, cfg: cfg}, nil
+	return p.halt(ctx, v.LastEventID, v.Task, run, StoppedPayload{
+		Reason: StopSandbox, Explanation: line(p.mask("The run cannot be configured: " + cause.Error())), Action: ClearRetry,
+		Detail: cause.Error(),
+	})
 }
 
 // abandon ends a new run row whose claim was never written, then returns cause.

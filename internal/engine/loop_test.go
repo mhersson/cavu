@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1901,4 +1902,78 @@ func TestLoopStopsWithoutConfig(t *testing.T) {
 		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: r.ID, ProjectID: h.task.ProjectID,
 	}, h.runner.calls[0].ref)
 	assert.Equal(t, map[int64]string{r.ID: engine.StopCancelled}, h.spy.ended())
+}
+
+// A run config that cannot be built is a stop a person clears by fixing the
+// cause and retrying, as a runner fault is; nothing of the runner runs.
+func TestLoopStopsOnABrokenRunConfig(t *testing.T) {
+	const missing = "project.web.NPM_TOKEN" // the vault name of the secret the project names
+
+	// unset makes the project name a secret that is not set.
+	unset := func(h *harness) {
+		p := h.project()
+		p.SecretVars = []string{"NPM_TOKEN"}
+		require.NoError(h.t, h.store.UpdateProject(h.t.Context(), p))
+	}
+
+	// fix sets the secret and records a person's retry.
+	fix := func(h *harness) {
+		require.NoError(h.t, h.vault.Set(h.t.Context(), missing, "npm-secret-value"))
+		require.NoError(h.t, h.loop.Retry(h.t.Context(), h.task.ID))
+	}
+
+	t.Run("before a run", func(t *testing.T) {
+		h := newHarness(t)
+		unset(h)
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status)
+		assert.Empty(t, h.runner.trace())
+
+		stop := h.lastStop()
+		assert.Equal(t, engine.StopSandbox, stop.Reason)
+		assert.Equal(t, engine.ClearRetry, stop.Action)
+		assert.Contains(t, stop.Explanation, missing)
+
+		evs := h.events()
+		assert.Equal(t, []string{engine.Stopped}, types(evs))
+		assert.Zero(t, evs[0].RunID, "the stop carries no run")
+		assert.Equal(t, 1, h.spy.created())
+		assert.Equal(t, []string{engine.RunAbandoned}, slices.Collect(maps.Values(h.spy.ended())), "the new run's row is abandoned")
+
+		fix(h)
+
+		status, err = h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, happyTrace, h.runner.trace())
+	})
+
+	t.Run("with a run open", func(t *testing.T) {
+		h := newHarness(t)
+		r := h.seed(ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`))
+		unset(h)
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status)
+		assert.Equal(t, []string{"release/keep"}, h.runner.trace(), "the run's containers stop and its volumes stay")
+		assert.Equal(t, r.ID, h.runner.callsOf("release")[0].runID)
+		assert.Empty(t, h.spy.ended(), "the run stays open")
+
+		stops := h.eventsOf(engine.Stopped)
+		require.Len(t, stops, 1)
+		assert.Equal(t, r.ID, stops[0].RunID)
+		assert.Contains(t, h.lastStop().Explanation, missing)
+		assert.Empty(t, h.eventsOf(engine.RunEnded))
+
+		fix(h)
+
+		status, err = h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, []string{"release/keep", "work/start", "verify", "export", "release/remove"}, h.runner.trace())
+		assert.Zero(t, h.spy.created(), "the work goes on in the same run")
+	})
 }

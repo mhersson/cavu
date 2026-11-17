@@ -27,17 +27,17 @@ const (
 func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, overrides map[string]string) (RunConfig, error) {
 	p, err := l.Store.Project(ctx, t.ProjectID)
 	if err != nil {
-		return RunConfig{}, fmt.Errorf("run config: project %d: %w", t.ProjectID, err)
+		return RunConfig{}, fmt.Errorf("project %d: %w", t.ProjectID, err)
 	}
 
 	sw, err := resolveSwitches(p, overrides)
 	if err != nil {
-		return RunConfig{}, fmt.Errorf("run config: %w", err)
+		return RunConfig{}, err
 	}
 
 	all, err := l.Store.Settings(ctx)
 	if err != nil {
-		return RunConfig{}, fmt.Errorf("run config: %w", err)
+		return RunConfig{}, err
 	}
 
 	values := map[string]string{}
@@ -51,7 +51,7 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 
 	c, err := ReadSettings(values)
 	if err != nil {
-		return RunConfig{}, fmt.Errorf("run config: %w", err)
+		return RunConfig{}, err
 	}
 
 	c.TaskID, c.RunID, c.ProjectID, c.Image = t.ID, r.ID, p.ID, l.Image
@@ -67,7 +67,7 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 	c.Task.Title, c.Task.Body = t.Title, t.Body
 
 	if err := l.readSecrets(ctx, p, &c); err != nil {
-		return RunConfig{}, fmt.Errorf("run config: %w", err)
+		return RunConfig{}, err
 	}
 
 	return c, nil

@@ -669,23 +669,24 @@ func TestSchedulerOnly(t *testing.T) {
 
 func TestSchedulerReportsAnErrorOnce(t *testing.T) {
 	h := newHarness(t)
-	p := h.project()
-	p.SecretVars = []string{"NPM_TOKEN"}
-	require.NoError(t, h.store.UpdateProject(t.Context(), p))
+	gone := errors.New("the container daemon is unreachable")
+	h.runner.works = []step[engine.WorkResult]{{err: gone}}
+	h.runner.releaseErr = gone
 
 	s := h.schedule(nil)
 
 	h.eventually(func() bool { return len(s.errs()) == 1 })
 	s.passes(t, 3)
 	assert.Equal(t, []int64{h.task.ID}, s.errs(), "an error is reported once while nothing changes")
+	assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, h.runner.trace(), "the task is not driven again")
 
-	h.add(0, engine.HumanRetried, "user", "")
+	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
 	s.Nudge()
 
 	h.eventually(func() bool { return len(s.errs()) == 2 })
 	s.passes(t, 2)
 	assert.Equal(t, []int64{h.task.ID, h.task.ID}, s.errs())
-	assert.Empty(t, h.runner.trace())
+	assert.Equal(t, engine.StatusInReview, h.statusOf(h.task.ID))
 }
 
 // A pass reads every task before it starts a drive, so a higher task's open
