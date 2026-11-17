@@ -144,11 +144,12 @@ func TestEventRequestsRefused(t *testing.T) {
 	}
 }
 
-// stream is an open event stream. Its messages arrive on msgs, which is
-// closed when the stream ends.
+// stream is an open event stream. Its messages after the opening one arrive
+// on msgs, which is closed when the stream ends.
 type stream struct {
-	resp *http.Response
-	msgs chan message
+	resp   *http.Response
+	msgs   chan message
+	opened string // the id the opening message holds
 }
 
 // message is one message of a stream: its id line and its data line.
@@ -194,6 +195,15 @@ func (f *fixture) stream(t *testing.T, query, lastEventID string) *stream {
 		}
 	})
 
+	select {
+	case m, ok := <-s.msgs:
+		require.True(t, ok, "the stream ended before it opened")
+		require.Empty(t, m.data, "the opening message holds only an id")
+		s.opened = m.id
+	case <-time.After(within):
+		require.FailNow(t, "the stream sent no opening message")
+	}
+
 	return s
 }
 
@@ -215,7 +225,7 @@ func (s *stream) read() {
 			m.data = v
 		}
 
-		if line == "" && m.data != "" {
+		if line == "" && m != (message{}) {
 			s.msgs <- m
 
 			m = message{}
@@ -246,10 +256,12 @@ func TestStreamSendsNewEvents(t *testing.T) {
 
 	// Older than the streams, with b's newest event the newest of all.
 	f.say(t, a, 0, 3)
-	f.say(t, b, 0, 2)
+	newest := f.say(t, b, 0, 2)[1]
 
 	every := f.stream(t, "", "")
 	ofA := f.stream(t, fmt.Sprintf("?task=%d", a), "")
+
+	assert.Equal(t, strconv.FormatInt(newest.ID, 10), every.opened, "the stream opens on the id it starts after")
 
 	assert.Equal(t, "text/event-stream", every.resp.Header.Get("Content-Type"))
 	assert.Equal(t, "no-store", every.resp.Header.Get("Cache-Control"))
@@ -285,6 +297,7 @@ func TestStreamResumes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := f.stream(t, tc.query, tc.lastEventID)
+			assert.Equal(t, from, s.opened)
 
 			missed, err := f.store.EventsAfter(t.Context(), sent[1].ID, id, 0)
 			require.NoError(t, err)

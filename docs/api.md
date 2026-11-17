@@ -238,7 +238,7 @@ data: {"id":42,"task_id":7,"run_id":3,"at":"2030-01-02T03:04:05Z","type":"agent_
 
 ```
 
-The stream starts after the event named by the header `Last-Event-ID`, else by the query `after=ID`, else after the newest event when the request arrives. A client that reconnects with the id it got last, as a browser's `EventSource` does, misses no event and gets none twice. The server looks for new events once a second and sends them in id order, and sends a comment line, `:`, every 15 seconds. The stream's answer carries `Cache-Control: no-store` and `X-Accel-Buffering: no`, which keeps a proxy such as nginx from holding the events back. The stream ends when the client leaves or the server stops. A `task` that does not exist is 404; a `task`, `after` or `Last-Event-ID` that is not a whole number is 400.
+The stream starts after the event named by the header `Last-Event-ID`, else by the query `after=ID`, else after the newest event when the request arrives. It opens with a message that holds only that id (`id: 41` and a blank line) and carries no event. A client that reconnects with the id it got last, as a browser's `EventSource` does, misses no event and gets none twice, even when it drops before its first event. The server looks for new events once a second and sends them in id order, and sends a comment line, `:`, every 15 seconds. The stream's answer carries `Cache-Control: no-store` and `X-Accel-Buffering: no`, which keeps a proxy such as nginx from holding the events back. The stream ends when the client leaves or the server stops. A `task` that does not exist is 404; a `task`, `after` or `Last-Event-ID` that is not a whole number is 400.
 
 ### The event
 

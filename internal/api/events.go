@@ -126,7 +126,10 @@ func (s *server) stream(w http.ResponseWriter, r *http.Request) error {
 	alive := time.NewTicker(keepAlive)
 	defer alive.Stop()
 
-	// The status line goes out at once, so the client sees the stream open before any event.
+	// The status line and the cursor go out at once, so a client that drops
+	// before the first event resumes from the cursor with Last-Event-ID.
+	fmt.Fprintf(w, "id: %d\n\n", cursor) //nolint:gosec // G705: the cursor is a parsed whole number, never the header's text
+
 	rc := http.NewResponseController(w)
 	err = rc.Flush()
 
