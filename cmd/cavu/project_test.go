@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -355,20 +354,21 @@ func TestProjectCheck(t *testing.T) {
 
 	t.Run("no verify command prints the suggestion", func(t *testing.T) {
 		dir, fake := checkSetup(t)
-		fake.runner.checkErr = errors.New("runner: the verify command is blank and the project does not waive it")
+		fake.runner.check = engine.PrepareResult{BaseCommit: "base123"}
 		fake.runner.suggestion = "go test ./..."
 
 		code, stdout, stderr := runCavu("project", "check", "web", "--data-dir", dir)
 
 		assert.Equal(t, 1, code)
-		assert.Contains(t, stderr, fake.runner.checkErr.Error())
+		assert.Contains(t, stdout, "base123")
+		assert.Empty(t, stderr)
 		assert.Contains(t, stdout, "cavu project set web --verify 'go test ./...'")
 		assert.Nil(t, storedProject(t, dir, "web").Baseline)
 	})
 
 	t.Run("no verify command and nothing to suggest", func(t *testing.T) {
 		dir, fake := checkSetup(t)
-		fake.runner.checkErr = errors.New("runner: the verify command is blank and the project does not waive it")
+		fake.runner.check = engine.PrepareResult{BaseCommit: "base123"}
 
 		code, stdout, _ := runCavu("project", "check", "web", "--data-dir", dir)
 

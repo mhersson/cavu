@@ -327,7 +327,9 @@ func printCheck(w io.Writer, res engine.PrepareResult) {
 		return
 	}
 
-	fmt.Fprintf(w, "baseline:      %s\n", res.Baseline)
+	if res.Baseline != "" {
+		fmt.Fprintf(w, "baseline:      %s\n", res.Baseline)
+	}
 }
 
 // printSuggestion prints the line that sets the suggested verify command, or
