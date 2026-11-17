@@ -74,7 +74,7 @@ Answers 200 with the project.
 
 ### `PATCH /api/projects/{id}`
 
-Changes the fields the body names and keeps the others. `switches` merge per key; every other field replaces its whole value. The name cannot change, since the project's secrets are stored under it. An edit of anything a baseline rests on clears the baseline: the repository, the base branch, the setup or verify command, the waiver, the tool versions, the environment or the secret variables. Answers 200 with the project.
+Changes the fields the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `switches` and `secrets` merge per key; every other field replaces its whole value, so `""`, `[]` or `{}` empties one that may be empty. The name cannot change, since the project's secrets are stored under it. An edit of anything a baseline rests on clears the baseline: the repository, the base branch, the setup or verify command, the waiver, the tool versions, the environment or the secret variables. Answers 200 with the project.
 
 ### `POST /api/projects/{id}/check`
 
@@ -106,7 +106,7 @@ A list is `[]` and a map `{}` when empty, never null. These fields are set by a 
 | `verify_waived` | `true` when a person checks every change instead. A project may not have both a verify command and a waiver, so a change from one to the other names both fields. |
 | `tool_overrides` | Tool name to version, over the versions the repository names. |
 | `egress_hosts` | The hosts the setup command, the agent and verify may reach. |
-| `env` | Variables for the setup command. |
+| `env` | Variables for the setup command, the agent's sessions and verify. |
 | `switches` | Switch name to `true` or `false`. |
 | `secrets` | Variable to value, for the setup command. Each value is sealed as the secret `project.<name>.<VAR>` and the variable added to `secret_vars`; an empty value removes both. It is never given back. |
 
@@ -169,7 +169,7 @@ Answers 200 with the task.
 
 ### `PATCH /api/tasks/{id}`
 
-Changes the `title`, `body` or `depends_on` the body names and keeps the others; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts. An edit after that is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
+Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts. An edit after that is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
 
 ### `POST /api/tasks/{id}/actions`
 
@@ -238,7 +238,7 @@ data: {"id":42,"task_id":7,"run_id":3,"at":"2030-01-02T03:04:05Z","type":"agent_
 
 ```
 
-The stream starts after the event named by the header `Last-Event-ID`, else by the query `after=ID`, else after the newest event when the request arrives. It opens with a message that holds only that id (`id: 41` and a blank line) and carries no event. A client that reconnects with the id it got last, as a browser's `EventSource` does, misses no event and gets none twice, even when it drops before its first event. The server looks for new events once a second and sends them in id order, and sends a comment line, `:`, every 15 seconds. The stream's answer carries `Cache-Control: no-store` and `X-Accel-Buffering: no`, which keeps a proxy such as nginx from holding the events back. The stream ends when the client leaves or the server stops. A `task` that does not exist is 404; a `task`, `after` or `Last-Event-ID` that is not a whole number is 400.
+The stream starts after the event named by the header `Last-Event-ID`, else by the query `after=ID`, else after the newest event when the request arrives. It opens with a message that holds only that id (`id: 41` and a blank line) and carries no event. A client that reconnects with the id it got last, as a browser's `EventSource` does, misses no event and gets none twice, even when it drops before its first event. The server looks for new events once a second and sends them in id order, and sends a comment line, `:`, every 15 seconds. The stream's answer carries `Cache-Control: no-store` and `X-Accel-Buffering: no`, which keeps a proxy such as nginx from holding the events back. The stream ends when the client leaves or the server stops. A `task` that does not exist is 404; a `task`, or the `Last-Event-ID` or `after` the stream starts after, that is not a whole number is 400.
 
 ### The event
 
