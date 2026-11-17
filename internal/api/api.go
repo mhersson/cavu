@@ -117,26 +117,31 @@ func (e *apiError) Error() string { return e.text }
 
 var errNoAuthority = &apiError{http.StatusUnauthorized, "log in, or send an API token as Authorization: Bearer TOKEN"}
 
-// fail answers err as JSON: content the engine refuses is a 400, a write that
-// conflicts with what is stored a 409, and a row that does not exist a 404.
-// An error that is not the caller's is logged and answered without detail.
+// fail answers err as JSON, with the status and the line classify gives it.
 func fail(w http.ResponseWriter, r *http.Request, err error) {
-	status, text := http.StatusInternalServerError, "internal error"
+	status, text := classify(r.Context(), r.Pattern, err)
+	reply(w, status, map[string]string{"error": text})
+}
 
+// classify gives err's status and the one line the caller sees: content the
+// engine refuses is a 400, a write that conflicts with what is stored a 409,
+// and a row that does not exist a 404. An error that is not the caller's is
+// logged with the route and given without detail.
+func classify(ctx context.Context, route string, err error) (int, string) {
 	switch e, ok := errors.AsType[*apiError](err); {
 	case ok:
-		status, text = e.status, e.text
+		return e.status, e.text
 	case errors.Is(err, engine.ErrRefused):
-		status, text = http.StatusBadRequest, err.Error()
+		return http.StatusBadRequest, err.Error()
 	case errors.Is(err, store.ErrConflict):
-		status, text = http.StatusConflict, err.Error()
+		return http.StatusConflict, err.Error()
 	case errors.Is(err, store.ErrNotFound):
-		status, text = http.StatusNotFound, err.Error()
-	default:
-		slog.ErrorContext(r.Context(), "request failed", "route", r.Pattern, "err", err)
+		return http.StatusNotFound, err.Error()
 	}
 
-	reply(w, status, map[string]string{"error": text})
+	slog.ErrorContext(ctx, "request failed", "route", route, "err", err)
+
+	return http.StatusInternalServerError, "internal error"
 }
 
 func reply(w http.ResponseWriter, status int, v any) {
