@@ -217,7 +217,7 @@ func ProjectSwitches(p store.Project) map[string]bool {
 // resolveSwitches applies a project's switches over the defaults, then a task's
 // overrides. The snapshot and the run config both resolve through it.
 func resolveSwitches(p store.Project, overrides map[string]string) (Switches, error) {
-	sw := Switches{Continuations: true, VerifyFix: true, Readiness: true}
+	sw := Switches{Continuations: true, VerifyFix: true, Readiness: true, Review: true}
 	fields := switchFields(&sw)
 
 	for k, on := range p.Switches {

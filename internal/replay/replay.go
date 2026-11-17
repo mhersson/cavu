@@ -22,8 +22,8 @@ var ErrNoReferenceTasks = errors.New("replay: no reference task has a base commi
 
 // Config names a replay and what it changes. Empty and nil fields change nothing.
 type Config struct {
-	Name, Model, Effort                           string
-	Continuations, VerifyFix, WebTools, Readiness *bool
+	Name, Model, Effort                                   string
+	Continuations, VerifyFix, WebTools, Readiness, Review *bool
 }
 
 // overrides maps c onto the task override keys the engine understands.
@@ -40,6 +40,7 @@ func (c Config) overrides() map[string]string {
 
 	for k, v := range map[string]*bool{
 		"continuations": c.Continuations, "verify_fix": c.VerifyFix, "web_tools": c.WebTools, "readiness": c.Readiness,
+		"review": c.Review,
 	} {
 		if v != nil {
 			o[k] = strconv.FormatBool(*v)

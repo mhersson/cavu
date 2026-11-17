@@ -56,6 +56,7 @@ func (f *Facts) reviewEnded(p ReviewEndedPayload) {
 
 		r.Head, r.Failed, r.Open, r.Minor = p.Head, "", open, append(r.Minor, minor...)
 	case ReviewFailed:
+		// A non-empty Failed is what marks a review without a verdict, so one without a detail still gets a text.
 		r.Head, r.Failed = p.Head, cmp.Or(p.Detail, "The reviewer gave no verdict.")
 	default:
 		r.Halt = &SessionFact{Outcome: p.Outcome, Detail: p.Detail, ResetsAt: p.ResetsAt}

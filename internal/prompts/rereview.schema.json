@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding": {"type": "integer", "description": "The finding's number."},
+          "addressed": {"type": "boolean", "description": "The finding's problem no longer exists."},
+          "evidence": {"type": "string", "description": "What in the fix diff shows it."}
+        },
+        "required": ["finding", "addressed", "evidence"]
+      }
+    },
+    "breakage": {
+      "type": "array",
+      "description": "What the fix itself broke.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {"type": "string", "enum": ["critical", "important", "minor"]},
+          "where": {"type": "string", "description": "The file and line."},
+          "what": {"type": "string", "description": "What is wrong."},
+          "why": {"type": "string", "description": "Why it matters."}
+        },
+        "required": ["severity", "where", "what", "why"]
+      }
+    }
+  },
+  "required": ["verdicts", "breakage"]
+}

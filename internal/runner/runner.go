@@ -134,6 +134,7 @@ type run struct {
 	sb         sandboxer
 	agent      container     // the agent's container while a session phase is up
 	phase      sandbox.Phase // that session phase: the agent phase or the read-only one
+	kept       bool          // the action in flight found that phase's container up and kept it
 	ecosystems []string
 	req        sidecar.ProxyRequest // the session phases' proxy request, kept while their sidecar lives
 	standIn    string               // req's stand-in token in key mode
@@ -365,6 +366,10 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig, phase sandbox
 	}
 
 	live := st.agentUp()
+	// The phase's container stays when it was up, also when only its sidecar
+	// starts anew, and so does whatever ran in it.
+	st.kept = st.agent != nil && st.phase == phase
+
 	if live && st.phase == phase {
 		return nil
 	}
@@ -420,11 +425,6 @@ func homeStep(ctx context.Context, a container, script string, pairs map[string]
 	}
 
 	return nil
-}
-
-// Review is not built: no review session runs yet.
-func (r *Runner) Review(context.Context, engine.RunConfig, engine.ReviewRequest, func(engine.Progress)) (engine.ReviewResult, error) {
-	return engine.ReviewResult{}, errors.New("runner: review is not built")
 }
 
 // Release stops the run's containers and, when removeVolumes is set, removes

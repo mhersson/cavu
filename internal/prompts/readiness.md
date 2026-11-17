@@ -1,4 +1,4 @@
-Before you work on this task, check that you have what you need to do it. In this turn, change nothing: read the task, and read what you need of the repository.
+Before you work on this task, check that you have what you need to do it. You work unattended: nobody watches this session, and nobody can answer a question while it runs. In this turn, change nothing: read the task, and read what you need of the repository.
 
 # {{.Title}}
 

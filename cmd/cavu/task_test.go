@@ -376,6 +376,43 @@ func TestTaskShowPrintsSuggestedAnswers(t *testing.T) {
 		"each suggested answer under its question, and none for a question without one")
 }
 
+func TestTaskShowPrintsTheReview(t *testing.T) {
+	trimmed := engine.Finding{Severity: engine.SeverityCritical, Where: "login.go:12", What: "The password is trimmed.", Why: "Valid passwords fail."}
+	typo := engine.Finding{Severity: engine.SeverityMinor, Where: "README.md", What: "A typo.", Why: "It reads badly."}
+
+	dir := webData(t)
+	id := addTask(t, dir, "Fix")
+
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}),
+		event(engine.ReviewEnded, "runner", engine.ReviewEndedPayload{
+			Outcome: engine.ReviewReviewed, Head: "head1", Built: engine.Verdict{Pass: true}, Findings: []engine.Finding{trimmed, typo},
+		}))
+
+	out := cavuIn(t, dir, "task", "show", id)
+
+	for label, f := range map[string]engine.Finding{"open:": trimmed, "minor:": typo} {
+		lines := labelled(out, label)
+		require.Len(t, lines, 1, out)
+
+		for _, v := range []string{f.Severity, f.Where, f.What, f.Why} {
+			assert.Contains(t, lines[0], v)
+		}
+	}
+
+	assert.Empty(t, labelled(out, "review:"), "the review gave a verdict")
+
+	seedEvents(t, dir, id, nil, event(engine.ReviewEnded, "runner", engine.ReviewEndedPayload{
+		Outcome: engine.ReviewFailed, Head: "head2", Detail: "The session crashed: exit 1.",
+	}))
+
+	out = cavuIn(t, dir, "task", "show", id)
+	lines := labelled(out, "review:")
+	require.Len(t, lines, 1, out)
+	assert.Contains(t, lines[0], "The session crashed: exit 1.")
+	assert.Len(t, labelled(out, "open:"), 1, "what the last verdict left open stays open")
+}
+
 func TestTaskShowPrintsTheNewestExport(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix")
@@ -559,7 +596,7 @@ func TestTaskRunDrivesWhenTheLockIsFree(t *testing.T) {
 	code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
 
 	require.Equal(t, 0, code, stderr)
-	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork, engine.KindVerify, engine.KindExport}, fake.runner.actions)
+	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork, engine.KindVerify, engine.KindReview, engine.KindExport}, fake.runner.actions)
 	require.Len(t, fake.runner.releases, 1)
 	assert.True(t, fake.runner.releases[0].removeVolumes, "the exported run ends")
 

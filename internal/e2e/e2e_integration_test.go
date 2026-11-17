@@ -46,7 +46,9 @@ const (
 
 // change and done are one session's model calls: a commit that adds a line to
 // notes.txt, then the structured result of finished work. ready is a
-// readiness turn's one model call, which finds nothing missing.
+// readiness turn's one model call, which finds nothing missing. readDiff and
+// passed are a review's: it reads the diff CAVU wrote for it, then passes the
+// change.
 var (
 	change = mockapi.Step{Tool: "Bash", Input: map[string]any{
 		"command": "echo " + marker + " >> notes.txt && git commit -qam 'docs(notes): add a line'",
@@ -54,7 +56,12 @@ var (
 	done = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
 		"status": "done", "title": title, "summary": "Added a line to notes.txt.",
 	}}
-	ready = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{"status": "ready"}}
+	ready    = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{"status": "ready"}}
+	readDiff = mockapi.Step{Tool: "Bash", Input: map[string]any{"command": "cat /run/cavu/review.patch"}}
+	passed   = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
+		"asked": map[string]any{"pass": true, "reason": "It adds the line."}, "built": map[string]any{"pass": true, "reason": "One line."},
+		"findings": []any{},
+	}}
 )
 
 // standInForm is the form of the stand-in token: 32 random bytes in hex.
@@ -296,14 +303,14 @@ func setup(t *testing.T, endpoint string) *instance {
 }
 
 // project adds a project on the fixture repository and checks it. The
-// readiness turn is off, since no test but the pipeline's is about it, unless
-// switches, each NAME=on or NAME=off, turn it on.
+// readiness turn and the review are off, since no test but the pipeline's is
+// about them, unless switches, each NAME=on or NAME=off, turn them on.
 func (in *instance) project(name string, switches ...string) {
 	in.t.Helper()
 
 	in.ok("project", "add", name, "--repo", in.repo, "--verify", verify)
 
-	set := []string{"project", "set", name, "--switch", "readiness=off"}
+	set := []string{"project", "set", name, "--switch", "readiness=off", "--switch", "review=off"}
 	for _, s := range switches {
 		set = append(set, "--switch", s)
 	}
@@ -459,17 +466,38 @@ func sessionStarts(t *testing.T, out string) []sessionStart {
 }
 
 func TestPipelineEndToEnd(t *testing.T) {
-	// The readiness turn, then the work that resumes its session.
-	mock := mockapi.Start(t, []mockapi.Step{ready, change, done})
+	// The readiness turn, then the work that resumes its session, then a review.
+	mock := mockapi.Start(t, []mockapi.Step{ready, change, done, readDiff, passed})
 	in := setup(t, mock.HostURL())
 
-	id, run := in.pipeline("notes", "readiness=on")
+	id, run := in.pipeline("notes", "readiness=on", "review=on")
 	require.Zero(t, run.code, run)
 
 	show := in.ok("task", "show", id, "--events")
 	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
 	assert.Equal(t, []sessionStart{{Mode: "readiness"}, {Mode: "start", Resume: true}}, sessionStarts(t, show))
 	assert.Contains(t, strings.Split(in.ok("task", "diff", id), "\n"), "+"+marker)
+
+	var reviews []string
+
+	for line := range strings.Lines(show) {
+		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == "review_ended" {
+			var r struct{ Outcome string }
+			require.NoError(t, json.Unmarshal([]byte(e[4]), &r))
+			reviews = append(reviews, r.Outcome)
+		}
+	}
+
+	assert.Equal(t, []string{"reviewed"}, reviews, show)
+
+	// The review's second model call carries what its shell read, so the diff
+	// was written in its read-only container; the added line is in no earlier call.
+	calls := slices.DeleteFunc(mock.Requests(), func(r mockapi.Request) bool { return !r.ModelCall })
+	require.Len(t, calls, 5)
+
+	for i, r := range calls {
+		assert.Equal(t, i == 4, bytes.Contains(r.Body, []byte("+"+marker)), "model call %d", i+1)
+	}
 
 	changed := values(show, "changed:")
 	require.NotEmpty(t, changed, show)
@@ -538,8 +566,8 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	require.Equal(t, 1, r.code, r)
 	assert.Equal(t, []string{"setup"}, values(r.stdout, "failed step:"))
 
-	// The readiness turn is off: the held call must be the agent phase's.
-	in.ok("project", "set", "notes", "--env", "E2E_PLANTED="+planted, "--switch", "readiness=off")
+	// The readiness turn and the review are off: the held call must be the agent phase's.
+	in.ok("project", "set", "notes", "--env", "E2E_PLANTED="+planted, "--switch", "readiness=off", "--switch", "review=off")
 	in.ok("project", "check", "notes")
 
 	// The run's prepare runs the setup command again, so its exit 0 covers that setup container too.

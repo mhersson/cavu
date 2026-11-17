@@ -399,10 +399,10 @@ func newHarness(t *testing.T) *harness {
 		require.NoError(t, s.SetSetting(ctx, k, val))
 	}
 
-	// The readiness turn is off: only the tests that turn it on are about it.
+	// The readiness turn and the review are off: only the tests that turn them on are about them.
 	p, err := s.CreateProject(ctx, store.Project{
 		Name: "web", RepoURL: "https://example.com/web.git", BaseBranch: "main",
-		SetupCommand: "make setup", VerifyCommand: "make test", Switches: map[string]bool{"readiness": false},
+		SetupCommand: "make setup", VerifyCommand: "make test", Switches: map[string]bool{"readiness": false, "review": false},
 	})
 	require.NoError(t, err)
 
@@ -1949,7 +1949,7 @@ func TestLoopAnswerReachesTheAgent(t *testing.T) {
 }
 
 // withDefaultSwitches gives the harness's project the default switches, which
-// turn the readiness turn on.
+// turn the readiness turn and the review on.
 func (h *harness) withDefaultSwitches() {
 	h.t.Helper()
 
@@ -1966,7 +1966,7 @@ func TestLoopReadinessThenWork(t *testing.T) {
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"prepare", "work/readiness", "work/start", "verify", "export", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "work/readiness", "work/start", "verify", "review", "export", "release/remove"}, h.runner.trace())
 
 	works := h.runner.callsOf("work")
 	require.Len(t, works, 2)

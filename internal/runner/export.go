@@ -25,14 +25,18 @@ const (
 
 var errArtifactTooLarge = errors.New("the file is over the export's bound")
 
+// diffOptions keep git from running a program the repository names to render
+// a file, and show a submodule's change in full.
+const diffOptions = "--no-ext-diff --no-textconv --ignore-submodules=none"
+
 // exportScript points the task branch $3 at the frozen commit $2, writes the
 // diff from the base commit $1 to $4 and a bundle of the branch from the base
 // to $5, and prints git's summary of the diff. It refuses a commit that is
 // missing or does not descend from the base. The working tree and HEAD are not read.
 var exportScript = proc.SandboxOnly(gitFunc + `g merge-base --is-ancestor "$1" "$2" 2>/dev/null ||
 	{ echo "The frozen commit $2 is missing from the repository or does not descend from the base commit."; exit 1; }
-g update-ref "refs/heads/$3" "$2" && g diff --no-ext-diff --no-textconv --ignore-submodules=none --binary "$1" "$2" >"$4" && g bundle create -q "$5" "$1..$3" &&
-g diff --no-ext-diff --no-textconv --ignore-submodules=none --stat --stat-count=` + strconv.Itoa(maxStatFiles) + ` "$1" "$2"`)
+g update-ref "refs/heads/$3" "$2" && g diff ` + diffOptions + ` --binary "$1" "$2" >"$4" && g bundle create -q "$5" "$1..$3" &&
+g diff ` + diffOptions + ` --stat --stat-count=` + strconv.Itoa(maxStatFiles) + ` "$1" "$2"`)
 
 // Export exports commit, the work a session froze: it points the task branch
 // at it and returns the diff from the base commit and a bundle of the branch.

@@ -28,11 +28,16 @@ func (r *Runner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyR
 	})
 }
 
-// restartAgent replaces the agent container with a fresh one on the same
-// volumes, so nothing a session or an earlier command left running survives.
-// Its caller's act brought the agent phase up, and Restart restarts the phase
-// of the last Up, so the read-only phase is never restarted to write.
+// restartAgent replaces the agent container the action found up with a fresh
+// one on the same volumes, so nothing a session or an earlier command left
+// running survives; one the action started is fresh already. Its caller's act
+// brought the agent phase up, and Restart restarts the phase of the last Up,
+// so the read-only phase is never restarted to write.
 func (st *run) restartAgent(ctx context.Context) error {
+	if !st.kept {
+		return nil
+	}
+
 	st.agent = nil
 
 	a, err := st.sb.Restart(ctx)

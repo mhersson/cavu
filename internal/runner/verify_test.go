@@ -26,8 +26,8 @@ func TestVerifyWaived(t *testing.T) {
 	assert.Empty(t, f.calls())
 }
 
-// The verify command runs as a command of its own in a restarted agent
-// container, so nothing the session left running sees it.
+// The verify command runs as a command of its own in the agent container,
+// never through the agent.
 func TestVerifyRunsOutsideTheSession(t *testing.T) {
 	f := newFake()
 	f.results["make test"] = sandbox.Result{ExitCode: 2, Output: "FAIL\n"}
@@ -42,7 +42,7 @@ func TestVerifyRunsOutsideTheSession(t *testing.T) {
 	assert.Equal(t, "FAIL\n", res.Output)
 	assert.Equal(t, "make test", res.Command)
 
-	assert.Equal(t, []string{"volumes", "up/agent", "restart", "run/make test"}, f.calls())
+	assert.Equal(t, []string{"volumes", "up/agent", "run/make test"}, f.calls())
 	assert.Empty(t, d.specs, "the driver runs nothing")
 
 	run := f.run(t, "make test")
@@ -87,4 +87,80 @@ func TestVerifyNamesDeniedHostsOnlyWhenItFails(t *testing.T) {
 	res, err = f.runner().Verify(t.Context(), workConfig())
 	require.NoError(t, err)
 	assert.NotContains(t, res.Output, "example.test")
+}
+
+// Verify and export run in an agent container nothing else ran in: one the
+// action finds up is restarted, and one it brings up is fresh already.
+func TestVerifyAndExportStartTheAgentPhaseOnce(t *testing.T) {
+	c := workConfig()
+
+	for _, a := range []struct {
+		name string
+		do   func(r *Runner) error
+		ran  string
+	}{
+		{
+			name: "verify", ran: "run/make test",
+			do: func(r *Runner) error {
+				_, err := r.Verify(t.Context(), c)
+
+				return err
+			},
+		},
+		{
+			name: "export", ran: "run/" + exportName(c, headCommit),
+			do: func(r *Runner) error {
+				_, err := r.Export(t.Context(), c, headCommit)
+
+				return err
+			},
+		},
+	} {
+		for _, tt := range []struct {
+			name   string
+			before func(t *testing.T, f *fakeSandbox, r *Runner)
+			want   []string
+		}{
+			{
+				name: "after a work session",
+				before: func(t *testing.T, _ *fakeSandbox, r *Runner) {
+					_, err := r.Work(t.Context(), c, startWork, noProgress)
+					require.NoError(t, err)
+				},
+				want: []string{"restart", a.ran},
+			},
+			{
+				name: "after its sidecar ended",
+				before: func(t *testing.T, f *fakeSandbox, r *Runner) {
+					_, err := r.Work(t.Context(), c, startWork, noProgress)
+					require.NoError(t, err)
+					f.fail("sandbox: the sidecar does not answer: it exited: killed")
+				},
+				want: []string{"up/agent", "restart", a.ran},
+			},
+			{
+				name: "after a review",
+				before: func(t *testing.T, _ *fakeSandbox, r *Runner) {
+					_, err := r.Review(t.Context(), c, fullReview(), noProgress)
+					require.NoError(t, err)
+				},
+				want: []string{"up/agent", a.ran},
+			},
+			{name: "with nothing up", before: func(*testing.T, *fakeSandbox, *Runner) {}, want: []string{"volumes", "up/agent", a.ran}},
+		} {
+			t.Run(a.name+" "+tt.name, func(t *testing.T) {
+				f := newFake()
+				r := f.workRunner(&fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}})
+
+				tt.before(t, f, r)
+				n := len(f.calls())
+
+				require.NoError(t, a.do(r))
+
+				got := f.calls()[n:]
+				require.GreaterOrEqual(t, len(got), len(tt.want))
+				assert.Equal(t, tt.want, got[:len(tt.want)])
+			})
+		}
+	}
 }

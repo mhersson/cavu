@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "properties": {
+    "asked": {
+      "type": "object",
+      "description": "Does the change do what the task asked, nothing missing and nothing extra?",
+      "properties": {
+        "pass": {"type": "boolean"},
+        "reason": {"type": "string"}
+      },
+      "required": ["pass", "reason"]
+    },
+    "built": {
+      "type": "object",
+      "description": "Is the change well built?",
+      "properties": {
+        "pass": {"type": "boolean"},
+        "reason": {"type": "string"}
+      },
+      "required": ["pass", "reason"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {"type": "string", "enum": ["critical", "important", "minor"]},
+          "where": {"type": "string", "description": "The file and line."},
+          "what": {"type": "string", "description": "What is wrong."},
+          "why": {"type": "string", "description": "Why it matters."}
+        },
+        "required": ["severity", "where", "what", "why"]
+      }
+    }
+  },
+  "required": ["asked", "built", "findings"]
+}

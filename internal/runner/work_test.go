@@ -374,9 +374,10 @@ func TestReadinessSpec(t *testing.T) {
 	assert.Equal(t, driver.Spec{
 		Auth:  driver.Auth{Mode: "subscription", Token: plantedEndpoint},
 		Model: "claude-test", Effort: "high", MaxTurns: 50, SessionID: sessionUUID,
+		// No instructions: they would tell a session that changes nothing to commit its work.
 		Prompt:       render(t, prompts.Readiness, prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}),
-		Instructions: render(t, prompts.Instructions, nil), OutputSchema: prompts.ReadinessSchema(),
-		Dir: workspace, BaseCommit: baseCommit, Home: home, ConfigDir: "/home/agent/.claude-cavu",
+		OutputSchema: prompts.ReadinessSchema(),
+		Dir:          workspace, BaseCommit: baseCommit, Home: home, ConfigDir: "/home/agent/.claude-cavu",
 		Env: withProjectVars(sessionEnv([]string{"go"}, baseCommit), c), ReadOnly: true,
 	}, d.specs[0])
 }
@@ -423,8 +424,8 @@ func TestPhasesSwitch(t *testing.T) {
 		_, err = r.Verify(t.Context(), c)
 		require.NoError(t, err)
 
-		assert.Equal(t, []string{"volumes", "up/readonly", "up/agent", "restart", "run/make test"}, f.calls())
-		assert.Equal(t, sandbox.PhaseAgent, f.run(t, "make test").phase, "the agent phase restarts, never the read-only one")
+		assert.Equal(t, []string{"volumes", "up/readonly", "up/agent", "run/make test"}, f.calls(), "the agent phase starts once")
+		assert.Equal(t, sandbox.PhaseAgent, f.run(t, "make test").phase, "the verify runs in the agent phase, never the read-only one")
 		assert.Equal(t, f.requests(sandbox.PhaseReadOnly), f.requests(sandbox.PhaseAgent))
 	})
 }

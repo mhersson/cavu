@@ -359,8 +359,9 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
 }
 
 // printState prints the task's status, its open stop with every question the
-// agent asked and the answer it suggested, and its newest export with git's
-// summary of it, and returns the status.
+// agent asked and the answer it suggested, the review's findings left open,
+// its minor ones and why its newest review gave no verdict, and its newest
+// export with git's summary of it, and returns the status.
 func printState(w io.Writer, events []store.Event) engine.Status {
 	facts := engine.Reduce(events)
 	status := engine.StatusOf(facts)
@@ -385,6 +386,18 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 		}
 	}
 
+	for _, f := range facts.Review.Open {
+		fmt.Fprintf(w, "open:    %s\n", findingLine(f))
+	}
+
+	for _, f := range facts.Review.Minor {
+		fmt.Fprintf(w, "minor:   %s\n", findingLine(f))
+	}
+
+	if facts.Review.Failed != "" {
+		fmt.Fprintf(w, "review:  no verdict: %s\n", facts.Review.Failed)
+	}
+
 	if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
 		fmt.Fprintf(w, "diff:    %s\n", x.DiffPath)
 
@@ -396,6 +409,11 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 	}
 
 	return status
+}
+
+// findingLine is a finding's severity, where, what and why, each that is set.
+func findingLine(f engine.Finding) string {
+	return strings.Join(slices.DeleteFunc([]string{f.Severity, f.Where, f.What, f.Why}, func(s string) bool { return s == "" }), " | ")
 }
 
 // newest decodes the newest event of the type, if any.

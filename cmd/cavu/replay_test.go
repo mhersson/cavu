@@ -150,6 +150,41 @@ func TestReplayVerbFlagsReachConfig(t *testing.T) {
 	}
 }
 
+func TestReplayNoReview(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		args    []string
+		config  map[string]string
+		reviews int
+	}{
+		{name: "the default", reviews: 1, config: map[string]string{}},
+		{name: "--no-review", args: []string{"--no-review"}, config: map[string]string{"review": "false"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, id, fake := runSetup(t)
+			markWithBase(t, dir, id)
+
+			code, _, stderr := runCavu(append([]string{"replay", "--name", "x", "--data-dir", dir}, tt.args...)...)
+			require.Equal(t, 0, code, stderr)
+
+			replays, _ := storedReplays(t, dir)
+			require.Len(t, replays, 1)
+			assert.Equal(t, tt.config, replays[0].Config)
+			assert.Equal(t, tt.reviews, countOf(fake.runner.actions, engine.KindReview))
+		})
+	}
+}
+
+func countOf[T comparable](all []T, v T) (n int) {
+	for _, x := range all {
+		if x == v {
+			n++
+		}
+	}
+
+	return n
+}
+
 func TestReplayVerbChecksTheDefaultImage(t *testing.T) {
 	dir, id, fake := runSetup(t)
 	markWithBase(t, dir, id)

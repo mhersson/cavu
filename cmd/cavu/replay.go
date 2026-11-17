@@ -22,7 +22,7 @@ func init() {
 	}
 }
 
-const replayUsage = "cavu replay --name NAME [--model ID] [--effort LEVEL] [--no-continuations] [--no-verify-fix] [--no-readiness] [--web-tools] [--image TAG] [--data-dir DIR]"
+const replayUsage = "cavu replay --name NAME [--model ID] [--effort LEVEL] [--no-continuations] [--no-verify-fix] [--no-readiness] [--no-review] [--web-tools] [--image TAG] [--data-dir DIR]"
 
 func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	f := newVerbFlags(replayUsage, stderr)
@@ -32,6 +32,7 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	noContinuations := f.Bool("no-continuations", false, "turn the continuations switch off")
 	noVerifyFix := f.Bool("no-verify-fix", false, "turn the verify_fix switch off")
 	noReadiness := f.Bool("no-readiness", false, "turn the readiness switch off")
+	noReview := f.Bool("no-review", false, "turn the review switch off")
 	webTools := f.Bool("web-tools", false, "turn the web_tools switch on")
 	image := f.String("image", "", "the sandbox image to replay on, not checked (default: this binary's image)")
 
@@ -54,6 +55,10 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	if *noReadiness {
 		cfg.Readiness = new(bool)
+	}
+
+	if *noReview {
+		cfg.Review = new(bool)
 	}
 
 	if *webTools {
