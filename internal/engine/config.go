@@ -196,6 +196,7 @@ func (s *settingsReader) read() RunConfig {
 	var c RunConfig
 
 	c.InstanceID = s.values["instance_id"]
+	s.oneOf("runtime", "docker", "podman")
 	c.Endpoint.Mode = s.oneOf("endpoint_mode", "subscription", "key")
 	c.Endpoint.URL = s.values["endpoint_url"]
 	c.Endpoint.AuthHeader = s.oneOf("endpoint_auth_header", "bearer", "x-api-key")
