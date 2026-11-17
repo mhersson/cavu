@@ -22,12 +22,13 @@ import (
 // Tool is one mise tool and the version to install.
 type Tool struct{ Name, Version string }
 
-// Defaults for an ecosystem present with no version source. They are floating:
-// they move with upstream, and an override pins them.
+// Defaults for a tool present with no version source. They are floating: they
+// move with upstream, and an override pins them.
 const (
 	defaultNode   = "lts"
 	defaultRust   = "stable"
 	defaultPython = "3"
+	defaultUv     = "latest"
 )
 
 var (
@@ -44,7 +45,7 @@ var toolAliases = map[string]string{"golang": "go", "nodejs": "node"}
 func VersionFiles() []string {
 	return []string{
 		".nvmrc", ".python-version", ".tool-versions", "Cargo.toml", "go.mod",
-		"mise.toml", "package.json", "pyproject.toml", "requirements.txt", "rust-toolchain.toml",
+		"mise.toml", "package.json", "pyproject.toml", "requirements.txt", "rust-toolchain.toml", "uv.lock",
 	}
 }
 
@@ -183,7 +184,7 @@ func detectEcosystems(files map[string][]byte) []string {
 		out = append(out, "node")
 	}
 
-	if has("pyproject.toml", "requirements.txt", ".python-version") {
+	if has("pyproject.toml", "requirements.txt", ".python-version", "uv.lock") {
 		out = append(out, "python")
 	}
 
@@ -260,6 +261,11 @@ func (r *reader) ownVersions(files map[string][]byte) (map[string]string, error)
 				return nil, err
 			}
 		}
+	}
+
+	// uv.lock names no version of uv, so its tool floats.
+	if _, ok := files["uv.lock"]; ok {
+		out["uv"] = defaultUv
 	}
 
 	if b, ok := files["rust-toolchain.toml"]; ok {
