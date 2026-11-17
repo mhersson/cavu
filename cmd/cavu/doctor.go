@@ -32,7 +32,9 @@ func runDoctorVerb(ctx context.Context, args []string, _ io.Reader, stdout, stde
 	defer a.close()
 
 	// The checks run under run and task id 0, as a project check does.
-	if err := a.lock(roleVerb); err != nil {
+	if err := a.lock(roleVerb); a.serverHolds(err) {
+		return fmt.Errorf("a cavu server is running on %s; the doctor runs only while none is", a.dir)
+	} else if err != nil {
 		return err
 	}
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -31,6 +32,7 @@ type app struct {
 	vault      *auth.Vault
 	instanceID string
 	held       *os.File // the lock file, while the lock is held
+	image      string   // the image this process drives on, a person's choice and unchecked; "" for this binary's
 }
 
 // openApp opens the data directory, creating it, the master key and the
@@ -123,6 +125,17 @@ func (a *app) lockHolder() (string, error) {
 	return strings.TrimSpace(string(b)), err
 }
 
+// serverHolds reports whether err is the lock refused because a server holds it.
+func (a *app) serverHolds(err error) bool {
+	if !errors.Is(err, syscall.EWOULDBLOCK) {
+		return false
+	}
+
+	role, _ := a.lockHolder()
+
+	return role == roleServe
+}
+
 // containerRuntime is what the verbs use of the container runtime.
 type containerRuntime interface {
 	BuildImage(ctx context.Context, o sandbox.BuildOptions, out io.Writer) error
@@ -177,9 +190,9 @@ func (a *app) caBundle(ctx context.Context) ([]byte, error) {
 }
 
 // drive takes what a verb needs before it starts a container: the lock, the
-// runtime, and this binary's image with the configured CA bundle. An image the
-// person named is their own choice, so skipImage leaves it unchecked.
-func (a *app) drive(ctx context.Context, skipImage bool) (containerRuntime, error) {
+// runtime, and this binary's image with the configured CA bundle, unless the
+// person named another image.
+func (a *app) drive(ctx context.Context) (containerRuntime, error) {
 	if err := a.lock(roleVerb); err != nil {
 		return nil, err
 	}
@@ -189,7 +202,7 @@ func (a *app) drive(ctx context.Context, skipImage bool) (containerRuntime, erro
 		return nil, err
 	}
 
-	if !skipImage {
+	if a.image == "" {
 		if err := a.checkImage(ctx, rt); err != nil {
 			return nil, err
 		}
@@ -207,11 +220,9 @@ var pollEvery = 500 * time.Millisecond
 // server that holds it. Another verb holding the lock is an error naming it.
 // Driving itself, it first does what drive does: the runtime, the image check, the orphans.
 func (a *app) driven(ctx context.Context, only func(store.Task) bool, wait func(context.Context) error) error {
-	rt, err := a.drive(ctx, false)
-	if errors.Is(err, syscall.EWOULDBLOCK) {
-		if role, _ := a.lockHolder(); role == roleServe {
-			return wait(ctx)
-		}
+	rt, err := a.drive(ctx)
+	if a.serverHolds(err) {
+		return wait(ctx)
 	}
 
 	if err != nil {
@@ -323,7 +334,7 @@ func (a *app) loop(rt containerRuntime) *engine.Loop {
 
 // actions is the engine without a runner: enough to record what a person does.
 func (a *app) actions() *engine.Loop {
-	return &engine.Loop{Store: a.store, Vault: a.vault, Now: time.Now, DataDir: a.dir, Image: sandbox.ImageName(version)}
+	return &engine.Loop{Store: a.store, Vault: a.vault, Now: time.Now, DataDir: a.dir, Image: cmp.Or(a.image, sandbox.ImageName(version))}
 }
 
 func (a *app) close() {

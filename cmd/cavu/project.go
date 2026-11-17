@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -339,6 +340,9 @@ func projectShow(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		p.Name, p.RepoURL, p.BaseBranch, cmp.Or(p.SetupCommand, "none"), verify, list(p.EgressHosts), list(env),
 		list(p.SecretVars), list(tools), list(switches), baseline)
 
+	// What the newest check found.
+	fmt.Fprintf(stdout, "detected: %s\nsuggests: %s\n", list(p.CheckResult.Tools), cmp.Or(p.CheckResult.VerifySuggestion, "none"))
+
 	return nil
 }
 
@@ -362,20 +366,85 @@ func projectCheck(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 
 	// Every check runs under run and task id 0, and a task run removes the
-	// containers it does not own: one verb drives containers at a time.
-	rt, err := a.drive(ctx, false)
+	// containers it does not own: one process drives containers at a time.
+	rt, err := a.drive(ctx)
+	if a.serverHolds(err) {
+		if p, err = a.checkedByServer(ctx, p); err != nil {
+			return err
+		}
+
+		res, err := storedCheck(p)
+
+		return reportCheck(stdout, p, res, p.CheckResult.VerifySuggestion, err)
+	}
+
 	if err != nil {
 		return err
 	}
 
 	// The runner masked the result and the error.
 	res, suggestion, err := a.loop(rt).CheckProject(ctx, p.ID)
+
+	return reportCheck(stdout, p, res, suggestion, err)
+}
+
+// checkedByServer asks the server for a check of p and returns p once the
+// server has cleared the request, which it does at the end of a check that
+// started after the request.
+func (a *app) checkedByServer(ctx context.Context, p store.Project) (store.Project, error) {
+	if err := a.actions().RequestCheck(ctx, p.ID); err != nil {
+		return p, err
+	}
+
+	tick := time.NewTicker(pollEvery)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return p, ctx.Err()
+		case <-tick.C:
+		}
+
+		now, err := a.store.Project(ctx, p.ID)
+		if err != nil || now.CheckRequestedAt == nil {
+			return now, err
+		}
+	}
+}
+
+// storedCheck is the newest check's result as the project stores it, with its
+// fault as the error. The base commit and the output are the baseline's, so a
+// check that stored none, with no verify command or a waived one, shows neither.
+func storedCheck(p store.Project) (engine.PrepareResult, error) {
+	c := p.CheckResult
+	if c.Fault != "" {
+		return engine.PrepareResult{}, errors.New(c.Fault)
+	}
+
+	res := engine.PrepareResult{Tools: c.Tools, IgnoredTools: c.IgnoredTools, FailedStep: c.FailedStep}
+
+	switch b := p.Baseline; {
+	case b != nil && b.Passed:
+		res.BaseCommit, res.Output, res.Baseline = b.Commit, b.Output, engine.ResultPassed
+	case b != nil:
+		res.BaseCommit, res.Output, res.Baseline = b.Commit, b.Output, engine.ResultFailed
+	case p.VerifyWaived:
+		res.Baseline = engine.ResultWaived
+	}
+
+	return res, nil
+}
+
+// reportCheck prints a check's result, and the suggestion a project without a
+// verify command needs. It fails unless the baseline passed or verify is waived.
+func reportCheck(w io.Writer, p store.Project, res engine.PrepareResult, suggestion string, err error) error {
 	if err == nil {
-		printCheck(stdout, res)
+		printCheck(w, res)
 	}
 
 	if p.VerifyCommand == "" && !p.VerifyWaived {
-		printSuggestion(stdout, p.Name, suggestion)
+		printSuggestion(w, p.Name, suggestion)
 	}
 
 	switch {

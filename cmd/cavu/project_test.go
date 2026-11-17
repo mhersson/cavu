@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -420,6 +422,77 @@ func TestProjectCheckRefusesBeforeTheRunner(t *testing.T) {
 	})
 }
 
+// serveChecks plays the server that holds dir's lock: it runs each requested
+// check on fake's runner, as the server's scheduler does, until the test ends.
+func serveChecks(t *testing.T, dir string, fake *fakeRuntime) {
+	t.Helper()
+
+	server := holdLock(t, dir, "serve")
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+
+	s := &engine.Scheduler{Loop: server.loop(fake), Tick: pollEvery, Checks: true, Only: func(store.Task) bool { return false }}
+
+	go func() { done <- s.Run(ctx) }()
+
+	t.Cleanup(func() {
+		cancel()
+		assert.NoError(t, <-done)
+	})
+}
+
+func TestProjectCheckUnderAServer(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string // after project add web --repo URL
+		check engine.PrepareResult
+		code  int
+		shows []string
+	}{
+		{"a passed baseline", []string{"--verify", "make test"}, engine.PrepareResult{
+			BaseCommit: "base123", Tools: []string{"go@1.27"}, IgnoredTools: []string{"python@2.7"}, Baseline: engine.ResultPassed,
+		}, 0, []string{"base123", "go@1.27", "python@2.7", engine.ResultPassed}},
+		{"a failed step", []string{"--verify", "make test"}, engine.PrepareResult{
+			BaseCommit: "base123", FailedStep: "setup", Output: "no rule to make target",
+		}, 1, []string{"setup", "no rule to make target"}},
+		{"a waived verify", []string{"--no-verify"}, engine.PrepareResult{
+			BaseCommit: "base123", Baseline: engine.ResultWaived,
+		}, 0, []string{engine.ResultWaived}},
+		{"no verify command", nil, engine.PrepareResult{BaseCommit: "base123"}, 1, []string{"cavu project set web --verify 'go test ./...'"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, fake := checkSetup(t, tc.args...)
+			fake.runner.check, fake.runner.suggestion = tc.check, "go test ./..."
+			serveChecks(t, dir, fake)
+			refuseRuntime(t)
+
+			code, stdout, stderr := runCavu("project", "check", "web", "--data-dir", dir)
+
+			assert.Equal(t, tc.code, code, stderr)
+			assert.Len(t, fake.runner.checks, 1, "the server ran the check")
+			assert.Nil(t, storedProject(t, dir, "web").CheckRequestedAt)
+
+			for _, v := range tc.shows {
+				assert.Contains(t, stdout, v)
+			}
+		})
+	}
+
+	t.Run("a fault", func(t *testing.T) {
+		dir, fake := checkSetup(t, "--verify", "make test")
+		fake.runner.checkErr = errors.New("the container runtime is gone")
+		serveChecks(t, dir, fake)
+		refuseRuntime(t)
+
+		code, _, stderr := runCavu("project", "check", "web", "--data-dir", dir)
+
+		assert.Equal(t, 1, code)
+		assert.Contains(t, stderr, fake.runner.checkErr.Error())
+	})
+}
+
 func TestProjectUsageErrors(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 
@@ -448,9 +521,21 @@ func TestProjectShowPrintsEveryField(t *testing.T) {
 	cavuIn(t, dir, "project", "set", "web", "--egress", "example.org", "--env", "A=b", "--secret", "TOKEN",
 		"--tool", "go=1.22", "--switch", "web_tools=on")
 
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	p, err := a.store.ProjectByName(t.Context(), "web")
+	require.NoError(t, err)
+
+	p.CheckResult = store.CheckResult{Tools: []string{"node@22"}, VerifySuggestion: "npm test"}
+	require.NoError(t, a.store.UpdateProject(t.Context(), p))
+	a.close()
+
 	out := cavuIn(t, dir, "project", "show", "web")
 
-	for _, want := range []string{repo, "waived", "example.org", "A=b", "TOKEN", "go=1.22", "web_tools=on", "continuations=on"} {
+	for _, want := range []string{
+		repo, "waived", "example.org", "A=b", "TOKEN", "go=1.22", "web_tools=on", "continuations=on", "node@22", "npm test",
+	} {
 		assert.Contains(t, out, want)
 	}
 

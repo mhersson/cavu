@@ -207,3 +207,113 @@ func TestReplayVerbInterruptReleasesTheShadowAndExits130(t *testing.T) {
 		removeVolumes: false,
 	}}, fake.runner.releases)
 }
+
+func TestReplayRefusesImageUnderAServer(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	markWithBase(t, dir, id)
+	holdLock(t, dir, "serve")
+	refuseRuntime(t)
+
+	// Bounded, so a verb that waits for the server instead fails the test.
+	ctx, cancel := context.WithTimeout(t.Context(), within)
+	defer cancel()
+
+	var stdout strings.Builder
+
+	err := runReplay(ctx, []string{"--name", "other", "--image", "cavu-sandbox:other", "--data-dir", dir}, &stdout, io.Discard)
+
+	require.Error(t, err)
+	require.NoError(t, ctx.Err(), "refused, not cut short")
+	assert.Empty(t, stdout.String())
+	assert.Empty(t, fake.runner.actions)
+
+	replays, _ := storedReplays(t, dir)
+	assert.Empty(t, replays)
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	all, err := a.store.Tasks(t.Context(), true)
+	require.NoError(t, err)
+	assert.Len(t, all, 1, "no shadow is added")
+}
+
+// shadowOf adds a shadow of the task to an earlier replay, started and run on
+// fake's runner until it rests.
+func shadowOf(t *testing.T, dir string, fake *fakeRuntime, replayID int64, id string) store.Task {
+	t.Helper()
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	src := storedTask(t, dir, id)
+	sh, err := a.store.CreateTask(t.Context(), store.Task{
+		ProjectID: src.ProjectID, Title: src.Title, BaseCommit: src.BaseCommit, ReplayID: replayID,
+	})
+	require.NoError(t, err)
+
+	l := a.loop(fake)
+	require.NoError(t, l.Start(t.Context(), sh.ID))
+	_, err = l.RunTask(t.Context(), sh.ID)
+	require.NoError(t, err)
+
+	return sh
+}
+
+func TestNewReplayCancelsOldUnfinishedShadows(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	markWithBase(t, dir, id)
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	old, err := a.store.CreateReplay(t.Context(), store.Replay{Name: "cut", Image: sandbox.ImageName(version)})
+	require.NoError(t, err)
+	a.close()
+
+	finished := shadowOf(t, dir, fake, old.ID, id)
+
+	fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: []string{"Which API version?"}}
+	stopped := shadowOf(t, dir, fake, old.ID, id)
+	fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456"}
+
+	a, err = openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	run, ok, err := a.store.OpenRun(t.Context(), stopped.ID)
+	require.NoError(t, err)
+	require.True(t, ok, "the stopped shadow keeps its run")
+	a.close()
+
+	fake.runner.releases = nil
+
+	cavuIn(t, dir, "replay", "--name", "new")
+
+	statusOf := func(task store.Task) engine.Status {
+		return engine.StatusOf(engine.Reduce(storedEvents(t, dir, strconv.FormatInt(task.ID, 10))))
+	}
+
+	assert.Equal(t, engine.StatusInReview, statusOf(finished), "a finished shadow is left as it is")
+	assert.Equal(t, engine.StatusCancelled, statusOf(stopped))
+	assert.Contains(t, fake.runner.releases, release{
+		ref: engine.RunRef{
+			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
+			TaskID: stopped.ID, RunID: run.ID, ProjectID: stopped.ProjectID,
+		},
+		removeVolumes: true,
+	}, "the replay's own scheduler ends the cancelled shadow's run")
+
+	a, err = openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	r, ok, err := a.store.PreviousReplay(t.Context(), 1<<40)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "new", r.Name, "the new replay ends")
+}

@@ -45,25 +45,33 @@ func (c Config) overrides() map[string]string {
 	return o
 }
 
-// Run runs a shadow of every reference task under c, one after another, and
-// records an item for each. A stop is an item's outcome; any error, from RunTask
-// or the store, ends the replay, which then stays unended and is never a comparison base.
-func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, out io.Writer) (store.Replay, error) {
-	all, err := s.Tasks(ctx, false)
+// Run runs a shadow of every reference task under c, one after another. drive
+// blocks until the shadow rests and returns its status. A shadow starts as any
+// task does, and a stop is its item's outcome. Any error ends the replay, which
+// then stays unended and is never a comparison base.
+func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, drive func(ctx context.Context, taskID int64) (engine.Status, error), out io.Writer) (store.Replay, error) {
+	all, err := s.Tasks(ctx, true)
 	if err != nil {
 		return store.Replay{}, fmt.Errorf("replay: %w", err)
 	}
 
-	var sources []store.Task
+	var sources, shadows []store.Task
 
 	for _, t := range all {
-		if t.Reference && t.BaseCommit != "" {
+		switch {
+		case t.Reference && t.BaseCommit != "":
 			sources = append(sources, t)
+		case t.ReplayID != 0:
+			shadows = append(shadows, t)
 		}
 	}
 
 	if len(sources) == 0 {
 		return store.Replay{}, ErrNoReferenceTasks
+	}
+
+	if err := cancelUnfinished(ctx, s, l, shadows); err != nil {
+		return store.Replay{}, err
 	}
 
 	r, err := s.CreateReplay(ctx, store.Replay{Name: c.Name, Image: l.Image, Config: c.overrides()})
@@ -72,7 +80,7 @@ func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, out io.W
 	}
 
 	for _, src := range sources {
-		item, err := runOne(ctx, s, l, r, src)
+		item, err := runOne(ctx, s, l, r, src, drive)
 		if err != nil {
 			return r, err
 		}
@@ -95,7 +103,28 @@ func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, out io.W
 	return r, nil
 }
 
-func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay, src store.Task) (store.ReplayItem, error) {
+// cancelUnfinished cancels the shadows that replays which never ended left
+// before they rested. Nothing resumes a shadow, and the cancel lets whoever
+// drives it end its run.
+func cancelUnfinished(ctx context.Context, s *store.Store, l *engine.Loop, shadows []store.Task) error {
+	for _, t := range shadows {
+		events, err := s.EventsOmitting(ctx, t.ID, engine.ProgressTypes...)
+		if err != nil {
+			return fmt.Errorf("replay: %w", err)
+		}
+
+		switch engine.StatusOf(engine.Reduce(events)) {
+		case engine.StatusQueued, engine.StatusRunning, engine.StatusBlocked:
+			if err := l.Cancel(ctx, t.ID); err != nil {
+				return fmt.Errorf("replay: cancel shadow %d: %w", t.ID, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay, src store.Task, drive func(context.Context, int64) (engine.Status, error)) (store.ReplayItem, error) {
 	shadow, err := s.CreateTask(ctx, store.Task{
 		ProjectID: src.ProjectID, Title: src.Title, Body: src.Body, Requester: src.Requester,
 		BaseCommit: src.BaseCommit, ReplayID: r.ID, Overrides: maps.Clone(r.Config),
@@ -104,14 +133,15 @@ func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay,
 		return store.ReplayItem{}, fmt.Errorf("replay: shadow of task %d: %w", src.ID, err)
 	}
 
-	start := store.Event{At: l.Now(), Type: engine.TaskStarted, Actor: "user", Payload: json.RawMessage("{}")}
-
-	if _, err := s.Append(ctx, shadow.ID, -1, []store.Event{start}, nil); err != nil {
+	if err := l.Start(ctx, shadow.ID); err != nil {
 		return store.ReplayItem{}, fmt.Errorf("replay: start shadow %d of task %d: %w", shadow.ID, src.ID, err)
 	}
 
-	status, err := l.RunTask(ctx, shadow.ID)
+	status, err := drive(ctx, shadow.ID)
 	if err != nil {
+		// The replay ends here, so nothing resumes the shadow: the cancel lets whoever drives it end its run.
+		err = errors.Join(err, l.Cancel(context.WithoutCancel(ctx), shadow.ID))
+
 		return store.ReplayItem{}, fmt.Errorf("replay: run shadow %d of task %d: %w", shadow.ID, src.ID, err)
 	}
 
@@ -123,7 +153,7 @@ func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay,
 	// Nothing resumes a shadow, so once its stop is recorded a cancel ends its run and removes its volumes.
 	if status == engine.StatusBlocked {
 		if err = l.Cancel(ctx, shadow.ID); err == nil {
-			_, err = l.RunTask(ctx, shadow.ID)
+			_, err = drive(ctx, shadow.ID)
 		}
 
 		if err != nil {
