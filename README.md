@@ -128,6 +128,17 @@ cavu project set web --cap task_budget_usd=0  # no task cap for this project's t
 
 There is no money cap unless one is set, and none under a subscription: unset or `0` turns a cap off, and a project's `0` lifts the instance's task cap for its own tasks. A session ends once it spends what the task or the day had left when it began. A task that spent its cap stops as `budget`, and `cavu task retry ID` gives it its whole budget again; once the day spent its cap, tasks wait until the next local midnight. With tasks running side by side, the daily cap can be passed by what the others in flight still spend, at most one task's budget each. `task show` prints what the task spent of its cap and what the day spent of the daily cap.
 
+### Skills and instructions for every task
+
+Every agent session of a task, readiness turns and reviews included, can have skills and instructions of your own beside the repository's. Put each skill's directory, with its `SKILL.md`, into one directory and name that directory; name one instruction file, whose text comes before the repository's own instruction files:
+
+```
+cavu settings set skills_path ~/cavu/skills
+cavu settings set instructions_path ~/cavu/AGENTS.md
+```
+
+Both are read on the machine `cavu` runs on, again at each step of a run, so a change reaches the next step. Links in the directory are followed, a `.git` directory in it is left out, and its files hold at most 16 MiB together. A repository's skill of the same name is written over yours. A path that cannot be read stops the task with the setting named; fix it and retry. The turns of the subagents an agent starts do not count toward `task_max_turns`; the task's time bounds them, since a session gets what is left of it and its end ends its subagents.
+
 ### Running the server
 
 `cavu serve` drives every started task, as `task run` drives one, and serves the HTTP API of [docs/api.md](docs/api.md) on the `listen_address` setting (default `127.0.0.1:7117`). Set the user first, with the password in a file, then start it:

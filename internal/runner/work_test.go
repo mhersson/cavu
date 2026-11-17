@@ -838,3 +838,48 @@ func TestWorkMasksTheAgentsToken(t *testing.T) {
 		})
 	}
 }
+
+// Every session gets the instance's files, the read-only readiness turn and
+// review as well as a work session.
+func TestSessionsCarryTheInstanceFiles(t *testing.T) {
+	c := workConfig()
+	c.Agent.Instance.Instructions = "INSTANCE-INSTRUCTIONS-4c1d"
+	c.Agent.Instance.Skills = map[string]engine.File{
+		"one/SKILL.md":       {Data: []byte("one\n")},
+		"one/scripts/run.sh": {Data: []byte("echo run\n"), Executable: true},
+	}
+
+	want := map[string]driver.File{
+		"one/SKILL.md":       {Data: []byte("one\n")},
+		"one/scripts/run.sh": {Data: []byte("echo run\n"), Executable: true},
+	}
+
+	for name, tc := range map[string]struct {
+		result  driver.Result
+		session func(ctx context.Context, r *Runner) error
+	}{
+		"work": {driver.Result{Reason: driver.ReasonDone}, func(ctx context.Context, r *Runner) error {
+			_, err := r.Work(ctx, c, startWork, noProgress)
+
+			return err
+		}},
+		"readiness": {readyResult(), func(ctx context.Context, r *Runner) error {
+			_, err := r.Work(ctx, c, readinessWork, noProgress)
+
+			return err
+		}},
+		"review": {passing(), func(ctx context.Context, r *Runner) error {
+			_, err := r.Review(ctx, c, fullReview(), noProgress)
+
+			return err
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := &fakeAgent{results: []driver.Result{tc.result}}
+			require.NoError(t, tc.session(t.Context(), newFake().workRunner(d)))
+			require.Len(t, d.specs, 1)
+			assert.Equal(t, c.Agent.Instance.Instructions, d.specs[0].InstanceInstructions)
+			assert.Equal(t, want, d.specs[0].InstanceSkills)
+		})
+	}
+}

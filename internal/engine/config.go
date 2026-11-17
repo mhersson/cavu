@@ -8,6 +8,9 @@ import (
 	"maps"
 	"math"
 	"net"
+	"os"
+	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,15 +25,108 @@ const (
 	keyEffortWork = "effort_work"
 )
 
-// BuildRunConfig reads the project, settings and secrets. overrides (may be nil)
-// replace model_work, effort_work and switches for a replay.
+// The settings that name the instance's files on the server's host, and the
+// bound on the skills directory, the same as the adapter's on a repository's.
+const (
+	keySkillsPath       = "skills_path"
+	keyInstructionsPath = "instructions_path"
+	skillsBound         = 16 << 20
+)
+
+// BuildRunConfig reads the project, settings and secrets, and the instance's
+// files for every action of a run. overrides (may be nil) replace model_work,
+// effort_work and switches for a replay.
 func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, overrides map[string]string) (RunConfig, error) {
 	p, err := l.Store.Project(ctx, t.ProjectID)
 	if err != nil {
 		return RunConfig{}, fmt.Errorf("project %d: %w", t.ProjectID, err)
 	}
 
-	return l.runConfig(ctx, p, t, r, overrides)
+	c, err := l.runConfig(ctx, p, t, r, overrides)
+	if err != nil {
+		return RunConfig{}, err
+	}
+
+	// runConfig leaves the files out: an environment check runs no session.
+	values, err := l.Store.Settings(ctx)
+	if err != nil {
+		return RunConfig{}, err
+	}
+
+	if file := values[keyInstructionsPath]; file != "" {
+		data, err := os.ReadFile(file) //nolint:gosec // the file the operator named
+		if err != nil {
+			return RunConfig{}, fmt.Errorf("setting %s: %w", keyInstructionsPath, err)
+		}
+
+		c.Agent.Instance.Instructions = string(data)
+	}
+
+	if dir := values[keySkillsPath]; dir != "" {
+		if c.Agent.Instance.Skills, err = readSkills(dir); err != nil {
+			return RunConfig{}, fmt.Errorf("setting %s: %w", keySkillsPath, err)
+		}
+	}
+
+	return c, nil
+}
+
+// readSkills reads every file below root but those in a .git directory,
+// following links, by its slash path under root. The bound is checked
+// before each read, so a link to a large tree fails early; a link loop ends
+// in the system's path error.
+func readSkills(root string) (map[string]File, error) {
+	skills := map[string]File{}
+
+	var (
+		total int64
+		walk  func(rel string) error
+	)
+
+	walk = func(rel string) error {
+		entries, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			return err
+		}
+
+		for _, e := range entries {
+			name := path.Join(rel, e.Name())
+			p := filepath.Join(root, filepath.FromSlash(name))
+
+			fi, err := os.Stat(p)
+			if err != nil {
+				return err
+			}
+
+			if fi.IsDir() {
+				// A checkout's history is no part of a skill and can pass the bound alone.
+				if e.Name() == ".git" {
+					continue
+				}
+
+				if err := walk(name); err != nil {
+					return err
+				}
+
+				continue
+			}
+
+			if total += fi.Size(); total > skillsBound {
+				return fmt.Errorf("the files pass %d MiB at %s", skillsBound>>20, name)
+			}
+
+			data, err := os.ReadFile(p) //nolint:gosec // a file below the directory the operator named
+			if err != nil {
+				return err
+			}
+
+			skills[name] = File{Data: data, Executable: fi.Mode()&0o111 != 0}
+		}
+
+		return nil
+	}
+
+	return skills, walk("")
 }
 
 // runConfig builds BuildRunConfig's config from a project already read.
@@ -153,7 +249,7 @@ var settableKeys = []string{
 	"runtime", "ca_bundle_path", "endpoint_mode", "endpoint_url", "endpoint_auth_header",
 	keyModelWork, keyEffortWork, "model_review", "effort_review", "model_strong", "effort_strong",
 	keyTaskTimeout, keyTaskTurns, keyTaskBudget, keyDayBudget, keyPrices, "verify_timeout_minutes",
-	"commit_name", "commit_email", "concurrency", "listen_address",
+	"commit_name", "commit_email", "concurrency", "listen_address", keySkillsPath, keyInstructionsPath,
 }
 
 // SettableKeys lists the settings a person sets.
@@ -176,7 +272,28 @@ func CheckSetting(key, value string) error {
 	_, listen := ListenAddress(values)
 	_, prices := Prices(values)
 
-	return errors.Join(set.err, concurrency, listen, prices)
+	return errors.Join(set.err, concurrency, listen, prices, checkInstancePath(key, value))
+}
+
+// checkInstancePath refuses a skills_path that is not a directory and an
+// instructions_path that is not a file; a link to one counts.
+func checkInstancePath(key, value string) error {
+	if value == "" || (key != keySkillsPath && key != keyInstructionsPath) {
+		return nil
+	}
+
+	fi, err := os.Stat(value)
+
+	switch {
+	case err != nil:
+		return fmt.Errorf("setting %s: %w", key, err)
+	case key == keySkillsPath && !fi.IsDir():
+		return fmt.Errorf("setting %s: %s is not a directory", key, value)
+	case key == keyInstructionsPath && !fi.Mode().IsRegular():
+		return fmt.Errorf("setting %s: %s is not a file", key, value)
+	}
+
+	return nil
 }
 
 // Concurrency reads the concurrency setting: a positive integer, 3 when unset.
