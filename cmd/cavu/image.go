@@ -14,16 +14,15 @@ import (
 
 func init() {
 	commands["image"] = command{
-		summary: "image build [--cavu-binary PATH] [--ca-bundle PATH]: build the sandbox image",
+		summary: "image build [--cavu-binary PATH]: build the sandbox image",
 		run:     runImage,
 	}
 }
 
 func runImage(ctx context.Context, args []string, _ io.Reader, stdout, stderr io.Writer) error {
-	f := newVerbFlags("cavu image build [--cavu-binary PATH] [--ca-bundle PATH] [--data-dir DIR]", stderr)
+	f := newVerbFlags("cavu image build [--cavu-binary PATH] [--data-dir DIR]", stderr)
 
 	binary := f.String("cavu-binary", "", "a Linux cavu executable to put in the image (default: this executable, on Linux)")
-	caPath := f.String("ca-bundle", "", "a PEM file of CA certificates to trust, for a network that inspects TLS (default: the file ca_bundle_path names)")
 
 	if len(args) == 0 || args[0] != "build" {
 		return f.usageError()
@@ -44,21 +43,17 @@ func runImage(ctx context.Context, args []string, _ io.Reader, stdout, stderr io
 	}
 	defer a.close()
 
+	bundle, err := a.caBundle(ctx)
+	if err != nil {
+		return err
+	}
+
 	o := sandbox.BuildOptions{
 		CavuBinary:   bin,
 		CavuVersion:  version,
 		AgentVersion: claudecode.Version,
 		AgentSHA512:  claudecode.SHA512,
-	}
-
-	if *caPath != "" {
-		o.CABundle, err = os.ReadFile(*caPath)
-	} else {
-		o.CABundle, err = a.caBundle(ctx)
-	}
-
-	if err != nil {
-		return err
+		CABundle:     bundle,
 	}
 
 	rt, err := a.runtime(ctx)

@@ -46,14 +46,12 @@ func TestImageBuildUsesCABundleSetting(t *testing.T) {
 
 	dir := t.TempDir()
 	data := filepath.Join(dir, "data")
-	setting, flagged := filepath.Join(dir, "setting.pem"), filepath.Join(dir, "flag.pem")
+	setting := filepath.Join(dir, "setting.pem")
 
 	require.NoError(t, os.WriteFile(setting, []byte("bundle of the setting"), 0o600))
-	require.NoError(t, os.WriteFile(flagged, []byte("bundle of the flag"), 0o600))
 
-	build := func(flags ...string) int {
-		args := append([]string{"image", "build", "--cavu-binary", "/linux/cavu", "--data-dir", data}, flags...)
-		code, _, _ := runCavu(args...)
+	build := func() int {
+		code, _, _ := runCavu("image", "build", "--cavu-binary", "/linux/cavu", "--data-dir", data)
 
 		return code
 	}
@@ -76,11 +74,7 @@ func TestImageBuildUsesCABundleSetting(t *testing.T) {
 	assert.Equal(t, []byte("bundle of the setting"), fake.builds[1].CABundle)
 	assert.Equal(t, "podman", fake.name)
 
-	require.Equal(t, 0, build("--ca-bundle", flagged))
-	require.Len(t, fake.builds, 3)
-	assert.Equal(t, []byte("bundle of the flag"), fake.builds[2].CABundle, "the flag wins")
-
 	set("ca_bundle_path", filepath.Join(dir, "missing.pem"))
 	assert.Equal(t, 1, build())
-	assert.Len(t, fake.builds, 3, "an unreadable bundle builds nothing")
+	assert.Len(t, fake.builds, 2, "an unreadable bundle builds nothing")
 }
