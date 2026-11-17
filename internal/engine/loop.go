@@ -95,6 +95,10 @@ const maxProgressText = 2 << 10 // bytes kept of agent_text.text and agent_tool.
 // recordTimeout bounds recording a runner call's result after ctx has ended.
 const recordTimeout = 10 * time.Second
 
+// endTimeout bounds ending a run, its Release with volumes removed and its row,
+// on a context that outlives the caller's.
+const endTimeout = time.Minute
+
 // RunTask decides and acts until the task rests (action none) or waits, or ctx
 // ends. It returns the final status. The caller keeps one live RunTask per
 // task by holding the data-directory lock or a per-task lock: the
@@ -832,8 +836,16 @@ func (l *Loop) ReleaseOpenRun(ctx context.Context, taskID int64) error {
 }
 
 // free stops a run's containers, removing its volumes and ending its row when
-// the run ends. A Release error is held so the row is still ended.
+// the run ends. A Release error is held so the row is still ended. An end is
+// already recorded, so it is carried out past ctx's end, or the row stays open.
 func (p *pass) free(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
+	if end {
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), endTimeout)
+		defer cancel()
+	}
+
 	ref, err := p.ref(ctx, t, row)
 	if err != nil {
 		return err

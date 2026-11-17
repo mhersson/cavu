@@ -1437,6 +1437,40 @@ func TestLoopRetryAfterRunnerFault(t *testing.T) {
 	})
 }
 
+// A cancel that lands as the session ends is the drive's own to stop on, and a
+// scheduler cuts the drive for the same cancel, here during the stop's release.
+func TestLoopEndsARunWhoseContextIsCutDuringItsRelease(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cut := context.WithCancel(t.Context())
+	defer cut()
+
+	var released error
+
+	h.runner.onCall = func(c call) {
+		if c.method == "work" {
+			h.add(0, engine.HumanCancelled, "user", "")
+		}
+	}
+	h.runner.gate = func(rctx context.Context, c call) error {
+		if c.method != "release" {
+			return nil
+		}
+
+		cut()
+
+		released = rctx.Err()
+
+		return released
+	}
+
+	_, _ = h.run(ctx) // ends with ctx's error, after the run is ended
+
+	assert.Equal(t, []string{"prepare", "work/start", "release/remove"}, h.runner.trace())
+	require.NoError(t, released, "the release runs on past the cut")
+	assert.Equal(t, map[int64]string{h.runner.calls[0].runID: engine.StopCancelled}, h.spy.ended(), "the run row is ended")
+}
+
 func TestLoopClaimConflict(t *testing.T) {
 	rivalText := store.Event{Type: engine.AgentText, Actor: "agent", Payload: json.RawMessage(`{"text":"rival"}`)}
 	cancelled := store.Event{Type: engine.HumanCancelled, Actor: "user", Payload: json.RawMessage(`{}`)}
