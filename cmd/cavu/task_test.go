@@ -608,6 +608,41 @@ func TestTaskRunRemovesOrphansKeepingOpenRuns(t *testing.T) {
 	assert.Equal(t, []removal{{instanceID: storedSettings(t, dir)["instance_id"], keepRuns: []int64{open.ID}}}, fake.removals)
 }
 
+func TestTaskRunEndsTheRunOfACancelledTask(t *testing.T) {
+	dir, blocked, fake := runSetup(t)
+	fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: []string{"Which API version?"}}
+
+	code, _, _ := runCavu("task", "run", blocked, "--data-dir", dir)
+	require.Equal(t, 3, code)
+
+	task := storedTask(t, dir, blocked)
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	run, ok, err := a.store.OpenRun(t.Context(), task.ID)
+	require.NoError(t, err)
+	require.True(t, ok, "a question keeps the run")
+	a.close()
+
+	cavuIn(t, dir, "task", "cancel", blocked)
+
+	fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456"}
+	fake.runner.releases = nil
+
+	cavuIn(t, dir, "task", "run", addTask(t, dir, "Another task"))
+
+	assert.Contains(t, fake.runner.releases, release{
+		ref: engine.RunRef{
+			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
+			TaskID: task.ID, RunID: run.ID, ProjectID: task.ProjectID,
+		},
+		removeVolumes: true,
+	}, "the cancelled task's run ends and its volumes go")
+	assert.NotContains(t, fake.removals[len(fake.removals)-1].keepRuns, run.ID)
+	assert.Equal(t, engine.StatusCancelled, engine.StatusOf(engine.Reduce(storedEvents(t, dir, blocked))))
+}
+
 func TestTaskRunInterruptReleasesAndExits130(t *testing.T) {
 	dir, id, fake := runSetup(t)
 

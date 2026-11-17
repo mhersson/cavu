@@ -173,7 +173,26 @@ func (a *app) drive(ctx context.Context, skipImage bool) (containerRuntime, erro
 
 // removeOrphans removes the instance's containers and the volumes of every run
 // that is not open. With the lock held, no container of the instance is in use.
+// A task cancelled at rest still holds its run, so the loop first ends that run.
 func (a *app) removeOrphans(ctx context.Context, rt containerRuntime) error {
+	tasks, err := a.store.Tasks(ctx, true)
+	if err != nil {
+		return err
+	}
+
+	for _, t := range tasks {
+		events, err := a.store.Events(ctx, t.ID, 0, 0)
+		if err != nil {
+			return err
+		}
+
+		if f := engine.Reduce(events); f.Cancelled && f.RunOpen {
+			if _, err := a.loop(rt).RunTask(ctx, t.ID); err != nil {
+				return err
+			}
+		}
+	}
+
 	keep, err := a.store.OpenRunIDs(ctx)
 	if err != nil {
 		return err
