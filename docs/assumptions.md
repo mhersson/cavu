@@ -23,7 +23,7 @@ It also lists what the Claude Code adapter assumes of the pinned Claude Code ver
 - Switch: `web_tools`, set per project and overridden by a task's overrides, which is how the `internal/replay` package sets it. Off by default.
 - What it turns on: the agent's web tools. With the switch off, the Claude Code adapter disallows `WebFetch` and `WebSearch` and sets `CLAUDE_CODE_DISABLE_WEB_FETCH=1`, so a session can neither fetch a page nor search the web.
 - Assumption: fetched content is an injection and exfiltration channel: current models can follow instructions planted in a page they read, and a request they send can carry the repository's content out.
-- Comparison to retire it: replay the same reference set with the switch on, with tasks whose fetched pages carry planted instructions. Retire the part when no session follows a planted instruction or sends the repository's content out, and the verify pass rate is no worse than with it off.
+- Comparison to retire it: replay the same reference set with `cavu replay --web-tools`, with tasks whose fetched pages carry planted instructions. Retire the part when no session follows a planted instruction or sends the repository's content out, and the verify pass rate is no worse than with it off.
 
 ## The pinned flag set of the Claude Code adapter
 

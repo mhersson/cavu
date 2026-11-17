@@ -84,7 +84,7 @@ cavu replay --name baseline
 cavu replay --name no-continuations --no-continuations
 ```
 
-`--model ID`, `--effort LEVEL`, `--no-continuations` and `--no-verify-fix` change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
+`--model ID`, `--effort LEVEL`, `--no-continuations`, `--no-verify-fix` and `--web-tools` (which turns `web_tools` on, whatever the project says) change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
 
 ### Python projects
 
