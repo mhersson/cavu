@@ -1,6 +1,6 @@
 # HTTP API
 
-`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP. Every route is under `/api/`. Request and response bodies are JSON. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
+`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP. Every route is under `/api/`. Request and response bodies are JSON, but for the event stream's. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
 
 ## Authentication
 
@@ -23,10 +23,10 @@ An error is a JSON object with one field, a line saying what went wrong:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless; or the query names a project or a status that does not exist. |
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless; or the query names a project or a status that does not exist; or a query value or header that must be a whole number is not one. |
 | 401 | The request has neither a known API token nor a live session cookie, or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
-| 404 | No route matches the method and the path, or the id in the path names nothing. |
+| 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist. |
 | 409 | The write conflicts with what is stored: another project has the name, or an event was recorded on the task between an action's read and its write. Nothing was written; send it again. |
 | 413 | The body is larger than 1 MiB. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
@@ -217,3 +217,44 @@ A list is `[]` when empty, never null.
 | `turns` | The turns of all the task's agent sessions. |
 | `duration_ms` | The milliseconds from the task's start to its newest event other than the agent's progress, 0 before it starts. |
 | `cost_estimate_usd` | The sum of the costs recorded for the task, an estimate from list prices, not a bill. |
+
+### `GET /api/tasks/{id}/events`
+
+Answers 200 with a page of the task's events, oldest first:
+
+```json
+{"events": [{"id": 42, "task_id": 7, "run_id": 3, "...": "..."}]}
+```
+
+The query `after=ID` starts the page after the event with that id, and `limit=N` sets how many events the page holds at most: 200 when it is left out or 0, and never more than 1000. A client pages by sending the id of the last event it got as `after`, until a page comes back empty. An `after` or `limit` that is not a whole number is 400.
+
+### `GET /api/events`
+
+Answers 200 with a stream of [server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html) (`Content-Type: text/event-stream`) that carries the events of every task as they are recorded, or those of one task with the query `task=ID`. Each event is one message: `id:` the event's id, `data:` the event as one line of JSON, then a blank line.
+
+```
+id: 42
+data: {"id":42,"task_id":7,"run_id":3,"at":"2030-01-02T03:04:05Z","type":"agent_text","actor":"agent","payload":{"text":"Adding the footer."}}
+
+```
+
+The stream starts after the event named by the header `Last-Event-ID`, else by the query `after=ID`, else after the newest event when the request arrives. A client that reconnects with the id it got last, as a browser's `EventSource` does, misses no event and gets none twice. The server looks for new events once a second and sends them in id order, and sends a comment line, `:`, every 15 seconds. The stream's answer carries `Cache-Control: no-store` and `X-Accel-Buffering: no`, which keeps a proxy such as nginx from holding the events back. The stream ends when the client leaves or the server stops. A `task` that does not exist is 404; a `task`, `after` or `Last-Event-ID` that is not a whole number is 400.
+
+### The event
+
+An event is one fact in a task's history, recorded once and never changed:
+
+```json
+{"id": 42, "task_id": 7, "run_id": 3, "at": "2030-01-02T03:04:05Z", "type": "agent_text", "actor": "agent",
+ "payload": {"text": "Adding the footer."}}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `id` | The event's id. Ids rise with every event recorded, over all tasks. |
+| `task_id` | The id of the event's task. |
+| `run_id` | The id of the run the event belongs to, or null. |
+| `at` | When the event was recorded, to the millisecond. |
+| `type` | What happened, such as `task_started`, `agent_text` or `stopped`. |
+| `actor` | Who recorded it: `user`, `engine`, `runner` or `agent`. |
+| `payload` | The event's details, a JSON value whose shape the type sets. |

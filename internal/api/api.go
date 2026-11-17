@@ -34,6 +34,8 @@ type Deps struct {
 	Nudge   func()                    // the scheduler's
 	Waiting func(taskID int64) string // the scheduler's
 	Version string
+	Stop    <-chan struct{} // closed when the server stops, which ends the open streams
+	Poll    time.Duration   // how often a stream asks the store for new events; 0 is a second
 }
 
 // route is one REST route. Only an open route is served without authority.
@@ -59,6 +61,8 @@ var routes = []route{
 	{"GET /api/tasks/{id}", false, (*server).task},
 	{"PATCH /api/tasks/{id}", false, (*server).editTask},
 	{"POST /api/tasks/{id}/actions", false, (*server).act},
+	{"GET /api/tasks/{id}/events", false, (*server).events},
+	{"GET /api/events", false, (*server).stream},
 }
 
 // Routes lists every REST route as "METHOD /path". The handler is built from it.

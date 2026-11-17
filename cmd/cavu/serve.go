@@ -92,13 +92,16 @@ func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, s
 	s := &engine.Scheduler{Loop: a.loop(rt), Checks: true, OnError: func(taskID int64, err error) {
 		slog.Error("scheduler error", "task", taskID, "err", err)
 	}}
+	stopped := make(chan struct{})
 	srv := &http.Server{
 		Handler: api.New(api.Deps{
 			Store: a.store, Vault: a.vault, Auth: auth.NewService(a.store, time.Now), Loop: a.actions(),
-			Nudge: s.Nudge, Waiting: s.Waiting, Version: version,
+			Nudge: s.Nudge, Waiting: s.Waiting, Version: version, Stop: stopped,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// Shutdown waits for the open requests, and a stream ends only when told.
+	srv.RegisterOnShutdown(func() { close(stopped) })
 
 	// The scheduler ends after the open requests, which may still record a person's action.
 	sctx, stop := context.WithCancel(context.WithoutCancel(ctx))

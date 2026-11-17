@@ -34,6 +34,8 @@ func TestServeStartsDrivesAndStops(t *testing.T) {
 	require.NoError(t, a.actions().Start(t.Context(), taskID(t, id)))
 	a.close()
 
+	token := strings.TrimSpace(cavuIn(t, dir, "token", "add", "test"))
+
 	// The session runs until the scheduler cuts it, so the run is in flight when the server stops.
 	working := make(chan struct{})
 	fake.runner.duringWork = func(ctx context.Context) {
@@ -62,6 +64,17 @@ func TestServeStartsDrivesAndStops(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
+	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, url+"/api/events", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	stream, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+
+	defer stream.Body.Close()
+
+	require.Equal(t, http.StatusOK, stream.StatusCode)
+
 	select {
 	case <-working:
 	case <-time.After(within):
@@ -72,11 +85,12 @@ func TestServeStartsDrivesAndStops(t *testing.T) {
 
 	cancel()
 
+	// The open stream ends at once, so the verb does not wait out the grace.
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(within):
-		require.FailNow(t, "the verb did not end")
+	case <-time.After(shutdownGrace / 2):
+		require.FailNow(t, "the verb did not end before the grace ran out")
 	}
 
 	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork}, fake.runner.actions)

@@ -54,6 +54,7 @@ func (c *clock) add(d time.Duration) {
 // fixture is the handler over a real store with one user and one API token,
 // served on a port the kernel picks.
 type fixture struct {
+	srv     *httptest.Server
 	url     string
 	db      string // the store's file
 	store   *store.Store
@@ -93,12 +94,16 @@ func newServer(t *testing.T, wrap ...func(*store.Store) engine.Store) *fixture {
 	}
 
 	f := &fixture{db: db, store: s, vault: vault, auth: svc, clock: c, token: token}
-	srv := httptest.NewServer(api.New(api.Deps{
+	stop := make(chan struct{})
+	f.srv = httptest.NewUnstartedServer(api.New(api.Deps{
 		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: records, Vault: vault, Now: c.Now},
-		Nudge: func() { f.nudges.Add(1) }, Waiting: f.why, Version: "1.2.3",
+		Nudge: func() { f.nudges.Add(1) }, Waiting: f.why, Version: "1.2.3", Stop: stop, Poll: 10 * time.Millisecond,
 	}))
-	t.Cleanup(srv.Close)
-	f.url = srv.URL
+	// As cavu serve does, so that Shutdown ends the open streams.
+	f.srv.Config.RegisterOnShutdown(func() { close(stop) })
+	f.srv.Start()
+	t.Cleanup(f.srv.Close)
+	f.url = f.srv.URL
 
 	return f
 }
