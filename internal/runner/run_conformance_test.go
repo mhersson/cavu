@@ -118,6 +118,7 @@ func TestRunProducesDiff(t *testing.T) {
 	ex := export(t, r, c, res)
 	assert.Contains(t, string(ex.Diff), "\n+CAVU-ADDED-LINE\n")
 	assert.Equal(t, 1, ex.FilesChanged)
+	assert.Equal(t, []string{"notes.txt | 1 +", "1 file changed, 1 insertion(+)"}, ex.DiffStat)
 	assertBundle(t, r, c, ex.Bundle, res.HeadCommit)
 }
 

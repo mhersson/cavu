@@ -380,3 +380,43 @@ func TestReduceRetryAfterSandboxStop(t *testing.T) {
 		})
 	}
 }
+
+func TestTurnsAndDuration(t *testing.T) {
+	t0 := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+
+	// at is e recorded m minutes after t0.
+	at := func(e store.Event, m int) store.Event {
+		e.At = t0.Add(time.Duration(m) * time.Minute)
+
+		return e
+	}
+
+	tests := []struct {
+		name     string
+		events   []store.Event
+		turns    int
+		duration time.Duration
+	}{
+		{name: "nothing", events: nil},
+		{name: "never started", events: []store.Event{at(ev(engine.HumanCancelled, ""), 5)}},
+		{
+			name: "every session's turns, timed from the newest start to the last event",
+			events: []store.Event{
+				at(ev(engine.TaskStarted, ""), 0),
+				at(ev(engine.SessionEnded, `{"outcome":"unfinished","turns":3}`), 10),
+				at(ev(engine.TaskStarted, ""), 20),
+				at(ev(engine.SessionEnded, `{"outcome":"done","turns":4}`), 30),
+				at(ev(engine.Exported, `{}`), 32),
+			},
+			turns: 7, duration: 12 * time.Minute,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			turns, d := engine.TurnsAndDuration(tc.events)
+			assert.Equal(t, tc.turns, turns)
+			assert.Equal(t, tc.duration, d)
+		})
+	}
+}

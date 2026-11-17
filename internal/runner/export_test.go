@@ -24,19 +24,25 @@ func exportName(c engine.RunConfig, commit string) string {
 
 // The export runs as one script in the agent container, wrapped so it runs
 // only in a sandbox, with every value as an argument, then copies both files
-// out through the agent container.
+// out through the agent container. The script prints git's summary of the change.
 func TestExportScript(t *testing.T) {
 	f := newFake()
 	f.out = map[string][]byte{diffFile: []byte(twoFiles), bundleFile: []byte("# v2 git bundle\n")}
 	c := workConfig()
+	name := exportName(c, headCommit)
+
+	// git's summary, then what a rootless Podman client prints after an exec's own output.
+	f.results[name] = sandbox.Result{Output: " login.go | 2 +-\n logo.png | Bin 0 -> 3 bytes\n" +
+		" 2 files changed, 1 insertion(+), 1 deletion(-)\n" +
+		`time="2026-11-16T15:00:00Z" level=warning msg="The cgroupv2 manager is set to systemd but there is no systemd user session available"` + "\n"}
 
 	res, err := f.runner().Export(t.Context(), c, headCommit)
 	require.NoError(t, err)
 	assert.Equal(t, engine.ExportResult{
 		HeadCommit: headCommit, Diff: []byte(twoFiles), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 2,
+		DiffStat: []string{"login.go | 2 +-", "logo.png | Bin 0 -> 3 bytes", "2 files changed, 1 insertion(+), 1 deletion(-)"},
 	}, res)
 
-	name := exportName(c, headCommit)
 	assert.Equal(t, []string{"volumes", "up/agent", "run/" + name, "copyout " + diffFile, "copyout " + bundleFile}, f.calls())
 
 	run := f.run(t, name)

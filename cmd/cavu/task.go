@@ -212,6 +212,9 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
 		printState(stdout, events)
 
+		turns, d := engine.TurnsAndDuration(events)
+		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
+
 		if err := printUsage(ctx, stdout, a.store, id); err != nil {
 			return err
 		}
@@ -225,7 +228,7 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 }
 
 // printState prints the task's status, its open stop with every question the
-// agent asked, and its newest export, and returns the status.
+// agent asked, and its newest export with git's summary of it, and returns the status.
 func printState(w io.Writer, events []store.Event) engine.Status {
 	facts := engine.Reduce(events)
 	status := engine.StatusOf(facts)
@@ -245,7 +248,13 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 	}
 
 	if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
-		fmt.Fprintf(w, "diff:    %s\nbundle:  %s\n", x.DiffPath, x.BundlePath)
+		fmt.Fprintf(w, "diff:    %s\n", x.DiffPath)
+
+		for _, l := range x.DiffStat {
+			fmt.Fprintf(w, "changed: %s\n", l)
+		}
+
+		fmt.Fprintf(w, "bundle:  %s\n", x.BundlePath)
 	}
 
 	return status

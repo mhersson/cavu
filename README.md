@@ -53,7 +53,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline.
 
-6. Add a task and run it. `task run` prints each event as it happens and ends with the task's status.
+6. Add a task and run it. `task run` prints each event as it happens and ends with the task's status. `task show` also prints the turns, the duration and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
 
    ```
    cavu task add web --title "Fix the login redirect" --body-file task.md
