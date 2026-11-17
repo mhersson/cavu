@@ -36,3 +36,24 @@ func TestSecretsStoreBytesVerbatim(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"endpoint_credential", "forge_token"}, names)
 }
+
+func TestDeleteSecret(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.PutSecret(ctx, "forge_token", []byte("a")))
+	require.NoError(t, s.PutSecret(ctx, "endpoint_credential", []byte("b")))
+
+	require.NoError(t, s.DeleteSecret(ctx, "forge_token"))
+	require.NoError(t, s.DeleteSecret(ctx, "never_set"), "an unknown name is a no-op")
+
+	_, ok, err := s.Secret(ctx, "forge_token")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	names, err := s.SecretNames(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{"endpoint_credential"}, names)
+}

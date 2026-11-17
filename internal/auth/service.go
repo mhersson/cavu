@@ -63,7 +63,8 @@ func (a *Service) SetUser(ctx context.Context, name, password string) error {
 
 // Login returns a new session's cookie value and when it expires.
 func (a *Service) Login(ctx context.Context, name, password, remote string) (cookie string, expires time.Time, err error) {
-	if err := a.check(ctx, name, password, name+"|"+remote); err != nil {
+	// The limiter keeps a failed login's key for an hour, so it holds the name's digest, not the name.
+	if err := a.check(ctx, name, password, HashToken(name)+"|"+remote); err != nil {
 		return "", time.Time{}, err
 	}
 
@@ -123,27 +124,29 @@ func (a *Service) check(ctx context.Context, name, password, key string) error {
 	return nil
 }
 
-// Session reports whether the cookie value names a live session, and keeps it alive.
-func (a *Service) Session(ctx context.Context, cookie string) (bool, error) {
+// Session reports whether the cookie value names a live session, and keeps it
+// alive: renewed is the session's new expiry when it moved, else zero.
+func (a *Service) Session(ctx context.Context, cookie string) (ok bool, renewed time.Time, err error) {
 	hash := HashToken(cookie)
 
 	expiry, found, err := a.store.SessionExpiry(ctx, hash)
 	if err != nil || !found {
-		return false, err
+		return false, time.Time{}, err
 	}
 
 	now := a.now()
 	if !expiry.After(now) {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 
 	if expiry.Sub(now) < sessionRefreshBelow {
-		if err := a.store.ExtendSession(ctx, hash, now.Add(sessionLife)); err != nil {
-			return false, err
+		renewed = now.Add(sessionLife)
+		if err := a.store.ExtendSession(ctx, hash, renewed); err != nil {
+			return false, time.Time{}, err
 		}
 	}
 
-	return true, nil
+	return true, renewed, nil
 }
 
 // Logout ends the session; an unknown cookie value is a no-op.

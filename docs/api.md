@@ -1,0 +1,260 @@
+# HTTP API
+
+`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP. Every route is under `/api/`. Request and response bodies are JSON, but for the event stream's. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
+
+## Authentication
+
+Every route but `GET /api/health` and `POST /api/auth/login` needs one of these:
+
+- **An API token**, sent as `Authorization: Bearer <token>`. `cavu token add NAME` creates one and prints it once: `cavu_` followed by 43 URL-safe characters.
+- **The session cookie** `cavu_session`, which `POST /api/auth/login` sets. It is `HttpOnly`, `SameSite=Strict` and `Path=/`, and `Secure` when the login came over TLS or carries `X-Forwarded-Proto: https`. A session lasts 30 days after its last use: when a request moves its expiry, which happens at most once a day, the response sets the cookie again with the new expiry.
+
+A request with the cookie whose method is not `GET` or `HEAD` must also carry the header `X-CAVU-CSRF` with any non-empty value. A page served from another port of the same host can make a browser send the cookie, but cannot add this header. A request with a bearer token needs no such header.
+
+A request with a bearer token the server does not know is judged by its cookie.
+
+## Errors
+
+An error is a JSON object with one field, a line saying what went wrong:
+
+```json
+{"error": "wrong name or password"}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless; or the query names a project or a status that does not exist; or a query value or header that must be a whole number is not one. |
+| 401 | The request has neither a known API token nor a live session cookie, or a login named the wrong name or password. |
+| 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
+| 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist. |
+| 409 | The write conflicts with what is stored: another project has the name, or an event was recorded on the task between an action's read and its write. Nothing was written; send it again. |
+| 413 | The body is larger than 1 MiB. |
+| 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
+| 500 | The server failed. It logs the cause; the answer holds no detail. |
+
+## Routes
+
+### `GET /api/health`
+
+Needs no authentication. Answers 200:
+
+```json
+{"status": "ok", "version": "dev"}
+```
+
+### `POST /api/auth/login`
+
+Needs no authentication. The body names the user that `cavu user set` created:
+
+```json
+{"name": "ada", "password": "correct horse battery"}
+```
+
+Answers 204 with the session cookie, or 401 for a wrong name or password. From the third failed login for a name from one address, logins for that name from that address are refused with 429 for a while: 1 second, doubling with each further failure, up to 5 minutes. A successful login clears the count, and so does a restart of the server. The address is the host of the connection; no forwarded header changes it.
+
+### `POST /api/auth/logout`
+
+Ends the session of the cookie the request carries and answers 204 with the cookie expired. A request with a bearer token and no cookie ends nothing.
+
+### `GET /api/projects`
+
+Answers 200 with every project, ordered by name:
+
+```json
+{"projects": [{"id": 1, "name": "web", "...": "..."}]}
+```
+
+### `POST /api/projects`
+
+Creates a project. The body holds `name`, `repo_url` and any of the other fields a request sets (see [The project](#the-project)); `base_branch` is `main` when left out. Answers 201 with the project, 400 when a field holds what a project may not, or 409 when another project has the name.
+
+### `GET /api/projects/{id}`
+
+Answers 200 with the project.
+
+### `PATCH /api/projects/{id}`
+
+Changes the fields the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `switches` and `secrets` merge per key; every other field replaces its whole value, so `""`, `[]` or `{}` empties one that may be empty. The name cannot change, since the project's secrets are stored under it. An edit of anything a baseline rests on clears the baseline: the repository, the base branch, the setup or verify command, the waiver, the tool versions, the environment or the secret variables. Answers 200 with the project.
+
+### `POST /api/projects/{id}/check`
+
+Asks for an environment check, the one `cavu project check` runs, which the server starts as soon as it can. Answers 202 with the project. `check.requested_at` stays set until a check that started after the request ends; a request made while a check runs is kept, and the check runs again.
+
+### The project
+
+```json
+{"id": 1, "name": "web", "repo_url": "https://github.com/acme/web.git", "base_branch": "main",
+ "setup_command": "npm ci", "verify_command": "npm test", "verify_waived": false,
+ "tool_overrides": {"node": "22"}, "egress_hosts": ["registry.npmjs.org"], "env": {"CI": "1"},
+ "secret_vars": ["NPM_TOKEN"],
+ "switches": {"continuations": true, "verify_fix": true, "web_tools": false},
+ "runnable": true,
+ "baseline": {"commit": "4b825dc", "passed": true, "at": "2030-01-02T03:04:05Z", "output": ""},
+ "check": {"requested_at": null, "tools": ["node"], "ignored_tools": [], "failed_step": "",
+           "verify_suggestion": "npm test", "fault": "", "commit": "4b825dc", "output": ""}}
+```
+
+A list is `[]` and a map `{}` when empty, never null. These fields are set by a request, `name` only when the project is created:
+
+| Field | Meaning |
+|-------|---------|
+| `name` | 1 to 40 of `a-z`, `0-9` and `-`. |
+| `repo_url` | The repository's `https://` URL. |
+| `base_branch` | The branch tasks start from. |
+| `setup_command` | The command that prepares the workspace, such as installing dependencies; `""` for none. |
+| `verify_command` | The command whose exit code decides whether a change passes. |
+| `verify_waived` | `true` when a person checks every change instead. A project may not have both a verify command and a waiver, so a change from one to the other names both fields. |
+| `tool_overrides` | Tool name to version, over the versions the repository names. |
+| `egress_hosts` | The hosts the setup command, the agent and verify may reach. |
+| `env` | Variables for the setup command, the agent's sessions and verify. |
+| `switches` | Switch name to `true` or `false`. |
+| `secrets` | Variable to value, for the setup command. Each value is sealed as the secret `project.<name>.<VAR>` and the variable added to `secret_vars`; an empty value removes both. It is never given back. |
+
+The others are the server's:
+
+| Field | Meaning |
+|-------|---------|
+| `id` | The project's id. |
+| `secret_vars` | The variables whose values are sealed. |
+| `switches` | Every switch and its state, the defaults included. |
+| `runnable` | Whether the project's tasks may start: the baseline passed, or verify is waived. |
+| `baseline` | The verify command's result on the base commit at the newest check that ran it, or null. |
+| `check` | The newest check that ended: the tools it found and ignored, the step that failed, the verify command the repository suggests, the error it met (`fault`), the base commit and the output. `requested_at` is the time of a check asked for and not yet answered, or null. |
+
+### `GET /api/settings`
+
+Answers 200 with every key `cavu settings set` takes whose value is not empty, and whether each instance secret is set:
+
+```json
+{"settings": {"endpoint_mode": "subscription", "model_work": "sonnet"},
+ "secrets": {"endpoint_credential": true, "forge_token": false}}
+```
+
+A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given.
+
+### `PATCH /api/settings`
+
+Sets settings and instance secrets; either part may be left out:
+
+```json
+{"settings": {"model_work": "opus", "effort_work": null}, "secrets": {"forge_token": "..."}}
+```
+
+A setting's value is a string, null or a JSON object, which is stored as its text; null or `""` unsets the key. A secret is `endpoint_credential` or `forge_token`, sealed at rest; `""` removes it. Every value is checked before anything is written: a key that cannot be set, a value of another kind or one the server would not read, or another secret refuses the whole request with 400. Answers 200 with the settings as `GET` gives them.
+
+### `GET /api/tasks`
+
+Answers 200 with every task but a replay's shadow tasks, oldest first:
+
+```json
+{"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "stop_reason": "question",
+            "waiting": "", "created_at": "2030-01-02T03:04:05Z"}]}
+```
+
+The query `project=NAME` keeps the tasks of one project, and `status=STATUS` the tasks with one status; a project that does not exist, or a status that is not one of [the task's](#the-task), is 400. `stop_reason` is the open stop's reason, else `""`; the other fields are the task's.
+
+### `POST /api/tasks`
+
+Creates a draft task, with the requester `api`:
+
+```json
+{"project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "depends_on": [3], "start": true}
+```
+
+`title` is required: at most 200 characters, with no line break or other control character. `depends_on` names the tasks that must be done before this one runs. With `start` set to `true` the task is started as well, which its project must allow (the project's `runnable`); when it does not, nothing is created. Answers 201 with the task, or 400 when the project does not exist, a field holds what a task may not, a dependency does not exist, or the project is not runnable for a start.
+
+### `GET /api/tasks/{id}`
+
+Answers 200 with the task.
+
+### `PATCH /api/tasks/{id}`
+
+Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts. An edit after that is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
+
+### `POST /api/tasks/{id}/actions`
+
+Records a person's action on the task:
+
+```json
+{"action": "answer", "text": "Link the privacy page and the contact page."}
+```
+
+| Action | What it does | Refused when |
+|--------|--------------|--------------|
+| `start` | Starts a draft task; a task already started is left as it is. | The task is cancelled, or its project is not runnable. |
+| `answer` | Answers the question that stopped the task with `text`. | The task has no open question, or `text` is blank. |
+| `retry` | Clears the open stop, so the task carries on. | The task is cancelled, or has no open stop. |
+| `cancel` | Cancels the task. | The task is cancelled or done. |
+| `done` | Records that the task's change was merged. | The task is not `in_review`. |
+
+Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action or one that is refused, or 409 when an event was recorded on the task between the action's read and its write, such as the server's own next step; nothing is recorded then, and the request may be sent again.
+
+### The task
+
+```json
+{"id": 7, "project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "requester": "api",
+ "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "waiting": "", "depends_on": [3],
+ "stop": {"reason": "question", "explanation": "Which pages should the footer link to?", "action": "answer", "resets_at": null},
+ "questions": [{"question": "Which pages should the footer link to?"}, {"question": "Should it show the year?"}],
+ "change": null, "turns": 33, "duration_ms": 226000, "cost_estimate_usd": 0.325}
+```
+
+A list is `[]` when empty, never null.
+
+| Field | Meaning |
+|-------|---------|
+| `id` | The task's id. |
+| `project` | The name of the task's project. |
+| `title`, `body` | What the task asks for. |
+| `requester` | What created the task: `cli` for a `cavu task add`, `api` for this API. |
+| `created_at` | When the task was created. |
+| `status` | Where the task stands: `cancelled` once cancelled, started or not; else `draft` until started; `done` once its change is merged; `blocked` while a stop is open; `in_review` once its change is exported; `queued` while no run is open; else `running`. |
+| `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; else `""`. |
+| `depends_on` | The ids of the tasks that must be done before this one runs. |
+| `stop` | The open stop, or null: its `reason` (`question`, `environment`, `verify_failed`, `budget`, `timeout`, `no_change`, `agent_error`, `usage_limit`, `endpoint`, `sandbox`, `cancelled` or `dependency`), a one-line `explanation`, the one `action` that clears it (`answer`, `retry`, or `none` for a stop that a clock ends or that stays), and `resets_at`, the time a usage limit resets, else null. |
+| `questions` | While the open stop is `question`, every question the agent asked, of which the explanation holds the first; else `[]`. |
+| `change` | The newest exported change, or null: its `head_commit`, the number of `files_changed`, and `diff_stat`, git's summary of the diff: a line per file, a long list cut short, then the totals. |
+| `turns` | The turns of all the task's agent sessions. |
+| `duration_ms` | The milliseconds from the task's start to its newest event other than the agent's progress, 0 before it starts. |
+| `cost_estimate_usd` | The sum of the costs recorded for the task, an estimate from list prices, not a bill. |
+
+### `GET /api/tasks/{id}/events`
+
+Answers 200 with a page of the task's events, oldest first:
+
+```json
+{"events": [{"id": 42, "task_id": 7, "run_id": 3, "...": "..."}]}
+```
+
+The query `after=ID` starts the page after the event with that id, and `limit=N` sets how many events the page holds at most: 200 when it is left out or 0, and never more than 1000. A client pages by sending the id of the last event it got as `after`, until a page comes back empty. An `after` or `limit` that is not a whole number is 400.
+
+### `GET /api/events`
+
+Answers 200 with a stream of [server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html) (`Content-Type: text/event-stream`) that carries the events of every task as they are recorded, or those of one task with the query `task=ID`. Each event is one message: `id:` the event's id, `data:` the event as one line of JSON, then a blank line.
+
+```
+id: 42
+data: {"id":42,"task_id":7,"run_id":3,"at":"2030-01-02T03:04:05Z","type":"agent_text","actor":"agent","payload":{"text":"Adding the footer."}}
+
+```
+
+The stream starts after the event named by the header `Last-Event-ID`, else by the query `after=ID`, else after the newest event when the request arrives. It opens with a message that holds only that id (`id: 41` and a blank line) and carries no event. A client that reconnects with the id it got last, as a browser's `EventSource` does, misses no event and gets none twice, even when it drops before its first event. The server looks for new events once a second and sends them in id order, and sends a comment line, `:`, every 15 seconds. The stream's answer carries `Cache-Control: no-store` and `X-Accel-Buffering: no`, which keeps a proxy such as nginx from holding the events back. The stream ends when the client leaves or the server stops. A `task` that does not exist is 404; a `task`, or the `Last-Event-ID` or `after` the stream starts after, that is not a whole number is 400.
+
+### The event
+
+An event is one fact in a task's history, recorded once and never changed:
+
+```json
+{"id": 42, "task_id": 7, "run_id": 3, "at": "2030-01-02T03:04:05Z", "type": "agent_text", "actor": "agent",
+ "payload": {"text": "Adding the footer."}}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `id` | The event's id. Ids rise with every event recorded, over all tasks. |
+| `task_id` | The id of the event's task. |
+| `run_id` | The id of the run the event belongs to, or null. |
+| `at` | When the event was recorded, to the millisecond. |
+| `type` | What happened, such as `task_started`, `agent_text` or `stopped`. |
+| `actor` | Who recorded it: `user`, `engine`, `runner` or `agent`. |
+| `payload` | The event's details, a JSON value whose shape the type sets. |
