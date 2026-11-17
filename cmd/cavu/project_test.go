@@ -389,7 +389,7 @@ func TestProjectCheckRefusesBeforeTheRunner(t *testing.T) {
 		{"the lock held", func(t *testing.T, dir string, _ *fakeRuntime) {
 			a, err := openApp(t.Context(), dir)
 			require.NoError(t, err)
-			require.NoError(t, a.lock())
+			require.NoError(t, a.lock("verb"))
 			t.Cleanup(a.close)
 		}, "lock"},
 	}

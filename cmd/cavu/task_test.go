@@ -4,14 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
@@ -507,7 +511,7 @@ func eventLines(t *testing.T, stdout string, events []store.Event) (tail []strin
 }
 
 // refusedRun runs the task and checks that it is refused before any container:
-// exit 1, no event, no runner call and no orphan removed. It returns stderr.
+// exit 1, no event and no runner call. It returns stderr.
 func refusedRun(t *testing.T, dir, id string, fake *fakeRuntime) string {
 	t.Helper()
 
@@ -520,12 +524,11 @@ func refusedRun(t *testing.T, dir, id string, fake *fakeRuntime) string {
 	assert.Equal(t, before, storedEvents(t, dir, id), "no event is appended")
 	assert.Empty(t, fake.runner.actions, "no container starts")
 	assert.Empty(t, fake.runner.releases)
-	assert.Empty(t, fake.removals)
 
 	return stderr
 }
 
-func TestTaskRunPrintsEventsAndStatus(t *testing.T) {
+func TestTaskRunDrivesWhenTheLockIsFree(t *testing.T) {
 	dir, id, fake := runSetup(t)
 
 	code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
@@ -594,9 +597,8 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 		assert.Equal(t, 3, code)
 		require.Len(t, fake.runner.releases, 1)
 		assert.True(t, fake.runner.releases[0].removeVolumes, "a cancel ends the run")
-		// The other terminal appended the cancel, so this run prints every event but that one.
-		mine := slices.DeleteFunc(storedEvents(t, dir, id), func(e store.Event) bool { return e.Type == engine.HumanCancelled })
-		assert.Contains(t, strings.Join(eventLines(t, stdout, mine), "\n"), string(engine.StatusCancelled))
+		// The lines come from the store, so the other terminal's cancel is printed too.
+		assert.Contains(t, strings.Join(eventLines(t, stdout, storedEvents(t, dir, id)), "\n"), string(engine.StatusCancelled))
 	})
 }
 
@@ -625,15 +627,24 @@ func TestTaskRunRefusesAStaleImage(t *testing.T) {
 	assert.Equal(t, sandbox.ImageName(version), fake.image)
 }
 
-func TestSecondTaskRunIsRefusedByLock(t *testing.T) {
-	dir, id, fake := runSetup(t)
+// holdLock holds the data directory's lock as role until the test ends, as another process would.
+func holdLock(t *testing.T, dir, role string) *app {
+	t.Helper()
 
 	a, err := openApp(t.Context(), dir)
 	require.NoError(t, err)
-	require.NoError(t, a.lock())
+	require.NoError(t, a.lock(role))
 	t.Cleanup(a.close)
 
+	return a
+}
+
+func TestTaskRunRefusedBesideAnotherVerb(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	holdLock(t, dir, "verb")
+
 	assert.Contains(t, refusedRun(t, dir, id, fake), filepath.Join(dir, "lock"))
+	assert.Empty(t, storedEvents(t, dir, id), "the task is not started")
 }
 
 func TestTaskRunRemovesOrphansKeepingOpenRuns(t *testing.T) {
@@ -735,4 +746,336 @@ func TestTaskRunInterruptReleasesAndExits130(t *testing.T) {
 		},
 		removeVolumes: false,
 	}}, fake.runner.releases, "the run's containers stop and its volumes stay, on a context the interrupt did not cancel")
+}
+
+// syncBuffer is a verb's output that a test reads while the verb writes it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.String()
+}
+
+// taskInBackground runs the task verb with args until it returns or ctx ends.
+func taskInBackground(ctx context.Context, args ...string) (*syncBuffer, <-chan error) {
+	out, done := &syncBuffer{}, make(chan error, 1)
+
+	go func() { done <- runTask(ctx, args, nil, out, io.Discard) }()
+
+	return out, done
+}
+
+// within bounds how long a test waits for a verb.
+const within = 10 * time.Second
+
+// exitCodeOf waits for the verb's result and returns its exit code.
+func exitCodeOf(t *testing.T, done <-chan error) int {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			return 0
+		}
+
+		ee, ok := errors.AsType[exitError](err)
+		require.True(t, ok, err)
+
+		return ee.code
+	case <-time.After(within):
+		require.FailNow(t, "the verb did not end")
+
+		return 0
+	}
+}
+
+// waitReasons are the reasons of the lines of out that report a wait.
+func waitReasons(out string) []string {
+	var rs []string
+
+	for l := range strings.Lines(out) {
+		if f := strings.Fields(l); len(f) > 1 && f[1] == "wait" {
+			rs = append(rs, strings.Join(f[2:], " "))
+		}
+	}
+
+	return rs
+}
+
+// names reports whether text holds the task id as a whole number.
+func names(text, id string) bool {
+	return slices.Contains(strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsDigit(r) }), id)
+}
+
+// refuseRuntime fails the test if a verb asks for the container runtime.
+func refuseRuntime(t *testing.T) {
+	t.Helper()
+
+	prev := detectRuntime
+	detectRuntime = func(context.Context, string) (containerRuntime, error) {
+		t.Error("the verb asked for the container runtime")
+
+		return nil, errors.New("no runtime here")
+	}
+
+	t.Cleanup(func() { detectRuntime = prev })
+}
+
+func taskID(t *testing.T, id string) int64 {
+	t.Helper()
+
+	n, err := strconv.ParseInt(id, 10, 64)
+	require.NoError(t, err)
+
+	return n
+}
+
+func TestTaskRunPrintsFromThePersonsNewestAction(t *testing.T) {
+	dir, id, _ := runSetup(t)
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.AgentText, "agent", engine.AgentTextPayload{Text: "an earlier session's line"}), question())
+
+	code, _, stderr := withStdin("Use the v2 API.", "task", "answer", id, "--data-dir", dir)
+	require.Equal(t, 0, code, stderr)
+
+	code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
+
+	require.Equal(t, 0, code, stderr)
+	assert.NotContains(t, stdout, "an earlier session's line")
+
+	events := storedEvents(t, dir, id)
+	tail := eventLines(t, stdout, events[slices.IndexFunc(events, func(e store.Event) bool { return e.Type == engine.HumanAnswered }):])
+	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+}
+
+func TestTaskRunFollowsUnderAServer(t *testing.T) {
+	dir, id, _ := runSetup(t)
+	server := holdLock(t, dir, "serve")
+	refuseRuntime(t)
+
+	n := taskID(t, id)
+	head := "head456"
+
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan struct{})
+
+	// The server drives the task once the verb has started it, unless the verb ended first.
+	go func() {
+		defer close(served)
+
+		started := func() bool {
+			last, err := server.store.LastEventID(ctx, n)
+
+			return ctx.Err() != nil || err == nil && last > 0
+		}
+
+		if assert.Eventually(t, started, within, time.Millisecond) && ctx.Err() == nil {
+			_, err := server.store.Append(ctx, n, -1, []store.Event{
+				event(engine.SessionStarted, "engine", engine.SessionStartedPayload{Mode: engine.ModeStart}),
+				event(engine.AgentText, "agent", engine.AgentTextPayload{Text: "Reading the login handler."}),
+				event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: head, Turns: 3}),
+				event(engine.VerifyEnded, "runner", engine.VerifyEndedPayload{Result: engine.ResultPassed}),
+				event(engine.Exported, "runner", engine.ExportedPayload{HeadCommit: head, DiffPath: "/srv/diff.patch"}),
+			}, nil)
+			assert.NoError(t, err)
+		}
+	}()
+
+	code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
+
+	cancel()
+	<-served
+	require.Equal(t, 0, code, stderr)
+
+	events := storedEvents(t, dir, id)
+	assert.Equal(t, engine.TaskStarted, events[0].Type, "the verb records the start")
+	assert.Len(t, events, 6)
+
+	tail := eventLines(t, stdout, events)
+	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+}
+
+func TestTaskRunPrintsAWaitOnce(t *testing.T) {
+	dir, _, fake := runSetup(t)
+	dep := addTask(t, dir, "First")
+	id := strings.TrimSpace(cavuIn(t, dir, "task", "add", "web", "--title", "Second", "--depends-on", dep))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	out, done := taskInBackground(ctx, "run", id, "--data-dir", dir)
+
+	require.Eventually(t, func() bool { return len(waitReasons(out.String())) > 0 }, within, time.Millisecond)
+	assert.True(t, names(waitReasons(out.String())[0], dep), "the wait names the task it waits on")
+
+	// Each progress line it prints is a later poll that found the task waiting still.
+	for i := range 3 {
+		text := fmt.Sprintf("still waiting %d", i)
+		seedEvents(t, dir, id, nil, event(engine.AgentText, "agent", engine.AgentTextPayload{Text: text}))
+		require.Eventually(t, func() bool { return strings.Contains(out.String(), text) }, within, time.Millisecond)
+	}
+
+	cancel()
+
+	assert.Equal(t, 130, exitCodeOf(t, done))
+	assert.Len(t, waitReasons(out.String()), 1, out.String())
+	assert.Empty(t, fake.runner.actions)
+}
+
+func TestTaskRunWaitNamesThePausingTask(t *testing.T) {
+	for _, server := range []bool{false, true} {
+		t.Run(map[bool]string{false: "its own scheduler", true: "a server"}[server], func(t *testing.T) {
+			dir, id, fake := runSetup(t)
+			other := addTask(t, dir, "Other")
+			seedEvents(t, dir, other, nil, event(engine.TaskStarted, "user", struct{}{}),
+				event(engine.Stopped, "engine", engine.StoppedPayload{Reason: engine.StopEndpoint, Explanation: "502", Action: engine.ClearRetry}))
+
+			if server {
+				holdLock(t, dir, "serve")
+				refuseRuntime(t)
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			out, done := taskInBackground(ctx, "run", id, "--data-dir", dir)
+
+			require.Eventually(t, func() bool {
+				return slices.ContainsFunc(waitReasons(out.String()), func(r string) bool { return names(r, other) })
+			}, within, time.Millisecond, "the wait names the task whose endpoint stop pauses the queue")
+
+			cancel()
+
+			assert.Equal(t, 130, exitCodeOf(t, done))
+			assert.Empty(t, fake.runner.actions, "nothing starts while the queue is paused")
+		})
+	}
+}
+
+func TestTaskAddDependsOnAndStart(t *testing.T) {
+	dir := webData(t)
+	first, second := addTask(t, dir, "First"), addTask(t, dir, "Second")
+
+	id := strings.TrimSpace(cavuIn(t, dir, "task", "add", "web", "--title", "Third", "--depends-on", first+","+second, "--start"))
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	deps, err := a.store.TaskDeps(t.Context(), taskID(t, id))
+	require.NoError(t, err)
+	assert.Equal(t, []int64{taskID(t, first), taskID(t, second)}, deps)
+
+	events := storedEvents(t, dir, id)
+	require.Len(t, events, 1)
+	assert.Equal(t, engine.TaskStarted, events[0].Type)
+
+	code, stdout, _ := runCavu("task", "add", "web", "--title", "Fourth", "--depends-on", "999", "--data-dir", dir)
+	assert.Equal(t, 1, code)
+	assert.Empty(t, stdout)
+
+	tasks, err := a.store.Tasks(t.Context(), true)
+	require.NoError(t, err)
+	assert.Len(t, tasks, 3, "no task is created")
+}
+
+func TestTaskDone(t *testing.T) {
+	dir := webData(t)
+
+	review := addTask(t, dir, "In review")
+	seedEvents(t, dir, review, nil, event(engine.TaskStarted, "user", struct{}{}), event(engine.Exported, "runner", engine.ExportedPayload{}))
+
+	cavuIn(t, dir, "task", "done", review)
+	assert.Equal(t, engine.StatusDone, engine.StatusOf(engine.Reduce(storedEvents(t, dir, review))))
+
+	running := addTask(t, dir, "Running")
+	seedEvents(t, dir, running, nil, event(engine.TaskStarted, "user", struct{}{}), event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}))
+	before := storedEvents(t, dir, running)
+
+	code, _, _ := runCavu("task", "done", running, "--data-dir", dir)
+	assert.Equal(t, 1, code)
+	assert.Equal(t, before, storedEvents(t, dir, running), "no event is appended")
+}
+
+func TestTaskShowPrintsDependenciesAndTheWait(t *testing.T) {
+	dir := webData(t)
+	dep := addTask(t, dir, "First")
+	id := strings.TrimSpace(cavuIn(t, dir, "task", "add", "web", "--title", "Second", "--depends-on", dep, "--start"))
+
+	out := cavuIn(t, dir, "task", "show", id)
+	require.Len(t, labelled(out, "depends:"), 1)
+	assert.Contains(t, labelled(out, "depends:")[0], dep)
+	require.Len(t, labelled(out, "wait:"), 1)
+	assert.True(t, names(labelled(out, "wait:")[0], dep), "the wait names the task it waits on")
+
+	seedEvents(t, dir, dep, nil, event(engine.TaskStarted, "user", struct{}{}), event(engine.Exported, "runner", engine.ExportedPayload{}),
+		event(engine.Merged, "user", struct{}{}))
+
+	out = cavuIn(t, dir, "task", "show", id)
+	assert.Contains(t, labelled(out, "depends:")[0], string(engine.StatusDone))
+	assert.Empty(t, labelled(out, "wait:"), "a task whose dependencies are done does not wait")
+}
+
+func TestEventLine(t *testing.T) {
+	at := time.Date(2026, 11, 17, 9, 30, 15, 0, time.Local)
+
+	tests := []struct {
+		typ     string
+		payload any
+		values  []string
+	}{
+		{engine.AgentText, engine.AgentTextPayload{Text: "Reading the handler.\nThen the tests."}, []string{"Reading the handler.", "Then the tests."}},
+		{engine.AgentTool, engine.AgentToolPayload{Name: "Bash", Summary: "go test ./..."}, []string{"Bash", "go test ./..."}},
+		{engine.SessionStarted, engine.SessionStartedPayload{Mode: engine.ModeFixVerify, SessionID: "abc"}, []string{engine.ModeFixVerify}},
+		{engine.SessionEnded, engine.SessionEndedPayload{Outcome: engine.OutcomeUnfinished, Turns: 17}, []string{engine.OutcomeUnfinished, "17"}},
+		{engine.VerifyEnded, engine.VerifyEndedPayload{Result: engine.ResultTimeout, Output: "FAIL"}, []string{engine.ResultTimeout}},
+		{engine.PrepareFailed, engine.PrepareFailedPayload{Step: "setup", Output: "npm ERR!"}, []string{"setup"}},
+		{engine.Stopped, engine.StoppedPayload{Reason: engine.StopQuestion, Explanation: "Which API version?"}, []string{engine.StopQuestion, "Which API version?"}},
+		{engine.Prepared, engine.PreparedPayload{BaseCommit: "base123"}, []string{"base123"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.typ, func(t *testing.T) {
+			raw, err := json.Marshal(tc.payload)
+			require.NoError(t, err)
+
+			l := eventLine(store.Event{At: at, Type: tc.typ, Payload: raw})
+
+			assert.Equal(t, []string{at.Format(time.TimeOnly), tc.typ}, strings.Fields(l)[:2])
+
+			for _, v := range tc.values {
+				assert.Contains(t, l, v)
+			}
+
+			assert.NotContains(t, l, "\n")
+			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
+		})
+	}
+
+	t.Run("a long text", func(t *testing.T) {
+		// One of the two puts a two-byte character across the cut, whatever the line's head.
+		for _, text := range []string{strings.Repeat("x", 5000), strings.Repeat("å", 2500), "x" + strings.Repeat("å", 2500)} {
+			raw, err := json.Marshal(engine.AgentTextPayload{Text: text})
+			require.NoError(t, err)
+
+			l := eventLine(store.Event{At: at, Type: engine.AgentText, Payload: raw})
+
+			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
+			assert.Greater(t, utf8.RuneCountInString(l), 100, "the line keeps the head of the text")
+			assert.True(t, utf8.ValidString(l), l)
+		}
+	})
 }

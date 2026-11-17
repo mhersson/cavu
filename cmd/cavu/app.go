@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,9 +78,16 @@ func ensureInstanceID(ctx context.Context, s *store.Store) (string, error) {
 	return id, s.SetSetting(ctx, "instance_id", id)
 }
 
-// lock holds the data directory's lock until close or the process exits.
-// The file is never removed: a new file would let a second holder in.
-func (a *app) lock() error {
+// The roles a lock holder writes into the lock file.
+const (
+	roleServe = "serve"
+	roleVerb  = "verb"
+)
+
+// lock takes the data directory's lock and writes role into its file. It holds
+// the lock until close or the process exits. The file is never removed: a new
+// file would let a second holder in.
+func (a *app) lock(role string) error {
 	path := filepath.Join(a.dir, "lock")
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -93,9 +101,26 @@ func (a *app) lock() error {
 		return fmt.Errorf("another cavu holds %s; wait for it to end: %w", path, err)
 	}
 
+	if err = f.Truncate(0); err == nil {
+		_, err = f.WriteAt([]byte(role+"\n"), 0)
+	}
+
+	if err != nil {
+		_ = f.Close()
+
+		return fmt.Errorf("lock: %w", err)
+	}
+
 	a.held = f
 
 	return nil
+}
+
+// lockHolder is the role in the lock file when another process holds the lock.
+func (a *app) lockHolder() (string, error) {
+	b, err := os.ReadFile(filepath.Join(a.dir, "lock"))
+
+	return strings.TrimSpace(string(b)), err
 }
 
 // containerRuntime is what the verbs use of the container runtime.
@@ -155,7 +180,7 @@ func (a *app) caBundle(ctx context.Context) ([]byte, error) {
 // runtime, and this binary's image with the configured CA bundle. An image the
 // person named is their own choice, so skipImage leaves it unchecked.
 func (a *app) drive(ctx context.Context, skipImage bool) (containerRuntime, error) {
-	if err := a.lock(); err != nil {
+	if err := a.lock(roleVerb); err != nil {
 		return nil, err
 	}
 
@@ -171,6 +196,71 @@ func (a *app) drive(ctx context.Context, skipImage bool) (containerRuntime, erro
 	}
 
 	return rt, nil
+}
+
+// pollEvery is how often a verb reads the store, and how often its own
+// scheduler passes, so a task the verb starts beside it waits at most that long.
+var pollEvery = 500 * time.Millisecond
+
+// driven runs wait while something drives the tasks only admits: this
+// process's own scheduler, under the lock, when the lock is free, else the
+// server that holds it. Another verb holding the lock is an error naming it.
+// Driving itself, it first does what drive does: the runtime, the image check, the orphans.
+func (a *app) driven(ctx context.Context, only func(store.Task) bool, wait func(context.Context) error) error {
+	rt, err := a.drive(ctx, false)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		if role, _ := a.lockHolder(); role == roleServe {
+			return wait(ctx)
+		}
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if err := a.removeOrphans(ctx, rt); err != nil {
+		return err
+	}
+
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+
+	// OnError runs on Run's goroutine, and failed is read once Run has returned.
+	var failed error
+
+	s := &engine.Scheduler{Loop: a.loop(rt), Tick: pollEvery, Only: only, OnError: func(_ int64, err error) {
+		failed = errors.Join(failed, err)
+
+		stop()
+	}}
+
+	ran := make(chan struct{})
+
+	go func() {
+		defer close(ran)
+
+		_ = s.Run(ctx)
+	}()
+
+	err = wait(ctx)
+
+	// A task rests while its drive still releases its run: cut there, the run
+	// would keep its containers, and an exported run its volumes.
+	for err == nil && ctx.Err() == nil && s.Driving() {
+		select {
+		case <-ctx.Done():
+		case <-time.After(pollEvery):
+		}
+	}
+
+	stop()
+	<-ran
+
+	if failed != nil {
+		return failed
+	}
+
+	return err
 }
 
 // removeOrphans removes the instance's containers and the volumes of every run

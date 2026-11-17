@@ -32,7 +32,7 @@ func runDoctorVerb(ctx context.Context, args []string, _ io.Reader, stdout, stde
 	defer a.close()
 
 	// The checks run under run and task id 0, as a project check does.
-	if err := a.lock(); err != nil {
+	if err := a.lock(roleVerb); err != nil {
 		return err
 	}
 

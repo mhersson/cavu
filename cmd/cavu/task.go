@@ -20,13 +20,13 @@ import (
 
 func init() {
 	commands["task"] = command{
-		summary: "task add | list | show | diff | run | answer | retry | cancel | mark: add a task, read one, run one, or act on one",
+		summary: "task add | list | show | diff | run | answer | retry | cancel | done | mark: add a task, read one, run one, or act on one",
 		run:     runTask,
 	}
 }
 
 const (
-	taskAddUsage    = "cavu task add PROJECT --title TITLE [--body-file FILE, else the body is read from a pipe] [--data-dir DIR]"
+	taskAddUsage    = "cavu task add PROJECT --title TITLE [--depends-on ID[,ID]...] [--start] [--body-file FILE, else the body is read from a pipe] [--data-dir DIR]"
 	taskListUsage   = "cavu task list [--data-dir DIR]"
 	taskShowUsage   = "cavu task show ID [--events] [--data-dir DIR]"
 	taskDiffUsage   = "cavu task diff ID [--data-dir DIR]"
@@ -34,6 +34,7 @@ const (
 	taskAnswerUsage = "cavu task answer ID [--data-dir DIR] < FILE"
 	taskRetryUsage  = "cavu task retry ID [--data-dir DIR]"
 	taskCancelUsage = "cavu task cancel ID [--data-dir DIR]"
+	taskDoneUsage   = "cavu task done ID [--data-dir DIR]"
 	taskMarkUsage   = "cavu task mark ID [--unmark] [--data-dir DIR]"
 )
 
@@ -58,13 +59,16 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return taskAct(ctx, taskRetryUsage, rest, stderr, (*engine.Loop).Retry)
 		case "cancel":
 			return taskAct(ctx, taskCancelUsage, rest, stderr, (*engine.Loop).Cancel)
+		case "done":
+			return taskAct(ctx, taskDoneUsage, rest, stderr, (*engine.Loop).Done)
 		case "mark":
 			return taskMark(ctx, rest, stderr)
 		}
 	}
 
 	usage := strings.Join([]string{
-		taskAddUsage, taskListUsage, taskShowUsage, taskDiffUsage, taskRunUsage, taskAnswerUsage, taskRetryUsage, taskCancelUsage, taskMarkUsage,
+		taskAddUsage, taskListUsage, taskShowUsage, taskDiffUsage, taskRunUsage, taskAnswerUsage, taskRetryUsage, taskCancelUsage,
+		taskDoneUsage, taskMarkUsage,
 	}, "\n       ")
 
 	return newVerbFlags(usage, stderr).helpOr(args)
@@ -95,8 +99,15 @@ func taskAdd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	f := newVerbFlags(taskAddUsage, stderr)
 	title := f.String("title", "", "what the task asks for, in one line of at most 200 characters")
 	bodyFile := f.String("body-file", "", "a file holding the task's description")
+	dependsOn := f.String("depends-on", "", "the tasks that must be done before this one runs, as ids separated by commas")
+	start := f.Bool("start", false, "start the task as well")
 
 	name, err := f.parse(args, 1)
+	if err != nil {
+		return err
+	}
+
+	deps, err := taskIDs(*dependsOn)
 	if err != nil {
 		return err
 	}
@@ -117,12 +128,45 @@ func taskAdd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return fmt.Errorf("project %q: %w", name[0], err)
 	}
 
-	t, err := engine.AddTask(ctx, a.store, store.Task{ProjectID: p.ID, Title: *title, Body: body, Requester: "cli"}, nil)
+	t, err := engine.AddTask(ctx, a.store, store.Task{ProjectID: p.ID, Title: *title, Body: body, Requester: "cli"}, deps)
 	if err != nil {
 		return err
 	}
 
-	_, err = fmt.Fprintln(stdout, t.ID)
+	if _, err := fmt.Fprintln(stdout, t.ID); err != nil || !*start {
+		return err
+	}
+
+	return startTask(ctx, a.actions(), t.ID, p.Name)
+}
+
+// taskIDs reads task ids separated by commas; empty is none.
+func taskIDs(list string) ([]int64, error) {
+	if list == "" {
+		return nil, nil
+	}
+
+	var ids []int64
+
+	for field := range strings.SplitSeq(list, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("task ids %q: want numbers separated by commas", list)
+		}
+
+		ids = append(ids, id)
+	}
+
+	return ids, nil
+}
+
+// startTask records that a person started the task, naming the verbs that
+// give its project a baseline when it has none.
+func startTask(ctx context.Context, l *engine.Loop, id int64, project string) error {
+	err := l.Start(ctx, id)
+	if errors.Is(err, engine.ErrNoBaseline) {
+		return fmt.Errorf("%w; run cavu project check %s, or waive verify with cavu project set %s --no-verify", err, project, project)
+	}
 
 	return err
 }
@@ -178,7 +222,7 @@ func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	fmt.Fprintln(w, "ID\tPROJECT\tSTATUS\tTITLE")
 
 	for _, t := range tasks {
-		events, err := a.store.Events(ctx, t.ID, 0, 0)
+		events, err := a.store.EventsOmitting(ctx, t.ID, engine.ProgressTypes...)
 		if err != nil {
 			return err
 		}
@@ -204,13 +248,17 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 
-		events, err := a.store.Events(ctx, id, 0, 0)
+		events, err := a.store.EventsOmitting(ctx, id, engine.ProgressTypes...)
 		if err != nil {
 			return err
 		}
 
 		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
 		printState(stdout, events)
+
+		if err := printQueue(ctx, stdout, a, id); err != nil {
+			return err
+		}
 
 		turns, d := engine.TurnsAndDuration(events)
 		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
@@ -219,12 +267,51 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 
-		if *withEvents {
-			printEvents(stdout, events)
+		if !*withEvents {
+			return nil
 		}
+
+		all, err := a.store.Events(ctx, id, 0, 0)
+		if err != nil {
+			return err
+		}
+
+		printEvents(stdout, all)
 
 		return nil
 	})
+}
+
+// printQueue prints the task's dependencies, each with its status, and why
+// Decide holds the task while it does.
+func printQueue(ctx context.Context, w io.Writer, a *app, id int64) error {
+	var pauses engine.Pauses
+	if err := pauses.Read(ctx, a.store); err != nil {
+		return err
+	}
+
+	l := a.actions()
+	l.Paused = pauses.Of
+
+	snap, err := l.Snapshot(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if len(snap.Deps) > 0 {
+		deps := make([]string, len(snap.Deps))
+		for i, d := range snap.Deps {
+			deps[i] = fmt.Sprintf("%d (%s)", d.TaskID, d.Status)
+		}
+
+		fmt.Fprintf(w, "depends: %s\n", strings.Join(deps, ", "))
+	}
+
+	if act := engine.Decide(snap); act.Kind == engine.KindWait {
+		fmt.Fprintf(w, "wait:    %s\n", waitText(act))
+	}
+
+	return nil
 }
 
 // printState prints the task's status, its open stop with every question the
@@ -326,18 +413,10 @@ func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	})
 }
 
-// releaseTimeout bounds stopping an interrupted run's containers.
-const releaseTimeout = time.Minute
-
-// taskRun starts the task, removes the instance's orphans, and runs the loop
-// until the task rests or waits, printing each event as it is recorded.
+// taskRun starts the task once something drives it, and prints its events
+// until it rests, then its state.
 func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return onTask(ctx, newVerbFlags(taskRunUsage, stderr), args, func(a *app, id int64) error {
-		rt, err := a.drive(ctx, false)
-		if err != nil {
-			return err
-		}
-
 		t, err := a.store.Task(ctx, id)
 		if err != nil {
 			return fmt.Errorf("task %d: %w", id, err)
@@ -348,30 +427,26 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return err
 		}
 
-		l := a.loop(rt)
-		l.Store = printingStore{Store: l.Store, out: stdout}
+		l := a.actions()
 
-		err = l.Start(ctx, id)
-		if errors.Is(err, engine.ErrNoBaseline) {
-			return fmt.Errorf("%w; run cavu project check %s, or waive verify with cavu project set %s --no-verify", err, p.Name, p.Name)
-		}
+		err = a.driven(ctx, func(t store.Task) bool { return t.ID == id }, func(ctx context.Context) error {
+			if err := startTask(ctx, l, id, p.Name); err != nil {
+				return err
+			}
 
-		if err != nil {
-			return err
-		}
-
-		if err := a.removeOrphans(ctx, rt); err != nil {
-			return err
-		}
-
-		_, err = l.RunTask(ctx, id)
+			return follow(ctx, l, id, stdout)
+		})
 
 		if ctx.Err() != nil {
-			if err := releaseOpenRun(ctx, l, id); err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				fmt.Fprintf(stderr, "cavu: %v\n", err)
 			}
 
-			fmt.Fprintf(stderr, "interrupted; cavu task run %d carries on where this run stopped\n", id)
+			if a.held != nil { // this verb held the lock, so it drove the task itself
+				fmt.Fprintf(stderr, "interrupted; cavu task run %d carries on where this run stopped\n", id)
+			} else {
+				fmt.Fprintf(stderr, "interrupted; the server carries on with task %d\n", id)
+			}
 
 			return exitError{code: 130}
 		}
@@ -380,7 +455,7 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return err
 		}
 
-		events, err := a.store.Events(ctx, id, 0, 0)
+		events, err := a.store.EventsOmitting(ctx, id, engine.ProgressTypes...)
 		if err != nil {
 			return err
 		}
@@ -393,49 +468,131 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	})
 }
 
-// releaseOpenRun releases the task's open run, keeping its volumes, on a
-// context that outlives the interrupt that ended ctx.
-func releaseOpenRun(ctx context.Context, l *engine.Loop, taskID int64) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
-	defer cancel()
+// follow prints each new event of the task as one line, and each wait's reason
+// once, until the task rests. It begins at the newest action of a person. It gives l the pauses the store shows, as a
+// scheduler would, so it decides alike beside a scheduler or a server.
+func follow(ctx context.Context, l *engine.Loop, taskID int64, out io.Writer) error {
+	var (
+		pauses engine.Pauses
+		after  int64
+		waited string
+	)
 
-	return l.ReleaseOpenRun(ctx, taskID)
-}
+	l.Paused = pauses.Of
 
-// printingStore prints each event once its append succeeded. The engine's
-// write masked every payload before the append, so nothing here masks again.
-type printingStore struct {
-	engine.Store
+	tick := time.NewTicker(pollEvery)
+	defer tick.Stop()
 
-	out io.Writer
-}
+	for {
+		if err := pauses.Read(ctx, l.Store); err != nil {
+			return err
+		}
 
-func (s printingStore) Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error) {
-	last, err := s.Store.Append(ctx, taskID, expectLast, events, usage)
-	if err == nil {
+		snap, err := l.Snapshot(ctx, taskID)
+		if err != nil {
+			return err
+		}
+
+		// Read after the snapshot, so the events it decided on are all printed.
+		events, err := l.Store.Events(ctx, taskID, after, 0)
+		if err != nil {
+			return err
+		}
+
+		// The first lines begin at a person's newest action, which is what this follow carries on from.
+		if after == 0 {
+			for i, e := range slices.Backward(events) {
+				if e.Actor == "user" {
+					events = events[i:]
+
+					break
+				}
+			}
+		}
+
 		for _, e := range events {
-			fmt.Fprintf(s.out, "%s %s %s\n", e.At.Format(time.TimeOnly), e.Type, summary(e.Payload))
+			fmt.Fprintln(out, eventLine(e))
+
+			after = e.ID
+		}
+
+		switch act := engine.Decide(snap); {
+		case act.Kind == engine.KindNone:
+			return nil
+		case act.Kind != engine.KindWait:
+			waited = ""
+		case waitText(act) != waited:
+			waited = waitText(act)
+			fmt.Fprintf(out, "%s wait %s\n", snap.Now.Format(time.TimeOnly), waited)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
 		}
 	}
-
-	return last, err
 }
 
-// summary is the head of a payload, short enough for one line on a terminal.
-// The payload is JSON, which escapes line breaks and control characters.
-func summary(payload []byte) string {
-	const n = 80
-
-	if len(payload) <= n {
-		return string(payload)
+// waitText is a wait's reason, with its end when a clock ends it.
+func waitText(act engine.Action) string {
+	if act.Until.IsZero() {
+		return act.Why
 	}
 
-	i := n
-	for i > 0 && !utf8.RuneStart(payload[i]) {
-		i--
+	return fmt.Sprintf("%s (until %s)", act.Why, act.Until.Local().Format(time.DateTime))
+}
+
+// maxLine bounds an event's line, in bytes.
+const maxLine = 200
+
+// eventLine is an event on one line: its time, its type and its telling field.
+func eventLine(e store.Event) string {
+	var tell string
+
+	switch e.Type {
+	case engine.AgentText:
+		tell = decoded[engine.AgentTextPayload](e.Payload).Text
+	case engine.AgentTool:
+		p := decoded[engine.AgentToolPayload](e.Payload)
+		tell = p.Name + " " + p.Summary
+	case engine.SessionStarted:
+		tell = decoded[engine.SessionStartedPayload](e.Payload).Mode
+	case engine.SessionEnded:
+		p := decoded[engine.SessionEndedPayload](e.Payload)
+		tell = fmt.Sprintf("%s after %d turns", p.Outcome, p.Turns)
+	case engine.VerifyEnded:
+		tell = decoded[engine.VerifyEndedPayload](e.Payload).Result
+	case engine.PrepareFailed:
+		tell = decoded[engine.PrepareFailedPayload](e.Payload).Step
+	case engine.Stopped:
+		p := decoded[engine.StoppedPayload](e.Payload)
+		tell = p.Reason + ": " + p.Explanation
+	default:
+		tell = string(e.Payload)
 	}
 
-	return string(payload[:i]) + "..."
+	l := strings.Join(strings.Fields(e.At.Format(time.TimeOnly)+" "+e.Type+" "+tell), " ")
+
+	if len(l) <= maxLine {
+		return l
+	}
+
+	n := maxLine - len("...")
+	for !utf8.RuneStart(l[n]) {
+		n--
+	}
+
+	return l[:n] + "..."
+}
+
+// decoded is the payload as T, with zero values where it does not fit.
+func decoded[T any](payload []byte) T {
+	var v T
+
+	_ = json.Unmarshal(payload, &v)
+
+	return v
 }
 
 func taskAnswer(ctx context.Context, args []string, stdin io.Reader, stderr io.Writer) error {

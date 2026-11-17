@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
@@ -22,6 +23,7 @@ func TestMain(m *testing.M) {
 	detectRuntime = func(context.Context, string) (containerRuntime, error) {
 		return nil, errors.New("a unit test drives no container runtime")
 	}
+	pollEvery = 5 * time.Millisecond
 
 	dir, err := os.MkdirTemp("", "cavu-cmd-test-")
 	if err == nil {
@@ -223,15 +225,42 @@ func TestLockRefusesASecondHolder(t *testing.T) {
 
 	defer second.close()
 
-	require.NoError(t, first.lock())
+	require.NoError(t, first.lock("verb"))
 
-	err = second.lock()
+	err = second.lock("verb")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), lockFile)
 
 	first.close()
 	assert.FileExists(t, lockFile)
-	require.NoError(t, second.lock(), "closing the holder releases the lock")
+	require.NoError(t, second.lock("verb"), "closing the holder releases the lock")
+}
+
+func TestLockRole(t *testing.T) {
+	dir := t.TempDir()
+
+	// holder takes the lock as role, then a second app on dir is refused and reads the role.
+	holder := func(role string) *app {
+		first, err := openApp(t.Context(), dir)
+		require.NoError(t, err)
+		require.NoError(t, first.lock(role))
+
+		second, err := openApp(t.Context(), dir)
+		require.NoError(t, err)
+
+		defer second.close()
+
+		require.Error(t, second.lock("verb"))
+
+		got, err := second.lockHolder()
+		require.NoError(t, err)
+		assert.Equal(t, role, got)
+
+		return first
+	}
+
+	holder("serve").close()
+	holder("verb").close()
 }
 
 func TestDataDirResolution(t *testing.T) {

@@ -100,6 +100,18 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	return printReplay(ctx, a.store, r, stdout)
 }
 
+// releaseTimeout bounds stopping an interrupted run's containers.
+const releaseTimeout = time.Minute
+
+// releaseOpenRun releases the task's open run, keeping its volumes, on a
+// context that outlives the interrupt that ended ctx.
+func releaseOpenRun(ctx context.Context, l *engine.Loop, taskID int64) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+
+	return l.ReleaseOpenRun(ctx, taskID)
+}
+
 // releaseShadows stops the containers of the replay's open runs, keeping their volumes.
 func (a *app) releaseShadows(ctx context.Context, l *engine.Loop, r store.Replay) error {
 	tasks, err := a.store.Tasks(context.WithoutCancel(ctx), true)

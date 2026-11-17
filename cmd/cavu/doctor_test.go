@@ -118,7 +118,7 @@ func TestDoctorIsRefusedByLock(t *testing.T) {
 
 	defer a.close()
 
-	require.NoError(t, a.lock())
+	require.NoError(t, a.lock("verb"))
 
 	code, _, _ := runCavu("doctor", "--data-dir", dir)
 	assert.Equal(t, 1, code)

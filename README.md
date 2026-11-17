@@ -6,7 +6,18 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Status
 
-Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu user set` sets the one user and their password, read from standard input, `cavu token` adds, lists and removes API tokens, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes, lists and shows projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark, and `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
+Pre-release. The verbs today:
+
+- `cavu version` prints the version.
+- `cavu settings` sets and shows the settings.
+- `cavu secret set` stores a secret read from standard input.
+- `cavu user set` sets the one user and their password, read from standard input.
+- `cavu token` adds, lists and removes API tokens.
+- `cavu image build` builds the sandbox image on Docker or Podman.
+- `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge.
+- `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
+- `cavu task` adds tasks, each with the tasks it depends on, lists and shows them, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
+- `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 
 ## Try it
 
@@ -53,7 +64,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches and baseline.
 
-6. Add a task and run it. `task run` prints each event as it happens and ends with the task's status. `task show` also prints the turns, the duration and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
+6. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. `task show` also prints the task's dependencies and why it waits, the turns, the duration and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
 
    ```
    cavu task add web --title "Fix the login redirect" --body-file task.md
@@ -62,7 +73,19 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu task diff ID
    ```
 
-   A task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself.
+   A task can wait for others: `--depends-on ID[,ID]` makes it wait until every task it names is done, and stops it when one of them is cancelled. `--start` starts it as it is added.
+
+   ```
+   cavu task add web --title "Test the login redirect" --depends-on ID --start
+   ```
+
+   `task run` drives only the task it names, so run a dependency first: on a task that waits for one, `task run` prints why and waits until that task is done or you interrupt it.
+
+   A task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
+
+   ```
+   cavu task done ID
+   ```
 
 When a task stops, `task run` exits 3 and prints the reason, what it means and what clears it:
 
@@ -72,7 +95,7 @@ cavu task retry ID                  # run it again after fixing the cause
 cavu task cancel ID                 # give up on it
 ```
 
-Then `cavu task run ID` again for an answer or a retry. Only one `cavu` verb that drives containers runs at a time; a second one is refused with a message naming the lock.
+Then `cavu task run ID` again for an answer or a retry. A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock. A server that holds the lock drives the tasks itself, and `task run` then follows the task instead: it records the start and prints the task's events as the server records them.
 
 ### Replaying tasks
 
