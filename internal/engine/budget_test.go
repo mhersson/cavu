@@ -284,13 +284,28 @@ func TestPrices(t *testing.T) {
 
 	for _, bad := range []string{
 		`{"m": {"input": -1, "output": 1, "cache_read": 1, "cache_write": 1}}`,
-		`{"m": {"input": 1, "outptu": 1}}`,
+		`{"m": {"input": 1, "output": 1, "cache_read": 1, "cache_write": 1, "cache_raed": 1}}`,
+		`{"m": null}`,
 		`[{"input": 1}]`,
 		`"cheap"`,
 	} {
 		_, err := engine.Prices(map[string]string{"model_prices": bad})
 		require.Error(t, err, bad)
 		require.Error(t, engine.CheckSetting("model_prices", bad), bad)
+	}
+
+	// A kind of token left out would count as free.
+	for _, field := range []string{"input", "output", "cache_read", "cache_write"} {
+		price := map[string]float64{"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
+		delete(price, field)
+
+		raw, err := json.Marshal(map[string]any{"claude-x": price})
+		require.NoError(t, err)
+
+		_, err = engine.Prices(map[string]string{"model_prices": string(raw)})
+		require.ErrorContains(t, err, "claude-x", field)
+		require.ErrorContains(t, err, field)
+		require.Error(t, engine.CheckSetting("model_prices", string(raw)), field)
 	}
 }
 

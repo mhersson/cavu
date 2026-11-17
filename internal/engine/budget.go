@@ -49,12 +49,7 @@ type Spent struct {
 }
 
 // Price is a model's price in US dollars per million tokens.
-type Price struct {
-	Input      float64 `json:"input"`
-	Output     float64 `json:"output"`
-	CacheRead  float64 `json:"cache_read"`
-	CacheWrite float64 `json:"cache_write"`
-}
+type Price struct{ Input, Output, CacheRead, CacheWrite float64 }
 
 // readLimits reads a task's limits from the settings with its project's caps
 // over them. Money is capped in key mode only.
@@ -72,7 +67,8 @@ func readLimits(settings, caps map[string]string) (Limits, error) {
 	return l, set.err
 }
 
-// Prices reads the model_prices setting; unset gives none.
+// Prices reads the model_prices setting; unset gives none. Each price names
+// all four kinds of token, since one left out would count as free.
 func Prices(values map[string]string) (map[string]Price, error) {
 	v := values[keyPrices]
 	if v == "" {
@@ -82,16 +78,35 @@ func Prices(values map[string]string) (map[string]Price, error) {
 	dec := json.NewDecoder(strings.NewReader(v))
 	dec.DisallowUnknownFields()
 
-	var prices map[string]Price
-	if err := dec.Decode(&prices); err != nil {
+	var given map[string]struct {
+		Input      *float64 `json:"input"`
+		Output     *float64 `json:"output"`
+		CacheRead  *float64 `json:"cache_read"`
+		CacheWrite *float64 `json:"cache_write"`
+	}
+	if err := dec.Decode(&given); err != nil {
 		return nil, fmt.Errorf("setting %s: want a JSON object of model ids, each with input, output, cache_read and cache_write in US dollars per million tokens: %w",
 			keyPrices, err)
 	}
 
-	for model, p := range prices {
-		if min(p.Input, p.Output, p.CacheRead, p.CacheWrite) < 0 {
-			return nil, fmt.Errorf("setting %s: model %q has a negative price", keyPrices, model)
+	prices := make(map[string]Price, len(given))
+
+	for _, model := range slices.Sorted(maps.Keys(given)) {
+		g := given[model]
+
+		for _, f := range []struct {
+			name  string
+			price *float64
+		}{{"input", g.Input}, {"output", g.Output}, {"cache_read", g.CacheRead}, {"cache_write", g.CacheWrite}} {
+			switch {
+			case f.price == nil:
+				return nil, fmt.Errorf("setting %s: model %q has no %s price", keyPrices, model, f.name)
+			case *f.price < 0:
+				return nil, fmt.Errorf("setting %s: model %q has a negative %s price", keyPrices, model, f.name)
+			}
 		}
+
+		prices[model] = Price{Input: *g.Input, Output: *g.Output, CacheRead: *g.CacheRead, CacheWrite: *g.CacheWrite}
 	}
 
 	return prices, nil

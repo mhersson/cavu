@@ -242,6 +242,7 @@ func TestCheckSetting(t *testing.T) {
 		{"model_prices", `{"*": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}}`, true},
 		{"model_prices", "", true},
 		{"model_prices", "[]", false},
+		{"model_prices", `{"*": {"input": 3, "output": 15}}`, false},
 	}
 
 	for _, tt := range tests {
