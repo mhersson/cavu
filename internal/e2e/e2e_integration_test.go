@@ -390,6 +390,14 @@ exit $s`
 // extended pattern $1, and fails on one it cannot read.
 const fileScan = `p=$1; shift; grep -rlaE -D skip -e "$p" "$@" || test $? = 1`
 
+// setupScan is a setup command that runs procScan and fileScan in the setup
+// container and prints what they find. It fails on a match of found, on what
+// they cannot read, and when no process holds a match of held.
+func setupScan(found, held string) string {
+	return fmt.Sprintf(`c=$(sh -c '%[1]s' sh '%[3]s') && f=$(sh -c '%[2]s' sh '%[3]s' /workspace /handoff /cache /home/agent /tmp /run/cavu) && echo "$c" "$f" && test -z "$c$f" && p=$(sh -c '%[1]s' sh '%[4]s') && test -n "$p"`,
+		procScan, fileScan, found, held)
+}
+
 // mark is a pattern for v that its own text does not match, so a scan never
 // finds its own command line.
 func mark(v string) string { return "[" + v[:1] + "]" + v[1:] }
@@ -488,7 +496,20 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	mock := mockapi.Start(t, []mockapi.Step{change, done})
 	in := setup(t, mock.HostURL())
 
-	in.project("notes")
+	const planted = "sk-test-PLANTED-0123456789"
+
+	credentials := mark(endpointKey) + "|" + mark(forgeToken)
+	in.ok("project", "add", "notes", "--repo", in.repo, "--verify", verify, "--setup", setupScan(credentials, mark(planted)))
+
+	// Without the planted value the setup command fails, so a check that passes ran it.
+	r := in.cavu("", "project", "check", "notes")
+	require.Equal(t, 1, r.code, r)
+	assert.Equal(t, []string{"setup"}, values(r.stdout, "failed step:"))
+
+	in.ok("project", "set", "notes", "--env", "E2E_PLANTED="+planted)
+	in.ok("project", "check", "notes")
+
+	// The run's prepare runs the setup command again, so its exit 0 covers that setup container too.
 	id := in.task("notes")
 
 	release, _, wait := in.runHeld(mock, id)
@@ -503,7 +524,6 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	}
 
 	files := func(pattern string) string { return in.sh(agent, fileScan, append([]string{pattern}, dirs...)...) }
-	credentials := mark(endpointKey) + "|" + mark(forgeToken)
 
 	assert.Empty(t, in.sh(agent, procScan, credentials))
 	assert.Empty(t, files(credentials))
