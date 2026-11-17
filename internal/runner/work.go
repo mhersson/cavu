@@ -52,24 +52,35 @@ func (r *Runner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequ
 	}
 
 	return act(ctx, r, c, phase, func(ctx context.Context, st *run, mask func(string) string) (engine.WorkResult, error) {
-		s := &session{c: c, st: st, mask: mask, progress: progress, proxied: map[string]store.Usage{}}
+		res, usage, err := runSession(st, c, mask, progress, func(s *session) (engine.WorkResult, []driver.Usage, error) {
+			return s.run(ctx, r.driver, w)
+		})
+		res.Usage = usage
 
-		st.watching(s.line)
-		res, totals, err := s.run(ctx, r.driver, w)
-
-		st.watching(nil)
-
-		if err != nil {
-			return engine.WorkResult{}, err
-		}
-
-		res.Usage = s.usage(totals)
-
-		return res, nil
+		return res, err
 	})
 }
 
-// session is one Work call, and what the sidecar reported during it.
+// runSession builds a session, runs it with the sidecar's lines watched, and
+// returns its result with the usage it reported. The usage is nil on error.
+func runSession[T any](st *run, c engine.RunConfig, mask func(string) string, progress func(engine.Progress), do func(*session) (T, []driver.Usage, error)) (T, []store.Usage, error) {
+	s := &session{c: c, st: st, mask: mask, progress: progress, proxied: map[string]store.Usage{}}
+
+	st.watching(s.line)
+	res, totals, err := do(s)
+
+	st.watching(nil)
+
+	if err != nil {
+		var zero T
+
+		return zero, nil, err
+	}
+
+	return res, s.usage(totals), nil
+}
+
+// session is one agent session of a Work or Review call, and what the sidecar reported during it.
 type session struct {
 	c        engine.RunConfig
 	st       *run

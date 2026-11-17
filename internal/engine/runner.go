@@ -53,8 +53,8 @@ type RunRef struct {
 // Runner carries out a run's actions where a container runtime exists.
 type Runner interface {
 	// Prepare starts from empty run volumes: clone, toolchains, setup, baseline
-	// verify. Work, Verify and Export bring the run's containers up themselves
-	// when they are not running, so a restart needs no second prepare.
+	// verify. Work, Review, Verify and Export bring the run's containers up
+	// themselves when they are not running, so a restart needs no second prepare.
 	Prepare(ctx context.Context, c RunConfig) (PrepareResult, error)
 	// Work returns how the session ended as a result, endpoint failures and
 	// usage limits included; an error means the sandbox itself failed. A

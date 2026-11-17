@@ -446,23 +446,30 @@ type sessionStart struct {
 	Resume bool
 }
 
-// sessionStarts returns every session_started event in out, the output of
-// task show --events, where an event line is its id, time, type, actor and
-// payload.
-func sessionStarts(t *testing.T, out string) []sessionStart {
+// eventPayloads decodes into T the payload of every event of kind in out, the
+// output of task show --events, where an event line is its id, time, type,
+// actor and payload.
+func eventPayloads[T any](t *testing.T, out, kind string) []T {
 	t.Helper()
 
-	var ss []sessionStart
+	var ps []T
 
 	for line := range strings.Lines(out) {
-		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == "session_started" {
-			var s sessionStart
-			require.NoError(t, json.Unmarshal([]byte(e[4]), &s))
-			ss = append(ss, s)
+		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == kind {
+			var p T
+			require.NoError(t, json.Unmarshal([]byte(e[4]), &p))
+			ps = append(ps, p)
 		}
 	}
 
-	return ss
+	return ps
+}
+
+// sessionStarts returns every session_started event in out.
+func sessionStarts(t *testing.T, out string) []sessionStart {
+	t.Helper()
+
+	return eventPayloads[sessionStart](t, out, "session_started")
 }
 
 func TestPipelineEndToEnd(t *testing.T) {
@@ -480,12 +487,8 @@ func TestPipelineEndToEnd(t *testing.T) {
 
 	var reviews []string
 
-	for line := range strings.Lines(show) {
-		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == "review_ended" {
-			var r struct{ Outcome string }
-			require.NoError(t, json.Unmarshal([]byte(e[4]), &r))
-			reviews = append(reviews, r.Outcome)
-		}
+	for _, r := range eventPayloads[struct{ Outcome string }](t, show, "review_ended") {
+		reviews = append(reviews, r.Outcome)
 	}
 
 	assert.Equal(t, []string{"reviewed"}, reviews, show)

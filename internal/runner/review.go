@@ -11,7 +11,6 @@ import (
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/mhersson/cavu/internal/sandbox"
-	"github.com/mhersson/cavu/internal/store"
 )
 
 // The diffs a review reads, on the tmpfs of the phase container: the change
@@ -44,20 +43,12 @@ func (r *Runner) Review(ctx context.Context, c engine.RunConfig, rq engine.Revie
 			return engine.ReviewResult{Outcome: engine.ReviewFailed, Detail: mask(problem)}, err
 		}
 
-		s := &session{c: c, st: st, mask: mask, progress: progress, proxied: map[string]store.Usage{}}
+		res, usage, err := runSession(st, c, mask, progress, func(s *session) (engine.ReviewResult, []driver.Usage, error) {
+			return s.review(ctx, r.driver, rq)
+		})
+		res.Usage = usage
 
-		st.watching(s.line)
-		res, totals, err := s.review(ctx, r.driver, rq)
-
-		st.watching(nil)
-
-		if err != nil {
-			return engine.ReviewResult{}, err
-		}
-
-		res.Usage = s.usage(totals)
-
-		return res, nil
+		return res, err
 	})
 }
 

@@ -37,7 +37,7 @@ Give two verdicts, each with its reason:
 
 List every finding with where it is (a file and line), what is wrong and why it matters, and its severity:
 
-- `critical` or `important`: the change cannot be trusted until it is fixed, such as wrong or fragile behaviour, a missed requirement, a test that proves nothing, or duplicated logic.
+- `critical` or `important`: the change cannot be trusted until it is fixed, such as wrong or fragile behaviour, a missed requirement, a test that proves nothing, or a block of logic copied word for word.
 - `minor`: polish, such as naming, wording or a test that could cover more.
 
 End with the structured result.
