@@ -340,8 +340,8 @@ func (f verbFlags) open(ctx context.Context) (*app, error) {
 	return openApp(ctx, dir)
 }
 
-// isTerminal reports whether r is a character device, as a terminal is.
-func isTerminal(r io.Reader) bool {
+// isTerminal reports whether r, a reader or writer, is a character device, as a terminal is.
+func isTerminal(r any) bool {
 	f, ok := r.(*os.File)
 	if !ok {
 		return false
