@@ -26,6 +26,7 @@ type Facts struct {
 	Faults                     int           // sandbox stops since the last human action
 	Turns                      int           // of sessions and reviews since the last human action
 	SessionTime                time.Duration // from each session's or review's start to its end, since the last human action
+	CostMissing                int           // sessions and reviews of the whole task that ended without a cost
 	Review                     ReviewFact
 	Role                       string   // of the run's session, strong after a fresh fix session; "" means work
 	Answers                    []string // every answer a person gave on the task
@@ -156,7 +157,7 @@ func (f *Facts) apply(e store.Event) {
 		f.started = e.At
 	case SessionEnded:
 		p := decode[SessionEndedPayload](e.Payload)
-		f.used(e.At, p.Turns)
+		f.sessionEnded(e.At, p.Turns, p.CostMissing)
 
 		f.Resumed = nil
 		if f.RunOpen {
@@ -183,7 +184,7 @@ func (f *Facts) apply(e store.Event) {
 		f.started = e.At
 	case ReviewEnded:
 		p := decode[ReviewEndedPayload](e.Payload)
-		f.used(e.At, p.Turns)
+		f.sessionEnded(e.At, p.Turns, p.CostMissing)
 
 		if f.RunOpen {
 			f.reviewEnded(p)
@@ -219,12 +220,17 @@ func (f *Facts) clearStop() {
 	f.Turns, f.SessionTime = 0, 0
 }
 
-// used counts a session or review that ended at end toward the budget. One a
-// fault cut never ends, so it counts nothing.
-func (f *Facts) used(end time.Time, turns int) {
+// sessionEnded counts a session or review that ended at end: its turns and
+// time toward the budget, and a missing cost. One a fault cut never ends, so it
+// counts nothing.
+func (f *Facts) sessionEnded(end time.Time, turns int, costMissing bool) {
 	f.Turns += turns
 	if !f.started.IsZero() {
 		f.SessionTime += end.Sub(f.started)
+	}
+
+	if costMissing {
+		f.CostMissing++
 	}
 
 	f.started = time.Time{}

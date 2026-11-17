@@ -587,7 +587,8 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 	return p.result(ctx, o, runUsage(o.row.ID, res.Usage), draft{SessionEnded, actorRunner, SessionEndedPayload{
 		Outcome: res.Outcome, Title: res.Title, Summary: res.Summary, Assumptions: res.Assumptions,
 		Questions: res.Questions, SuggestedAnswers: res.SuggestedAnswers, Changed: res.Changed, Turns: res.Turns,
-		CostEstimateUSD: res.CostEstimateUSD, ResetsAt: res.ResetsAt, Detail: res.Detail, HeadCommit: res.HeadCommit,
+		CostEstimateUSD: res.CostEstimateUSD, CostMissing: res.CostMissing, ResetsAt: res.ResetsAt, Detail: res.Detail,
+		HeadCommit: res.HeadCommit,
 	}})
 }
 

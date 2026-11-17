@@ -308,11 +308,11 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		turns, d := engine.TurnsAndDuration(events)
 		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
 
-		f, l := snap.Facts, snap.Limits
+		used, limits := snap.Facts, snap.Limits
 		fmt.Fprintf(stdout, "budget:  %d of %d turns, %.0f of %.0f minutes since a person last acted\n",
-			f.Turns, l.Turns, f.SessionTime.Minutes(), l.SessionTime.Minutes())
+			used.Turns, limits.Turns, used.SessionTime.Minutes(), limits.SessionTime.Minutes())
 
-		if err := printUsage(ctx, stdout, a.store, id); err != nil {
+		if err := printUsage(ctx, stdout, a.store, id, used.CostMissing); err != nil {
 			return err
 		}
 
@@ -434,9 +434,10 @@ func newest[T any](events []store.Event, typ string) (T, bool) {
 	return v, false
 }
 
-// printUsage prints a row per source and model and the one cost row, which
-// is an estimate from list prices, not a bill.
-func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64) error {
+// printUsage prints a row per source and model and the one cost row, an
+// estimate from list prices, not a bill, which ends with how many sessions
+// without a cost it leaves out, when any.
+func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64, missing int) error {
 	rows, err := s.UsageTotals(ctx, taskID)
 	if err != nil {
 		return err
@@ -451,7 +452,13 @@ func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64) 
 		cost += u.CostEstimateUSD
 	}
 
-	fmt.Fprintf(w, "cost (estimate): $%.4f\n", cost)
+	fmt.Fprintf(w, "cost (estimate): $%.4f", cost)
+
+	if missing > 0 {
+		fmt.Fprintf(w, ", leaving out %d sessions that ended without one", missing)
+	}
+
+	fmt.Fprintln(w)
 
 	return nil
 }

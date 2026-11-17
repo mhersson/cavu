@@ -125,6 +125,7 @@ type WorkResult struct {
 	HeadCommit             string // the commit the session's work was frozen into
 	Turns                  int
 	CostEstimateUSD        float64
+	CostMissing            bool // the session ended without a cost estimate
 	ResetsAt               time.Time
 	Usage                  []store.Usage
 }
@@ -138,6 +139,7 @@ type ReviewResult struct {
 	Detail          string
 	Turns           int
 	CostEstimateUSD float64
+	CostMissing     bool // the session ended without a cost estimate
 	ResetsAt        time.Time
 	Usage           []store.Usage
 }

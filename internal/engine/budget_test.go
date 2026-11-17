@@ -56,6 +56,32 @@ func TestReduceBudget(t *testing.T) {
 			assert.Equal(t, tc.time, f.SessionTime)
 		})
 	}
+
+	t.Run("sessions without a cost count over the whole task", func(t *testing.T) {
+		noCost := ev(engine.SessionEnded, `{"outcome":"crashed","cost_missing":true}`)
+		f := engine.Reduce(preparedRun(firstSession, noCost, budgetStop, retried, resumeSession, noCost, resumeSession, doneChanged))
+		assert.Equal(t, 2, f.CostMissing)
+	})
+}
+
+// A session's and a review's missing cost reach the record and the facts.
+func TestLoopRecordsAMissingCost(t *testing.T) {
+	h := newHarness(t)
+	h.withReview()
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{
+		Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456", CostMissing: true,
+	}}}
+	h.runner.reviews = []step[engine.ReviewResult]{{res: engine.ReviewResult{Outcome: engine.ReviewFailed, CostMissing: true}}}
+
+	_, err := h.run(t.Context())
+	require.NoError(t, err)
+
+	assert.True(t, payloadOf[engine.SessionEndedPayload](t, h.eventsOf(engine.SessionEnded)[0]).CostMissing)
+	assert.True(t, payloadOf[engine.ReviewEndedPayload](t, h.eventsOf(engine.ReviewEnded)[0]).CostMissing)
+
+	s, err := h.loop.Snapshot(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, s.Facts.CostMissing)
 }
 
 func TestDecideBudget(t *testing.T) {

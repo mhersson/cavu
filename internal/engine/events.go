@@ -148,6 +148,7 @@ type (
 		HeadCommit       string    `json:"head_commit,omitempty"`
 		Turns            int       `json:"turns"`
 		CostEstimateUSD  float64   `json:"cost_estimate_usd"`
+		CostMissing      bool      `json:"cost_missing,omitempty"` // the estimate does not cover the session
 		ResetsAt         time.Time `json:"resets_at,omitzero"`
 		Detail           string    `json:"detail"`
 	}
@@ -181,6 +182,7 @@ type (
 		Addressed       []bool    `json:"addressed,omitempty"` // scoped: one per finding that was open, in their order
 		Turns           int       `json:"turns"`
 		CostEstimateUSD float64   `json:"cost_estimate_usd"`
+		CostMissing     bool      `json:"cost_missing,omitempty"` // the estimate does not cover the review
 		ResetsAt        time.Time `json:"resets_at,omitzero"`
 		Detail          string    `json:"detail"`
 	}

@@ -157,6 +157,7 @@ func (p *pass) review(ctx context.Context, v view, a Action, o openRun) error {
 
 	return p.result(ctx, o, runUsage(o.row.ID, res.Usage), draft{ReviewEnded, actorRunner, ReviewEndedPayload{
 		Outcome: res.Outcome, Head: r.Head, Scoped: a.Scoped, Asked: res.Asked, Built: res.Built, Findings: res.Findings,
-		Addressed: res.Addressed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD, ResetsAt: res.ResetsAt, Detail: res.Detail,
+		Addressed: res.Addressed, Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD, CostMissing: res.CostMissing,
+		ResetsAt: res.ResetsAt, Detail: res.Detail,
 	}})
 }

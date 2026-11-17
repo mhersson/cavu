@@ -137,7 +137,7 @@ func numberFindings(findings []engine.Finding) []prompts.ReviewFinding {
 // the schema, a session outcome that stops the task, and otherwise failed
 // with the session's detail, so no other outcome reaches the record.
 func (s *session) reviewResult(dr driver.Result, rq engine.ReviewRequest) engine.ReviewResult {
-	res := engine.ReviewResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, Detail: s.mask(dr.Detail)}
+	res := engine.ReviewResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, CostMissing: dr.CostMissing, Detail: s.mask(dr.Detail)}
 
 	if res.Outcome, res.ResetsAt = stopped(dr); res.Outcome != "" {
 		return res

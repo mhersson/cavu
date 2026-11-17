@@ -331,7 +331,7 @@ func stopped(dr driver.Result) (string, time.Time) {
 
 // result maps how the session in mode ended.
 func (s *session) result(dr driver.Result, mode string) engine.WorkResult {
-	res := engine.WorkResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, Detail: s.mask(dr.Detail)}
+	res := engine.WorkResult{Turns: dr.Turns, CostEstimateUSD: dr.CostEstimateUSD, CostMissing: dr.CostMissing, Detail: s.mask(dr.Detail)}
 
 	if res.Outcome, res.ResetsAt = stopped(dr); res.Outcome != "" {
 		return res

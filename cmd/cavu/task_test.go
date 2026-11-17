@@ -462,7 +462,7 @@ func TestTaskShowPrintsTurnsAndDuration(t *testing.T) {
 // numbers is every whole number in text, in order.
 var numbers = regexp.MustCompile(`[0-9]+`)
 
-func TestTaskShowPrintsTheBudget(t *testing.T) {
+func TestTaskShowPrintsTheBudgetAndAMissingCost(t *testing.T) {
 	dir := webData(t)
 	cavuIn(t, dir, "settings", "set", "task_max_turns", "400")
 	cavuIn(t, dir, "settings", "set", "task_timeout_minutes", "120")
@@ -475,15 +475,29 @@ func TestTaskShowPrintsTheBudget(t *testing.T) {
 		return e
 	}
 
-	seedEvents(t, dir, id, nil,
+	seedEvents(t, dir, id, []store.Usage{{Source: "agent", Model: "model-a", Input: 1, CostEstimateUSD: 0.5}},
 		at(event(engine.TaskStarted, "user", struct{}{}), 0),
 		at(event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}), 0),
 		at(event(engine.SessionStarted, "engine", engine.SessionStartedPayload{Mode: engine.ModeStart, SessionID: "s1"}), time.Minute),
 		at(event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeUnfinished, Turns: 20}), 11*time.Minute))
 
-	lines := labelled(cavuIn(t, dir, "task", "show", id), "budget:")
+	out := cavuIn(t, dir, "task", "show", id)
+
+	lines := labelled(out, "budget:")
 	require.Len(t, lines, 1)
 	assert.Equal(t, []string{"20", "400", "10", "120"}, numbers.FindAllString(lines[0], -1), "turns and minutes used, of how many")
+
+	cost := labelled(out, "cost (estimate):")
+	require.Len(t, cost, 1)
+	assert.Equal(t, []string{"0", "5000"}, numbers.FindAllString(cost[0], -1), "every session had a cost")
+
+	seedEvents(t, dir, id, nil,
+		event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeCrashed, CostMissing: true}),
+		event(engine.ReviewEnded, "runner", engine.ReviewEndedPayload{Outcome: engine.ReviewFailed, CostMissing: true}))
+
+	cost = labelled(cavuIn(t, dir, "task", "show", id), "cost (estimate):")
+	require.Len(t, cost, 1)
+	assert.Equal(t, []string{"0", "5000", "2"}, numbers.FindAllString(cost[0], -1), "the cost line ends with how many sessions it leaves out")
 }
 
 func TestTaskDiffPrintsTheNewestExport(t *testing.T) {

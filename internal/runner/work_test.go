@@ -107,9 +107,9 @@ func TestWorkMapsResults(t *testing.T) {
 			want: engine.WorkResult{Outcome: engine.OutcomeEndpoint, Detail: "502"},
 		},
 		{
-			name: "crashed",
-			res:  driver.Result{Reason: driver.ReasonCrashed, Detail: "exit 1"},
-			want: engine.WorkResult{Outcome: engine.OutcomeCrashed, Detail: "exit 1"},
+			name: "crashed, without a cost",
+			res:  driver.Result{Reason: driver.ReasonCrashed, Detail: "exit 1", CostMissing: true},
+			want: engine.WorkResult{Outcome: engine.OutcomeCrashed, Detail: "exit 1", CostMissing: true},
 		},
 		{name: "done", res: doneResult, freeze: &sandbox.Result{Output: headCommit + "\n"}, want: changed},
 		{name: "done without a change", res: doneResult, freeze: &sandbox.Result{Output: baseCommit + "\n"}, want: unchanged},
