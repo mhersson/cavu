@@ -254,7 +254,7 @@ wheels = [
 	},
 }
 
-// TestPrepareEcosystems prepares one repository of each ecosystem and uses
+// TestPrepareEcosystems prepares one repository per fixture and uses
 // it the way a session does: verify again, and add a dependency, with the
 // project cache read-only and only the registries reachable.
 func TestPrepareEcosystems(t *testing.T) {

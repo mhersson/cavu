@@ -185,8 +185,7 @@ func TestMiseInstallsNothingInTheAgentPhase(t *testing.T) {
 	}
 }
 
-// uv runs on the interpreter mise installed, and copies from its cache, which
-// is never on the workspace's volume.
+// A Python project has uv's variables in both phases; any other project has none.
 func TestUvEnvironment(t *testing.T) {
 	t.Parallel()
 
