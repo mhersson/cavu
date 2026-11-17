@@ -434,7 +434,7 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 				return err
 			}
 
-			return follow(ctx, l, id, stdout)
+			return follow(ctx, l, id, stdout, stdout)
 		})
 
 		if ctx.Err() != nil {
@@ -468,11 +468,12 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	})
 }
 
-// follow prints each new event of the task as one line, and each wait's reason
-// once, until the task rests. It begins at the newest action of a person,
-// which is what it carries on from. It gives l the pauses the store shows, as
-// a scheduler would, so it decides alike beside a scheduler or a server.
-func follow(ctx context.Context, l *engine.Loop, taskID int64, out io.Writer) error {
+// follow prints each new event of the task as one line on events, and each
+// wait's reason once on waits, until the task rests. It begins at the newest
+// action of a person, which is what it carries on from. It gives l the pauses
+// the store shows, as a scheduler would, so it decides alike beside a
+// scheduler or a server.
+func follow(ctx context.Context, l *engine.Loop, taskID int64, events, waits io.Writer) error {
 	var (
 		pauses engine.Pauses
 		after  int64
@@ -495,23 +496,23 @@ func follow(ctx context.Context, l *engine.Loop, taskID int64, out io.Writer) er
 		}
 
 		// Read after the snapshot, so the events it decided on are all printed.
-		events, err := l.Store.Events(ctx, taskID, after, 0)
+		evs, err := l.Store.Events(ctx, taskID, after, 0)
 		if err != nil {
 			return err
 		}
 
 		if after == 0 {
-			for i, e := range slices.Backward(events) {
+			for i, e := range slices.Backward(evs) {
 				if e.Actor == "user" {
-					events = events[i:]
+					evs = evs[i:]
 
 					break
 				}
 			}
 		}
 
-		for _, e := range events {
-			fmt.Fprintln(out, eventLine(e))
+		for _, e := range evs {
+			fmt.Fprintln(events, eventLine(e))
 
 			after = e.ID
 		}
@@ -523,7 +524,7 @@ func follow(ctx context.Context, l *engine.Loop, taskID int64, out io.Writer) er
 			waited = ""
 		case waitText(act) != waited:
 			waited = waitText(act)
-			fmt.Fprintf(out, "%s wait %s\n", snap.Now.Format(time.TimeOnly), waited)
+			fmt.Fprintf(waits, "%s wait %s\n", snap.Now.Format(time.TimeOnly), waited)
 		}
 
 		select {

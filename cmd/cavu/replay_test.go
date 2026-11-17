@@ -6,7 +6,9 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
@@ -321,4 +323,84 @@ func TestNewReplayCancelsOldUnfinishedShadows(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "new", r.Name, "the new replay ends")
+}
+
+func TestReplayPrintsAWaitOnce(t *testing.T) {
+	for _, own := range []bool{true, false} {
+		t.Run(map[bool]string{true: "its own usage limit", false: "another task's usage limit"}[own], func(t *testing.T) {
+			dir, id, fake := runSetup(t)
+			markWithBase(t, dir, id)
+
+			reset := time.Now().Add(time.Hour)
+			other := addTask(t, dir, "Other")
+
+			if own {
+				fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeUsageLimit, ResetsAt: reset}
+			} else {
+				seedEvents(t, dir, other, nil, event(engine.TaskStarted, "user", struct{}{}), event(engine.Stopped, "engine",
+					engine.StoppedPayload{Reason: engine.StopUsageLimit, Explanation: "limit", Action: engine.ClearNone, ResetsAt: reset}))
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			out, done := &syncBuffer{}, make(chan error, 1)
+
+			go func() { done <- runReplay(ctx, []string{"--name", "limited", "--data-dir", dir}, out, io.Discard) }()
+
+			require.Eventually(t, func() bool { return len(waitReasons(out.String())) > 0 }, within, time.Millisecond)
+			assert.Equal(t, !own, names(waitReasons(out.String())[0], other), "a wait another task holds names it")
+
+			cancel()
+
+			ee, ok := errors.AsType[exitError](<-done)
+			require.True(t, ok)
+			assert.Equal(t, 130, ee.code)
+			assert.Len(t, waitReasons(out.String()), 1, out.String())
+		})
+	}
+}
+
+// countedStore counts the snapshots a loop takes through it: one LastEventID each.
+type countedStore struct {
+	*store.Store
+
+	snapshots atomic.Int64
+}
+
+func (s *countedStore) LastEventID(ctx context.Context, taskID int64) (int64, error) {
+	s.snapshots.Add(1)
+
+	return s.Store.LastEventID(ctx, taskID)
+}
+
+func TestRestSaysAWaitOnce(t *testing.T) {
+	dir, id, _ := runSetup(t)
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}), event(engine.Stopped, "engine",
+		engine.StoppedPayload{Reason: engine.StopUsageLimit, Explanation: "limit", Action: engine.ClearNone, ResetsAt: time.Now().Add(time.Hour)}))
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	counted := &countedStore{Store: a.store}
+	l := a.actions()
+	l.Store = counted
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	out, done, n := &syncBuffer{}, make(chan error, 1), taskID(t, id)
+
+	go func() {
+		_, err := rest(ctx, l, n, out)
+		done <- err
+	}()
+
+	require.Eventually(t, func() bool { return counted.snapshots.Load() > 20 }, within, time.Millisecond, "many polls")
+	cancel()
+
+	require.ErrorIs(t, <-done, context.Canceled)
+	assert.Len(t, waitReasons(out.String()), 1, out.String())
 }

@@ -109,7 +109,7 @@ cavu replay --name no-continuations --no-continuations
 
 `--model ID`, `--effort LEVEL`, `--no-continuations`, `--no-verify-fix` and `--web-tools` (which turns `web_tools` on, whatever the project says) change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
 
-A replayed task starts as a new task does, so its project needs a passed baseline or a waived verify. An interrupted replay cancels the task it was running and is never compared with; the next replay ends what an earlier one left unfinished.
+A replayed task starts as a new task does, so its project needs a passed baseline or a waived verify, and the replay says why such a task waits when it does. An interrupted replay cancels the task it was running and is never compared with; the next replay ends what an earlier one left unfinished.
 
 ### Go projects
 

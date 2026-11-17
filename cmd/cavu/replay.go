@@ -75,7 +75,7 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		var err error
 
 		r, err = replay.Run(ctx, a.store, l, cfg, func(ctx context.Context, id int64) (engine.Status, error) {
-			return rest(ctx, l, id)
+			return rest(ctx, l, id, stdout)
 		}, stdout)
 
 		return err
@@ -100,27 +100,18 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	return printReplay(ctx, a.store, r, stdout)
 }
 
-// rest waits until Decide finds nothing to do for the task, and returns its status.
-func rest(ctx context.Context, l *engine.Loop, taskID int64) (engine.Status, error) {
-	tick := time.NewTicker(pollEvery)
-	defer tick.Stop()
-
-	for {
-		snap, err := l.Snapshot(ctx, taskID)
-		if err != nil {
-			return "", err
-		}
-
-		if engine.Decide(snap).Kind == engine.KindNone {
-			return engine.StatusOf(snap.Facts), nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-tick.C:
-		}
+// rest waits until the task rests, saying on out why it waits, and returns its status.
+func rest(ctx context.Context, l *engine.Loop, taskID int64, out io.Writer) (engine.Status, error) {
+	if err := follow(ctx, l, taskID, io.Discard, out); err != nil {
+		return "", err
 	}
+
+	snap, err := l.Snapshot(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+
+	return engine.StatusOf(snap.Facts), nil
 }
 
 // printReplay prints one row per source task: each value of this replay, then
