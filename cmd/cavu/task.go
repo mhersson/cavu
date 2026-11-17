@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -321,10 +322,25 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return err
 		}
 
+		t, err := a.store.Task(ctx, id)
+		if err != nil {
+			return fmt.Errorf("task %d: %w", id, err)
+		}
+
+		p, err := a.store.Project(ctx, t.ProjectID)
+		if err != nil {
+			return err
+		}
+
 		l := a.loop(rt)
 		l.Store = printingStore{Store: l.Store, out: stdout}
 
-		if err := l.Start(ctx, id); err != nil {
+		err = l.Start(ctx, id)
+		if errors.Is(err, engine.ErrNoBaseline) {
+			return fmt.Errorf("%w; run cavu project check %s, or waive verify with cavu project set %s --no-verify", err, p.Name, p.Name)
+		}
+
+		if err != nil {
 			return err
 		}
 
@@ -335,7 +351,7 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		_, err = l.RunTask(ctx, id)
 
 		if ctx.Err() != nil {
-			if err := a.releaseOpenRun(ctx, l, id); err != nil {
+			if err := a.releaseOpenRun(ctx, l, t); err != nil {
 				fmt.Fprintf(stderr, "cavu: %v\n", err)
 			}
 
@@ -363,16 +379,11 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 // releaseOpenRun stops the containers of the task's open run and keeps its
 // volumes, on a context that outlives the interrupt that ended ctx.
-func (a *app) releaseOpenRun(ctx context.Context, l *engine.Loop, taskID int64) error {
+func (a *app) releaseOpenRun(ctx context.Context, l *engine.Loop, t store.Task) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
 
-	t, err := a.store.Task(ctx, taskID)
-	if err != nil {
-		return err
-	}
-
-	row, ok, err := a.store.OpenRun(ctx, taskID)
+	row, ok, err := a.store.OpenRun(ctx, t.ID)
 	if err != nil || !ok {
 		return err
 	}

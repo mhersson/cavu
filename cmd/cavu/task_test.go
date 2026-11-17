@@ -550,7 +550,10 @@ func TestTaskRunRefusesWithoutBaseline(t *testing.T) {
 	dir, fake := checkSetup(t, "--verify", "make test")
 	id := addTask(t, dir, "Fix the login")
 
-	assert.Contains(t, refusedRun(t, dir, id, fake), strconv.Quote("web"))
+	stderr := refusedRun(t, dir, id, fake)
+
+	assert.Contains(t, stderr, "cavu project check web", "the verb that stores a baseline")
+	assert.Contains(t, stderr, "cavu project set web --no-verify", "the verb that waives verify")
 }
 
 func TestTaskRunRefusesACancelledTask(t *testing.T) {
