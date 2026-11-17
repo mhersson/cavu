@@ -20,6 +20,8 @@ type Config struct {
 	AllowHosts []string
 	// Model is nil in subscription mode; origin-form requests then answer 404.
 	Model *ModelRoute
+	// Budget caps the model route's spend; nil: nothing is counted and nothing refused.
+	Budget *Budget
 	// The callbacks may be nil and may be called from concurrent requests; the
 	// caller serialises its own output. They run inline and must not block: a
 	// slow OnUsage holds back the end of the response.
@@ -28,6 +30,9 @@ type Config struct {
 	OnDenied func(hostPort string)
 	// OnUsage is called once per metered model response, after it ends.
 	OnUsage func(Usage)
+	// OnBudget is called once, when the model route starts refusing: reason is
+	// "" when the cap is spent, else why the spend cannot be counted.
+	OnBudget func(reason string)
 }
 
 // ModelRoute is the real model endpoint and the credential only the proxy holds.

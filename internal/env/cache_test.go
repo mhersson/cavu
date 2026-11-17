@@ -184,3 +184,28 @@ func TestMiseInstallsNothingInTheAgentPhase(t *testing.T) {
 		assert.Equal(t, "false", envMap(t, AgentEnv(ecosystems, "/home/agent"))["MISE_AUTO_INSTALL"], ecosystems)
 	}
 }
+
+// A Python project has uv's variables in both phases; any other project has none.
+func TestUvEnvironment(t *testing.T) {
+	t.Parallel()
+
+	uv := map[string]string{"UV_PYTHON_DOWNLOADS": "never", "UV_LINK_MODE": "copy"}
+
+	for _, ecosystems := range [][]string{{"python"}, allEcosystems} {
+		for name, e := range map[string][]string{"setup": SetupEnv(ecosystems), "agent": AgentEnv(ecosystems, "/home/agent")} {
+			m := envMap(t, e)
+			for k, v := range uv {
+				assert.Equal(t, v, m[k], "%s %v %s", name, ecosystems, k)
+			}
+		}
+	}
+
+	for _, ecosystems := range [][]string{nil, {"go", "node", "rust"}} {
+		for name, e := range map[string][]string{"setup": SetupEnv(ecosystems), "agent": AgentEnv(ecosystems, "/home/agent")} {
+			m := envMap(t, e)
+			for k := range uv {
+				assert.NotContains(t, m, k, "%s %v", name, ecosystems)
+			}
+		}
+	}
+}

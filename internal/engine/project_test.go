@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -133,7 +134,7 @@ func TestProjectRules(t *testing.T) {
 			tc.edit(&add)
 
 			_, err := engine.AddProject(t.Context(), h.store, add)
-			require.Error(t, err)
+			require.ErrorIs(t, err, engine.ErrRefused)
 			assert.Contains(t, err.Error(), tc.field)
 
 			ps, err := h.store.Projects(t.Context())
@@ -147,11 +148,37 @@ func TestProjectRules(t *testing.T) {
 			tc.edit(&edit)
 
 			err = engine.EditProject(t.Context(), h.store, edit)
-			require.Error(t, err)
+			require.ErrorIs(t, err, engine.ErrRefused)
 			assert.Contains(t, err.Error(), tc.field)
 			assert.Equal(t, before, h.project(), "nothing is changed")
 		})
 	}
+}
+
+// failingWrites is a store whose project writes fail.
+type failingWrites struct {
+	engine.Store
+	err error
+}
+
+func (f failingWrites) CreateProject(context.Context, store.Project) (store.Project, error) {
+	return store.Project{}, f.err
+}
+
+func (f failingWrites) UpdateProject(context.Context, store.Project) error { return f.err }
+
+func TestProjectStoreFailureIsNotARefusal(t *testing.T) {
+	h := newHarness(t)
+	boom := errors.New("disk full")
+	s := failingWrites{Store: h.store, err: boom}
+
+	_, err := engine.AddProject(t.Context(), s, validProject())
+	require.ErrorIs(t, err, boom)
+	require.NotErrorIs(t, err, engine.ErrRefused)
+
+	err = engine.EditProject(t.Context(), s, h.project())
+	require.ErrorIs(t, err, boom)
+	require.NotErrorIs(t, err, engine.ErrRefused)
 }
 
 func TestAddProject(t *testing.T) {

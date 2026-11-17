@@ -9,7 +9,7 @@ import (
 var toolchainHosts = []string{
 	"api.github.com", "dl.google.com", "github.com", "go.dev", "mise-versions.jdx.dev", "mise.jdx.dev",
 	"nodejs.org", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
-	"sh.rustup.rs", "static.rust-lang.org",
+	"sh.rustup.rs", "static.rust-lang.org", "tuf-repo-cdn.sigstore.dev",
 }
 
 // registryHosts are the package registries of each ecosystem; both phases reach them.

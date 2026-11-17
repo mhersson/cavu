@@ -28,7 +28,7 @@ func SuggestFiles() []string {
 	return append([]string{
 		"Makefile", "justfile", "Justfile", ".justfile", "Taskfile.yml", "Taskfile.yaml",
 		"go.mod", "Cargo.toml", "package.json",
-		"pytest.ini", "pyproject.toml", "setup.cfg",
+		"pytest.ini", "pyproject.toml", "setup.cfg", "uv.lock",
 		"gradlew", "build.gradle", "build.gradle.kts",
 		"mvnw", "pom.xml",
 	}, dotnetPatterns...)
@@ -54,6 +54,8 @@ func Suggest(files map[string][]byte) (command string, ok bool) {
 		return "cargo test", true
 	case hasRealNPMTestScript(files["package.json"]):
 		return "npm test", true
+	case hasPytestMarker(files) && has(files, "uv.lock"):
+		return "uv run pytest -q", true
 	case hasPytestMarker(files):
 		return "pytest -q", true
 	case has(files, "gradlew"):

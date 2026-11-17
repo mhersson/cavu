@@ -39,6 +39,7 @@ type meter struct {
 	skipLine bool
 	buf      []byte
 	overflow bool
+	errored  bool // an SSE error event: the stream's form of an error response
 	usage    Usage
 	seen     bool
 }
@@ -125,6 +126,8 @@ func (m *meter) handleLine(line []byte) {
 			m.usage.CacheWrite = nonZero(u.CacheWrite, m.usage.CacheWrite)
 			m.seen = true
 		}
+	case "error":
+		m.errored = true
 	}
 }
 
@@ -163,9 +166,11 @@ func (m *meter) result() (Usage, bool) {
 
 // meterBody passes bytes through unchanged and reports usage on Close.
 type meterBody struct {
-	rc io.ReadCloser
-	m  *meter // nil when the response is not metered
-	h  *handler
+	rc  io.ReadCloser
+	m   *meter // nil when the response is not metered
+	h   *handler
+	l   *ledger // nil when the response costs nothing
+	why string  // why the response cannot be metered
 }
 
 func encoded(res *http.Response) bool {
@@ -174,10 +179,16 @@ func encoded(res *http.Response) bool {
 	return enc != "" && !strings.EqualFold(enc, "identity")
 }
 
-func newMeterBody(res *http.Response, h *handler) io.ReadCloser {
-	b := &meterBody{rc: res.Body, h: h}
+func newMeterBody(res *http.Response, h *handler, l *ledger) io.ReadCloser {
+	b := &meterBody{rc: res.Body, h: h, l: l}
 
-	if res.StatusCode >= 400 || encoded(res) {
+	if res.StatusCode >= 400 {
+		return b
+	}
+
+	if encoded(res) {
+		b.why = whyEncoded
+
 		return b
 	}
 
@@ -186,6 +197,8 @@ func newMeterBody(res *http.Response, h *handler) io.ReadCloser {
 		b.m = &meter{sse: true}
 	case "application/json":
 		b.m = &meter{}
+	default:
+		b.why = whyType
 	}
 
 	return b
@@ -203,12 +216,29 @@ func (b *meterBody) Read(p []byte) (int, error) {
 func (b *meterBody) Close() error {
 	err := b.rc.Close()
 
+	var (
+		u  Usage
+		ok bool
+	)
+
 	if b.m != nil {
-		if u, ok := b.m.result(); ok {
-			b.m = nil
+		if u, ok = b.m.result(); ok {
 			b.h.usage(u)
 		}
 	}
+
+	if b.l != nil {
+		switch {
+		case ok || b.why != "":
+			b.l.count(u, b.why)
+		case b.m.overflow:
+			b.l.count(u, whyLarge)
+		case !b.m.errored: // a stream with an error event is an error response, which costs nothing
+			b.l.count(u, whyNoUsage)
+		}
+	}
+
+	b.m, b.l = nil, nil
 
 	return err
 }

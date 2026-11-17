@@ -20,13 +20,14 @@ import (
 
 func init() {
 	commands["task"] = command{
-		summary: "task add | list | show | diff | run | answer | retry | cancel | done | mark: add a task, read one, run one, or act on one",
+		summary: "task add | edit | list | show | diff | run | answer | retry | cancel | done | mark: add a task, read one, run one, or act on one",
 		run:     runTask,
 	}
 }
 
 const (
 	taskAddUsage    = "cavu task add PROJECT --title TITLE [--depends-on ID[,ID]...] [--start] [--body-file FILE, else the body is read from a pipe] [--data-dir DIR]"
+	taskEditUsage   = "cavu task edit ID [--title TITLE] [--body-file FILE] [--depends-on ID[,ID]...] [--data-dir DIR]"
 	taskListUsage   = "cavu task list [--data-dir DIR]"
 	taskShowUsage   = "cavu task show ID [--events] [--data-dir DIR]"
 	taskDiffUsage   = "cavu task diff ID [--data-dir DIR]"
@@ -45,6 +46,8 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		switch args[0] {
 		case "add":
 			return taskAdd(ctx, rest, stdin, stdout, stderr)
+		case "edit":
+			return taskEdit(ctx, rest, stderr)
 		case "list":
 			return taskList(ctx, rest, stdout, stderr)
 		case "show":
@@ -67,7 +70,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	usage := strings.Join([]string{
-		taskAddUsage, taskListUsage, taskShowUsage, taskDiffUsage, taskRunUsage, taskAnswerUsage, taskRetryUsage, taskCancelUsage,
+		taskAddUsage, taskEditUsage, taskListUsage, taskShowUsage, taskDiffUsage, taskRunUsage, taskAnswerUsage, taskRetryUsage, taskCancelUsage,
 		taskDoneUsage, taskMarkUsage,
 	}, "\n       ")
 
@@ -138,6 +141,47 @@ func taskAdd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	return startTask(ctx, a.actions(), t.ID, p.Name)
+}
+
+// taskEdit changes only the title, body and dependencies it is given; an empty
+// --depends-on removes every dependency.
+func taskEdit(ctx context.Context, args []string, stderr io.Writer) error {
+	f := newVerbFlags(taskEditUsage, stderr)
+	title := f.String("title", "", "what the task asks for, in one line of at most 200 characters")
+	bodyFile := f.String("body-file", "", "a file holding the task's description")
+	dependsOn := f.String("depends-on", "", "the tasks that must be done before this one runs, as ids separated by commas; empty removes them all")
+
+	return onTask(ctx, f, args, func(a *app, id int64) error {
+		given := f.given()
+
+		t, err := a.store.Task(ctx, id)
+		if err != nil {
+			return fmt.Errorf("task %d: %w", id, err)
+		}
+
+		deps, err := a.store.TaskDeps(ctx, id)
+		if err != nil {
+			return fmt.Errorf("task %d: %w", id, err)
+		}
+
+		if given["title"] {
+			t.Title = *title
+		}
+
+		if given["body-file"] {
+			if t.Body, err = readBody(*bodyFile, nil); err != nil {
+				return err
+			}
+		}
+
+		if given["depends-on"] {
+			if deps, err = taskIDs(*dependsOn); err != nil {
+				return err
+			}
+		}
+
+		return engine.EditTask(ctx, a.store, t, deps)
+	})
 }
 
 // taskIDs reads task ids separated by commas; empty is none.

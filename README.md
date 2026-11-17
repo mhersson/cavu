@@ -16,7 +16,7 @@ Pre-release. The verbs today:
 - `cavu image build` builds the sandbox image on Docker or Podman.
 - `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge.
 - `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
-- `cavu task` adds tasks, each with the tasks it depends on, lists and shows them, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
+- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts, lists and shows them, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 - `cavu serve` drives every started task and serves the HTTP API until interrupted.
 
@@ -80,6 +80,12 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu task add web --title "Test the login redirect" --depends-on ID --start
    ```
 
+   `cavu task edit ID` changes only the title, body or dependencies it is given, until the task's first run starts; `--depends-on ""` removes every dependency.
+
+   ```
+   cavu task edit ID --depends-on 3,4
+   ```
+
    `task run` drives only the task it names, so run a dependency first: on a task that waits for one, `task run` prints why and waits until that task is done or you interrupt it.
 
    A task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
@@ -121,7 +127,7 @@ cavu replay --name no-continuations --no-continuations
 
 `--model ID`, `--effort LEVEL`, `--no-continuations`, `--no-verify-fix` and `--web-tools` (which turns `web_tools` on, whatever the project says) change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
 
-A replayed task starts as a new task does, so its project needs a passed baseline or a waived verify, and the replay says why such a task waits when it does. An interrupted replay cancels the task it was running and is never compared with; the next replay ends what an earlier one left unfinished.
+A replayed task starts as a new task does, so its project needs a passed baseline or a waived verify, and the replay says why such a task waits when it does. An interrupted replay cancels the task it was running and is never compared with; the next replay ends what an earlier one left unfinished. Run one replay at a time: a replay started while another runs cancels that one's unfinished shadows.
 
 ### Go projects
 
@@ -129,7 +135,9 @@ Download the modules in the setup command (`go mod download`): the setup phase r
 
 ### Python projects
 
-Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. Runs of one project run side by side and share the interpreter, so a bare `pip install` is not safe beside another run of the project. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
+A `uv.lock` at the repository's root installs uv. Use `uv sync --frozen` as the setup command and `uv run` in the verify command (`uv run pytest -q`): every run then has its own `.venv`, which uv keeps out of git. uv runs on the Python that mise installs and never downloads its own.
+
+Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. A project's open runs share the interpreter's packages, so a bare `pip install` in the setup command changes them under every other open run of the project. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
 
 ## Licence
 
