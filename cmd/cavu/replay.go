@@ -153,28 +153,29 @@ func printReplay(ctx context.Context, s *store.Store, r store.Replay, w io.Write
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TASK\tTITLE\tVERIFY\tPREV\tTURNS\tPREV\tTOKENS\tPREV\tCOST (ESTIMATE)\tPREV\tDURATION\tPREV\tDIFF")
+	fmt.Fprintln(tw, "TASK\tTITLE\tVERIFY\tPREV\tASKED\tPREV\tTURNS\tPREV\tTOKENS\tPREV\tCOST (ESTIMATE)\tPREV\tDURATION\tPREV\tDIFF")
 
 	for _, row := range replay.Compare(now, before, titles) {
 		n, p := cells(row.Now), cells(row.Before)
 
 		fmt.Fprintf(tw, "%d\t%s", row.SourceTaskID, row.Title)
 
-		for i := range n[:5] {
+		last := len(n) - 1
+		for i := range n[:last] {
 			fmt.Fprintf(tw, "\t%s\t%s", n[i], p[i])
 		}
 
-		fmt.Fprintf(tw, "\t%s\n", n[5])
+		fmt.Fprintf(tw, "\t%s\n", n[last])
 	}
 
 	return tw.Flush()
 }
 
-// cells are an item's verify (else its stop), turns, tokens, cost, duration and
-// diff path; all empty when the replay has no item for the task.
-func cells(i *store.ReplayItem) [6]string {
+// cells are an item's verify (else its stop), questions asked, turns, tokens,
+// cost, duration and diff path; all empty when the replay has no item for the task.
+func cells(i *store.ReplayItem) [7]string {
 	if i == nil {
-		return [6]string{}
+		return [7]string{}
 	}
 
 	verify := i.Verify
@@ -182,8 +183,8 @@ func cells(i *store.ReplayItem) [6]string {
 		verify = i.Stop
 	}
 
-	return [6]string{
-		verify, fmt.Sprint(i.Turns), fmt.Sprint(i.Tokens), fmt.Sprintf("$%.4f", i.CostEstimateUSD),
+	return [7]string{
+		verify, fmt.Sprint(i.Asked), fmt.Sprint(i.Turns), fmt.Sprint(i.Tokens), fmt.Sprintf("$%.4f", i.CostEstimateUSD),
 		i.Duration.Round(time.Second).String(), i.DiffPath,
 	}
 }

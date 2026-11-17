@@ -126,6 +126,38 @@ func TestReplayVerbPrintsOneRowPerSource(t *testing.T) {
 	assert.Equal(t, items[2][0].DiffPath, second[0][len(second[0])-1], "the diff path is this replay's")
 }
 
+func TestReplayTablePrintsTheQuestionsAsked(t *testing.T) {
+	dir, id, _ := runSetup(t)
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	task, err := strconv.ParseInt(id, 10, 64)
+	require.NoError(t, err)
+
+	var r store.Replay
+
+	for _, asked := range []int{2, 3} {
+		r, err = a.store.CreateReplay(t.Context(), store.Replay{Name: "r", Config: map[string]string{}})
+		require.NoError(t, err)
+		require.NoError(t, a.store.PutReplayItem(t.Context(), store.ReplayItem{ReplayID: r.ID, SourceTaskID: task, TaskID: task, Asked: asked}))
+		require.NoError(t, a.store.EndReplay(t.Context(), r.ID, time.Now()))
+	}
+
+	var out strings.Builder
+	require.NoError(t, printReplay(t.Context(), a.store, r, &out))
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2, out.String())
+
+	// The columns are aligned, so a cell starts where its heading does.
+	col := strings.Index(lines[0], "ASKED")
+	require.GreaterOrEqual(t, col, 0, out.String())
+	assert.Equal(t, []string{"3", "2"}, strings.Fields(lines[1][col:])[:2], "this replay's value, then the previous one's")
+}
+
 func TestReplayVerbFlagsReachConfig(t *testing.T) {
 	dir, id, fake := runSetup(t)
 	markWithBase(t, dir, id)
