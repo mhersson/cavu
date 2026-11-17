@@ -20,7 +20,7 @@ func init() {
 func runSecret(ctx context.Context, args []string, stdin io.Reader, _, stderr io.Writer) error {
 	f := newVerbFlags("cavu secret set NAME [--data-dir DIR] < FILE", stderr)
 	if len(args) == 0 || args[0] != "set" {
-		return f.usageError()
+		return f.helpOr(args)
 	}
 
 	name, err := f.parse(args[1:], 1)

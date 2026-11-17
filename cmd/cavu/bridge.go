@@ -18,14 +18,28 @@ func init() {
 	}
 }
 
-func runBridge(ctx context.Context, args []string, _ io.Reader, _, stderr io.Writer) error {
+func runBridge(ctx context.Context, args []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+
+	// The flag package would write help to standard error.
+	fs.Usage = func() {}
 
 	listen := fs.String("listen", "127.0.0.1:3128", "address to listen on")
 	socket := fs.String("socket", "/handoff/proxy.sock", "the proxy's Unix socket")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fmt.Fprintln(stdout, "usage: cavu bridge [--listen ADDR] [--socket PATH]")
+			fs.PrintDefaults()
+
+			return nil
+		}
+
+		fmt.Fprintln(stderr, "usage: cavu bridge [--listen ADDR] [--socket PATH]")
+		fs.PrintDefaults()
+
 		return exitError{code: 2, err: err}
 	}
 

@@ -146,3 +146,26 @@ func TestBridgeRejectsAnExtraArgument(t *testing.T) {
 	assert.Equal(t, 1, code)
 	assert.NotEmpty(t, stderr)
 }
+
+func TestVerbHelpPrintsOnStdoutAndExitsZero(t *testing.T) {
+	for _, args := range [][]string{
+		{"task", "-h"}, {"task", "run", "-h"}, {"settings", "set", "--help"},
+		{"project", "set", "-h"}, {"secret", "-h"}, {"image", "build", "-h"}, {"bridge", "-h"},
+	} {
+		var stdout, stderr bytes.Buffer
+
+		assert.Equal(t, 0, run(args, strings.NewReader(""), &stdout, &stderr), args)
+		assert.NotEmpty(t, stdout.String(), args)
+		assert.Empty(t, stderr.String(), args)
+	}
+}
+
+func TestVerbUsageErrorStaysOnStderr(t *testing.T) {
+	for _, args := range [][]string{{"task", "run"}, {"task", "run", "1", "--bogus"}, {"settings", "set", "k"}} {
+		var stdout, stderr bytes.Buffer
+
+		assert.Equal(t, 2, run(args, strings.NewReader(""), &stdout, &stderr), args)
+		assert.Empty(t, stdout.String(), args)
+		assert.NotEmpty(t, stderr.String(), args)
+	}
+}

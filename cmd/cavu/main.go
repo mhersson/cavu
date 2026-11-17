@@ -81,6 +81,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	if he, ok := errors.AsType[helpError](err); ok {
+		he.f.SetOutput(stdout)
+		he.f.Usage()
+
+		return 0
+	}
+
 	if ee, ok := errors.AsType[exitError](err); ok {
 		return ee.code
 	}

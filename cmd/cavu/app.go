@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -253,7 +255,7 @@ func newVerbFlags(usage string, stderr io.Writer) verbFlags {
 	fs := flag.NewFlagSet("cavu", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: %s\n", usage)
+		fmt.Fprintf(fs.Output(), "usage: %s\n", usage)
 		fs.PrintDefaults()
 	}
 
@@ -265,11 +267,28 @@ func newVerbFlags(usage string, stderr io.Writer) verbFlags {
 // parse returns the verb's n positional arguments. They come before the flags,
 // because the flag package stops at the first positional argument.
 func (f verbFlags) parse(args []string, n int) ([]string, error) {
+	if slices.ContainsFunc(args[:min(n, len(args))], isHelp) {
+		return nil, helpError{f}
+	}
+
 	if len(args) < n {
 		return nil, f.usageError()
 	}
 
-	if err := f.Parse(args[n:]); err != nil {
+	// The flag package prints the usage itself; hold it back to tell a help
+	// request from a mistake.
+	usage := f.Usage
+	f.Usage = func() {}
+	err := f.Parse(args[n:])
+	f.Usage = usage
+
+	if errors.Is(err, flag.ErrHelp) {
+		return nil, helpError{f}
+	}
+
+	if err != nil {
+		f.Usage()
+
 		return nil, exitError{code: 2, err: err}
 	}
 
@@ -287,6 +306,23 @@ func (f verbFlags) given() map[string]bool {
 	f.Visit(func(fl *flag.Flag) { set[fl.Name] = true })
 
 	return set
+}
+
+// helpError is a request for the verb's usage with -h or --help. run prints it
+// on standard output and exits 0.
+type helpError struct{ f verbFlags }
+
+func (helpError) Error() string { return "help requested" }
+
+func isHelp(arg string) bool { return arg == "-h" || arg == "--help" }
+
+// helpOr returns a help request when the first argument asks for one, else a usage error.
+func (f verbFlags) helpOr(args []string) error {
+	if len(args) > 0 && isHelp(args[0]) {
+		return helpError{f}
+	}
+
+	return f.usageError()
 }
 
 func (f verbFlags) usageError() error {
