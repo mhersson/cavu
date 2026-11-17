@@ -96,7 +96,7 @@ func TestReduce(t *testing.T) {
 			want: engine.Facts{
 				Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact,
 				Verify: engine.ResultFailed, LastVerifyOutput: "FAIL TestLogin",
-				OpenStop:      &engine.StopFact{Reason: engine.StopVerifyFailed, Explanation: "Verify failed."},
+				OpenStop:      &engine.StopFact{Reason: engine.StopVerifyFailed, Explanation: "Verify failed.", Action: "retry"},
 				Continuations: 1, VerifyFixes: 1,
 			},
 		},
@@ -119,7 +119,7 @@ func TestReduce(t *testing.T) {
 			events: preparedRun(firstSession, sandboxStop, resumeSession, sandboxStop),
 			want: engine.Facts{
 				Started: true, RunOpen: true, Prepared: true, SessionID: "s1",
-				OpenStop: &engine.StopFact{Reason: engine.StopSandbox, Explanation: "The runner failed.", At: stopAt}, Faults: 2,
+				OpenStop: &engine.StopFact{Reason: engine.StopSandbox, Explanation: "The runner failed.", Action: "retry", At: stopAt}, Faults: 2,
 			},
 		},
 		{
@@ -152,7 +152,7 @@ func TestReduce(t *testing.T) {
 			name: "a merge after the export",
 			events: preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""),
 				ev(engine.Exported, `{"head_commit":"def456"}`), ev(engine.RunEnded, `{"outcome":"exported"}`), ev(engine.Merged, "")),
-			want: engine.Facts{Started: true, Exported: true, Merged: true},
+			want: engine.Facts{Started: true, Exported: true, Export: engine.ExportedPayload{HeadCommit: "def456"}, Merged: true},
 		},
 		{
 			name:   "a retry with no open stop",
@@ -211,7 +211,22 @@ func TestReduce(t *testing.T) {
 			events: preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""),
 				ev(engine.Exported, `{"head_commit":"def456","diff_path":"diff.patch","bundle_path":"task.bundle","files_changed":2}`),
 				ev(engine.RunEnded, `{"outcome":"exported"}`)),
-			want: engine.Facts{Started: true, Exported: true},
+			want: engine.Facts{
+				Started: true, Exported: true,
+				Export: engine.ExportedPayload{HeadCommit: "def456", DiffPath: "diff.patch", BundlePath: "task.bundle", FilesChanged: 2},
+			},
+		},
+		{
+			name: "the newest of two exports",
+			events: []store.Event{
+				ev(engine.TaskStarted, ""),
+				ev(engine.Exported, `{"head_commit":"aaa111","diff_path":"one.patch","files_changed":1,"diff_stat":["a.go | 1 +"]}`),
+				ev(engine.Exported, `{"head_commit":"bbb222","diff_path":"two.patch","bundle_path":"two.bundle","files_changed":3}`),
+			},
+			want: engine.Facts{
+				Started: true, Exported: true,
+				Export: engine.ExportedPayload{HeadCommit: "bbb222", DiffPath: "two.patch", BundlePath: "two.bundle", FilesChanged: 3},
+			},
 		},
 		{
 			name: "the ecosystems of the prepare",

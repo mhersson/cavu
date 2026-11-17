@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -103,9 +102,7 @@ func (s *server) taskView(ctx context.Context, id int64) (taskJSON, error) {
 	}
 
 	if st := f.OpenStop; st != nil {
-		// The facts keep no stop's action, so it is read from the stop's event.
-		sp, _ := newest[engine.StoppedPayload](events, engine.Stopped)
-		v.Stop = &stopJSON{Reason: st.Reason, Explanation: st.Explanation, Action: sp.Action}
+		v.Stop = &stopJSON{Reason: st.Reason, Explanation: st.Explanation, Action: st.Action}
 
 		if !st.ResetsAt.IsZero() {
 			v.Stop.ResetsAt = new(st.ResetsAt.UTC())
@@ -119,7 +116,7 @@ func (s *server) taskView(ctx context.Context, id int64) (taskJSON, error) {
 		}
 	}
 
-	if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
+	if x := f.Export; f.Exported {
 		v.Change = &changeJSON{HeadCommit: x.HeadCommit, FilesChanged: x.FilesChanged, DiffStat: append([]string{}, x.DiffStat...)}
 	}
 
@@ -142,19 +139,6 @@ func (s *server) waiting(snap engine.Snapshot) string {
 	}
 
 	return ""
-}
-
-// newest decodes the payload of the newest event of typ, if there is one.
-func newest[T any](events []store.Event, typ string) (T, bool) {
-	var v T
-
-	for _, e := range slices.Backward(events) {
-		if e.Type == typ {
-			return v, json.Unmarshal(e.Payload, &v) == nil
-		}
-	}
-
-	return v, false
 }
 
 // taskList is a list of tasks as the API shows it.
