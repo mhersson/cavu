@@ -79,7 +79,12 @@ func TestResultSchemaIsValidJSON(t *testing.T) {
 		}
 		Then struct {
 			Required   []string
-			Properties struct{ Questions struct{ MinItems int } }
+			Properties struct {
+				Questions struct {
+					Type     string
+					MinItems int
+				}
+			}
 		}
 	}
 
@@ -97,6 +102,7 @@ func TestResultSchemaIsValidJSON(t *testing.T) {
 
 	assert.Equal(t, "blocked", schema.If.Properties.Status.Const, "the condition is a blocked status")
 	assert.Equal(t, []string{"questions"}, schema.Then.Required)
+	assert.Equal(t, "array", schema.Then.Properties.Questions.Type)
 	assert.Equal(t, 1, schema.Then.Properties.Questions.MinItems)
 
 	raw[0] = 'x'
