@@ -400,8 +400,8 @@ func TestStageCancelled(t *testing.T) {
 	requireNoSession(t, f)
 }
 
-// Without a base commit nothing is staged, but the config dir is cleared all
-// the same.
+// Without a base commit or instance files nothing is staged, but the config
+// dir is cleared all the same.
 func TestClearWithoutBaseCommit(t *testing.T) {
 	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
 
