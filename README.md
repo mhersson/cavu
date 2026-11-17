@@ -86,6 +86,10 @@ cavu replay --name no-continuations --no-continuations
 
 `--model ID`, `--effort LEVEL`, `--no-continuations`, `--no-verify-fix` and `--web-tools` (which turns `web_tools` on, whatever the project says) change the configuration, and `--image TAG` replays on another sandbox image, for another Claude Code version; that image is not checked. Each row has the verify result, turns, tokens, cost estimate and duration, with the previous replay's value beside it (empty on a first replay), and the path of the diff. `cavu task mark ID --unmark` clears a mark.
 
+### Go projects
+
+Download the modules in the setup command (`go mod download`): the setup phase reaches `storage.googleapis.com`, where the module proxy sends large modules, and the agent phase reads the modules from the project's cache. A task that needs a large module the setup did not fetch is refused with the denied-host line; `cavu project set NAME --egress storage.googleapis.com` allows that host for the project.
+
 ### Python projects
 
 Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
