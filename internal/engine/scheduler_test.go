@@ -635,7 +635,9 @@ func TestSchedulerRunsRequestedChecks(t *testing.T) {
 
 	got := h.project()
 	assert.Nil(t, got.CheckRequestedAt)
-	assert.Equal(t, store.CheckResult{Tools: preparedOK.Tools, VerifySuggestion: "make test"}, got.CheckResult)
+	assert.Equal(t, store.CheckResult{
+		Tools: preparedOK.Tools, BaseCommit: preparedOK.BaseCommit, VerifySuggestion: "make test",
+	}, got.CheckResult)
 	require.NotNil(t, got.Baseline)
 	assert.True(t, got.Baseline.Passed)
 

@@ -227,7 +227,8 @@ func TestCheckProjectStoresTheBaseline(t *testing.T) {
 			assert.Equal(t, "make test", suggestion)
 			assert.NotNil(t, h.project().CheckRequestedAt, "a check a person runs answers no request")
 			assert.Equal(t, store.CheckResult{
-				Tools: tc.res.Tools, IgnoredTools: tc.res.IgnoredTools, FailedStep: tc.res.FailedStep, VerifySuggestion: "make test",
+				Tools: tc.res.Tools, IgnoredTools: tc.res.IgnoredTools, BaseCommit: tc.res.BaseCommit, FailedStep: tc.res.FailedStep,
+				Output: tc.res.Output, VerifySuggestion: "make test",
 			}, h.project().CheckResult)
 
 			checks := h.runner.callsOf("check")

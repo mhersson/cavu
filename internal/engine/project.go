@@ -172,7 +172,8 @@ func (l *Loop) storeCheck(ctx context.Context, projectID int64, answers time.Tim
 		}
 
 		p.CheckResult = store.CheckResult{
-			Tools: res.Tools, IgnoredTools: res.IgnoredTools, FailedStep: res.FailedStep, VerifySuggestion: suggestion,
+			Tools: res.Tools, IgnoredTools: res.IgnoredTools, BaseCommit: res.BaseCommit, FailedStep: res.FailedStep,
+			Output: res.Output, VerifySuggestion: suggestion,
 		}
 
 		switch {

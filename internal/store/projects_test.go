@@ -96,8 +96,8 @@ func TestProjectCheckFields(t *testing.T) {
 	p := fullProject()
 	p.CheckRequestedAt = &at
 	p.CheckResult = CheckResult{
-		Tools: []string{"go"}, IgnoredTools: []string{"zig"},
-		FailedStep: "setup", VerifySuggestion: "make check", Fault: "boom",
+		Tools: []string{"go"}, IgnoredTools: []string{"zig"}, BaseCommit: "base123",
+		FailedStep: "setup", Output: "no rule", VerifySuggestion: "make check", Fault: "boom",
 	}
 
 	created, err := s.CreateProject(ctx, p)

@@ -35,8 +35,9 @@ type Project struct {
 
 // CheckResult is what the newest environment check that ended found.
 type CheckResult struct {
-	Tools, IgnoredTools                 []string
-	FailedStep, VerifySuggestion, Fault string // Fault: a runner error's text
+	Tools, IgnoredTools            []string
+	BaseCommit, FailedStep, Output string
+	VerifySuggestion, Fault        string // Fault: a runner error's text
 }
 
 const projectColumns = `id, name, repo_url, base_branch, setup_command, verify_command,

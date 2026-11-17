@@ -414,21 +414,22 @@ func (a *app) checkedByServer(ctx context.Context, p store.Project) (store.Proje
 }
 
 // storedCheck is the newest check's result as the project stores it, with its
-// fault as the error. The base commit and the output are the baseline's, so a
-// check that stored none, with no verify command or a waived one, shows neither.
+// fault as the error and the baseline's result as the baseline's.
 func storedCheck(p store.Project) (engine.PrepareResult, error) {
 	c := p.CheckResult
 	if c.Fault != "" {
 		return engine.PrepareResult{}, errors.New(c.Fault)
 	}
 
-	res := engine.PrepareResult{Tools: c.Tools, IgnoredTools: c.IgnoredTools, FailedStep: c.FailedStep}
+	res := engine.PrepareResult{
+		BaseCommit: c.BaseCommit, Tools: c.Tools, IgnoredTools: c.IgnoredTools, FailedStep: c.FailedStep, Output: c.Output,
+	}
 
 	switch b := p.Baseline; {
 	case b != nil && b.Passed:
-		res.BaseCommit, res.Output, res.Baseline = b.Commit, b.Output, engine.ResultPassed
+		res.Baseline = engine.ResultPassed
 	case b != nil:
-		res.BaseCommit, res.Output, res.Baseline = b.Commit, b.Output, engine.ResultFailed
+		res.Baseline = engine.ResultFailed
 	case p.VerifyWaived:
 		res.Baseline = engine.ResultWaived
 	}

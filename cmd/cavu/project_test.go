@@ -457,8 +457,16 @@ func TestProjectCheckUnderAServer(t *testing.T) {
 		}, 1, []string{"setup", "no rule to make target"}},
 		{"a waived verify", []string{"--no-verify"}, engine.PrepareResult{
 			BaseCommit: "base123", Baseline: engine.ResultWaived,
-		}, 0, []string{engine.ResultWaived}},
-		{"no verify command", nil, engine.PrepareResult{BaseCommit: "base123"}, 1, []string{"cavu project set web --verify 'go test ./...'"}},
+		}, 0, []string{"base123", engine.ResultWaived}},
+		{"a waived verify's failed setup", []string{"--no-verify"}, engine.PrepareResult{
+			BaseCommit: "base123", FailedStep: "setup", Output: "no rule to make target",
+		}, 1, []string{"base123", "setup", "no rule to make target"}},
+		{"no verify command", nil, engine.PrepareResult{BaseCommit: "base123"}, 1, []string{
+			"base123", "cavu project set web --verify 'go test ./...'",
+		}},
+		{"no verify command and a failed setup", nil, engine.PrepareResult{
+			BaseCommit: "base123", FailedStep: "setup", Output: "no rule to make target",
+		}, 1, []string{"base123", "setup", "no rule to make target", "cavu project set web --verify 'go test ./...'"}},
 	}
 
 	for _, tc := range cases {
