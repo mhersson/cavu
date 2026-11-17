@@ -44,7 +44,13 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	// A hangup ends a verb as Ctrl-C does, unless nohup ignores it: Notify would undo that.
+	if !signal.Ignored(syscall.SIGHUP) {
+		signals = append(signals, syscall.SIGHUP)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), signals...)
 	defer stop()
 	// Restore default signal handling after the first signal, so a second
 	// interrupt stops a verb that ignores ctx.
