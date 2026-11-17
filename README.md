@@ -6,7 +6,77 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 ## Status
 
-Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, and `cavu project` adds, changes and lists projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark.
+Pre-release. Today `cavu version` prints the version, `cavu settings` sets and shows the settings, `cavu secret set` stores a secret read from standard input, `cavu image build` builds the sandbox image on Docker or Podman, `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge, and `cavu project` adds, changes and lists projects and checks a project's environment, storing its baseline, and `cavu task` adds, lists and shows tasks, runs one in the sandbox until its change is ready for review or the task stops, prints a task's diff, and records a person's answer, retry, cancel and mark.
+
+## Try it
+
+CAVU needs Docker or Podman and a Linux or macOS host. The commands below keep their data in one directory: the default is created on first use, and `CAVU_DATA_DIR` or `--data-dir DIR` puts it elsewhere.
+
+1. Build the binary and the sandbox image. The build opens the data directory and uses its `runtime` and `ca_bundle_path` settings.
+
+   ```
+   make image
+   ```
+
+   With a built `cavu`, `cavu image build` builds the image alone.
+
+2. Set what a run needs. In `subscription` mode the credential is a subscription token; in `key` mode also set the endpoint.
+
+   ```
+   cavu settings set endpoint_mode subscription
+   cavu settings set model_work MODEL
+   cavu settings set commit_name "Your Name"
+   cavu settings set commit_email you@example.com
+   cavu settings set endpoint_url https://gateway.example.com     # key mode only
+   cavu settings set endpoint_auth_header x-api-key               # key mode only
+   ```
+
+3. Store the secrets from standard input, never as arguments. `forge_token` is for a private repository.
+
+   ```
+   cavu secret set endpoint_credential < credential.txt
+   cavu secret set forge_token < token.txt
+   ```
+
+4. Check the setup. Each line is a check; `skipped` follows from an earlier failure and `warning` passes. The exit code is 1 when a check failed.
+
+   ```
+   cavu doctor
+   ```
+
+5. Add a project, then check its environment. The check builds the workspace, runs the setup and verify commands once and stores the result as the project's baseline. A task runs only against a project that has a baseline.
+
+   ```
+   cavu project add web --repo https://github.com/OWNER/REPO.git --verify "make test"
+   cavu project check web
+   ```
+
+   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. `cavu project set web` changes a project.
+
+6. Add a task and run it. `task run` prints each event as it happens and ends with the task's status.
+
+   ```
+   cavu task add web --title "Fix the login redirect" --body-file task.md
+   cavu task run ID
+   cavu task show ID
+   cavu task diff ID
+   ```
+
+   A task in `in_review` has its change ready: read the diff, push the branch and merge it yourself.
+
+When a task stops, `task run` exits 3 and prints the reason, what it means and what clears it:
+
+```
+cavu task answer ID < answer.txt    # the agent asked a question
+cavu task retry ID                  # run it again after fixing the cause
+cavu task cancel ID                 # give up on it
+```
+
+Then `cavu task run ID` again for an answer or a retry. Only one `cavu` verb that drives containers runs at a time; a second one is refused with a message naming the lock.
+
+### Python projects
+
+Packages a setup command installs with `pip` are shared by the project's tasks and accumulate. A virtual environment in the workspace, in a directory `.gitignore` covers, gives per-run packages.
 
 ## Licence
 
