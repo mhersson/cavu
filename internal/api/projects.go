@@ -107,11 +107,9 @@ func (f projectFields) apply(p *store.Project) {
 	maps.Copy(sw, f.Switches)
 	p.Switches = sw
 
-	// An empty cap left in the map would lift the instance's setting to its default.
 	caps := map[string]string{}
 	maps.Copy(caps, p.Caps)
 	maps.Copy(caps, f.Caps)
-	maps.DeleteFunc(caps, func(_, v string) bool { return v == "" })
 	p.Caps = caps
 
 	// A variable keeps its place, since the baseline rests on the list as it is.

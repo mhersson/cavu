@@ -174,7 +174,6 @@ func (f *projectFlags) apply(p *store.Project) error {
 	}
 
 	maps.Copy(p.Caps, caps)
-	maps.DeleteFunc(p.Caps, func(_, v string) bool { return v == "" })
 
 	return nil
 }
