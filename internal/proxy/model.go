@@ -25,7 +25,11 @@ type modelHandler struct {
 	standIn    []byte
 	bearer     bool
 	rp         *httputil.ReverseProxy
+	ledger     *ledger // nil without a budget
 }
+
+// costs marks a request whose answer counts against the budget.
+type costs struct{}
 
 func newModelHandler(m *ModelRoute, tr http.RoundTripper, h *handler) (*modelHandler, error) {
 	// Errors below never echo BaseURL or the credential: either may carry secrets.
@@ -64,6 +68,10 @@ func newModelHandler(m *ModelRoute, tr http.RoundTripper, h *handler) (*modelHan
 		ErrorLog: log.New(io.Discard, "", 0),
 	}
 
+	if b := h.cfg.Budget; b != nil {
+		mh.ledger = &ledger{Budget: *b, onBudget: h.cfg.OnBudget}
+	}
+
 	return mh, nil
 }
 
@@ -92,6 +100,18 @@ func (m *modelHandler) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 
 		return
+	}
+
+	if m.ledger != nil {
+		if m.ledger.refusing() {
+			refuse(w)
+
+			return
+		}
+
+		if r.URL.Path == "/v1/messages" {
+			r = r.WithContext(context.WithValue(r.Context(), costs{}, true))
+		}
 	}
 
 	// Without full duplex the HTTP/1 server closes the request body at the first
@@ -128,7 +148,12 @@ func (m *modelHandler) rewrite(pr *httputil.ProxyRequest) {
 }
 
 func (m *modelHandler) modifyResponse(res *http.Response) error {
-	res.Body = newMeterBody(res, m.h)
+	var l *ledger
+	if m.ledger != nil && res.StatusCode/100 == 2 && res.Request.Context().Value(costs{}) != nil {
+		l = m.ledger
+	}
+
+	res.Body = newMeterBody(res, m.h, l)
 
 	return nil
 }
