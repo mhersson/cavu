@@ -23,11 +23,11 @@ An error is a JSON object with one field, a line saying what went wrong:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not; such a line names the field. |
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless; or the query names a project or a status that does not exist. |
 | 401 | The request has neither a known API token nor a live session cookie, or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, or the id in the path names nothing. |
-| 409 | The write conflicts with what is stored: another project has the name. |
+| 409 | The write conflicts with what is stored: another project has the name, or an event was recorded on the task between an action's read and its write. Nothing was written; send it again. |
 | 413 | The body is larger than 1 MiB. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
 | 500 | The server failed. It logs the cause; the answer holds no detail. |
@@ -141,3 +141,79 @@ Sets settings and instance secrets; either part may be left out:
 ```
 
 A setting's value is a string, null or a JSON object, which is stored as its text; null or `""` unsets the key. A secret is `endpoint_credential` or `forge_token`, sealed at rest; `""` removes it. Every value is checked before anything is written: a key that cannot be set, a value of another kind or one the server would not read, or another secret refuses the whole request with 400. Answers 200 with the settings as `GET` gives them.
+
+### `GET /api/tasks`
+
+Answers 200 with every task but a replay's shadow tasks, oldest first:
+
+```json
+{"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "stop_reason": "question",
+            "waiting": "", "created_at": "2030-01-02T03:04:05Z"}]}
+```
+
+The query `project=NAME` keeps the tasks of one project, and `status=STATUS` the tasks with one status; a project that does not exist, or a status that is not one of [the task's](#the-task), is 400. `stop_reason` is the open stop's reason, else `""`; the other fields are the task's.
+
+### `POST /api/tasks`
+
+Creates a draft task, with the requester `api`:
+
+```json
+{"project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "depends_on": [3], "start": true}
+```
+
+`title` is required: at most 200 characters, with no line break or other control character. `depends_on` names the tasks that must be done before this one runs. With `start` set to `true` the task is started as well, which its project must allow (the project's `runnable`); when it does not, nothing is created. Answers 201 with the task, or 400 when the project does not exist, a field holds what a task may not, a dependency does not exist, or the project is not runnable for a start.
+
+### `GET /api/tasks/{id}`
+
+Answers 200 with the task.
+
+### `PATCH /api/tasks/{id}`
+
+Changes the `title`, `body` or `depends_on` the body names and keeps the others; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts. An edit after that is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
+
+### `POST /api/tasks/{id}/actions`
+
+Records a person's action on the task:
+
+```json
+{"action": "answer", "text": "Link the privacy page and the contact page."}
+```
+
+| Action | What it does | Refused when |
+|--------|--------------|--------------|
+| `start` | Starts a draft task; a task already started is left as it is. | The task is cancelled, or its project is not runnable. |
+| `answer` | Answers the question that stopped the task with `text`. | The task has no open question, or `text` is blank. |
+| `retry` | Clears the open stop, so the task carries on. | The task is cancelled, or has no open stop. |
+| `cancel` | Cancels the task. | The task is cancelled or done. |
+| `done` | Records that the task's change was merged. | The task is not `in_review`. |
+
+Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action or one that is refused, or 409 when an event was recorded on the task between the action's read and its write, such as the server's own next step; nothing is recorded then, and the request may be sent again.
+
+### The task
+
+```json
+{"id": 7, "project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "requester": "api",
+ "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "waiting": "", "depends_on": [3],
+ "stop": {"reason": "question", "explanation": "Which pages should the footer link to?", "action": "answer", "resets_at": null},
+ "questions": [{"question": "Which pages should the footer link to?"}, {"question": "Should it show the year?"}],
+ "change": null, "turns": 33, "duration_ms": 226000, "cost_estimate_usd": 0.325}
+```
+
+A list is `[]` when empty, never null.
+
+| Field | Meaning |
+|-------|---------|
+| `id` | The task's id. |
+| `project` | The name of the task's project. |
+| `title`, `body` | What the task asks for. |
+| `requester` | What created the task: `cli` for a `cavu task add`, `api` for this API. |
+| `created_at` | When the task was created. |
+| `status` | Where the task stands: `cancelled` once cancelled, started or not; else `draft` until started; `done` once its change is merged; `blocked` while a stop is open; `in_review` once its change is exported; `queued` while no run is open; else `running`. |
+| `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; else `""`. |
+| `depends_on` | The ids of the tasks that must be done before this one runs. |
+| `stop` | The open stop, or null: its `reason` (`question`, `environment`, `verify_failed`, `budget`, `timeout`, `no_change`, `agent_error`, `usage_limit`, `endpoint`, `sandbox`, `cancelled` or `dependency`), a one-line `explanation`, the one `action` that clears it (`answer`, `retry`, or `none` for a stop that a clock ends or that stays), and `resets_at`, the time a usage limit resets, else null. |
+| `questions` | While the open stop is `question`, every question the agent asked, of which the explanation holds the first; else `[]`. |
+| `change` | The newest exported change, or null: its `head_commit`, the number of `files_changed`, and `diff_stat`, git's summary of the diff: a line per file, a long list cut short, then the totals. |
+| `turns` | The turns of all the task's agent sessions. |
+| `duration_ms` | The milliseconds from the task's start to its newest event other than the agent's progress, 0 before it starts. |
+| `cost_estimate_usd` | The sum of the costs recorded for the task, an estimate from list prices, not a bill. |

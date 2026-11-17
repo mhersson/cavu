@@ -54,6 +54,11 @@ var routes = []route{
 	{"POST /api/projects/{id}/check", false, (*server).requestCheck},
 	{"GET /api/settings", false, (*server).settings},
 	{"PATCH /api/settings", false, (*server).setSettings},
+	{"GET /api/tasks", false, (*server).tasks},
+	{"POST /api/tasks", false, (*server).createTask},
+	{"GET /api/tasks/{id}", false, (*server).task},
+	{"PATCH /api/tasks/{id}", false, (*server).editTask},
+	{"POST /api/tasks/{id}/actions", false, (*server).act},
 }
 
 // Routes lists every REST route as "METHOD /path". The handler is built from it.

@@ -54,18 +54,21 @@ func (c *clock) add(d time.Duration) {
 // fixture is the handler over a real store with one user and one API token,
 // served on a port the kernel picks.
 type fixture struct {
-	url    string
-	db     string // the store's file
-	store  *store.Store
-	vault  *auth.Vault
-	auth   *auth.Service
-	clock  *clock
-	token  string
-	nudges atomic.Int32
-	bodies []string // every body call got
+	url     string
+	db      string // the store's file
+	store   *store.Store
+	vault   *auth.Vault
+	auth    *auth.Service
+	clock   *clock
+	token   string
+	nudges  atomic.Int32
+	waiting sync.Map // task id to the scheduler's reason it is not acting
+	bodies  []string // every body call got
 }
 
-func newServer(t *testing.T) *fixture {
+// newServer builds the fixture. The handler's Loop records through wrap's
+// store when wrap is given, else through the real store.
+func newServer(t *testing.T, wrap ...func(*store.Store) engine.Store) *fixture {
 	t.Helper()
 
 	db := filepath.Join(t.TempDir(), "cavu.db")
@@ -84,15 +87,28 @@ func newServer(t *testing.T) *fixture {
 	token, err := svc.NewAPIToken(t.Context(), "test")
 	require.NoError(t, err)
 
+	var records engine.Store = s
+	for _, w := range wrap {
+		records = w(s)
+	}
+
 	f := &fixture{db: db, store: s, vault: vault, auth: svc, clock: c, token: token}
 	srv := httptest.NewServer(api.New(api.Deps{
-		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: s, Vault: vault, Now: c.Now},
-		Nudge: func() { f.nudges.Add(1) }, Version: "1.2.3",
+		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: records, Vault: vault, Now: c.Now},
+		Nudge: func() { f.nudges.Add(1) }, Waiting: f.why, Version: "1.2.3",
 	}))
 	t.Cleanup(srv.Close)
 	f.url = srv.URL
 
 	return f
+}
+
+// why answers Deps.Waiting from what the test stored.
+func (f *fixture) why(taskID int64) string {
+	v, _ := f.waiting.Load(taskID)
+	s, _ := v.(string)
+
+	return s
 }
 
 // call sends route with body under the API token and returns the status and the body.
