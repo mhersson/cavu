@@ -117,7 +117,7 @@ func taskAdd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return fmt.Errorf("project %q: %w", name[0], err)
 	}
 
-	t, err := engine.AddTask(ctx, a.store, store.Task{ProjectID: p.ID, Title: *title, Body: body, Requester: "cli"})
+	t, err := engine.AddTask(ctx, a.store, store.Task{ProjectID: p.ID, Title: *title, Body: body, Requester: "cli"}, nil)
 	if err != nil {
 		return err
 	}
@@ -330,7 +330,7 @@ func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 const releaseTimeout = time.Minute
 
 // taskRun starts the task, removes the instance's orphans, and runs the loop
-// until the task rests, printing each event as it is recorded.
+// until the task rests or waits, printing each event as it is recorded.
 func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return onTask(ctx, newVerbFlags(taskRunUsage, stderr), args, func(a *app, id int64) error {
 		rt, err := a.drive(ctx, false)

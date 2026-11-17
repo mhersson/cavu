@@ -9,8 +9,8 @@ import (
 
 // Facts is what a task's events add up to.
 type Facts struct {
-	Started, Cancelled         bool
-	OpenStop                   *StopFact // newest stop with no human action and no session start after it
+	Started, Cancelled, Merged bool
+	OpenStop                   *StopFact // newest stop with no human action and no claim after it
 	RunOpen                    bool
 	Prepared                   bool     // in the open run
 	Ecosystems                 []string // of the open run's prepare, which Work, Verify and Export run with
@@ -22,12 +22,14 @@ type Facts struct {
 	Resumed                    *Resume // a human retry or answer after a stop, other than a sandbox retry, not yet followed by a finished session or prepare, or by a new run when it came from environment
 	LastVerifyOutput           string  // of the newest verify_ended, for the next fix prompt
 	Continuations, VerifyFixes int     // session starts marked automatic, per mode, since the last human action
+	Faults                     int     // sandbox stops since the last human action
 }
 
 // StopFact is the open stop.
 type StopFact struct {
 	Reason, Explanation string
 	ResetsAt            time.Time
+	At                  time.Time // when the stop was recorded
 }
 
 // PrepareFailure is the newest failed prepare in the open run.
@@ -117,6 +119,7 @@ func (f *Facts) apply(e store.Event) {
 		f.resetRun()
 		f.RunOpen = false
 	case PrepareStarted:
+		f.OpenStop = nil
 		if f.RunOpen {
 			f.Prepared, f.PrepareFailure, f.Ecosystems = false, nil, nil
 		}
@@ -145,6 +148,7 @@ func (f *Facts) apply(e store.Event) {
 			}
 		}
 	case VerifyStarted:
+		f.OpenStop = nil
 		if f.RunOpen {
 			f.Verify = ""
 		}
@@ -153,11 +157,19 @@ func (f *Facts) apply(e store.Event) {
 			p := decode[VerifyEndedPayload](e.Payload)
 			f.Verify, f.LastVerifyOutput = p.Result, p.Output
 		}
+	case ExportStarted:
+		f.OpenStop = nil
 	case Exported:
 		f.Exported = true
+	case Merged:
+		f.Merged = true
 	case Stopped:
 		p := decode[StoppedPayload](e.Payload)
-		f.OpenStop = &StopFact{Reason: p.Reason, Explanation: p.Explanation, ResetsAt: p.ResetsAt}
+		f.OpenStop = &StopFact{Reason: p.Reason, Explanation: p.Explanation, ResetsAt: p.ResetsAt, At: e.At}
+
+		if p.Reason == StopSandbox {
+			f.Faults++
+		}
 	}
 }
 
@@ -172,7 +184,7 @@ func (f *Facts) humanAction() {
 // the last human action.
 func (f *Facts) clearStop() {
 	f.OpenStop = nil
-	f.Continuations, f.VerifyFixes = 0, 0
+	f.Continuations, f.VerifyFixes, f.Faults = 0, 0, 0
 }
 
 // resume records a retry or answer that clears an open stop; it must run

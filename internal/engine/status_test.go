@@ -20,8 +20,12 @@ func TestStatusOf(t *testing.T) {
 			engine.Facts{Started: true, Cancelled: true, RunOpen: true, OpenStop: &engine.StopFact{Reason: engine.StopCancelled}},
 			engine.StatusCancelled,
 		},
+		{"cancelled after it was merged", engine.Facts{Started: true, Exported: true, Merged: true, Cancelled: true}, engine.StatusCancelled},
+		{"merged", engine.Facts{Started: true, Exported: true, Merged: true}, engine.StatusDone},
 		{"stopped", engine.Facts{Started: true, RunOpen: true, OpenStop: &engine.StopFact{Reason: engine.StopQuestion}}, engine.StatusBlocked},
+		{"stopped with no run", engine.Facts{Started: true, OpenStop: &engine.StopFact{Reason: engine.StopDependency}}, engine.StatusBlocked},
 		{"exported", engine.Facts{Started: true, Exported: true}, engine.StatusInReview},
+		{"started with no run", engine.Facts{Started: true}, engine.StatusQueued},
 		{"running", engine.Facts{Started: true, RunOpen: true}, engine.StatusRunning},
 	}
 

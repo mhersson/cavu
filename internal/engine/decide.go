@@ -12,12 +12,26 @@ import (
 type Switches struct{ Continuations, VerifyFix, WebTools bool }
 
 // Caps bound the automatic rounds counted in Facts.
-type Caps struct{ Continuations, VerifyFixes int }
+type Caps struct{ Continuations, VerifyFixes, FaultRetries int }
+
+// Pause is what other tasks' open stops mean for a task that wants a session.
+type Pause struct {
+	EndpointTask int64     // another task that holds an open endpoint stop, 0 when none
+	LimitedUntil time.Time // the reset time of another task's open usage_limit stop, zero when none
+}
+
+// Dep is one dependency of a task, with where it stands.
+type Dep struct {
+	TaskID int64
+	Status Status
+}
 
 // Snapshot is a task at one moment, as Decide sees it.
 type Snapshot struct {
 	Task        store.Task
 	Facts       Facts
+	Deps        []Dep // in id order
+	Pause       Pause
 	Now         time.Time
 	Switches    Switches
 	Caps        Caps
@@ -52,6 +66,14 @@ const (
 	StopEndpoint     = "endpoint"
 	StopSandbox      = "sandbox"
 	StopCancelled    = "cancelled"
+	StopDependency   = "dependency"
+)
+
+// The waits before a runner fault is retried: after the first fault since the
+// last human action, and after the second.
+const (
+	firstFaultWait  = 30 * time.Second
+	secondFaultWait = 2 * time.Minute
 )
 
 // UsageLimitFallback is how long a usage limit holds when its reset time is
@@ -80,9 +102,27 @@ type Action struct {
 	ResetsAt  time.Time // stop: when a usage limit resets, always after Now
 }
 
-// Decide returns the next action for s; the first rule that matches wins. It
-// reads nothing but s, so the same snapshot always gives the same action.
+// Decide returns the next action for s; the first rule that matches wins, then
+// the pauses hold a prepare or a session. It reads nothing but s, so the same
+// snapshot always gives the same action.
 func Decide(s Snapshot) Action {
+	a := decide(s)
+	if a.Kind != KindPrepare && a.Kind != KindWork {
+		return a
+	}
+
+	if t := s.Pause.EndpointTask; t != 0 {
+		return Action{Kind: KindWait, Why: fmt.Sprintf("Task %d stopped on the model endpoint; retrying or cancelling it lifts the pause.", t)}
+	}
+
+	if s.Now.Before(s.Pause.LimitedUntil) {
+		return Action{Kind: KindWait, Why: "Another task hit the usage limit, which has not reset yet.", Until: s.Pause.LimitedUntil}
+	}
+
+	return a
+}
+
+func decide(s Snapshot) Action {
 	f := s.Facts
 
 	if !f.Started {
@@ -93,12 +133,30 @@ func Decide(s Snapshot) Action {
 		return halt(StopCancelled, ClearNone, "The task was cancelled.", "The task was cancelled.")
 	}
 
+	if f.Merged {
+		return Action{Kind: KindNone, Why: "The change was merged."}
+	}
+
 	if f.stoppedFor(StopUsageLimit) && s.Now.Before(f.OpenStop.ResetsAt) {
 		return Action{Kind: KindWait, Why: "The usage limit has not reset yet.", Until: f.OpenStop.ResetsAt}
 	}
 
 	if f.stoppedFor(StopUsageLimit) {
 		return work(ModeContinue, "The usage limit has reset.")
+	}
+
+	if f.stoppedFor(StopSandbox) && f.Faults <= s.Caps.FaultRetries {
+		backoff := firstFaultWait
+		if f.Faults > 1 {
+			backoff = secondFaultWait
+		}
+
+		if until := f.OpenStop.At.Add(backoff); s.Now.Before(until) {
+			return Action{Kind: KindWait, Why: "The runner failed; the action it cut is retried after a pause.", Until: until}
+		}
+
+		// The claim of the action decided below closes the stop.
+		f.OpenStop = nil
 	}
 
 	if f.OpenStop != nil {
@@ -111,6 +169,21 @@ func Decide(s Snapshot) Action {
 
 	if f.Exported {
 		return Action{Kind: KindNone, Why: "The change is exported."}
+	}
+
+	if !f.RunOpen {
+		for _, d := range s.Deps {
+			if d.Status == StatusCancelled {
+				return halt(StopDependency, ClearRetry, "A dependency was cancelled.",
+					fmt.Sprintf("Task %d, which this task depends on, was cancelled.", d.TaskID))
+			}
+		}
+
+		for _, d := range s.Deps {
+			if d.Status != StatusDone {
+				return Action{Kind: KindWait, Why: fmt.Sprintf("Task %d, which this task depends on, is not done.", d.TaskID)}
+			}
+		}
 	}
 
 	if f.resumedFrom(StopEnvironment) || !f.RunOpen {

@@ -30,10 +30,14 @@ type Store interface {
 	UpdateProject(ctx context.Context, p store.Project) error
 	Settings(ctx context.Context) (map[string]string, error)
 	Events(ctx context.Context, taskID, afterID int64, limit int) ([]store.Event, error)
+	EventsOmitting(ctx context.Context, taskID int64, omit ...string) ([]store.Event, error)
+	LastEventID(ctx context.Context, taskID int64) (int64, error)
 	Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error)
 	CreateRun(ctx context.Context, r store.Run) (store.Run, error)
 	UpdateRun(ctx context.Context, r store.Run) error
 	OpenRun(ctx context.Context, taskID int64) (store.Run, bool, error)
+	SetTaskDeps(ctx context.Context, taskID int64, dependsOn []int64) error
+	TaskDeps(ctx context.Context, taskID int64) ([]int64, error)
 }
 
 // Loop carries out the actions Decide chooses, through a Runner.
@@ -43,6 +47,7 @@ type Loop struct {
 	Runner         Runner
 	Now            func() time.Time
 	DataDir, Image string
+	Paused         func(taskID int64) Pause // nil outside a scheduler
 }
 
 // Run row outcomes besides the stop reasons that end a run.
@@ -58,11 +63,11 @@ const (
 	maxRepairs   = 100 // stale run rows ended
 )
 
-// defaultCaps bounds the automatic continuations and fix rounds Decide allows.
-var defaultCaps = Caps{Continuations: 2, VerifyFixes: 2}
+// defaultCaps bounds the automatic continuations, fix rounds and fault retries Decide allows.
+var defaultCaps = Caps{Continuations: 2, VerifyFixes: 2, FaultRetries: 2}
 
 var (
-	// ErrActionCap is returned when RunTask decides maxActions times and the task has not rested.
+	// ErrActionCap is returned when RunTask decides maxActions times and the task has neither rested nor waited.
 	ErrActionCap = errors.New("engine: action cap reached")
 	// ErrConflictCap is returned when maxConflicts claims in a row lose to another writer.
 	ErrConflictCap = errors.New("engine: claim conflict cap reached")
@@ -88,10 +93,10 @@ const maxProgressText = 2 << 10 // bytes kept of agent_text.text and agent_tool.
 // recordTimeout bounds recording a runner call's result after ctx has ended.
 const recordTimeout = 10 * time.Second
 
-// RunTask decides and acts until the task rests (action none), ctx ends, or a
-// wait is due later than ctx allows. It returns the final status. The caller
-// keeps one live RunTask per task by holding the data-directory lock or a
-// per-task lock: the compare-and-swap guards claims, not actions in flight.
+// RunTask decides and acts until the task rests (action none) or waits, or ctx
+// ends. It returns the final status. The caller keeps one live RunTask per
+// task by holding the data-directory lock or a per-task lock: the
+// compare-and-swap guards claims, not actions in flight.
 func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
 	p, err := l.newPass(ctx, taskID)
 	if err != nil {
@@ -122,11 +127,12 @@ func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
 		case KindNone:
 			return done(nil)
 		case KindWait:
-			if stop, err := p.wait(ctx, a.Until); stop {
-				return done(err)
+			// A waiting task holds no container. A stop's halt already released its run.
+			if v.Facts.RunOpen && v.Facts.OpenStop == nil {
+				return done(p.free(ctx, v.Task, v.run, false, ""))
 			}
 
-			continue
+			return done(nil)
 		}
 
 		err = p.act(ctx, v, a)
@@ -188,35 +194,75 @@ type draft struct {
 	payload    any
 }
 
-func (p *pass) view(ctx context.Context) (view, error) {
-	t, err := p.Store.Task(ctx, p.taskID)
+// Snapshot reads the task as Decide sees it now.
+func (l *Loop) Snapshot(ctx context.Context, taskID int64) (Snapshot, error) {
+	s, _, err := l.snapshot(ctx, taskID)
+
+	return s, err
+}
+
+// snapshot also returns the events it reduced. The newest event id is read
+// first, so an event that lands after it makes the claim lose and be decided again.
+func (l *Loop) snapshot(ctx context.Context, taskID int64) (Snapshot, []store.Event, error) {
+	last, err := l.Store.LastEventID(ctx, taskID)
 	if err != nil {
-		return view{}, fmt.Errorf("task %d: %w", p.taskID, err)
+		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
 	}
 
-	pr, err := p.Store.Project(ctx, t.ProjectID)
+	events, err := l.Store.EventsOmitting(ctx, taskID, ProgressTypes...)
 	if err != nil {
-		return view{}, fmt.Errorf("task %d: project %d: %w", p.taskID, t.ProjectID, err)
+		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	t, err := l.Store.Task(ctx, taskID)
+	if err != nil {
+		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	pr, err := l.Store.Project(ctx, t.ProjectID)
+	if err != nil {
+		return Snapshot{}, nil, fmt.Errorf("task %d: project %d: %w", taskID, t.ProjectID, err)
 	}
 
 	sw, err := resolveSwitches(pr, t.Overrides)
 	if err != nil {
-		return view{}, fmt.Errorf("task %d: %w", p.taskID, err)
+		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
 	}
 
-	events, err := p.Store.Events(ctx, p.taskID, 0, 0)
+	ids, err := l.Store.TaskDeps(ctx, taskID)
 	if err != nil {
-		return view{}, fmt.Errorf("task %d: %w", p.taskID, err)
+		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
 	}
 
-	v := view{
-		Task: t, Facts: Reduce(events), Now: p.Now(), Switches: sw, Caps: defaultCaps,
-		hadRun: slices.ContainsFunc(events, func(e store.Event) bool { return e.Type == RunStarted }),
+	deps := make([]Dep, len(ids))
+
+	for i, id := range ids {
+		evs, err := l.Store.EventsOmitting(ctx, id, ProgressTypes...)
+		if err != nil {
+			return Snapshot{}, nil, fmt.Errorf("task %d: dependency %d: %w", taskID, id, err)
+		}
+
+		deps[i] = Dep{TaskID: id, Status: StatusOf(Reduce(evs))}
 	}
 
-	if len(events) > 0 {
-		v.LastEventID = events[len(events)-1].ID
+	s := Snapshot{
+		Task: t, Facts: Reduce(events), Deps: deps, Now: l.Now(), Switches: sw, Caps: defaultCaps, LastEventID: last,
 	}
+
+	if l.Paused != nil {
+		s.Pause = l.Paused(taskID)
+	}
+
+	return s, events, nil
+}
+
+func (p *pass) view(ctx context.Context) (view, error) {
+	s, events, err := p.snapshot(ctx, p.taskID)
+	if err != nil {
+		return view{}, err
+	}
+
+	v := view{Snapshot: s, hadRun: hadRun(events)}
 
 	if v.Facts.RunOpen {
 		r, ok, err := p.Store.OpenRun(ctx, p.taskID)
@@ -232,6 +278,10 @@ func (p *pass) view(ctx context.Context) (view, error) {
 	}
 
 	return v, nil
+}
+
+func hadRun(events []store.Event) bool {
+	return slices.ContainsFunc(events, func(e store.Event) bool { return e.Type == RunStarted })
 }
 
 // repair makes the run rows follow the events. It ends the newest open row
@@ -282,25 +332,6 @@ func (p *pass) repair(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("task %d: more than %d stale run rows", p.taskID, maxRepairs)
-}
-
-// wait waits until the clock reaches until. It reports true when RunTask must
-// return: the wait is due later than ctx allows, or ctx ended during it.
-func (p *pass) wait(ctx context.Context, until time.Time) (bool, error) {
-	d := until.Sub(p.Now())
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < d {
-		return true, nil
-	}
-
-	t := time.NewTimer(d)
-	defer t.Stop()
-
-	select {
-	case <-ctx.Done():
-		return true, ctx.Err()
-	case <-t.C:
-		return false, nil
-	}
 }
 
 func (p *pass) act(ctx context.Context, v view, a Action) error {

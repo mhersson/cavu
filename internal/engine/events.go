@@ -26,9 +26,13 @@ const (
 	VerifyEnded    = "verify_ended"    // runner
 	ExportStarted  = "export_started"  // engine
 	Exported       = "exported"        // runner
+	Merged         = "merged"          // user
 	Stopped        = "stopped"         // engine
 	RunEnded       = "run_ended"       // engine
 )
+
+// ProgressTypes are the event types Reduce does not read.
+var ProgressTypes = []string{AgentText, AgentTool, RateLimit, EgressDenied}
 
 // Session outcomes.
 const (

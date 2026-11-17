@@ -29,7 +29,7 @@ func TestAddTaskRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 
-			got, err := engine.AddTask(t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: tc.title})
+			got, err := engine.AddTask(t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: tc.title}, nil)
 
 			tasks, listErr := h.store.Tasks(t.Context(), false)
 			require.NoError(t, listErr)
@@ -45,6 +45,102 @@ func TestAddTaskRules(t *testing.T) {
 			require.ErrorIs(t, err, engine.ErrRefused)
 			assert.Contains(t, err.Error(), "title")
 			assert.Len(t, tasks, 1, "nothing is stored")
+		})
+	}
+}
+
+func TestAddTaskDependencies(t *testing.T) {
+	t.Run("the dependencies are stored", func(t *testing.T) {
+		h := newHarness(t)
+		d := h.draft()
+
+		got, err := engine.AddTask(t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{d.ID, h.task.ID})
+		require.NoError(t, err)
+		assert.Equal(t, []int64{h.task.ID, d.ID}, h.deps(got.ID))
+	})
+
+	t.Run("a dependency on a missing task is refused", func(t *testing.T) {
+		h := newHarness(t)
+
+		_, err := engine.AddTask(t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{h.task.ID, 999})
+		require.ErrorIs(t, err, engine.ErrRefused)
+
+		tasks, err := h.store.Tasks(t.Context(), false)
+		require.NoError(t, err)
+		assert.Len(t, tasks, 1, "nothing is stored")
+	})
+}
+
+// deps returns the ids the task depends on.
+func (h *harness) deps(taskID int64) []int64 {
+	h.t.Helper()
+
+	ids, err := h.store.TaskDeps(h.t.Context(), taskID)
+	require.NoError(h.t, err)
+
+	return ids
+}
+
+func TestEditTask(t *testing.T) {
+	t.Run("the title, the body and the dependencies are written", func(t *testing.T) {
+		h := newHarness(t)
+		a, b := h.draft(), h.draft()
+
+		require.NoError(t, engine.EditTask(t.Context(), h.store, store.Task{ID: b.ID, Title: "Fix the logout", Body: "It hangs."}, []int64{a.ID}))
+
+		got, err := h.store.Task(t.Context(), b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "Fix the logout", got.Title)
+		assert.Equal(t, "It hangs.", got.Body)
+		assert.Equal(t, h.task.ProjectID, got.ProjectID)
+		assert.Equal(t, []int64{a.ID}, h.deps(b.ID))
+
+		require.NoError(t, engine.EditTask(t.Context(), h.store, store.Task{ID: b.ID, Title: "Fix the logout"}, nil))
+		assert.Empty(t, h.deps(b.ID))
+	})
+
+	t.Run("a task whose run started is refused", func(t *testing.T) {
+		h := newHarness(t)
+		h.add(0, engine.RunStarted, "engine", `{"reason":"initial"}`)
+
+		err := engine.EditTask(t.Context(), h.store, store.Task{ID: h.task.ID, Title: "Something else"}, nil)
+		require.ErrorIs(t, err, engine.ErrRefused)
+
+		got, err := h.store.Task(t.Context(), h.task.ID)
+		require.NoError(t, err)
+		assert.Equal(t, h.task.Title, got.Title)
+	})
+
+	refused := map[string]func(h *harness, a, b store.Task) []int64{
+		"a dependency on itself":         func(_ *harness, _, b store.Task) []int64 { return []int64{b.ID} },
+		"a dependency on a missing task": func(*harness, store.Task, store.Task) []int64 { return []int64{999} },
+		"a dependency that closes a cycle": func(h *harness, a, b store.Task) []int64 {
+			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, a, []int64{b.ID}))
+
+			return []int64{a.ID}
+		},
+		"a dependency that closes a longer cycle": func(h *harness, a, b store.Task) []int64 {
+			c := h.draft()
+			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, a, []int64{c.ID}))
+			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, c, []int64{b.ID}))
+
+			return []int64{h.task.ID, a.ID}
+		},
+	}
+
+	for name, deps := range refused {
+		t.Run(name+" is refused", func(t *testing.T) {
+			h := newHarness(t)
+			a, b := h.draft(), h.draft()
+			dependsOn := deps(h, a, b)
+
+			err := engine.EditTask(t.Context(), h.store, store.Task{ID: b.ID, Title: "Renamed"}, dependsOn)
+			require.ErrorIs(t, err, engine.ErrRefused)
+
+			got, err := h.store.Task(t.Context(), b.ID)
+			require.NoError(t, err)
+			assert.Equal(t, b.Title, got.Title, "nothing is written")
+			assert.Empty(t, h.deps(b.ID))
 		})
 	}
 }
@@ -254,7 +350,10 @@ func TestCancel(t *testing.T) {
 
 	refused := map[string]func(h *harness){
 		"a cancelled task": func(h *harness) { h.add(0, engine.HumanCancelled, "user", "") },
-		"a task in review": func(h *harness) { h.add(0, engine.Exported, "runner", "") },
+		"a done task": func(h *harness) {
+			h.add(0, engine.Exported, "runner", "")
+			h.add(0, engine.Merged, "user", "")
+		},
 	}
 
 	for name, setup := range refused {
@@ -267,6 +366,51 @@ func TestCancel(t *testing.T) {
 			assert.Equal(t, before, h.recorded(h.task.ID))
 		})
 	}
+}
+
+func TestTaskGuards(t *testing.T) {
+	status := func(h *harness) engine.Status { return engine.StatusOf(engine.Reduce(h.recorded(h.task.ID))) }
+
+	t.Run("done on a task that is not in review is refused", func(t *testing.T) {
+		h := newHarness(t)
+		before := h.recorded(h.task.ID)
+
+		require.ErrorIs(t, h.loop.Done(t.Context(), h.task.ID), engine.ErrRefused)
+		assert.Equal(t, before, h.recorded(h.task.ID))
+	})
+
+	t.Run("done on a task in review records the merge", func(t *testing.T) {
+		h := newHarness(t)
+		h.add(0, engine.Exported, "runner", "")
+
+		require.NoError(t, h.loop.Done(t.Context(), h.task.ID))
+
+		es := h.recorded(h.task.ID)
+		assert.Equal(t, engine.Merged, es[len(es)-1].Type)
+		assert.Equal(t, "user", es[len(es)-1].Actor)
+		assert.Equal(t, engine.StatusDone, status(h))
+	})
+
+	t.Run("cancel on a task in review is recorded", func(t *testing.T) {
+		h := newHarness(t)
+		h.add(0, engine.Exported, "runner", "")
+
+		require.NoError(t, h.loop.Cancel(t.Context(), h.task.ID))
+
+		es := h.recorded(h.task.ID)
+		assert.Equal(t, engine.HumanCancelled, es[len(es)-1].Type)
+		assert.Equal(t, engine.StatusCancelled, status(h))
+	})
+
+	t.Run("cancel on a done task is refused", func(t *testing.T) {
+		h := newHarness(t)
+		h.add(0, engine.Exported, "runner", "")
+		require.NoError(t, h.loop.Done(t.Context(), h.task.ID))
+		before := h.recorded(h.task.ID)
+
+		require.ErrorIs(t, h.loop.Cancel(t.Context(), h.task.ID), engine.ErrRefused)
+		assert.Equal(t, before, h.recorded(h.task.ID))
+	})
 }
 
 func TestHumanActionLosesToANewerEvent(t *testing.T) {

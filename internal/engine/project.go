@@ -118,6 +118,11 @@ func sameBaselineGround(a, b store.Project) bool {
 		maps.Equal(a.ToolOverrides, b.ToolOverrides) && maps.Equal(a.Env, b.Env) && slices.Equal(a.SecretVars, b.SecretVars)
 }
 
+// Runnable reports whether a project's tasks may start: a passed baseline or a waived verify.
+func Runnable(p store.Project) bool {
+	return p.VerifyWaived || p.Baseline != nil && p.Baseline.Passed
+}
+
 // CheckProject prepares a project the way a run does, under run and task id 0,
 // and stores what it found as the project's baseline. It also returns the
 // verify command the repository suggests, or "", even with a runner error,

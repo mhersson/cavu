@@ -197,7 +197,7 @@ func TestAnswerRetryCancelGuards(t *testing.T) {
 		{"retry with no stop", "retry", nil},
 		{"retry on a cancelled task", "retry", []store.Event{event(engine.HumanCancelled, "user", struct{}{})}},
 		{"cancel when cancelled", "cancel", []store.Event{event(engine.HumanCancelled, "user", struct{}{})}},
-		{"cancel in review", "cancel", []store.Event{event(engine.Exported, "runner", engine.ExportedPayload{})}},
+		{"cancel when done", "cancel", []store.Event{event(engine.Exported, "runner", engine.ExportedPayload{}), event(engine.Merged, "user", struct{}{})}},
 	}
 
 	for _, tc := range tests {

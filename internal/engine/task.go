@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -21,18 +22,117 @@ var ErrNoBaseline = errors.New("neither a passed baseline nor a waived verify")
 
 const maxTitle = 200
 
-// AddTask stores a new draft task that holds only what a task may hold.
-func AddTask(ctx context.Context, s Store, t store.Task) (store.Task, error) {
-	switch {
-	case strings.TrimSpace(t.Title) == "":
-		return store.Task{}, fmt.Errorf("%w: title is required", ErrRefused)
-	case utf8.RuneCountInString(t.Title) > maxTitle:
-		return store.Task{}, fmt.Errorf("%w: title is over %d characters", ErrRefused, maxTitle)
-	case strings.ContainsFunc(t.Title, unicode.IsControl):
-		return store.Task{}, fmt.Errorf("%w: title holds a line break or another control character", ErrRefused)
+// AddTask stores a new draft task that holds only what a task may hold, and its dependencies.
+func AddTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) (store.Task, error) {
+	if err := checkTitle(t.Title); err != nil {
+		return store.Task{}, err
 	}
 
-	return s.CreateTask(ctx, t)
+	if err := checkDeps(ctx, s, 0, dependsOn); err != nil {
+		return store.Task{}, err
+	}
+
+	t, err := s.CreateTask(ctx, t)
+	if err != nil {
+		return store.Task{}, err
+	}
+
+	if err := s.SetTaskDeps(ctx, t.ID, dependsOn); err != nil {
+		return store.Task{}, fmt.Errorf("task %d: %w", t.ID, err)
+	}
+
+	return t, nil
+}
+
+// EditTask writes a task's title, body and dependencies until its first run starts.
+func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) error {
+	if err := checkTitle(t.Title); err != nil {
+		return err
+	}
+
+	stored, err := s.Task(ctx, t.ID)
+	if err != nil {
+		return fmt.Errorf("task %d: %w", t.ID, err)
+	}
+
+	events, err := s.EventsOmitting(ctx, t.ID, ProgressTypes...)
+	if err != nil {
+		return fmt.Errorf("task %d: %w", t.ID, err)
+	}
+
+	if hadRun(events) {
+		return refuse("task %d has started a run", t.ID)
+	}
+
+	if err := checkDeps(ctx, s, t.ID, dependsOn); err != nil {
+		return err
+	}
+
+	stored.Title, stored.Body = t.Title, t.Body
+	if err := s.UpdateTask(ctx, stored); err != nil {
+		return fmt.Errorf("task %d: %w", t.ID, err)
+	}
+
+	if err := s.SetTaskDeps(ctx, t.ID, dependsOn); err != nil {
+		return fmt.Errorf("task %d: %w", t.ID, err)
+	}
+
+	return nil
+}
+
+func checkTitle(title string) error {
+	switch {
+	case strings.TrimSpace(title) == "":
+		return refuse("title is required")
+	case utf8.RuneCountInString(title) > maxTitle:
+		return refuse("title is over %d characters", maxTitle)
+	case strings.ContainsFunc(title, unicode.IsControl):
+		return refuse("title holds a line break or another control character")
+	}
+
+	return nil
+}
+
+// checkDeps refuses a dependency that does not exist, and one that is the task
+// itself or leads back to it. A new task, id 0, has nothing that leads back to it.
+func checkDeps(ctx context.Context, s Store, taskID int64, dependsOn []int64) error {
+	for _, d := range dependsOn {
+		if _, err := s.Task(ctx, d); errors.Is(err, store.ErrNotFound) {
+			return refuse("task %d does not exist", d)
+		} else if err != nil {
+			return fmt.Errorf("dependency %d: %w", d, err)
+		}
+	}
+
+	if taskID == 0 {
+		return nil
+	}
+
+	seen, next := map[int64]bool{}, slices.Clone(dependsOn)
+
+	for len(next) > 0 {
+		d := next[len(next)-1]
+		next = next[:len(next)-1]
+
+		if d == taskID {
+			return refuse("task %d would wait on itself", taskID)
+		}
+
+		if seen[d] {
+			continue
+		}
+
+		seen[d] = true
+
+		more, err := s.TaskDeps(ctx, d)
+		if err != nil {
+			return fmt.Errorf("dependency %d: %w", d, err)
+		}
+
+		next = append(next, more...)
+	}
+
+	return nil
 }
 
 // Start records that a person started a draft task. A started task is left
@@ -45,7 +145,7 @@ func (l *Loop) Start(ctx context.Context, taskID int64) error {
 			return false, refuse("the task is cancelled")
 		case f.Started:
 			return false, nil
-		case !p.VerifyWaived && (p.Baseline == nil || !p.Baseline.Passed):
+		case !Runnable(p):
 			return false, refuse("project %q has %w", p.Name, ErrNoBaseline)
 		}
 
@@ -83,11 +183,22 @@ func (l *Loop) Retry(ctx context.Context, taskID int64) error {
 	})
 }
 
-// Cancel records that a person cancelled a task that is not yet cancelled or in review.
+// Cancel records that a person cancelled a task that is not yet cancelled or done.
 func (l *Loop) Cancel(ctx context.Context, taskID int64) error {
 	return l.human(ctx, taskID, HumanCancelled, struct{}{}, func(f Facts, _ store.Project) (bool, error) {
-		if s := StatusOf(f); s == StatusCancelled || s == StatusInReview {
+		if s := StatusOf(f); s == StatusCancelled || s == StatusDone {
 			return false, refuse("the task is %s", s)
+		}
+
+		return true, nil
+	})
+}
+
+// Done records that the change of a task in review was merged.
+func (l *Loop) Done(ctx context.Context, taskID int64) error {
+	return l.human(ctx, taskID, Merged, struct{}{}, func(f Facts, _ store.Project) (bool, error) {
+		if s := StatusOf(f); s != StatusInReview {
+			return false, refuse("the task is %s, not %s", s, StatusInReview)
 		}
 
 		return true, nil
