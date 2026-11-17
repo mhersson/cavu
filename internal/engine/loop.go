@@ -746,13 +746,38 @@ func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *st
 
 // ref names a run for Release from the task, the row, the loop's image and the
 // instance id, so a broken setting or secret cannot keep a run's containers.
-func (p *pass) ref(ctx context.Context, t store.Task, row store.Run) (RunRef, error) {
-	set, err := p.Store.Settings(ctx)
+func (l *Loop) ref(ctx context.Context, t store.Task, row store.Run) (RunRef, error) {
+	set, err := l.Store.Settings(ctx)
 	if err != nil {
-		return RunRef{}, fmt.Errorf("task %d: release run %d: %w", p.taskID, row.ID, err)
+		return RunRef{}, fmt.Errorf("task %d: release run %d: %w", t.ID, row.ID, err)
 	}
 
-	return RunRef{InstanceID: set["instance_id"], Image: p.Image, TaskID: t.ID, RunID: row.ID, ProjectID: t.ProjectID}, nil
+	return RunRef{InstanceID: set["instance_id"], Image: l.Image, TaskID: t.ID, RunID: row.ID, ProjectID: t.ProjectID}, nil
+}
+
+// ReleaseOpenRun stops the containers of the task's open run and keeps its
+// volumes, so the next RunTask carries on in them after a RunTask was cut short.
+func (l *Loop) ReleaseOpenRun(ctx context.Context, taskID int64) error {
+	t, err := l.Store.Task(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	row, ok, err := l.Store.OpenRun(ctx, taskID)
+	if err != nil || !ok {
+		return err
+	}
+
+	ref, err := l.ref(ctx, t, row)
+	if err != nil {
+		return err
+	}
+
+	if err := l.Runner.Release(ctx, ref, false); err != nil {
+		return fmt.Errorf("task %d: release run %d: %w", taskID, row.ID, err)
+	}
+
+	return nil
 }
 
 // free stops a run's containers once its stop or end is recorded, removing its

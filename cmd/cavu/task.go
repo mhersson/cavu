@@ -351,7 +351,7 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		_, err = l.RunTask(ctx, id)
 
 		if ctx.Err() != nil {
-			if err := a.releaseOpenRun(ctx, l, t); err != nil {
+			if err := releaseOpenRun(ctx, l, id); err != nil {
 				fmt.Fprintf(stderr, "cavu: %v\n", err)
 			}
 
@@ -377,20 +377,13 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	})
 }
 
-// releaseOpenRun stops the containers of the task's open run and keeps its
-// volumes, on a context that outlives the interrupt that ended ctx.
-func (a *app) releaseOpenRun(ctx context.Context, l *engine.Loop, t store.Task) error {
+// releaseOpenRun releases the task's open run, keeping its volumes, on a
+// context that outlives the interrupt that ended ctx.
+func releaseOpenRun(ctx context.Context, l *engine.Loop, taskID int64) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
 
-	row, ok, err := a.store.OpenRun(ctx, t.ID)
-	if err != nil || !ok {
-		return err
-	}
-
-	return l.Runner.Release(ctx, engine.RunRef{
-		InstanceID: a.instanceID, Image: l.Image, TaskID: t.ID, RunID: row.ID, ProjectID: t.ProjectID,
-	}, false)
+	return l.ReleaseOpenRun(ctx, taskID)
 }
 
 // printingStore prints each event once its append succeeded. The engine's

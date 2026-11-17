@@ -105,7 +105,7 @@ func (a *app) releaseShadows(ctx context.Context, l *engine.Loop, r store.Replay
 
 	for _, t := range tasks {
 		if t.ReplayID == r.ID {
-			errs = append(errs, a.releaseOpenRun(ctx, l, t))
+			errs = append(errs, releaseOpenRun(ctx, l, t.ID))
 		}
 	}
 

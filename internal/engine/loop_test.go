@@ -1209,6 +1209,21 @@ func TestLoopRepairsRunRows(t *testing.T) {
 	})
 }
 
+func TestReleaseOpenRunKeepsVolumes(t *testing.T) {
+	h := newHarness(t)
+
+	require.NoError(t, h.loop.ReleaseOpenRun(t.Context(), h.task.ID))
+	assert.Empty(t, h.runner.calls, "a task with no open run has nothing to release")
+
+	r := h.seed(ev(engine.RunStarted, `{"reason":"initial"}`))
+
+	require.NoError(t, h.loop.ReleaseOpenRun(t.Context(), h.task.ID))
+	assert.Equal(t, []call{{method: "release", runID: r.ID, ref: engine.RunRef{
+		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: r.ID, ProjectID: h.task.ProjectID,
+	}}}, h.runner.calls)
+	assert.Empty(t, h.spy.ended(), "the run stays open")
+}
+
 func TestLoopRunnerFaultStops(t *testing.T) {
 	daemon := errors.New("the container daemon is unreachable")
 
