@@ -298,34 +298,38 @@ func TestHumanEventsAreRecorded(t *testing.T) {
 	assert.Contains(t, cavuIn(t, dir, "task", "show", id), string(engine.StatusCancelled))
 }
 
-func TestTaskShowLabelsCostAsEstimate(t *testing.T) {
+func TestTaskShowPrintsUsageAndCost(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix the login")
 
-	seedEvents(t, dir, id, []store.Usage{
+	usage := []store.Usage{
 		{Source: "proxy", Model: "model-a", Input: 10, Output: 5, CostEstimateUSD: 0.5},
 		{Source: "agent", Model: "model-a", Input: 1, Output: 2, CostEstimateUSD: 0.25},
 		{Source: "agent", Model: "model-b", Input: 3, Output: 4, CostEstimateUSD: 0.25},
-	}, event(engine.TaskStarted, "user", struct{}{}),
+	}
+
+	seedEvents(t, dir, id, usage, event(engine.TaskStarted, "user", struct{}{}),
 		event(engine.Stopped, "engine", engine.StoppedPayload{Reason: engine.StopNoChange, Explanation: "nothing changed", Action: engine.ClearRetry}))
 
 	out := cavuIn(t, dir, "task", "show", id)
 
-	var usage, cost []string
-
-	for line := range strings.SplitSeq(out, "\n") {
-		switch {
-		case strings.HasPrefix(line, "usage"):
-			usage = append(usage, line)
-		case strings.HasPrefix(line, "cost"):
-			cost = append(cost, line)
+	// linesWith counts the lines of out that hold every one of values.
+	linesWith := func(values ...string) (n int) {
+		for line := range strings.SplitSeq(out, "\n") {
+			if !slices.ContainsFunc(values, func(v string) bool { return !strings.Contains(line, v) }) {
+				n++
+			}
 		}
+
+		return n
 	}
 
-	assert.Len(t, usage, 3, "a row per source and model")
-	require.Len(t, cost, 1)
-	assert.Contains(t, cost[0], "estimate")
-	assert.Contains(t, cost[0], "1.00")
+	assert.Equal(t, 1, linesWith("1.00"), "one cost line, with the sum of the estimates")
+
+	for _, u := range usage {
+		assert.Equal(t, 1, linesWith(u.Source, u.Model, strconv.FormatInt(u.Input, 10), strconv.FormatInt(u.Output, 10)),
+			"one line per source and model, with its values: %+v", u)
+	}
 
 	for _, want := range []string{"Fix the login", string(engine.StatusBlocked), engine.StopNoChange, "nothing changed", engine.ClearRetry} {
 		assert.Contains(t, out, want)
