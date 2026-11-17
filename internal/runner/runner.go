@@ -17,15 +17,12 @@ import (
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
-	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/redact"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 )
 
 const (
-	// bridgeURL is the sandbox's bridge to the proxy inside a phase container.
-	bridgeURL = "http://127.0.0.1:3128"
 	loopback  = "localhost,127.0.0.1,::1"
 	home      = "/home/agent"
 	workspace = "/workspace"
@@ -50,12 +47,15 @@ var seedScript = proc.SandboxOnly(`while [ "$#" -ge 2 ]; do
 	shift 2
 done`)
 
-// proxyEnv sends a command's egress through the bridge, the one way out of
-// either phase, and keeps loopback traffic off it.
-var proxyEnv = []string{
-	"HTTP_PROXY=" + bridgeURL, "HTTPS_PROXY=" + bridgeURL, "http_proxy=" + bridgeURL, "https_proxy=" + bridgeURL,
-	"NO_PROXY=" + loopback, "no_proxy=" + loopback,
+// bridgeEnv sends a process's egress through the bridge, the one way out of
+// either phase.
+var bridgeEnv = []string{
+	"HTTP_PROXY=" + sandbox.BridgeURL, "HTTPS_PROXY=" + sandbox.BridgeURL, "http_proxy=" + sandbox.BridgeURL, "https_proxy=" + sandbox.BridgeURL,
 }
+
+// noProxyEnv keeps a command's loopback traffic off the bridge; the driver
+// does the same for a session.
+var noProxyEnv = []string{"NO_PROXY=" + loopback, "no_proxy=" + loopback}
 
 // Runner carries out the engine's actions over a container runtime.
 type Runner struct {
@@ -338,18 +338,8 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig) error {
 		return nil
 	}
 
-	req := sidecar.ProxyRequest{
-		AllowHosts: allowlist(env.AgentHosts(st.ecosystems), c.Setup.EgressHosts, r.driver.Hosts(c.Endpoint.Mode)),
-	}
-
-	st.standIn = ""
-
-	if c.Endpoint.Mode == modeKey {
-		st.standIn = proxy.NewStandIn()
-		req.Model = &proxy.ModelRoute{
-			BaseURL: c.Endpoint.URL, Credential: c.Endpoint.Credential, AuthHeader: c.Endpoint.AuthHeader, StandIn: st.standIn,
-		}
-	}
+	req, standIn := agentProxy(c, st.ecosystems, r.driver)
+	st.standIn = standIn
 
 	a, err := st.up(ctx, sandbox.PhaseAgent, req)
 	if err != nil {
@@ -422,14 +412,19 @@ func (r *Runner) Release(ctx context.Context, ref engine.RunRef, removeVolumes b
 	return st.sb.Destroy(ctx, false)
 }
 
-// agentEnv is the one environment of the agent phase: the baseline verify,
-// the verify gate and the session run with it.
+// agentEnv is the environment of the commands the runner runs in the agent
+// phase.
 func agentEnv(ecosystems []string) []string {
-	return append(env.AgentEnv(ecosystems, home), proxyEnv...)
+	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv, noProxyEnv)
+}
+
+// sessionEnv is agentEnv without noProxyEnv, which the driver adds itself.
+func sessionEnv(ecosystems []string) []string {
+	return slices.Concat(env.AgentEnv(ecosystems, home), bridgeEnv)
 }
 
 func setupEnv(ecosystems []string) []string {
-	return append(env.SetupEnv(ecosystems), proxyEnv...)
+	return slices.Concat(env.SetupEnv(ecosystems), bridgeEnv, noProxyEnv)
 }
 
 func allowlist(lists ...[]string) []string {

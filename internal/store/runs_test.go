@@ -66,3 +66,35 @@ func TestUpdateRunKeepsStartedAt(t *testing.T) {
 	require.Equal(t, "done", got.Outcome)
 	require.WithinDuration(t, time.Now(), got.StartedAt, time.Minute)
 }
+
+func TestOpenRunIDs(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+
+	ids, err := s.OpenRunIDs(ctx)
+	require.NoError(t, err)
+	require.Empty(t, ids)
+
+	task := seedTask(t, s)
+	other, err := s.CreateTask(ctx, Task{ProjectID: task.ProjectID, Title: "other"})
+	require.NoError(t, err)
+
+	open, err := s.CreateRun(ctx, Run{TaskID: task.ID, Reason: "initial"})
+	require.NoError(t, err)
+
+	ended, err := s.CreateRun(ctx, Run{TaskID: other.ID, Reason: "initial"})
+	require.NoError(t, err)
+
+	at := time.Now()
+	ended.EndedAt = &at
+	require.NoError(t, s.UpdateRun(ctx, ended))
+
+	alsoOpen, err := s.CreateRun(ctx, Run{TaskID: other.ID, Reason: "retry"})
+	require.NoError(t, err)
+
+	ids, err = s.OpenRunIDs(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []int64{open.ID, alsoOpen.ID}, ids, "every task's open runs, and no ended one")
+}

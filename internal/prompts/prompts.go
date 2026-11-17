@@ -12,13 +12,14 @@ import (
 )
 
 // Prompt names, each a file of this package. Instructions, appended to the
-// system prompt of every session, and Continue take no data.
+// system prompt of every session, Continue and Doctor take no data.
 const (
 	Instructions = "instructions"
 	Work         = "work" // a session's opening prompt
 	Continue     = "continue"
 	FixVerify    = "fix_verify"
 	Answer       = "answer"
+	Doctor       = "doctor" // the health check's session
 )
 
 // WorkData fills the work prompt.

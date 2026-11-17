@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -15,31 +14,36 @@ import (
 
 func init() {
 	commands["image"] = command{
-		summary: "image build [--cavu-binary PATH] [--ca-bundle PATH]: build the sandbox image",
+		summary: "image build [--cavu-binary PATH]: build the sandbox image",
 		run:     runImage,
 	}
 }
 
 func runImage(ctx context.Context, args []string, _ io.Reader, stdout, stderr io.Writer) error {
+	f := newVerbFlags("cavu image build [--cavu-binary PATH] [--data-dir DIR]", stderr)
+
+	binary := f.String("cavu-binary", "", "a Linux cavu executable to put in the image (default: this executable, on Linux)")
+
 	if len(args) == 0 || args[0] != "build" {
-		return errors.New("usage: cavu image build [--cavu-binary PATH] [--ca-bundle PATH]")
+		return f.usageError()
 	}
 
-	fs := flag.NewFlagSet("image build", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	binary := fs.String("cavu-binary", "", "a Linux cavu executable to put in the image (default: this executable, on Linux)")
-	caPath := fs.String("ca-bundle", "", "a PEM file of CA certificates to trust, for a network that inspects TLS")
-
-	if err := fs.Parse(args[1:]); err != nil {
-		return exitError{code: 2, err: err}
-	}
-
-	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	if _, err := f.parse(args[1:], 0); err != nil {
+		return err
 	}
 
 	bin, err := defaultBinary(runtime.GOOS, *binary, os.Executable)
+	if err != nil {
+		return err
+	}
+
+	a, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+
+	bundle, err := a.caBundle(ctx)
 	if err != nil {
 		return err
 	}
@@ -49,15 +53,10 @@ func runImage(ctx context.Context, args []string, _ io.Reader, stdout, stderr io
 		CavuVersion:  version,
 		AgentVersion: claudecode.Version,
 		AgentSHA512:  claudecode.SHA512,
+		CABundle:     bundle,
 	}
 
-	if *caPath != "" {
-		if o.CABundle, err = os.ReadFile(*caPath); err != nil {
-			return fmt.Errorf("--ca-bundle: %w", err)
-		}
-	}
-
-	rt, err := sandbox.Detect(ctx, "")
+	rt, err := a.runtime(ctx)
 	if err != nil {
 		return err
 	}

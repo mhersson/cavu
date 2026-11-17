@@ -25,8 +25,8 @@ func TestDoctorAgainstMock(t *testing.T) {
 	image := sandboxtest.Image(t, r, claudecode.Version, claudecode.SHA512, nil)
 	mock := mockapi.Start(t, []mockapi.Step{
 		{Tool: "Bash", Input: map[string]any{"command": "echo cavu"}},
-		{Tool: mockapi.Structured, Input: map[string]any{"ok": true}},
-		{Tool: mockapi.Structured, Input: map[string]any{"ok": true}},
+		{Tool: mockapi.Structured, Input: map[string]any{"status": "done"}},
+		{Tool: mockapi.Structured, Input: map[string]any{"status": "done"}},
 	})
 
 	b := make([]byte, 8)

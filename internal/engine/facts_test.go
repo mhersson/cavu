@@ -69,7 +69,7 @@ func TestReduce(t *testing.T) {
 		},
 		{
 			name:   "a cancel before the start",
-			events: []store.Event{ev(engine.TaskCreated, ""), ev(engine.HumanCancelled, "")},
+			events: []store.Event{ev(engine.HumanCancelled, "")},
 			want:   engine.Facts{Cancelled: true},
 		},
 		{

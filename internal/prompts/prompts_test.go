@@ -24,6 +24,7 @@ func TestEveryPromptRenders(t *testing.T) {
 			values: []string{"command-3", "output-4"},
 		},
 		{name: prompts.Answer, data: prompts.AnswerData{Answer: "answer-5"}, values: []string{"answer-5"}},
+		{name: prompts.Doctor},
 	}
 
 	for _, tt := range tests {

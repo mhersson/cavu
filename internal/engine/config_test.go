@@ -59,6 +59,7 @@ func TestBuildRunConfig(t *testing.T) {
 		},
 		{
 			name: "optional settings and secrets take their defaults",
+			set:  map[string]string{"endpoint_mode": "subscription"},
 			unset: []string{
 				"endpoint_url", "endpoint_auth_header", "effort_work", "work_max_turns", "work_timeout_minutes",
 				"verify_timeout_minutes", "forge_token", "endpoint_credential",
@@ -79,6 +80,8 @@ func TestBuildRunConfig(t *testing.T) {
 		{name: "commit_name is required", unset: []string{"commit_name"}, errHas: "commit_name"},
 		{name: "commit_email is required", unset: []string{"commit_email"}, errHas: "commit_email"},
 		{name: "instance_id is required", unset: []string{"instance_id"}, errHas: "instance_id"},
+		{name: "endpoint_url is required in key mode", unset: []string{"endpoint_url"}, errHas: "endpoint_url"},
+		{name: "endpoint_auth_header is required in key mode", unset: []string{"endpoint_auth_header"}, errHas: "endpoint_auth_header"},
 		{name: "an unknown endpoint mode", set: map[string]string{"endpoint_mode": "both"}, errHas: "endpoint_mode"},
 		{name: "an unknown auth header", set: map[string]string{"endpoint_auth_header": "basic"}, errHas: "endpoint_auth_header"},
 		{name: "turns that do not parse", set: map[string]string{"work_max_turns": "many"}, errHas: "work_max_turns"},
@@ -136,6 +139,56 @@ func TestBuildRunConfig(t *testing.T) {
 
 			require.NoError(t, err)
 			tt.check(t, got, fx)
+		})
+	}
+}
+
+func TestReadSettingsNamesEveryMissingKey(t *testing.T) {
+	_, err := engine.ReadSettings(map[string]string{"endpoint_mode": "key", "work_max_turns": "many"})
+	require.Error(t, err)
+
+	for _, key := range []string{"instance_id", "model_work", "commit_name", "commit_email", "endpoint_url", "endpoint_auth_header"} {
+		assert.Contains(t, err.Error(), key)
+	}
+
+	assert.NotContains(t, err.Error(), "work_max_turns", "a key not set comes before a value that does not parse")
+}
+
+func TestCheckSetting(t *testing.T) {
+	tests := []struct {
+		key, value string
+		ok         bool
+	}{
+		{"endpoint_mode", "subscription", true},
+		{"endpoint_mode", "key", true},
+		{"endpoint_mode", "both", false},
+		{"endpoint_auth_header", "x-api-key", true},
+		{"endpoint_auth_header", "basic", false},
+		{"work_max_turns", "50", true},
+		{"work_max_turns", "0", false},
+		{"work_timeout_minutes", "soon", false},
+		{"verify_timeout_minutes", "2.5", true},
+		{"verify_timeout_minutes", "soon", false},
+		{"endpoint_mode", "", true},
+		{"model_work", "any-model", true},
+		{"runtime", "podman", true},
+		{"ca_bundle_path", "/etc/ca.pem", true},
+		{"commit_email", "bot@example.com", true},
+		{"instance_id", "0123456789abcdef", false},
+		{"max_turns", "5", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			err := engine.CheckSetting(tt.key, tt.value)
+			if tt.ok {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.key)
 		})
 	}
 }

@@ -68,6 +68,10 @@ type Runner interface {
 	Export(ctx context.Context, c RunConfig, commit string) (ExportResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
 	Release(ctx context.Context, ref RunRef, removeVolumes bool) error
+	// CheckEnvironment prepares a project as a run does, under run and task id
+	// 0 and never reusing a baseline, then releases it with its volumes. It
+	// also returns the verify command the repository suggests, or "".
+	CheckEnvironment(ctx context.Context, c RunConfig) (res PrepareResult, verifySuggestion string, err error)
 }
 
 // PrepareResult is what preparing a run found. A failed step is a result, not an error.

@@ -95,3 +95,25 @@ func (s *Store) OpenRun(ctx context.Context, taskID int64) (Run, bool, error) {
 
 	return r, true, nil
 }
+
+// OpenRunIDs returns the ids of every task's runs that have not ended, oldest first.
+func (s *Store) OpenRunIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM runs WHERE ended_at IS NULL ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("open runs: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("open runs: %w", err)
+		}
+
+		ids = append(ids, id)
+	}
+
+	return ids, rows.Err()
+}

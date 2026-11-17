@@ -12,8 +12,11 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/env"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/prompts"
+	"github.com/mhersson/cavu/internal/proxy"
+	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/store"
 )
@@ -109,32 +112,67 @@ func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest
 }
 
 func (s *session) spec(w engine.WorkRequest) (driver.Spec, error) {
-	c := s.c
+	spec, err := sessionSpec(s.c, s.st.ecosystems, s.st.standIn)
+	text, perr := prompt(s.c, w.Mode, w.Detail)
 
-	text, err := prompt(c, w.Mode, w.Detail)
-	instructions, ierr := prompts.Render(prompts.Instructions, nil)
+	if err := errors.Join(err, perr); err != nil {
+		return driver.Spec{}, err
+	}
 
-	if err := errors.Join(err, ierr); err != nil {
+	spec.Prompt = text
+
+	if w.Resume {
+		spec.Resume = w.SessionID
+	} else {
+		spec.SessionID = w.SessionID
+	}
+
+	return spec, nil
+}
+
+// AgentPhase is the proxy request a run starts c's agent phase with, and the
+// spec of a session in it but its prompt and id, which the caller sets. In key
+// mode both hold one fresh stand-in for the credential. A run builds the two
+// apart: the request when the phase starts, a spec for each session.
+func AgentPhase(c engine.RunConfig, d driver.Driver) (sidecar.ProxyRequest, driver.Spec, error) {
+	req, standIn := agentProxy(c, c.Ecosystems, d)
+	spec, err := sessionSpec(c, c.Ecosystems, standIn)
+
+	return req, spec, err
+}
+
+// agentProxy is the agent phase's proxy request and, in key mode, the
+// stand-in its model route takes in place of the credential.
+func agentProxy(c engine.RunConfig, ecosystems []string, d driver.Driver) (sidecar.ProxyRequest, string) {
+	req := sidecar.ProxyRequest{AllowHosts: allowlist(env.AgentHosts(ecosystems), c.Setup.EgressHosts, d.Hosts(c.Endpoint.Mode))}
+	if c.Endpoint.Mode != modeKey {
+		return req, ""
+	}
+
+	standIn := proxy.NewStandIn()
+	req.Model = &proxy.ModelRoute{BaseURL: c.Endpoint.URL, Credential: c.Endpoint.Credential, AuthHeader: c.Endpoint.AuthHeader, StandIn: standIn}
+
+	return req, standIn
+}
+
+// sessionSpec is a session's spec but its prompt and id.
+func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (driver.Spec, error) {
+	instructions, err := prompts.Render(prompts.Instructions, nil)
+	if err != nil {
 		return driver.Spec{}, err
 	}
 
 	spec := driver.Spec{
 		Auth:  driver.Auth{Mode: c.Endpoint.Mode, Token: c.Endpoint.Credential},
 		Model: c.Agent.Model, Effort: c.Agent.Effort, MaxTurns: c.Agent.MaxTurns,
-		Prompt: text, Instructions: instructions, OutputSchema: prompts.ResultSchema(),
+		Instructions: instructions, OutputSchema: prompts.ResultSchema(),
 		Dir: workspace, BaseCommit: c.Repo.BaseCommit, Home: home, ConfigDir: configDir,
-		Env: agentEnv(s.st.ecosystems), WebTools: c.Agent.WebTools,
+		Env: sessionEnv(ecosystems), WebTools: c.Agent.WebTools,
 	}
 
 	if c.Endpoint.Mode == modeKey {
 		// The agent holds only the stand-in; the proxy swaps the credential in.
-		spec.Auth.Token, spec.Auth.BaseURL = s.st.standIn, bridgeURL
-	}
-
-	if w.Resume {
-		spec.Resume = w.SessionID
-	} else {
-		spec.SessionID = w.SessionID
+		spec.Auth.Token, spec.Auth.BaseURL = standIn, sandbox.BridgeURL
 	}
 
 	return spec, nil

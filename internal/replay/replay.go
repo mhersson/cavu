@@ -111,13 +111,25 @@ func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay,
 		return store.ReplayItem{}, fmt.Errorf("replay: start shadow %d of task %d: %w", shadow.ID, src.ID, err)
 	}
 
-	if _, err := l.RunTask(ctx, shadow.ID); err != nil {
+	status, err := l.RunTask(ctx, shadow.ID)
+	if err != nil {
 		return store.ReplayItem{}, fmt.Errorf("replay: run shadow %d of task %d: %w", shadow.ID, src.ID, err)
 	}
 
 	item, err := record(ctx, s, shadow)
 	if err != nil {
 		return store.ReplayItem{}, fmt.Errorf("replay: record shadow %d of task %d: %w", shadow.ID, src.ID, err)
+	}
+
+	// Nothing resumes a shadow, so once its stop is recorded a cancel ends its run and removes its volumes.
+	if status == engine.StatusBlocked {
+		if err = l.Cancel(ctx, shadow.ID); err == nil {
+			_, err = l.RunTask(ctx, shadow.ID)
+		}
+
+		if err != nil {
+			return store.ReplayItem{}, fmt.Errorf("replay: cancel shadow %d of task %d: %w", shadow.ID, src.ID, err)
+		}
 	}
 
 	item.ReplayID, item.SourceTaskID = r.ID, src.ID

@@ -20,11 +20,13 @@ import (
 	"github.com/mhersson/cavu/internal/store"
 )
 
-// Store is the part of *store.Store the loop uses; tests wrap it to inject a conflict.
+// Store is the part of *store.Store the engine uses; tests wrap it to inject a conflict.
 type Store interface {
+	CreateTask(ctx context.Context, t store.Task) (store.Task, error)
 	Task(ctx context.Context, id int64) (store.Task, error)
 	UpdateTask(ctx context.Context, t store.Task) error
 	Project(ctx context.Context, id int64) (store.Project, error)
+	CreateProject(ctx context.Context, p store.Project) (store.Project, error)
 	UpdateProject(ctx context.Context, p store.Project) error
 	Settings(ctx context.Context) (map[string]string, error)
 	Events(ctx context.Context, taskID, afterID int64, limit int) ([]store.Event, error)
@@ -72,6 +74,7 @@ const (
 	actorEngine = "engine"
 	actorRunner = "runner"
 	actorAgent  = "agent"
+	actorUser   = "user"
 )
 
 // progressActors are the progress types the loop records, with their actors.
@@ -90,12 +93,10 @@ const recordTimeout = 10 * time.Second
 // keeps one live RunTask per task by holding the data-directory lock or a
 // per-task lock: the compare-and-swap guards claims, not actions in flight.
 func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
-	secrets, err := l.Vault.Values(ctx)
+	p, err := l.newPass(ctx, taskID)
 	if err != nil {
-		return "", fmt.Errorf("task %d: %w", taskID, err)
+		return "", err
 	}
-
-	p := &pass{Loop: l, taskID: taskID, mask: redact.New(secrets...)}
 
 	var status Status
 
@@ -154,6 +155,16 @@ type pass struct {
 	taskID int64
 	mask   func(string) string
 	held   error // an error that must not stop the loop, such as a failed Release
+}
+
+// newPass masks with the vault's secrets as they are now.
+func (l *Loop) newPass(ctx context.Context, taskID int64) (*pass, error) {
+	secrets, err := l.Vault.Values(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	return &pass{Loop: l, taskID: taskID, mask: redact.New(secrets...)}, nil
 }
 
 // view is a snapshot with what the loop needs beside it.
@@ -735,13 +746,38 @@ func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *st
 
 // ref names a run for Release from the task, the row, the loop's image and the
 // instance id, so a broken setting or secret cannot keep a run's containers.
-func (p *pass) ref(ctx context.Context, t store.Task, row store.Run) (RunRef, error) {
-	set, err := p.Store.Settings(ctx)
+func (l *Loop) ref(ctx context.Context, t store.Task, row store.Run) (RunRef, error) {
+	set, err := l.Store.Settings(ctx)
 	if err != nil {
-		return RunRef{}, fmt.Errorf("task %d: release run %d: %w", p.taskID, row.ID, err)
+		return RunRef{}, fmt.Errorf("task %d: release run %d: %w", t.ID, row.ID, err)
 	}
 
-	return RunRef{InstanceID: set["instance_id"], Image: p.Image, TaskID: t.ID, RunID: row.ID, ProjectID: t.ProjectID}, nil
+	return RunRef{InstanceID: set["instance_id"], Image: l.Image, TaskID: t.ID, RunID: row.ID, ProjectID: t.ProjectID}, nil
+}
+
+// ReleaseOpenRun stops the containers of the task's open run and keeps its
+// volumes, so the next RunTask carries on in them after a RunTask was cut short.
+func (l *Loop) ReleaseOpenRun(ctx context.Context, taskID int64) error {
+	t, err := l.Store.Task(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	row, ok, err := l.Store.OpenRun(ctx, taskID)
+	if err != nil || !ok {
+		return err
+	}
+
+	ref, err := l.ref(ctx, t, row)
+	if err != nil {
+		return err
+	}
+
+	if err := l.Runner.Release(ctx, ref, false); err != nil {
+		return fmt.Errorf("task %d: release run %d: %w", taskID, row.ID, err)
+	}
+
+	return nil
 }
 
 // free stops a run's containers once its stop or end is recorded, removing its
