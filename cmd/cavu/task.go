@@ -67,7 +67,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		taskAddUsage, taskListUsage, taskShowUsage, taskDiffUsage, taskRunUsage, taskAnswerUsage, taskRetryUsage, taskCancelUsage, taskMarkUsage,
 	}, "\n       ")
 
-	return newVerbFlags(usage, stderr).usageError()
+	return newVerbFlags(usage, stderr).helpOr(args)
 }
 
 // onTask parses the task id, opens the app and calls do with it.

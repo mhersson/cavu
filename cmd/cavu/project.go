@@ -49,7 +49,7 @@ func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr 
 
 	usage := strings.Join([]string{projectAddUsage, projectSetUsage, projectListUsage, projectShowUsage, projectCheckUsage}, "\n       ")
 
-	return newVerbFlags(usage, stderr).usageError()
+	return newVerbFlags(usage, stderr).helpOr(args)
 }
 
 // projectFlags are the flags of project add and project set; only set has the lists.

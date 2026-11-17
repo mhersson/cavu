@@ -29,7 +29,7 @@ func runSettings(ctx context.Context, args []string, _ io.Reader, stdout, stderr
 		return settingsShow(ctx, f, args[1:], stdout)
 	}
 
-	return f.usageError()
+	return f.helpOr(args)
 }
 
 func settingsSet(ctx context.Context, f verbFlags, args []string) error {

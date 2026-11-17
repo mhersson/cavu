@@ -25,7 +25,7 @@ func runImage(ctx context.Context, args []string, _ io.Reader, stdout, stderr io
 	binary := f.String("cavu-binary", "", "a Linux cavu executable to put in the image (default: this executable, on Linux)")
 
 	if len(args) == 0 || args[0] != "build" {
-		return f.usageError()
+		return f.helpOr(args)
 	}
 
 	if _, err := f.parse(args[1:], 0); err != nil {
