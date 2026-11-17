@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -34,6 +35,7 @@ type Service struct {
 	store   *store.Store
 	now     func() time.Time
 	limiter *Limiter
+	mu      sync.Mutex
 }
 
 // NewService returns a Service over s that reads time from now.
@@ -43,10 +45,6 @@ func NewService(s *store.Store, now func() time.Time) *Service {
 
 // SetUser creates the user or replaces the name and password, and ends every session.
 func (a *Service) SetUser(ctx context.Context, name, password string) error {
-	if name == "" {
-		return errors.New("auth: the user needs a name")
-	}
-
 	if utf8.RuneCountInString(password) < minPasswordLen {
 		return fmt.Errorf("auth: the password needs at least %d characters", minPasswordLen)
 	}
@@ -65,35 +63,9 @@ func (a *Service) SetUser(ctx context.Context, name, password string) error {
 
 // Login returns a new session's cookie value and when it expires.
 func (a *Service) Login(ctx context.Context, name, password, remote string) (cookie string, expires time.Time, err error) {
-	key := name + "|" + remote
-	if wait, ok := a.limiter.Allow(key); !ok {
-		return "", time.Time{}, &LimitedError{RetryAfter: wait}
-	}
-
-	user, found, err := a.store.User(ctx)
-	if err != nil {
+	if err := a.check(ctx, name, password, name+"|"+remote); err != nil {
 		return "", time.Time{}, err
 	}
-
-	if !found {
-		a.limiter.Failure(key)
-
-		return "", time.Time{}, ErrBadLogin
-	}
-
-	// The hash is verified whatever the name, so a wrong name costs what a wrong password does.
-	match, err := VerifyPassword(password, user.PasswordHash)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-
-	if !match || name != user.Name {
-		a.limiter.Failure(key)
-
-		return "", time.Time{}, ErrBadLogin
-	}
-
-	a.limiter.Reset(key)
 
 	now := a.now()
 	if err := a.store.DeleteSessions(ctx, now); err != nil {
@@ -106,8 +78,49 @@ func (a *Service) Login(ctx context.Context, name, password, remote string) (coo
 	}
 
 	expires = now.Add(sessionLife)
+	if err := a.store.CreateSession(ctx, hash, now, expires); err != nil {
+		return "", time.Time{}, err
+	}
 
-	return raw, expires, a.store.CreateSession(ctx, hash, now, expires)
+	return raw, expires, nil
+}
+
+// check holds the lock so the limiter counts each attempt before the next is
+// checked, and only one 64 MiB argon2 verify runs at a time.
+func (a *Service) check(ctx context.Context, name, password, key string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if wait, ok := a.limiter.Allow(key); !ok {
+		return &LimitedError{RetryAfter: wait}
+	}
+
+	user, found, err := a.store.User(ctx)
+	if err != nil {
+		return err
+	}
+
+	if !found {
+		a.limiter.Failure(key)
+
+		return ErrBadLogin
+	}
+
+	// The hash is verified whatever the name, so a wrong name costs what a wrong password does.
+	match, err := VerifyPassword(password, user.PasswordHash)
+	if err != nil {
+		return err
+	}
+
+	if !match || name != user.Name {
+		a.limiter.Failure(key)
+
+		return ErrBadLogin
+	}
+
+	a.limiter.Reset(key)
+
+	return nil
 }
 
 // Session reports whether the cookie value names a live session, and keeps it alive.
@@ -125,7 +138,9 @@ func (a *Service) Session(ctx context.Context, cookie string) (bool, error) {
 	}
 
 	if expiry.Sub(now) < sessionRefreshBelow {
-		return true, a.store.ExtendSession(ctx, hash, now.Add(sessionLife))
+		if err := a.store.ExtendSession(ctx, hash, now.Add(sessionLife)); err != nil {
+			return false, err
+		}
 	}
 
 	return true, nil

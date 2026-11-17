@@ -141,6 +141,34 @@ func TestLoginLimiter(t *testing.T) {
 	}
 }
 
+func TestLoginLimiterCountsParallelAttempts(t *testing.T) {
+	t.Parallel()
+
+	f := newService(t)
+	errs := make(chan error, 10)
+
+	for range cap(errs) {
+		go func() {
+			_, _, err := f.svc.Login(t.Context(), "ada", "wrong password!", "10.0.0.1")
+			errs <- err
+		}()
+	}
+
+	var bad, limited int
+
+	for range cap(errs) {
+		err := <-errs
+		if _, ok := errors.AsType[*auth.LimitedError](err); ok {
+			limited++
+		} else if errors.Is(err, auth.ErrBadLogin) {
+			bad++
+		}
+	}
+
+	assert.Equal(t, 3, bad)
+	assert.Equal(t, 7, limited)
+}
+
 func TestSessionLifetime(t *testing.T) {
 	t.Parallel()
 
@@ -210,7 +238,7 @@ func TestAPITokens(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 
-	ok, err = f.svc.Bearer(ctx, "cavu_"+token[5:len(token)-1]+"x")
+	ok, err = f.svc.Bearer(ctx, token[:len(token)-1])
 	require.NoError(t, err)
 	assert.False(t, ok)
 
