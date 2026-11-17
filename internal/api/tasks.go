@@ -157,12 +157,30 @@ func newest[T any](events []store.Event, typ string) (T, bool) {
 	return v, false
 }
 
-// tasks lists every task but a replay's shadows, oldest first, of the project
-// and with the status the query names, when it names them.
+// taskList is a list of tasks as the API shows it.
+type taskList struct {
+	Tasks []taskItemJSON `json:"tasks"`
+}
+
 func (s *server) tasks(w http.ResponseWriter, r *http.Request) error {
-	ps, err := s.Store.Projects(r.Context())
+	q := r.URL.Query()
+
+	l, err := s.listTasks(r.Context(), q.Get("project"), engine.Status(q.Get("status")))
 	if err != nil {
 		return err
+	}
+
+	reply(w, http.StatusOK, l)
+
+	return nil
+}
+
+// listTasks lists every task but a replay's shadows, oldest first, of the
+// project and with the status, when they are given.
+func (s *server) listTasks(ctx context.Context, project string, status engine.Status) (taskList, error) {
+	ps, err := s.Store.Projects(ctx)
+	if err != nil {
+		return taskList{}, err
 	}
 
 	names := make(map[int64]string, len(ps))
@@ -170,32 +188,29 @@ func (s *server) tasks(w http.ResponseWriter, r *http.Request) error {
 		names[p.ID] = p.Name
 	}
 
-	q := r.URL.Query()
-	project, status := q.Get("project"), engine.Status(q.Get("status"))
-
 	if project != "" && !slices.ContainsFunc(ps, func(p store.Project) bool { return p.Name == project }) {
-		return &apiError{http.StatusBadRequest, fmt.Sprintf("project %q does not exist", project)}
+		return taskList{}, &apiError{http.StatusBadRequest, fmt.Sprintf("project %q does not exist", project)}
 	}
 
 	if status != "" && !slices.Contains(statuses, status) {
-		return &apiError{http.StatusBadRequest, fmt.Sprintf("status %q: want one of %v", status, statuses)}
+		return taskList{}, &apiError{http.StatusBadRequest, fmt.Sprintf("status %q: want one of %v", status, statuses)}
 	}
 
-	ts, err := s.Store.Tasks(r.Context(), false)
+	ts, err := s.Store.Tasks(ctx, false)
 	if err != nil {
-		return err
+		return taskList{}, err
 	}
 
-	out := []taskItemJSON{}
+	l := taskList{Tasks: []taskItemJSON{}}
 
 	for _, t := range ts {
 		if project != "" && names[t.ProjectID] != project {
 			continue
 		}
 
-		snap, err := s.Loop.Snapshot(r.Context(), t.ID)
+		snap, err := s.Loop.Snapshot(ctx, t.ID)
 		if err != nil {
-			return err
+			return taskList{}, err
 		}
 
 		item := taskItemJSON{
@@ -211,59 +226,70 @@ func (s *server) tasks(w http.ResponseWriter, r *http.Request) error {
 			item.StopReason = st.Reason
 		}
 
-		out = append(out, item)
+		l.Tasks = append(l.Tasks, item)
 	}
 
-	reply(w, http.StatusOK, map[string][]taskItemJSON{"tasks": out})
-
-	return nil
+	return l, nil
 }
 
-// createTask asks whether the project is runnable before it stores the task,
-// so a start that would be refused creates nothing.
-func (s *server) createTask(w http.ResponseWriter, r *http.Request) error {
-	var in struct {
-		Project   string  `json:"project"`
-		Title     string  `json:"title"`
-		Body      string  `json:"body"`
-		DependsOn []int64 `json:"depends_on"`
-		Start     bool    `json:"start"`
-	}
+// newTask is what a request gives a new task, over REST and MCP. The optional
+// fields are omitempty, so that the schema MCP infers does not require them.
+type newTask struct {
+	Project   string  `json:"project" jsonschema:"the name of the task's project"`
+	Title     string  `json:"title" jsonschema:"one line of at most 200 characters"`
+	Body      string  `json:"body,omitempty" jsonschema:"what the task asks for, in full"`
+	DependsOn []int64 `json:"depends_on,omitempty" jsonschema:"the ids of the tasks that must be done before this one runs"`
+	Start     bool    `json:"start,omitempty" jsonschema:"start the task as well, which its project must allow"`
+}
 
+func (s *server) createTask(w http.ResponseWriter, r *http.Request) error {
+	var in newTask
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
 
-	p, err := s.Store.ProjectByName(r.Context(), in.Project)
-	if errors.Is(err, store.ErrNotFound) {
-		return &apiError{http.StatusBadRequest, fmt.Sprintf("project %q does not exist", in.Project)}
-	}
-
-	if err != nil {
-		return fmt.Errorf("project %q: %w", in.Project, err)
-	}
-
-	if in.Start && !engine.Runnable(p) {
-		return &apiError{http.StatusBadRequest, fmt.Sprintf(
-			"project %q has %v; check the project, or waive its verify", p.Name, engine.ErrNoBaseline)}
-	}
-
-	t, err := engine.AddTask(r.Context(), s.Store, store.Task{
-		ProjectID: p.ID, Title: in.Title, Body: in.Body, Requester: "api",
-	}, in.DependsOn)
+	id, err := s.addTask(r.Context(), in, "api")
 	if err != nil {
 		return err
 	}
 
+	return s.replyTask(w, r, id, http.StatusCreated)
+}
+
+// addTask stores the task with the requester, and starts it when in asks. It
+// asks whether the project is runnable before it stores the task, so a start
+// that would be refused creates nothing.
+func (s *server) addTask(ctx context.Context, in newTask, requester string) (int64, error) {
+	p, err := s.Store.ProjectByName(ctx, in.Project)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, &apiError{http.StatusBadRequest, fmt.Sprintf("project %q does not exist", in.Project)}
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("project %q: %w", in.Project, err)
+	}
+
+	if in.Start && !engine.Runnable(p) {
+		return 0, &apiError{http.StatusBadRequest, fmt.Sprintf(
+			"project %q has %v; check the project, or waive its verify", p.Name, engine.ErrNoBaseline)}
+	}
+
+	t, err := engine.AddTask(ctx, s.Store, store.Task{
+		ProjectID: p.ID, Title: in.Title, Body: in.Body, Requester: requester,
+	}, in.DependsOn)
+	if err != nil {
+		return 0, err
+	}
+
 	if in.Start {
-		if err := s.Loop.Start(r.Context(), t.ID); err != nil {
-			return err
+		if err := s.Loop.Start(ctx, t.ID); err != nil {
+			return 0, err
 		}
 
 		s.Nudge()
 	}
 
-	return s.replyTask(w, r, t.ID, http.StatusCreated)
+	return t.ID, nil
 }
 
 func (s *server) task(w http.ResponseWriter, r *http.Request) error {
@@ -314,8 +340,6 @@ func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
 	return s.replyTask(w, r, id, http.StatusOK)
 }
 
-// act records a person's action through the engine, which refuses one the
-// task's state makes meaningless, and one that lost to a write since its read.
 func (s *server) act(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		Action string `json:"action"`
@@ -331,11 +355,27 @@ func (s *server) act(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	switch ctx := r.Context(); in.Action {
+	v, err := s.perform(r.Context(), id, in.Action, in.Text)
+	if err != nil {
+		return err
+	}
+
+	reply(w, http.StatusOK, v)
+
+	return nil
+}
+
+// perform records a person's action, named by action, through the engine,
+// which refuses one the task's state makes meaningless, and one that lost to a
+// write since its read. It gives the task as it is then.
+func (s *server) perform(ctx context.Context, id int64, action, text string) (taskJSON, error) {
+	var err error
+
+	switch action {
 	case "start":
 		err = s.Loop.Start(ctx, id)
 	case "answer":
-		err = s.Loop.Answer(ctx, id, in.Text)
+		err = s.Loop.Answer(ctx, id, text)
 	case "retry":
 		err = s.Loop.Retry(ctx, id)
 	case "cancel":
@@ -343,16 +383,16 @@ func (s *server) act(w http.ResponseWriter, r *http.Request) error {
 	case "done":
 		err = s.Loop.Done(ctx, id)
 	default:
-		return &apiError{http.StatusBadRequest, fmt.Sprintf("action %q: want start, answer, retry, cancel or done", in.Action)}
+		return taskJSON{}, &apiError{http.StatusBadRequest, fmt.Sprintf("action %q: want start, answer, retry, cancel or done", action)}
 	}
 
 	if err != nil {
-		return err
+		return taskJSON{}, err
 	}
 
 	s.Nudge()
 
-	return s.replyTask(w, r, id, http.StatusOK)
+	return s.taskView(ctx, id)
 }
 
 // replyTask answers with the task as it is now.
