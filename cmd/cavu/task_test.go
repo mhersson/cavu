@@ -500,6 +500,52 @@ func TestTaskShowPrintsTheBudgetAndAMissingCost(t *testing.T) {
 	assert.Equal(t, []string{"0", "5000", "2"}, numbers.FindAllString(cost[0], -1), "the cost line ends with how many sessions it leaves out")
 }
 
+// amounts is every dollar amount in text, in order.
+var amounts = regexp.MustCompile(`\$[0-9]+\.[0-9]{2}`)
+
+func TestTaskShowPrintsTheMoney(t *testing.T) {
+	dir := webData(t)
+
+	for k, v := range map[string]string{
+		"endpoint_mode": "key", "endpoint_url": "https://gateway.example", "endpoint_auth_header": "x-api-key",
+		"task_budget_usd": "5", "model_prices": `{"*": {"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}}`,
+	} {
+		cavuIn(t, dir, "settings", "set", k, v)
+	}
+
+	id := addTask(t, dir, "Fix")
+
+	// Long before today, so the day's spend is none of it.
+	t0 := time.Date(2001, 1, 1, 9, 0, 0, 0, time.UTC)
+	at := func(e store.Event, d time.Duration) store.Event {
+		e.At = t0.Add(d)
+
+		return e
+	}
+
+	seedEvents(t, dir, id, []store.Usage{{Source: "proxy", Model: "claude-x", Input: 3_200_000}},
+		at(event(engine.TaskStarted, "user", struct{}{}), 0),
+		at(event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}), 0),
+		at(event(engine.SessionStarted, "engine", engine.SessionStartedPayload{Mode: engine.ModeStart, SessionID: "s1"}), time.Minute),
+		at(event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeUnfinished, Turns: 20}), 11*time.Minute))
+
+	lines := labelled(cavuIn(t, dir, "task", "show", id), "budget:")
+	require.Len(t, lines, 1)
+	assert.Equal(t, []string{"$3.20", "$5.00"}, amounts.FindAllString(lines[0], -1), "the task's spend of its cap")
+
+	cavuIn(t, dir, "settings", "set", "daily_budget_usd", "20")
+
+	lines = labelled(cavuIn(t, dir, "task", "show", id), "budget:")
+	require.Len(t, lines, 1)
+	assert.Equal(t, []string{"$3.20", "$5.00", "$0.00", "$20.00"}, amounts.FindAllString(lines[0], -1), "and the day's of the daily cap")
+
+	cavuIn(t, dir, "settings", "set", "endpoint_mode", "subscription")
+
+	lines = labelled(cavuIn(t, dir, "task", "show", id), "budget:")
+	require.Len(t, lines, 1)
+	assert.Empty(t, amounts.FindAllString(lines[0], -1), "no money cap under a subscription")
+}
+
 func TestTaskDiffPrintsTheNewestExport(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix")

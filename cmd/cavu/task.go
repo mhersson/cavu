@@ -309,8 +309,9 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
 
 		used, limits := snap.Facts, snap.Limits
-		fmt.Fprintf(stdout, "budget:  %d of %d turns, %.0f of %.0f minutes since a person last acted\n",
-			used.Turns, limits.Turns, used.SessionTime.Minutes(), limits.SessionTime.Minutes())
+		spent, today := money(snap)
+		fmt.Fprintf(stdout, "budget:  %d of %d turns, %.0f of %.0f minutes%s since a person last acted%s\n",
+			used.Turns, limits.Turns, used.SessionTime.Minutes(), limits.SessionTime.Minutes(), spent, today)
 
 		if err := printUsage(ctx, stdout, a.store, id, used.CostMissing); err != nil {
 			return err
@@ -329,6 +330,24 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 
 		return nil
 	})
+}
+
+// money is what the budget line says of the money caps in force: the task's
+// spend of its cap, and the instance's today of the daily cap.
+func money(s engine.Snapshot) (task, day string) {
+	if c := s.Limits.TaskMicroUSD; c > 0 {
+		task = fmt.Sprintf(", %s of %s", dollars(s.Spent.TaskMicroUSD), dollars(c))
+	}
+
+	if c := s.Limits.DayMicroUSD; c > 0 {
+		day = fmt.Sprintf("; %s of the daily %s today", dollars(s.Spent.DayMicroUSD), dollars(c))
+	}
+
+	return task, day
+}
+
+func dollars(microUSD int64) string {
+	return fmt.Sprintf("$%.2f", float64(microUSD)/1e6)
 }
 
 // printQueue prints the task's dependencies, each with its status, and why

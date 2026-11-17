@@ -34,6 +34,8 @@ type Store interface {
 	EventsOmitting(ctx context.Context, taskID int64, omit ...string) ([]store.Event, error)
 	LastEventID(ctx context.Context, taskID int64) (int64, error)
 	Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error)
+	UsageSince(ctx context.Context, taskID, afterEventID int64) ([]store.Usage, error)
+	UsageBetween(ctx context.Context, from, to time.Time) ([]store.Usage, error)
 	CreateRun(ctx context.Context, r store.Run) (store.Run, error)
 	UpdateRun(ctx context.Context, r store.Run) error
 	OpenRun(ctx context.Context, taskID int64) (store.Run, bool, error)
@@ -266,6 +268,12 @@ func (l *Loop) snapshot(ctx context.Context, taskID int64) (Snapshot, []store.Ev
 		Task: t, Facts: Reduce(events), Deps: deps, Now: l.Now(), Switches: sw, Caps: defaultCaps, Limits: limits, LastEventID: last,
 	}
 
+	if limits.capped() {
+		if s.Spent, s.prices, err = l.spent(ctx, taskID, s.Facts.LastHumanEventID, set, s.Now); err != nil {
+			return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
+		}
+	}
+
 	if l.Paused != nil {
 		s.Pause = l.Paused(taskID)
 	}
@@ -388,6 +396,11 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 	o, err := p.open(ctx, v.Task, row)
 	if err != nil {
 		return p.unconfigured(ctx, v, a, row, err)
+	}
+
+	if v.Limits.capped() {
+		b := &o.cfg.Budget
+		b.Capped, b.MicroUSD, b.Prices = true, moneyLeft(v.Snapshot), v.prices
 	}
 
 	if a.Kind == KindPrepare {

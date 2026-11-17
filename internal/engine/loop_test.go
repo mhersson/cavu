@@ -70,7 +70,7 @@ type call struct {
 	commit string // the commit an export was given
 	ref    engine.RunRef
 	eco    []string         // the config's ecosystems
-	cfg    engine.RunConfig // the config of a check, a session or a review
+	cfg    engine.RunConfig // the config of every call but a release
 }
 
 func (c call) String() string {
@@ -140,7 +140,7 @@ func (r *fakeRunner) begin(ctx context.Context, c call) error {
 }
 
 func (r *fakeRunner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
-	if err := r.begin(ctx, call{method: "prepare", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "prepare", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.PrepareResult{}, err
 	}
 
@@ -183,7 +183,7 @@ func (r *fakeRunner) Work(ctx context.Context, c engine.RunConfig, w engine.Work
 }
 
 func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.VerifyResult, error) {
-	if err := r.begin(ctx, call{method: "verify", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "verify", task: c.TaskID, runID: c.RunID, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.VerifyResult{}, err
 	}
 
@@ -194,7 +194,7 @@ func (r *fakeRunner) Verify(ctx context.Context, c engine.RunConfig) (engine.Ver
 }
 
 func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit string) (engine.ExportResult, error) {
-	if err := r.begin(ctx, call{method: "export", task: c.TaskID, runID: c.RunID, commit: commit, eco: c.Ecosystems}); err != nil {
+	if err := r.begin(ctx, call{method: "export", task: c.TaskID, runID: c.RunID, commit: commit, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.ExportResult{}, err
 	}
 

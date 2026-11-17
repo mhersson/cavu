@@ -75,7 +75,7 @@ func newProjectFlags(usage string, stderr io.Writer, lists bool) *projectFlags {
 		f.Var(&f.secrets, "secret", "a variable for the setup command from the secret project.NAME.VAR; repeat for more, '' alone for none")
 		f.Var(&f.tools, "tool", "a tool version NAME=VERSION over the repository's; repeat for more, '' alone for none")
 		f.Var(&f.switches, "switch", "continuations, verify_fix, web_tools, readiness or review, =on or =off; repeat for more")
-		f.Var(&f.caps, "cap", "a cap KEY=VALUE over the setting for this project's tasks, task_max_turns or task_timeout_minutes; KEY= removes it; repeat for more")
+		f.Var(&f.caps, "cap", "a cap KEY=VALUE over the setting for this project's tasks, task_max_turns, task_timeout_minutes or task_budget_usd; KEY= removes it; repeat for more")
 	}
 
 	return f

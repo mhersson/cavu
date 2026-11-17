@@ -231,6 +231,17 @@ func TestCheckSetting(t *testing.T) {
 		{"commit_email", "bot@example.com", true},
 		{"instance_id", "0123456789abcdef", false},
 		{"max_turns", "5", false},
+		{"task_budget_usd", "5", true},
+		{"task_budget_usd", "2.50", true},
+		{"task_budget_usd", "0", true},
+		{"task_budget_usd", "", true},
+		{"task_budget_usd", "-1", false},
+		{"task_budget_usd", "five", false},
+		{"daily_budget_usd", "20", true},
+		{"daily_budget_usd", "-0.01", false},
+		{"model_prices", `{"*": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}}`, true},
+		{"model_prices", "", true},
+		{"model_prices", "[]", false},
 	}
 
 	for _, tt := range tests {

@@ -152,7 +152,7 @@ func ReadSettings(values map[string]string) (RunConfig, error) {
 var settableKeys = []string{
 	"runtime", "ca_bundle_path", "endpoint_mode", "endpoint_url", "endpoint_auth_header",
 	keyModelWork, keyEffortWork, "model_review", "effort_review", "model_strong", "effort_strong",
-	keyTaskTimeout, keyTaskTurns, "verify_timeout_minutes",
+	keyTaskTimeout, keyTaskTurns, keyTaskBudget, keyDayBudget, keyPrices, "verify_timeout_minutes",
 	"commit_name", "commit_email", "concurrency", "listen_address",
 }
 
@@ -174,8 +174,9 @@ func CheckSetting(key, value string) error {
 
 	_, concurrency := Concurrency(values)
 	_, listen := ListenAddress(values)
+	_, prices := Prices(values)
 
-	return errors.Join(set.err, concurrency, listen)
+	return errors.Join(set.err, concurrency, listen, prices)
 }
 
 // Concurrency reads the concurrency setting: a positive integer, 3 when unset.
@@ -273,10 +274,12 @@ func (s *settingsReader) read() RunConfig {
 	return c
 }
 
-// limits reads the task's budget; a session's config gets what is left of it.
+// limits reads the task's budget and the day's money; a session's config gets
+// what is left of the turns and the time.
 func (s *settingsReader) limits() Limits {
 	return Limits{
 		Turns: s.positiveInt(keyTaskTurns, 1000), SessionTime: time.Duration(s.positiveInt(keyTaskTimeout, 300)) * time.Minute,
+		TaskMicroUSD: s.dollars(keyTaskBudget), DayMicroUSD: s.dollars(keyDayBudget),
 	}
 }
 
@@ -316,6 +319,24 @@ func (s *settingsReader) hostPort(key, def string) string {
 	}
 
 	return v
+}
+
+// dollars reads a decimal number of US dollars that is not negative, in
+// micro-dollars; unset is 0.
+func (s *settingsReader) dollars(key string) int64 {
+	v := s.values[key]
+	if v == "" {
+		return 0
+	}
+
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(f) || f < 0 {
+		s.fail(key, fmt.Sprintf("%q is not a number of dollars of 0 or more", v))
+
+		return 0
+	}
+
+	return int64(math.Round(f * 1e6))
 }
 
 // minutes reads a decimal number of minutes, clamped to [lo, hi].

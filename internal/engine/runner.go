@@ -36,6 +36,13 @@ type RunConfig struct {
 	}
 	Identity struct{ Name, Email string }
 	Task     struct{ Title, Body string }
+	// Budget is what the run's model calls may still spend, set in key mode
+	// while a money cap is in force; the proxy counts it against Prices.
+	Budget struct {
+		Capped   bool
+		MicroUSD int64
+		Prices   map[string]Price
+	}
 	// Ecosystems are what the run's prepare detected, for Work, Verify and
 	// Export; never a setting, and empty for Prepare.
 	Ecosystems []string

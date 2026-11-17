@@ -47,7 +47,9 @@ const (
 	OutcomeTimeout    = "timeout"
 	OutcomeUsageLimit = "usage_limit"
 	OutcomeEndpoint   = "endpoint"
-	OutcomeReady      = "ready" // a readiness turn found nothing missing
+	OutcomeReady      = "ready"     // a readiness turn found nothing missing
+	OutcomeBudget     = "budget"    // the proxy's count reached the budget the session was given
+	OutcomeUnmetered  = "unmetered" // the proxy could not price or meter a model call; the detail says why
 )
 
 // Verify results.
