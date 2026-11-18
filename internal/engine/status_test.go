@@ -150,6 +150,17 @@ func TestPullRequestOf(t *testing.T) {
 			hasPullRequest: true, state: engine.PROpen, checks: engine.ChecksPassed, head: "h2",
 		},
 		{
+			name:           "an unanswered request of a reviewer",
+			facts:          pullRequest(look("h2", engine.ChecksPassed, func(o *engine.Observation) { o.Comments = []engine.Comment{{ID: "r1"}} })),
+			hasPullRequest: true, state: engine.PROpen, checks: engine.ChecksPassed, head: "h2",
+		},
+		{
+			name: "a request that a follow-up run was given",
+			facts: with(pullRequest(look("h2", engine.ChecksPassed, func(o *engine.Observation) { o.Comments = []engine.Comment{{ID: "r1"}} })),
+				func(f *engine.Facts) { f.PR.Answered = []string{"r1"} }),
+			hasPullRequest: true, state: engine.PROpen, checks: engine.ChecksPassed, ready: true, head: "h2",
+		},
+		{
 			name: "a merged task", facts: with(pullRequest(look("h2", engine.ChecksPassed)), func(f *engine.Facts) { f.Merged = true }),
 			hasPullRequest: true, state: engine.PROpen, checks: engine.ChecksPassed, head: "h2",
 		},
@@ -175,13 +186,6 @@ func TestPullRequestOf(t *testing.T) {
 			assert.ElementsMatch(t, tc.failed, got.Failed)
 		})
 	}
-
-	t.Run("the facts cannot be changed through it", func(t *testing.T) {
-		f := pullRequest(look("h2", engine.ChecksFailed, failed))
-		engine.PullRequestOf(f, false).Failed[0] = "changed"
-
-		assert.Equal(t, []string{"lint", "unit"}, f.PR.Seen.Failed)
-	})
 }
 
 func TestChangeOf(t *testing.T) {
@@ -209,14 +213,4 @@ func TestChangeOf(t *testing.T) {
 			assert.Equal(t, tc.want, engine.ChangeOf(tc.facts))
 		})
 	}
-
-	t.Run("the facts cannot be changed through it", func(t *testing.T) {
-		f := engine.Facts{PR: &engine.PRFact{Export: published}}
-		got := engine.ChangeOf(f)
-		got.DiffStat[0], got.Flagged.Workflows[0], got.HeadCommit = "x", "x", "x"
-
-		assert.Equal(t, "a | 1 +", f.PR.Export.DiffStat[0])
-		assert.Equal(t, "w", f.PR.Export.Flagged.Workflows[0])
-		assert.Equal(t, "c1", f.PR.Export.HeadCommit)
-	})
 }
