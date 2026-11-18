@@ -155,10 +155,10 @@ Answers 200 with every task but a replay's shadow tasks, oldest first:
 
 ```json
 {"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "stop_reason": "question",
-            "waiting": "", "created_at": "2030-01-02T03:04:05Z"}]}
+            "waiting": "", "pull_request_ready": false, "created_at": "2030-01-02T03:04:05Z"}]}
 ```
 
-The query `project=NAME` keeps the tasks of one project, and `status=STATUS` the tasks with one status; a project that does not exist, or a status that is not one of [the task's](#the-task), is 400. `stop_reason` is the open stop's reason, else `""`; the other fields are the task's.
+The query `project=NAME` keeps the tasks of one project, and `status=STATUS` the tasks with one status; a project that does not exist, or a status that is not one of [the task's](#the-task), is 400. `stop_reason` is the open stop's reason, else `""`; `pull_request_ready` is the `ready` of the task's `pull_request`, false for a task with none; the other fields are the task's.
 
 ### `POST /api/tasks`
 
@@ -208,7 +208,7 @@ Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action
             "open": [{"severity": "important", "where": "footer.html:10", "what": "The footer covers the cookie banner.",
                       "why": "A visitor cannot dismiss the banner."}],
             "minor": []},
- "change": null, "turns": 33, "duration_ms": 226000, "cost_estimate_usd": 0.325, "cost_missing_sessions": 0,
+ "pull_request": null, "change": null, "turns": 33, "duration_ms": 226000, "cost_estimate_usd": 0.325, "cost_missing_sessions": 0,
  "budget": {"turns": 33, "max_turns": 1000, "minutes": 4, "max_minutes": 300, "usd": 0.29, "max_usd": 5}}
 ```
 
@@ -227,7 +227,8 @@ A list is `[]` when empty, never null.
 | `stop` | The open stop, or null: its `reason` (`question`, `environment`, `verify_failed`, `budget`, `timeout`, `no_change`, `agent_error`, `usage_limit`, `endpoint`, `sandbox`, `cancelled`, `dependency`, `push_rejected`, `ci_failed`, `ci_timeout`, `no_checks`, `conflict`, `taken_over` or `changes_requested`), a one-line `explanation`, the one `action` that clears it (`answer`, `retry`, or `none` for a stop that a clock ends or that stays), and `resets_at`, the time a usage limit resets, else null. |
 | `questions` | While the open stop is `question`, every question the agent asked, of which the explanation holds the first, each with the `suggested_answer` the agent would assume, `""` where it gave none; else `[]`. |
 | `review` | The newest run's review, or null until a review gives a verdict or fails to give one: `rounds`, the fix rounds after its findings since a person last acted; `failed`, why the newest review gave no verdict, else `""`; `open`, the critical and important findings left open; and `minor`, the minor ones, which never start a fix round. A finding has a `severity` (`critical`, `important` or `minor`), `where`, `what` and `why`. A review that a usage limit, a timeout or the like cut short shows as the stop instead. |
-| `change` | The newest exported change, or null: its `head_commit`, the number of `files_changed`, `diff_stat`, git's summary of the diff: a line per file, a long list cut short, then the totals, and `flagged`, the paths a person should know of before a merge, at most 20 in each list and `[]` for none: `workflows`, a path under `.github/workflows/`; `instructions`, a file named `AGENTS.md` or `CLAUDE.md`, or a path under a `.claude/` directory, in any directory; and `large`, a file the change adds that is over 1 MiB. The first two name a path the change deletes too, and a rename counts as deleting the old path and adding the new one. |
+| `pull_request` | The task's pull request on GitHub, or null before the first publish: its `number`, `url`, `branch` and `head`, the commit CAVU has on the branch; `state`, `open`, `merged` or `closed` as CAVU's newest look at the pull request shows it, `open` before any look; `checks`, `none`, `pending`, `passed` or `failed`, the checks of `head`, where `""` means they were not read yet, as between a publish and the first look at it or when the newest look shows another commit; `failed_checks`, the names of the failed ones, `[]` for none; and `ready`, true only when the newest look shows `head`, the pull request is open and no draft, its checks are `passed` (or `none`, on a project with `no_ci`), and the task waits for a person: no run or stop is open, and it is neither done nor cancelled. |
+| `change` | The change the task shows, or null: the export CAVU published last whenever the task has a pull request, in the middle of a fix run too, else the newest exported change. After a retry that gave the branch back to CAVU (a takeover, or a conflict a person resolved) the pull request's `head` is the person's commit and `change` is still CAVU's last export, so the two differ until CAVU publishes again. Its fields: its `head_commit`, the number of `files_changed`, `diff_stat`, git's summary of the diff: a line per file, a long list cut short, then the totals, and `flagged`, the paths a person should know of before a merge, at most 20 in each list and `[]` for none: `workflows`, a path under `.github/workflows/`; `instructions`, a file named `AGENTS.md` or `CLAUDE.md`, or a path under a `.claude/` directory, in any directory; and `large`, a file the change adds that is over 1 MiB. The first two name a path the change deletes too, and a rename counts as deleting the old path and adding the new one. |
 | `turns` | The turns of all the task's agent sessions. |
 | `duration_ms` | The milliseconds from the task's start to its newest event other than the agent's progress, 0 before it starts. |
 | `cost_estimate_usd` | The sum of the costs recorded for the task, an estimate from list prices, not a bill. |
@@ -274,6 +275,8 @@ An event is one fact in a task's history, recorded once and never changed:
 | `type` | What happened, such as `task_started`, `agent_text` or `stopped`. |
 | `actor` | Who recorded it: `user`, `engine`, `runner` or `agent`. |
 | `payload` | The event's details, a JSON value whose shape the type sets. |
+
+A task's pull request leaves these events: `publish_started` and `published` for a push of the branch and the pull request opened or updated by it, `pr_observed` for what GitHub showed of the pull request when that differs from the last record, and `ready_started` and `pr_ready` for CAVU marking it ready for review. After a follow-up run for reviewers' requests, `reply_started` and `replied` record CAVU's one comment on the pull request that answers them. `home_removed` records that the task's home volume was removed once the task was over.
 
 ## MCP
 

@@ -1,5 +1,7 @@
 package engine
 
+import "slices"
+
 // Status is where a task stands, as a person sees it.
 type Status string
 
@@ -32,4 +34,66 @@ func StatusOf(f Facts) Status {
 	default:
 		return StatusRunning
 	}
+}
+
+// PullRequest is a task's pull request as a person sees it.
+type PullRequest struct {
+	Number            int
+	URL, Branch, Head string // Head is the pull request's head as CAVU has it
+	State             string // PROpen, PRMerged or PRClosed as the newest look has it; PROpen before any look
+	Ready             bool   // open, no draft, checks passed (or none, with no CI), and the task waits for a person
+	Checks            string // a Checks* value of the head; "" until a look showed it
+	Failed            []string
+}
+
+// PullRequestOf reads the task's pull request, nil before its first publish.
+// The checks are those of its own head: until a look shows that head, as
+// between a publish and the first look at it or when the newest look shows
+// another commit, they are not read yet. Ready also needs a task that waits
+// for a person: no run or stop open, and neither merged nor cancelled.
+func PullRequestOf(f Facts, noCI bool) *PullRequest {
+	pr := f.PR
+	if pr == nil {
+		return nil
+	}
+
+	v := &PullRequest{Number: pr.Number, URL: pr.URL, Branch: pr.Branch, Head: pr.Head, State: PROpen}
+
+	seen := pr.Seen
+	if seen == nil {
+		return v
+	}
+
+	v.State = seen.State
+
+	if seen.Head == pr.Head {
+		v.Checks, v.Failed = seen.Checks, slices.Clone(seen.Failed)
+		v.Ready = !f.RunOpen && f.OpenStop == nil && !f.Merged && !f.Cancelled &&
+			seen.State == PROpen && !seen.Draft && (seen.Checks == ChecksPassed || seen.Checks == ChecksNone && noCI)
+	}
+
+	return v
+}
+
+// ChangeOf is the change a task shows: the export CAVU published last whenever
+// the task has a pull request, a fix run in the middle of its work included,
+// else the newest export, else nil. The copy is the caller's.
+func ChangeOf(f Facts) *ExportedPayload {
+	var x ExportedPayload
+
+	switch {
+	case f.PR != nil:
+		x = f.PR.Export
+	case f.Exported:
+		x = f.Export
+	default:
+		return nil
+	}
+
+	x.DiffStat = slices.Clone(x.DiffStat)
+	x.Flagged = Flagged{
+		Workflows: slices.Clone(x.Flagged.Workflows), Instructions: slices.Clone(x.Flagged.Instructions), Large: slices.Clone(x.Flagged.Large),
+	}
+
+	return &x
 }

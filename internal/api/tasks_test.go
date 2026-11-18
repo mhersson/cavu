@@ -152,7 +152,7 @@ func TestTasksRoundTrip(t *testing.T) {
 	at := rfc3339(stored.CreatedAt)
 	assert.JSONEq(t, `{"id": 1, "project": "site", "title": "Add a footer", "body": "Below the fold.", "requester": "api",
 		"created_at": "`+at+`", "status": "draft", "waiting": "", "depends_on": [], "stop": null, "questions": [],
-		"review": null, "change": null, "turns": 0, "duration_ms": 0, "cost_estimate_usd": 0, "cost_missing_sessions": 0,
+		"review": null, "pull_request": null, "change": null, "turns": 0, "duration_ms": 0, "cost_estimate_usd": 0, "cost_missing_sessions": 0,
 		"budget": {"turns": 0, "max_turns": 1000, "minutes": 0, "max_minutes": 300}}`, created)
 
 	status, body := f.call(t, "GET /api/tasks/1", "")
@@ -162,7 +162,7 @@ func TestTasksRoundTrip(t *testing.T) {
 	status, body = f.call(t, "GET /api/tasks", "")
 	require.Equal(t, http.StatusOK, status, body)
 	assert.JSONEq(t, `{"tasks": [{"id": 1, "project": "site", "title": "Add a footer", "status": "draft",
-		"stop_reason": "", "waiting": "", "created_at": "`+at+`"}]}`, body)
+		"stop_reason": "", "waiting": "", "pull_request_ready": false, "created_at": "`+at+`"}]}`, body)
 
 	t.Run("a PATCH changes only the fields it names", func(t *testing.T) {
 		second := f.task(t, `{"project": "site", "title": "Add a header", "body": "On top.", "depends_on": [1]}`)
@@ -614,7 +614,7 @@ func TestListFilters(t *testing.T) {
 
 		assert.Equal(t, []any{map[string]any{
 			"id": 4.0, "project": "api", "title": "A question", "status": "blocked", "stop_reason": "question",
-			"waiting": "", "created_at": rfc3339(stored.CreatedAt),
+			"waiting": "", "pull_request_ready": false, "created_at": rfc3339(stored.CreatedAt),
 		}}, list(t, "?status=blocked"))
 	})
 
@@ -625,4 +625,159 @@ func TestListFilters(t *testing.T) {
 			assertError(t, body)
 		})
 	}
+}
+
+const prURL = "https://github.com/acme/site/pull/12"
+
+// published makes the task one that exported a change at head and published it
+// as pull request 12 on the branch cavu/footer, its run ended.
+func (f *fixture) published(t *testing.T, taskID int64, head string) {
+	t.Helper()
+
+	f.add(t, taskID, engine.TaskStarted, struct{}{})
+	f.add(t, taskID, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+	f.add(t, taskID, engine.SessionEnded, engine.SessionEndedPayload{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: head})
+	f.add(t, taskID, engine.VerifyEnded, engine.VerifyEndedPayload{Result: engine.ResultPassed})
+	f.add(t, taskID, engine.Exported, engine.ExportedPayload{HeadCommit: head, FilesChanged: 1, DiffStat: []string{"footer.html | 1 +"}})
+	f.add(t, taskID, engine.Published, engine.PublishedPayload{Branch: "cavu/footer", Head: head, Number: 12, URL: prURL})
+	f.add(t, taskID, engine.RunEnded, engine.RunEndedPayload{Outcome: engine.RunExported})
+}
+
+// observed records what GitHub showed of the task's pull request.
+func (f *fixture) observed(t *testing.T, taskID int64, o engine.Observation) {
+	t.Helper()
+
+	f.add(t, taskID, engine.PRObserved, o)
+}
+
+func TestTaskShowsItsPullRequest(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	pr := func(state, head, checks string, ready bool, failed ...string) map[string]any {
+		return map[string]any{
+			"number": 12.0, "url": prURL, "branch": "cavu/footer", "head": head, "state": state,
+			"ready": ready, "checks": checks, "failed_checks": append([]any{}, toAny(failed)...),
+		}
+	}
+	change := func(head string) map[string]any {
+		return map[string]any{
+			"head_commit": head, "files_changed": 1.0, "diff_stat": []any{"footer.html | 1 +"},
+			"flagged": map[string]any{"workflows": []any{}, "instructions": []any{}, "large": []any{}},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		set        func(id int64)
+		status     string
+		want       any // pull_request
+		wantChange any
+	}{
+		{
+			name: "before the publish", status: "draft",
+			set: func(int64) {},
+		},
+		{
+			name: "just after the publish", status: "in_review",
+			set:        func(id int64) { f.published(t, id, "c1") },
+			want:       pr("open", "c1", "", false),
+			wantChange: change("c1"),
+		},
+		{
+			name: "with failed checks", status: "in_review",
+			set: func(id int64) {
+				f.published(t, id, "c1")
+				f.observed(t, id, engine.Observation{State: engine.PROpen, Draft: true, Head: "c1", Checks: engine.ChecksFailed, Failed: []string{"lint", "unit"}})
+			},
+			want:       pr("open", "c1", "failed", false, "lint", "unit"),
+			wantChange: change("c1"),
+		},
+		{
+			name: "in the middle of a fix run", status: "running",
+			set: func(id int64) {
+				f.published(t, id, "c1")
+				f.observed(t, id, engine.Observation{State: engine.PROpen, Head: "c1", Checks: engine.ChecksFailed, Failed: []string{"lint"}})
+				f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: "c1"})
+			},
+			want:       pr("open", "c1", "failed", false, "lint"),
+			wantChange: change("c1"),
+		},
+		{
+			name: "in the middle of a follow-up run on passed checks", status: "running",
+			set: func(id int64) {
+				f.published(t, id, "c1")
+				f.observed(t, id, engine.Observation{State: engine.PROpen, Head: "c1", Checks: engine.ChecksPassed})
+				f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonComments, Head: "c1", Requests: []string{"r1"}})
+			},
+			want:       pr("open", "c1", "passed", false),
+			wantChange: change("c1"),
+		},
+		{
+			name: "ready", status: "in_review",
+			set: func(id int64) {
+				f.published(t, id, "c1")
+				f.observed(t, id, engine.Observation{State: engine.PROpen, Head: "c1", Checks: engine.ChecksPassed})
+			},
+			want:       pr("open", "c1", "passed", true),
+			wantChange: change("c1"),
+		},
+		{
+			name: "merged", status: "done",
+			set: func(id int64) {
+				f.published(t, id, "c1")
+				f.observed(t, id, engine.Observation{State: engine.PRMerged, Head: "c1", Checks: engine.ChecksPassed})
+			},
+			want:       pr("merged", "c1", "passed", false),
+			wantChange: change("c1"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+			tc.set(id)
+
+			got := f.view(t, id)
+			assert.Equal(t, tc.status, got["status"])
+			assert.Equal(t, tc.want, got["pull_request"])
+			assert.Equal(t, tc.wantChange, got["change"])
+		})
+	}
+}
+
+func toAny(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+
+	return out
+}
+
+func TestListMarksReadyPullRequests(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	ready := f.task(t, `{"project": "site", "title": "Ready"}`)
+	f.published(t, ready, "c1")
+	f.observed(t, ready, engine.Observation{State: engine.PROpen, Head: "c1", Checks: engine.ChecksPassed})
+
+	failing := f.task(t, `{"project": "site", "title": "Failing"}`)
+	f.published(t, failing, "c2")
+	f.observed(t, failing, engine.Observation{State: engine.PROpen, Head: "c2", Checks: engine.ChecksFailed, Failed: []string{"unit"}})
+
+	bare := f.task(t, `{"project": "site", "title": "No pull request"}`)
+
+	status, body := f.call(t, "GET /api/tasks", "")
+	require.Equal(t, http.StatusOK, status, body)
+
+	got := map[float64]any{}
+
+	for _, row := range object(t, body)["tasks"].([]any) {
+		r := row.(map[string]any)
+		got[r["id"].(float64)] = r["pull_request_ready"]
+	}
+
+	assert.Equal(t, map[float64]any{float64(ready): true, float64(failing): false, float64(bare): false}, got)
 }
