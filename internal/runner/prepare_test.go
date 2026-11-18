@@ -525,7 +525,7 @@ func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string)
 }
 
 // appConfig is testConfig for a GitHub App's repository at url.
-func appConfig(t testing.TB, url string) engine.RunConfig {
+func appConfig(url string) engine.RunConfig {
 	c := testConfig()
 	c.Repo.URL = url
 	c.Repo.Access = engine.ForgeAccess{AppID: 42, AppKey: forgefake.AppKey()}
@@ -536,7 +536,7 @@ func appConfig(t testing.TB, url string) engine.RunConfig {
 func TestCloneUsesAnAppToken(t *testing.T) {
 	f := newFake()
 	r, fake, url := f.appRunner(t)
-	c := appConfig(t, url)
+	c := appConfig(url)
 
 	_, err := r.Prepare(t.Context(), c)
 	require.NoError(t, err)
@@ -575,7 +575,7 @@ func TestRunnerMasksAMintedToken(t *testing.T) {
 	}
 	r, _, url := f.appRunner(t)
 
-	res, err := r.Prepare(t.Context(), appConfig(t, url))
+	res, err := r.Prepare(t.Context(), appConfig(url))
 	require.NoError(t, err)
 	require.Len(t, f.clones, 1)
 	assert.Equal(t, stepClone, res.FailedStep)
@@ -607,7 +607,7 @@ func TestCloneWithoutAnAppToken(t *testing.T) {
 	t.Run("an address that names no repository on a forge", func(t *testing.T) {
 		f := newFake()
 
-		res, err := f.runner().Prepare(t.Context(), appConfig(t, "https://gitlab.example/group/subgroup/web.git"))
+		res, err := f.runner().Prepare(t.Context(), appConfig("https://gitlab.example/group/subgroup/web.git"))
 		require.NoError(t, err)
 		assert.Equal(t, stepClone, res.FailedStep)
 		assert.NotEmpty(t, res.Output)
@@ -619,7 +619,7 @@ func TestCloneWithoutAnAppToken(t *testing.T) {
 		r, fake, url := f.appRunner(t)
 		fake.Fail(1)
 
-		res, err := r.Prepare(t.Context(), appConfig(t, url))
+		res, err := r.Prepare(t.Context(), appConfig(url))
 		require.NoError(t, err)
 		assert.Equal(t, stepClone, res.FailedStep)
 		assert.NotEmpty(t, res.Output)
@@ -632,7 +632,7 @@ func TestCloneWithoutAnAppToken(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		res, err := r.Prepare(ctx, appConfig(t, url))
+		res, err := r.Prepare(ctx, appConfig(url))
 		require.ErrorIs(t, err, context.Canceled)
 		assert.Empty(t, res.FailedStep)
 	})

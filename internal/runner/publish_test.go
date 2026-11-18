@@ -52,8 +52,8 @@ func laterPublish() engine.PublishRequest {
 }
 
 // appPublishConfig is appConfig for a run with a base commit.
-func appPublishConfig(t *testing.T, url string) engine.RunConfig {
-	c := appConfig(t, url)
+func appPublishConfig(url string) engine.RunConfig {
+	c := appConfig(url)
 	c.Repo.BaseCommit = baseCommit
 
 	return c
@@ -186,7 +186,7 @@ func TestPublishPushTokenPermissions(t *testing.T) {
 			f := toPublish(tc.listed)
 			r, fake, url := f.appRunner(t)
 
-			_, err := r.Publish(t.Context(), appPublishConfig(t, url), laterPublish())
+			_, err := r.Publish(t.Context(), appPublishConfig(url), laterPublish())
 			require.NoError(t, err)
 			require.Len(t, f.pushes, 1)
 			assert.Equal(t, []forgefake.Token{{Value: f.pushes[0].Token, Permissions: tc.perms}}, fake.Tokens())
@@ -209,7 +209,7 @@ func TestPublishRejections(t *testing.T) {
 	})
 
 	t.Run("a push the forge refuses", func(t *testing.T) {
-		const moved = "the branch moved on the forge since it was pushed"
+		const moved = "the branch moved since it was pushed"
 
 		f := toPublish(twoFilesListed)
 		f.onPush = func(r sidecar.PushRequest) (string, string, error) { return r.Branch, moved, nil }
@@ -232,7 +232,7 @@ func TestPublishRejections(t *testing.T) {
 		r, fake, url := f.appRunner(t)
 		fake.Lack("workflows")
 
-		res, err := r.Publish(t.Context(), appPublishConfig(t, url), firstPublish())
+		res, err := r.Publish(t.Context(), appPublishConfig(url), firstPublish())
 		require.NoError(t, err)
 		assert.Contains(t, res.Rejected, "Workflows")
 		assert.Empty(t, f.pushes)
@@ -243,7 +243,7 @@ func TestPublishRejections(t *testing.T) {
 		r, fake, url := f.appRunner(t)
 		fake.Fail(1)
 
-		res, err := r.Publish(t.Context(), appPublishConfig(t, url), firstPublish())
+		res, err := r.Publish(t.Context(), appPublishConfig(url), firstPublish())
 		require.Error(t, err)
 		assert.Empty(t, res.Rejected)
 		assert.Empty(t, f.pushes)
@@ -272,7 +272,7 @@ func TestPublishMasksAMintedToken(t *testing.T) {
 			f.onPush = tc.push
 			r, fake, url := f.appRunner(t)
 
-			res, err := r.Publish(t.Context(), appPublishConfig(t, url), laterPublish())
+			res, err := r.Publish(t.Context(), appPublishConfig(url), laterPublish())
 			require.Len(t, f.pushes, 1)
 
 			minted := fake.Tokens()
