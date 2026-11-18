@@ -194,6 +194,8 @@ const (
 	usageSelect = `SELECT source, model, SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), SUM(cost_estimate_usd)
 		FROM usage `
 	usageGroup = ` GROUP BY source, model ORDER BY source, model`
+
+	usageBetweenQuery = usageSelect + `JOIN events ON events.id = usage.event_id WHERE events.at >= ? AND events.at < ?` + usageGroup
 )
 
 // UsageTotals returns the task's usage summed per source and model. RunID is zero.
@@ -209,8 +211,7 @@ func (s *Store) UsageSince(ctx context.Context, taskID, afterEventID int64) ([]U
 // UsageBetween sums every task's usage per source and model over events from
 // from up to, not including, to.
 func (s *Store) UsageBetween(ctx context.Context, from, to time.Time) ([]Usage, error) {
-	return s.sumUsage(ctx, usageSelect+`JOIN events ON events.id = usage.event_id WHERE events.at >= ? AND events.at < ?`+usageGroup,
-		from.UnixMilli(), to.UnixMilli())
+	return s.sumUsage(ctx, usageBetweenQuery, from.UnixMilli(), to.UnixMilli())
 }
 
 func (s *Store) sumUsage(ctx context.Context, query string, args ...any) ([]Usage, error) {
