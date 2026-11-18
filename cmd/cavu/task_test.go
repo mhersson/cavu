@@ -1360,3 +1360,10 @@ func newest[T any](events []store.Event, typ string) (T, bool) {
 
 	return v, false
 }
+
+func TestCountedIsSingularForOne(t *testing.T) {
+	assert.Equal(t, "0 turns", counted(0, "turn"))
+	assert.Equal(t, "1 turn", counted(1, "turn"))
+	assert.Equal(t, "2 findings", counted(2, "finding"))
+	assert.Equal(t, "1 finding", counted(1, "finding"))
+}
