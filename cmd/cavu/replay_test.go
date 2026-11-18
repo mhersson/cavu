@@ -279,7 +279,7 @@ func TestReplayVerbInterruptReleasesTheShadowAndExits130(t *testing.T) {
 			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
 			TaskID: shadow.ID, RunID: run.ID, ProjectID: shadow.ProjectID,
 		},
-		removeVolumes: false,
+		remove: engine.KeepVolumes,
 	}}, fake.runner.releases)
 }
 
@@ -379,7 +379,7 @@ func TestNewReplayCancelsOldUnfinishedShadows(t *testing.T) {
 			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
 			TaskID: stopped.ID, RunID: run.ID, ProjectID: stopped.ProjectID,
 		},
-		removeVolumes: true,
+		remove: engine.RemoveAll,
 	}, "the replay's own scheduler ends the cancelled shadow's run")
 
 	a, err = openApp(t.Context(), dir)

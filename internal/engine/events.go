@@ -31,9 +31,15 @@ const (
 	Exported       = "exported"        // runner
 	PublishStarted = "publish_started" // engine
 	Published      = "published"       // runner
+	PRObserved     = "pr_observed"     // runner
+	ReadyStarted   = "ready_started"   // engine
+	PRReady        = "pr_ready"        // runner
+	ReplyStarted   = "reply_started"   // engine
+	Replied        = "replied"         // runner
 	Merged         = "merged"          // user
 	Stopped        = "stopped"         // engine
 	RunEnded       = "run_ended"       // engine
+	HomeRemoved    = "home_removed"    // engine
 )
 
 // ProgressTypes are the event types a session reports while it runs; Reduce reads none of them.
@@ -103,8 +109,9 @@ type (
 	}
 
 	RunStartedPayload struct {
-		Reason string `json:"reason"`
-		Head   string `json:"head,omitempty"` // the pull request's head a fix run starts from
+		Reason   string   `json:"reason"`
+		Head     string   `json:"head,omitempty"`     // the pull request's head a fix run starts from
+		Requests []string `json:"requests,omitempty"` // a comments run's: the ids of the reviewers' requests it is given
 	}
 
 	PrepareStartedPayload struct {
@@ -236,6 +243,16 @@ type (
 		NodeID string `json:"node_id"`
 	}
 
+	PRObservedPayload = Observation
+
+	ReadyStartedPayload struct {
+		Why string `json:"why"`
+	}
+
+	ReplyStartedPayload struct {
+		Why string `json:"why"`
+	}
+
 	StoppedPayload struct {
 		Reason      string    `json:"reason"`
 		Explanation string    `json:"explanation"`
@@ -246,7 +263,12 @@ type (
 	}
 
 	RunEndedPayload struct {
-		Outcome string `json:"outcome"` // "exported", or the stop reason that ended the run
-		Why     string `json:"why,omitempty"`
+		Outcome  string `json:"outcome"` // "exported", "finished", or the stop reason that ended the run
+		Why      string `json:"why,omitempty"`
+		KeptHome bool   `json:"kept_home"` // the run's release keeps the task's home, for a later run to resume its session
+	}
+
+	HomeRemovedPayload struct {
+		Why string `json:"why"`
 	}
 )

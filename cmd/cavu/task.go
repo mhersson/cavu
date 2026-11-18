@@ -619,7 +619,7 @@ func follow(ctx context.Context, l *engine.Loop, taskID int64, events, waits io.
 		}
 
 		switch act := engine.Decide(snap); {
-		case act.Kind == engine.KindNone:
+		case act.Kind == engine.KindNone || act.Kind == engine.KindWatch:
 			return nil
 		case act.Kind != engine.KindWait:
 			waited = ""

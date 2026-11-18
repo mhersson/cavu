@@ -135,6 +135,19 @@ func (c *Client) Ready(ctx context.Context, r Repo, a Access, nodeID string) err
 	return c.graphQL(ctx, r, token, readyMutation, vars, nil)
 }
 
+// Comment posts body as a comment on pull request number itself, never in a
+// review thread.
+func (c *Client) Comment(ctx context.Context, r Repo, a Access, number int, body string) error {
+	token, err := c.Token(ctx, r, a, ForAPI)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.rest(ctx, r, token, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", r.path(), number), map[string]string{"body": body})
+
+	return err
+}
+
 // Observe reads pull request q.Number: its state, its head's checks but those
 // q ignores, and the reviewer requests on it, answered or not.
 func (c *Client) Observe(ctx context.Context, r Repo, a Access, q Query) (Observation, error) {

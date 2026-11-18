@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"sync"
@@ -16,10 +17,23 @@ import (
 // WaitingForSlot is why a task that would act does not, while every slot is taken.
 const WaitingForSlot = "Waiting for a free slot."
 
+// The poller's clock: the next look at a watched task's pull request comes
+// fastLook after a look that answered fast, else slowLook; after a failed look
+// firstBackoff, doubled for each failure in a row up to maxBackoff; under a
+// rate limit at the later of that and when it lifts, at most maxRateWait away.
+const (
+	fastLook     = 10 * time.Second
+	slowLook     = time.Minute
+	firstBackoff = 10 * time.Second
+	maxBackoff   = 5 * time.Minute
+	maxRateWait  = time.Hour
+)
+
 // Scheduler drives every task that can act, at most the concurrency setting at
 // a time, and runs requested environment checks one at a time, each in a slot.
-// What it keeps is a cache of the store, so a new Scheduler carries on where
-// an old one stopped.
+// It looks at the pull request of each task Decide watches on a clock of its
+// own, which decides nothing and is kept in memory only. What else it keeps is
+// a cache of the store, so a new Scheduler carries on where an old one stopped.
 type Scheduler struct {
 	Loop    *Loop
 	Tick    time.Duration                 // 0 means 2 seconds
@@ -40,10 +54,12 @@ type Scheduler struct {
 // round is what one Run keeps. Only Run's goroutine touches it.
 type round struct {
 	drives   map[int64]*flight
+	polls    map[int64]*poll // each watched task's clock, kept until it rests or a read or drive of it fails: a stop between two looks keeps a rate limit's wait
 	seen     map[int64]int64 // a task's newest event id when it was found with nothing to drive
 	loose    map[int64]bool  // tasks whose last drive may have left containers up
 	checking bool
 	ends     chan end
+	looks    chan look
 	checked  chan error
 }
 
@@ -51,6 +67,33 @@ type round struct {
 type flight struct {
 	cancel  context.CancelFunc
 	checked int64 // the newest event id read for a person's cancel
+	slot    bool  // the drive's action starts a container
+}
+
+// poll is the poller's clock of a watched task.
+type poll struct {
+	until   time.Time     // the watch's Until, when a clock rule of Decide's may end it
+	next    time.Time     // when the next look is due
+	backoff time.Duration // the wait after the newest look's failure, 0 after a success
+	failed  error         // the newest look's error, nil after a success
+	looking bool          // a look is in flight
+}
+
+// due is when the watched task is read again without an event.
+func (p *poll) due() time.Time {
+	if !p.until.IsZero() && p.until.Before(p.next) {
+		return p.until
+	}
+
+	return p.next
+}
+
+// look is how a look at a task's pull request ended.
+type look struct {
+	id   int64
+	at   time.Time // when the pass started it
+	fast bool
+	err  error
 }
 
 // end is how a drive ended.
@@ -72,8 +115,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	s.Loop.Paused = s.paused
 	r := &round{
-		drives: map[int64]*flight{}, seen: map[int64]int64{}, loose: map[int64]bool{},
-		ends: make(chan end), checked: make(chan error, 1),
+		drives: map[int64]*flight{}, polls: map[int64]*poll{}, seen: map[int64]int64{}, loose: map[int64]bool{},
+		ends: make(chan end), looks: make(chan look), checked: make(chan error, 1),
 	}
 	nudge := s.nudges()
 
@@ -86,6 +129,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-nudge:
 		case e := <-r.ends:
 			s.ended(ctx, r, e)
+		case l := <-r.looks:
+			s.looked(ctx, r, l)
 		case err := <-r.checked:
 			r.checking = false
 
@@ -95,6 +140,12 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	for len(r.drives) > 0 {
 		s.ended(ctx, r, <-r.ends)
+	}
+
+	for _, p := range r.polls {
+		if p.looking {
+			<-r.looks
+		}
 	}
 
 	if r.checking {
@@ -128,7 +179,9 @@ func (s *Scheduler) nudges() chan struct{} {
 // drive ends, while the drive still releases the task's run.
 func (s *Scheduler) Driving() bool { return s.driving.Load() > 0 }
 
-// Waiting is why the task is not acting: a wait's reason, WaitingForSlot, or "".
+// Waiting is why the task is not acting: a wait's or a watch's reason, the
+// error of the newest look at a watched task's pull request and when the next
+// comes, WaitingForSlot, or "".
 func (s *Scheduler) Waiting(taskID int64) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -170,6 +223,8 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 		return
 	}
 
+	now := s.Loop.Now()
+
 	// Every task is read before any drive starts, so each decision, and each
 	// drive's first, sees every open stop. A task Only leaves out still pauses the rest.
 	var acts []Snapshot
@@ -181,7 +236,8 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 			continue
 		}
 
-		if r.seen[id] == ids[id] {
+		// A watched task is also read when its clock comes due, and never while a look is in flight.
+		if p := r.polls[id]; p != nil && p.looking || r.seen[id] == ids[id] && (p == nil || now.Before(p.due())) {
 			continue
 		}
 
@@ -189,6 +245,7 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 		if err != nil {
 			s.report(ctx, id, err)
 			r.seen[id] = ids[id]
+			delete(r.polls, id) // read again only after an event, so the error is reported once
 
 			continue
 		}
@@ -218,15 +275,20 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 	for _, snap := range acts {
 		id := snap.Task.ID
 		snap.Pause = s.paused(id) // now from every stop this pass read
+		a := Decide(snap)
 		why := ""
 
-		switch a := Decide(snap); {
+		switch {
+		case a.Kind == KindWatch:
+			why = s.watch(ctx, r, id, a, now)
+			r.seen[id] = snap.LastEventID
 		case a.Kind == KindNone:
 			r.seen[id] = snap.LastEventID
+			delete(r.polls, id)
 		case a.Kind == KindWait:
 			why = a.Why
-		case a.Kind == KindStop || r.busy() < slots: // a stop starts no container and its drive ends at once
-			s.drive(ctx, r, snap)
+		case slotless(a.Kind) || r.busy() < slots:
+			s.drive(ctx, r, snap, !slotless(a.Kind))
 		default:
 			why = WaitingForSlot
 		}
@@ -241,13 +303,88 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 	}
 }
 
-// busy counts the slots taken: one per drive, and one for a running check.
+// slotless reports whether an action starts no container, so its drive takes no slot.
+func slotless(k ActionKind) bool { return k == KindStop || k == KindReady || k == KindClean }
+
+// busy counts the slots taken: one per drive that starts a container, and one
+// for a running check.
 func (r *round) busy() int {
-	if r.checking {
-		return len(r.drives) + 1
+	n := 0
+
+	for _, f := range r.drives {
+		if f.slot {
+			n++
+		}
 	}
 
-	return len(r.drives)
+	if r.checking {
+		n++
+	}
+
+	return n
+}
+
+// watch looks at the task's pull request when its next look is due, off the
+// pass's goroutine and in no slot, and returns why the task waits.
+func (s *Scheduler) watch(ctx context.Context, r *round, id int64, a Action, now time.Time) string {
+	p := r.polls[id]
+	if p == nil {
+		p = &poll{} // due at once: a new Scheduler looks in its first pass
+		r.polls[id] = p
+	}
+
+	p.until = a.Until
+
+	if !now.Before(p.next) {
+		p.looking = true
+		looks := r.looks
+
+		go func() {
+			fast, err := s.Loop.Observe(ctx, id)
+			looks <- look{id: id, at: now, fast: fast, err: err}
+		}()
+	}
+
+	if p.failed != nil {
+		return fmt.Sprintf("The last look at the pull request failed: %v. The next look is at %s.", p.failed, p.next.UTC().Format(time.RFC3339))
+	}
+
+	return a.Why
+}
+
+// looked sets the task's next look by how its last one ended, and has the next
+// pass read the task again. A run of failures is reported once; Waiting tells the newest.
+func (s *Scheduler) looked(ctx context.Context, r *round, l look) {
+	p := r.polls[l.id]
+	p.looking = false
+
+	delete(r.seen, l.id)
+
+	if l.err == nil {
+		p.backoff, p.failed = 0, nil
+		p.next = l.at.Add(slowLook)
+
+		if l.fast {
+			p.next = l.at.Add(fastLook)
+		}
+
+		return
+	}
+
+	if p.failed == nil {
+		s.report(ctx, l.id, l.err)
+	}
+
+	p.failed = l.err
+	p.backoff = min(max(2*p.backoff, firstBackoff), maxBackoff)
+	wait := p.backoff
+
+	// A reset that is not ahead, as after a Retry-After of 0, still waits the backoff.
+	if limited, ok := errors.AsType[*RateLimited](l.err); ok {
+		wait = min(max(wait, limited.Until.Sub(l.at)), maxRateWait)
+	}
+
+	p.next = l.at.Add(wait)
 }
 
 // cancelIfAsked ends the drive's context once a person's cancel of its task
@@ -273,10 +410,10 @@ func (s *Scheduler) cancelIfAsked(ctx context.Context, id int64, f *flight, last
 	}
 }
 
-func (s *Scheduler) drive(ctx context.Context, r *round, snap Snapshot) {
+func (s *Scheduler) drive(ctx context.Context, r *round, snap Snapshot, slot bool) {
 	id := snap.Task.ID
 	dctx, cancel := context.WithCancel(ctx)
-	r.drives[id] = &flight{cancel: cancel, checked: snap.LastEventID}
+	r.drives[id] = &flight{cancel: cancel, checked: snap.LastEventID, slot: slot}
 	r.loose[id] = true
 	ends := r.ends
 
@@ -308,6 +445,7 @@ func (s *Scheduler) ended(ctx context.Context, r *round, e end) {
 	case e.err != nil:
 		s.report(ctx, e.id, e.err)
 		r.seen[e.id] = e.last
+		delete(r.polls, e.id) // read again only after an event, or a failing clean would repeat at every pass
 	default:
 		delete(r.loose, e.id) // a drive that rests or waits has released its run
 	}

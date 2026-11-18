@@ -631,13 +631,13 @@ func TestServeTaskEndToEnd(t *testing.T) {
 	s.tool("create_task", map[string]any{"project": "notes", "title": title, "start": true}, &first)
 	s.rest(first.ID)
 
-	// The run ends once the change is exported.
+	// The run ends once the change is exported, and with publish off the task's home goes after it.
 	var events []apiEvent
 
 	within(t, time.Minute, func() (bool, string) {
 		events = s.events(first.ID)
 
-		return slices.ContainsFunc(events, func(e apiEvent) bool { return e.Type == "run_ended" }), "the run has not ended"
+		return slices.ContainsFunc(events, func(e apiEvent) bool { return e.Type == "home_removed" }), "the task's home is not removed"
 	})
 
 	var types []string
@@ -657,7 +657,7 @@ func TestServeTaskEndToEnd(t *testing.T) {
 		"session_started", "session_ended", // the fix, in the same session
 		"verify_started", "verify_ended",
 		"review_started", "review_ended", // the review of the fix
-		"export_started", "exported", "run_ended",
+		"export_started", "exported", "run_ended", "home_removed",
 	}, types)
 	assert.Equal(t, []sessionStart{{Mode: "readiness"}, {Mode: "start", Resume: true}, {Mode: "fix_review", Resume: true}}, sessionStarts(t, events))
 

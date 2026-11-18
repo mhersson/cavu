@@ -71,10 +71,13 @@ type ForgeAccess struct {
 
 // Comment is a reviewer's request on the task's pull request. ID is a
 // review's id, or the id of a thread's newest comment by an allowed author.
+// Its fields are forge.Comment's, in the same order, so the runner converts it.
 type Comment struct {
-	ID, Author, Path string
-	Line             int
-	Body             string
+	ID     string `json:"id"`
+	Author string `json:"author"`
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
+	Body   string `json:"body"`
 }
 
 // File is one file of the instance's skills directory.
@@ -91,6 +94,15 @@ type RunRef struct {
 	InstanceID, Image        string
 	TaskID, RunID, ProjectID int64
 }
+
+// Remove is what a release removes besides the run's containers.
+type Remove int
+
+const (
+	KeepVolumes Remove = iota // stop the containers
+	RemoveRun                 // and remove the run's volumes
+	RemoveAll                 // and the task's home
+)
 
 // Runner carries out a run's actions where a container runtime exists.
 type Runner interface {
@@ -121,7 +133,17 @@ type Runner interface {
 	// so a retry finishes a publish that failed half way.
 	Publish(ctx context.Context, c RunConfig, p PublishRequest) (PublishResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
-	Release(ctx context.Context, ref RunRef, removeVolumes bool) error
+	Release(ctx context.Context, ref RunRef, remove Remove) error
+	// Observe reads pull request number from the forge. Observe,
+	// Ready and Reply start no container, and return a *RateLimited while the
+	// forge limits their requests.
+	Observe(ctx context.Context, c RunConfig, number int) (Observation, error)
+	// Ready marks the pull request with node id nodeID ready for review; one
+	// that is ready already is no change.
+	Ready(ctx context.Context, c RunConfig, nodeID string) error
+	// Reply posts body as one comment on pull request number, never in a
+	// review thread, with the run's secrets masked.
+	Reply(ctx context.Context, c RunConfig, number int, body string) error
 	// CheckEnvironment prepares a project as a run does, under run and task id
 	// 0 and never reusing a baseline, then releases it with its volumes. It
 	// also returns the verify command the repository suggests, or "".

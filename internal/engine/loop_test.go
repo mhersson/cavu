@@ -66,9 +66,12 @@ type call struct {
 	runID  int64
 	work   engine.WorkRequest
 	review engine.ReviewRequest
-	remove bool
+	remove engine.Remove
 	commit string // the commit an export was given
 	pub    engine.PublishRequest
+	number int    // the pull request an observe or a reply was given
+	nodeID string // the pull request a ready was given
+	body   string // a reply's
 	ref    engine.RunRef
 	eco    []string         // the config's ecosystems
 	cfg    engine.RunConfig // the config of every call but a release
@@ -83,11 +86,7 @@ func (c call) String() string {
 			return "review/scoped"
 		}
 	case "release":
-		if c.remove {
-			return "release/remove"
-		}
-
-		return "release/keep"
+		return "release/" + [...]string{engine.KeepVolumes: "keep", engine.RemoveRun: "run", engine.RemoveAll: "remove"}[c.remove]
 	}
 
 	return c.method
@@ -103,6 +102,9 @@ type fakeRunner struct {
 	exports    []step[engine.ExportResult]
 	reviews    []step[engine.ReviewResult]
 	publishes  []step[engine.PublishResult]
+	observes   []step[engine.Observation]
+	readies    []step[struct{}]
+	replies    []step[struct{}]
 	releaseErr error
 	suggestion string                                  // every check's verify suggestion
 	progress   []engine.Progress                       // sent during every Work, each from its own goroutine
@@ -125,6 +127,7 @@ var (
 	publishedOK = engine.PublishResult{
 		Branch: "cavu/fix-the-login", Head: "head456", Number: 7, URL: "https://example.com/web/pull/7", NodeID: "PR_7",
 	}
+	observedOK = engine.Observation{State: engine.PROpen, Draft: true, Head: "head456", Checks: engine.ChecksPassed}
 )
 
 func (r *fakeRunner) begin(ctx context.Context, c call) error {
@@ -220,6 +223,43 @@ func (r *fakeRunner) Publish(ctx context.Context, c engine.RunConfig, p engine.P
 	return pop(&r.publishes, publishedOK)
 }
 
+func (r *fakeRunner) Observe(ctx context.Context, c engine.RunConfig, number int) (engine.Observation, error) {
+	if err := r.begin(ctx, call{method: "observe", task: c.TaskID, runID: c.RunID, number: number, cfg: c}); err != nil {
+		return engine.Observation{}, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return pop(&r.observes, observedOK)
+}
+
+func (r *fakeRunner) Ready(ctx context.Context, c engine.RunConfig, nodeID string) error {
+	if err := r.begin(ctx, call{method: "ready", task: c.TaskID, runID: c.RunID, nodeID: nodeID, cfg: c}); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_, err := pop(&r.readies, struct{}{})
+
+	return err
+}
+
+func (r *fakeRunner) Reply(ctx context.Context, c engine.RunConfig, number int, body string) error {
+	if err := r.begin(ctx, call{method: "reply", task: c.TaskID, runID: c.RunID, number: number, body: body, cfg: c}); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_, err := pop(&r.replies, struct{}{})
+
+	return err
+}
+
 func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.ReviewRequest, _ func(engine.Progress)) (engine.ReviewResult, error) {
 	if err := r.begin(ctx, call{method: "review", task: c.TaskID, runID: c.RunID, review: rv, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.ReviewResult{}, err
@@ -231,8 +271,8 @@ func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.R
 	return pop(&r.reviews, reviewedOK)
 }
 
-func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
-	if err := r.begin(ctx, call{method: "release", task: ref.TaskID, runID: ref.RunID, remove: removeVolumes, ref: ref}); err != nil {
+func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, remove engine.Remove) error {
+	if err := r.begin(ctx, call{method: "release", task: ref.TaskID, runID: ref.RunID, remove: remove, ref: ref}); err != nil {
 		return err
 	}
 
@@ -536,7 +576,7 @@ func payloadOf[T any](t *testing.T, e store.Event) T {
 
 var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
-var happyTrace = []string{"prepare", "work/start", "verify", "export", "release/remove"}
+var happyTrace = []string{"prepare", "work/start", "verify", "export", "release/run", "release/remove"}
 
 func TestLoopHappyPath(t *testing.T) {
 	h := newHarness(t)
@@ -549,7 +589,7 @@ func TestLoopHappyPath(t *testing.T) {
 	evs := h.events()
 	assert.Equal(t, []string{
 		engine.RunStarted, engine.PrepareStarted, engine.Prepared, engine.SessionStarted, engine.SessionEnded,
-		engine.VerifyStarted, engine.VerifyEnded, engine.ExportStarted, engine.Exported, engine.RunEnded,
+		engine.VerifyStarted, engine.VerifyEnded, engine.ExportStarted, engine.Exported, engine.RunEnded, engine.HomeRemoved,
 	}, types(evs))
 
 	actors := make([]string, len(evs))
@@ -558,7 +598,7 @@ func TestLoopHappyPath(t *testing.T) {
 	}
 
 	assert.Equal(t, []string{
-		"engine", "engine", "runner", "engine", "runner", "engine", "runner", "engine", "runner", "engine",
+		"engine", "engine", "runner", "engine", "runner", "engine", "runner", "engine", "runner", "engine", "engine",
 	}, actors)
 
 	runID := evs[0].RunID
@@ -566,7 +606,7 @@ func TestLoopHappyPath(t *testing.T) {
 		assert.Equal(t, runID, e.RunID, "%s carries the run id", e.Type)
 	}
 
-	for _, i := range []int{1, 3, 5, 7, 9} {
+	for _, i := range []int{1, 3, 5, 7, 9, 10} {
 		assert.NotEmpty(t, payloadOf[struct{ Why string }](t, evs[i]).Why, "%s records why", evs[i].Type)
 	}
 
@@ -736,10 +776,10 @@ func TestLoopRecordsResultAfterCtxEnds(t *testing.T) {
 		status engine.Status
 		next   []string // the next RunTask's runner calls
 	}{
-		{name: "prepare", method: "prepare", result: engine.Prepared, status: engine.StatusInReview, next: []string{"work/start", "verify", "export", "release/remove"}},
-		{name: "work", method: "work", result: engine.SessionEnded, status: engine.StatusInReview, next: []string{"verify", "export", "release/remove"}},
-		{name: "verify", method: "verify", result: engine.VerifyEnded, status: engine.StatusInReview, next: []string{"export", "release/remove"}},
-		{name: "export", method: "export", result: engine.Exported, status: engine.StatusInReview, next: []string{"release/remove"}},
+		{name: "prepare", method: "prepare", result: engine.Prepared, status: engine.StatusInReview, next: []string{"work/start", "verify", "export", "release/run", "release/remove"}},
+		{name: "work", method: "work", result: engine.SessionEnded, status: engine.StatusInReview, next: []string{"verify", "export", "release/run", "release/remove"}},
+		{name: "verify", method: "verify", result: engine.VerifyEnded, status: engine.StatusInReview, next: []string{"export", "release/run", "release/remove"}},
+		{name: "export", method: "export", result: engine.Exported, status: engine.StatusInReview, next: []string{"release/run", "release/remove"}},
 		{
 			name: "an export problem", method: "export", result: engine.Stopped, status: engine.StatusBlocked, next: []string{},
 			script: func(r *fakeRunner) {
@@ -913,7 +953,7 @@ func TestLoopCarriesEcosystems(t *testing.T) {
 
 		_, err := h.run(t.Context())
 		require.NoError(t, err)
-		assert.Equal(t, []string{"work/continue", "verify", "export", "release/remove"}, h.runner.trace())
+		assert.Equal(t, []string{"work/continue", "verify", "export", "release/run", "release/remove"}, h.runner.trace())
 
 		for _, c := range h.runner.calls {
 			if c.method != "release" {
@@ -935,7 +975,7 @@ func TestLoopExportsFrozenCommit(t *testing.T) {
 
 		_, err := h.run(t.Context())
 		require.NoError(t, err)
-		assert.Equal(t, []string{"prepare", "work/start", "verify", "work/fix_verify", "verify", "export", "release/remove"},
+		assert.Equal(t, []string{"prepare", "work/start", "verify", "work/fix_verify", "verify", "export", "release/run", "release/remove"},
 			h.runner.trace())
 
 		ended := h.eventsOf(engine.SessionEnded)
@@ -956,7 +996,7 @@ func TestLoopExportsFrozenCommit(t *testing.T) {
 
 		_, err := h.run(t.Context())
 		require.NoError(t, err)
-		assert.Equal(t, []string{"export", "release/remove"}, h.runner.trace())
+		assert.Equal(t, []string{"export", "release/run", "release/remove"}, h.runner.trace())
 		assert.Equal(t, "frozen3", h.runner.callsOf("export")[0].commit)
 	})
 }
@@ -1040,7 +1080,7 @@ func TestLoopWritesArtifacts(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, engine.StatusInReview, status)
 
-		assert.Equal(t, []string{"prepare", "work/start", "verify", "export", "export", "release/remove"}, h.runner.trace())
+		assert.Equal(t, []string{"prepare", "work/start", "verify", "export", "export", "release/run", "release/remove"}, h.runner.trace())
 		assertArtifacts(t, artifactDir(h, h.runner.callsOf("export")[1].runID), exportOK)
 	})
 }
@@ -1054,7 +1094,7 @@ func TestLoopFailedBaselineStops(t *testing.T) {
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusBlocked, status)
-	assert.Equal(t, []string{"prepare", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "release/run"}, h.runner.trace())
 	assert.Empty(t, h.eventsOf(engine.Prepared))
 
 	failed := h.eventsOf(engine.PrepareFailed)
@@ -1230,6 +1270,20 @@ func TestLoopRepairsRunRows(t *testing.T) {
 		assert.Equal(t, engine.StatusInReview, status)
 		assert.Equal(t, []string{"release/remove"}, h.runner.trace())
 		assert.Equal(t, r.ID, h.runner.calls[0].runID)
+		assert.Equal(t, map[int64]string{r.ID: engine.RunExported}, h.spy.ended())
+	})
+
+	t.Run("a row whose run ended and kept the home keeps it until the clean", func(t *testing.T) {
+		h := newHarness(t)
+
+		kept := slices.Clone(exportedRun)
+		kept[len(kept)-1] = ev(engine.RunEnded, `{"outcome":"exported","kept_home":true}`)
+		r := h.seed(kept...)
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, []string{"release/run", "release/remove"}, h.runner.trace())
 		assert.Equal(t, map[int64]string{r.ID: engine.RunExported}, h.spy.ended())
 	})
 
@@ -1515,22 +1569,22 @@ func TestLoopRetryAfterRunnerFault(t *testing.T) {
 		{
 			name:   "prepare",
 			script: func(r *fakeRunner) { r.prepares = []step[engine.PrepareResult]{{err: daemon}} },
-			next:   []string{"prepare", "work/start", "verify", "export", "release/remove"},
+			next:   []string{"prepare", "work/start", "verify", "export", "release/run", "release/remove"},
 		},
 		{
 			name:   "session",
 			script: func(r *fakeRunner) { r.works = []step[engine.WorkResult]{{err: daemon}} },
-			next:   []string{"work/continue", "verify", "export", "release/remove"},
+			next:   []string{"work/continue", "verify", "export", "release/run", "release/remove"},
 		},
 		{
 			name:   "verify",
 			script: func(r *fakeRunner) { r.verifies = []step[engine.VerifyResult]{{err: daemon}} },
-			next:   []string{"verify", "export", "release/remove"},
+			next:   []string{"verify", "export", "release/run", "release/remove"},
 		},
 		{
 			name:   "export",
 			script: func(r *fakeRunner) { r.exports = []step[engine.ExportResult]{{err: daemon}} },
-			next:   []string{"export", "release/remove"},
+			next:   []string{"export", "release/run", "release/remove"},
 		},
 	}
 
@@ -1592,7 +1646,7 @@ func TestLoopRetryAfterRunnerFault(t *testing.T) {
 		status, err := h.run(t.Context())
 		require.NoError(t, err)
 		assert.Equal(t, engine.StatusCancelled, status)
-		require.Equal(t, []string{"release/remove"}, h.runner.trace()[before:])
+		require.Equal(t, []string{"release/run", "release/remove"}, h.runner.trace()[before:])
 
 		runID := h.runner.calls[0].runID
 		assert.Equal(t, runID, h.runner.calls[before].runID)
@@ -1633,7 +1687,7 @@ func TestLoopEndsARunWhoseContextIsCutDuringItsRelease(t *testing.T) {
 
 	_, _ = h.run(ctx) // ends with ctx's error, after the run is ended
 
-	assert.Equal(t, []string{"prepare", "work/start", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "work/start", "release/run"}, h.runner.trace())
 	require.NoError(t, released, "the release runs on past the cut")
 	assert.Equal(t, map[int64]string{h.runner.calls[0].runID: engine.StopCancelled}, h.spy.ended(), "the run row is ended")
 }
@@ -1658,7 +1712,7 @@ func TestLoopClaimConflict(t *testing.T) {
 		{name: "the finish claim", rival: at(5, rivalText), status: engine.StatusInReview, trace: happyTrace, created: 1},
 		{
 			name: "a cancel before the work claim", rival: at(2, cancelled), status: engine.StatusCancelled,
-			trace: []string{"prepare", "release/remove"}, created: 1,
+			trace: []string{"prepare", "release/run", "release/remove"}, created: 1,
 		},
 	}
 
@@ -1851,7 +1905,7 @@ func TestRunTaskReturnsAtAWait(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
 	assert.Equal(t, []string{
-		"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/remove",
+		"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/run", "release/remove",
 	}, h.runner.trace())
 
 	works := h.runner.callsOf("work")
@@ -1889,7 +1943,7 @@ func TestRunTaskReleasesAtAWait(t *testing.T) {
 	status, err = h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"prepare", "release/keep", "work/start", "verify", "export", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "release/keep", "work/start", "verify", "export", "release/run", "release/remove"}, h.runner.trace())
 	assert.Equal(t, 1, h.spy.created())
 }
 
@@ -1927,7 +1981,7 @@ func TestLoopRetriesAFault(t *testing.T) {
 	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
 	assert.Equal(t, faulted, after(0, engine.StatusBlocked))
 	assert.Equal(t, faulted, after(30*time.Second, engine.StatusBlocked))
-	assert.Equal(t, []string{"work/continue", "verify", "export", "release/remove"}, after(2*time.Minute, engine.StatusInReview))
+	assert.Equal(t, []string{"work/continue", "verify", "export", "release/run", "release/remove"}, after(2*time.Minute, engine.StatusInReview))
 
 	works := h.runner.callsOf("work")
 	require.Len(t, works, 6)
@@ -2095,7 +2149,7 @@ func TestLoopReadinessThenWork(t *testing.T) {
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"prepare", "work/readiness", "work/start", "verify", "review", "export", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "work/readiness", "work/start", "verify", "review", "export", "release/run", "release/remove"}, h.runner.trace())
 
 	works := h.runner.callsOf("work")
 	require.Len(t, works, 2)
@@ -2161,7 +2215,7 @@ func TestLoopStopsWithoutConfig(t *testing.T) {
 	ends := h.eventsOf(engine.RunEnded)
 	require.Len(t, ends, 1)
 	assert.Equal(t, engine.StopCancelled, payloadOf[engine.RunEndedPayload](t, ends[0]).Outcome)
-	assert.Equal(t, []string{"release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"release/run", "release/remove"}, h.runner.trace())
 	assert.Equal(t, engine.RunRef{
 		InstanceID: "inst-1", Image: "cavu-sandbox:test", TaskID: h.task.ID, RunID: r.ID, ProjectID: h.task.ProjectID,
 	}, h.runner.calls[0].ref)
@@ -2237,7 +2291,141 @@ func TestLoopStopsOnABrokenRunConfig(t *testing.T) {
 		status, err = h.run(t.Context())
 		require.NoError(t, err)
 		assert.Equal(t, engine.StatusInReview, status)
-		assert.Equal(t, []string{"release/keep", "work/start", "verify", "export", "release/remove"}, h.runner.trace())
+		assert.Equal(t, []string{"release/keep", "work/start", "verify", "export", "release/run", "release/remove"}, h.runner.trace())
 		assert.Zero(t, h.spy.created(), "the work goes on in the same run")
+	})
+}
+
+// A run's end keeps the task's home, where a fix run on the pull request
+// resumes the session; once the task can run no more, the release of its
+// newest run removes the home, once, and the task rests.
+func TestHomeIsRemovedWhenTheTaskIsOver(t *testing.T) {
+	cancel := func(h *harness) { require.NoError(h.t, h.loop.Cancel(h.t.Context(), h.task.ID)) }
+	merge := func(h *harness) {
+		h.observe(engine.Observation{State: engine.PRMerged, Head: "head456", Checks: engine.ChecksPassed})
+	}
+
+	tests := []struct {
+		name    string
+		publish bool
+		script  func(r *fakeRunner)
+		end     func(h *harness) // what ends the task once it rests, nil when it is over then
+		trace   []string
+		status  engine.Status
+	}{
+		{
+			name: "cancelled after a stop ended its run",
+			script: func(r *fakeRunner) {
+				r.prepares = []step[engine.PrepareResult]{{res: engine.PrepareResult{FailedStep: "setup", Output: "exit 1"}}}
+			},
+			end: cancel, trace: []string{"prepare", "release/run", "release/remove"}, status: engine.StatusCancelled,
+		},
+		{
+			name: "cancelled with its run open",
+			script: func(r *fakeRunner) {
+				r.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: []string{"Which port?"}}}}
+			},
+			end: cancel, trace: []string{"prepare", "work/start", "release/keep", "release/run", "release/remove"}, status: engine.StatusCancelled,
+		},
+		{name: "exported with publish off", script: func(*fakeRunner) {}, trace: happyTrace, status: engine.StatusInReview},
+		{
+			name: "merged", publish: true, script: func(*fakeRunner) {}, end: merge,
+			trace:  []string{"prepare", "work/start", "verify", "export", "publish", "release/run", "observe", "release/remove"},
+			status: engine.StatusDone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			if tt.publish {
+				h.withPublish()
+			}
+
+			tt.script(h.runner)
+
+			_, err := h.run(t.Context())
+			require.NoError(t, err)
+
+			if tt.end != nil {
+				assert.NotContains(t, h.runner.trace(), "release/remove", "the home stays while the task can run again")
+				tt.end(h)
+
+				_, err = h.run(t.Context())
+				require.NoError(t, err)
+			}
+
+			status, err := h.run(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tt.status, status)
+			assert.Equal(t, tt.trace, h.runner.trace(), "the task rests once its home is removed")
+
+			runs := h.eventsOf(engine.RunStarted)
+			require.Len(t, runs, 1)
+
+			ends := h.eventsOf(engine.RunEnded)
+			require.Len(t, ends, 1)
+			assert.True(t, payloadOf[engine.RunEndedPayload](t, ends[0]).KeptHome)
+
+			removed := h.eventsOf(engine.HomeRemoved)
+			require.Len(t, removed, 1)
+			assert.Equal(t, runs[0].RunID, removed[0].RunID)
+
+			releases := h.runner.callsOf("release")
+			assert.Equal(t, engine.RemoveAll, releases[len(releases)-1].remove)
+			assert.Equal(t, runs[0].RunID, releases[len(releases)-1].runID, "the newest run's release removes the home")
+
+			if tt.status == engine.StatusCancelled {
+				var cancels int
+
+				for _, e := range h.eventsOf(engine.Stopped) {
+					if payloadOf[engine.StoppedPayload](t, e).Reason == engine.StopCancelled {
+						cancels++
+					}
+				}
+
+				assert.Equal(t, 1, cancels, "the removal leaves the cancel's stop")
+			}
+		})
+	}
+
+	t.Run("a release that fails records nothing, and the next pass removes the home", func(t *testing.T) {
+		h := newHarness(t)
+
+		injected := errors.New("volume busy")
+		h.runner.gate = func(_ context.Context, c call) error {
+			if c.method == "release" && c.remove == engine.RemoveAll {
+				return injected
+			}
+
+			return nil
+		}
+
+		_, err := h.run(t.Context())
+		require.ErrorIs(t, err, injected)
+		assert.Empty(t, h.eventsOf(engine.HomeRemoved))
+
+		h.runner.gate = nil
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, append(slices.Clone(happyTrace), "release/remove"), h.runner.trace())
+		assert.Len(t, h.eventsOf(engine.HomeRemoved), 1)
+	})
+
+	t.Run("kept while a pull request is open", func(t *testing.T) {
+		h := newHarness(t)
+		h.withPublish()
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, []string{"prepare", "work/start", "verify", "export", "publish", "release/run"}, h.runner.trace())
+		assert.Empty(t, h.eventsOf(engine.HomeRemoved))
+
+		snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
+		require.NoError(t, err)
+		assert.True(t, snap.Facts.Home)
 	})
 }

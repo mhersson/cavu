@@ -1,6 +1,6 @@
-// Package prompts holds CAVU's own prompts to the agent, the text of the pull
-// requests it opens, and the schemas of the results a session ends with, as
-// embedded files.
+// Package prompts holds CAVU's own prompts to the agent, the texts of the pull
+// requests it opens and of the comments it writes on them, and the schemas of
+// the results a session ends with, as embedded files.
 package prompts
 
 import (
@@ -31,6 +31,7 @@ const (
 	FixCI          = "fix_ci"           // what the pull request's failed checks printed, to the session that did the work; takes FixCIData
 	Comments       = "comments"         // a reviewer's requests on the pull request, to the session that did the work; takes CommentsData
 	PullRequest    = "pull_request"     // the text of the pull request CAVU opens, not a prompt; takes the engine's PullRequestData
+	Reply          = "reply"            // CAVU's comment on its pull request after a follow-up run, not a prompt; takes ReplyData
 )
 
 // WorkData fills the work and readiness prompts.
@@ -96,6 +97,14 @@ type ReviewComment struct {
 
 // CommentsData fills the comments prompt.
 type CommentsData struct{ Comments []ReviewComment }
+
+// ReplyData fills CAVU's comment after a follow-up run: the task, its
+// session's summary, and whether the run changed the code.
+type ReplyData struct {
+	TaskID  int64
+	Summary string
+	Changed bool
+}
 
 var (
 	//go:embed *.md

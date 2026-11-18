@@ -452,11 +452,11 @@ func homeStep(ctx context.Context, a container, script string, pairs map[string]
 	return nil
 }
 
-// Release stops the run's containers and, when removeVolumes is set, removes
-// its run volumes and the task's home. It succeeds when nothing exists.
-// Without the run's state it releases through a sandbox it does not keep,
-// so a later start still makes the run's volumes ready.
-func (r *Runner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
+// Release stops the run's containers and removes what remove asks for: the
+// run's volumes, or those and the task's home. It succeeds when nothing
+// exists. Without the run's state it releases through a sandbox it does not
+// keep, so a later start still makes the run's volumes ready.
+func (r *Runner) Release(ctx context.Context, ref engine.RunRef, remove engine.Remove) error {
 	st := r.state(ref.RunID)
 	if st == nil {
 		sb, err := r.sandbox(ref)
@@ -467,13 +467,13 @@ func (r *Runner) Release(ctx context.Context, ref engine.RunRef, removeVolumes b
 		st = &run{sb: sb}
 	}
 
-	if !removeVolumes {
+	if remove == engine.KeepVolumes {
 		return st.down(ctx)
 	}
 
 	r.setState(ref.RunID, nil)
 
-	return st.sb.Destroy(ctx, false)
+	return st.sb.Destroy(ctx, remove == engine.RemoveRun)
 }
 
 // agentEnv is the environment of the commands the runner runs in the agent

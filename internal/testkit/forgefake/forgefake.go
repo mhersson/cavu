@@ -104,6 +104,7 @@ type pull struct {
 	mergeable *bool // nil until the forge has computed it
 	reviews   []review
 	threads   []*Thread
+	comments  []string // on the pull request itself, so in no review and no thread
 }
 
 type review struct{ id, author, state, body string }
@@ -143,6 +144,7 @@ func New(t *testing.T, bareDir string) *Fake {
 	f.mux.HandleFunc("GET "+repo+"/pulls", f.listPulls)
 	f.mux.HandleFunc("POST "+repo+"/pulls", f.createPull)
 	f.mux.HandleFunc("GET "+repo+"/pulls/{number}", f.getPull)
+	f.mux.HandleFunc("POST "+repo+"/issues/{number}/comments", f.issueComment)
 	f.mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", f.checkRuns)
 	f.mux.HandleFunc("GET "+repo+"/commits/{sha}/status", f.status)
 	f.mux.HandleFunc("GET "+repo+"/actions/jobs/{id}/logs", f.jobLog)
@@ -363,6 +365,15 @@ func (f *Fake) Pulls() []Pull {
 	return out
 }
 
+// Comments returns the bodies of the comments posted on pull request number,
+// in order.
+func (f *Fake) Comments(number int) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Clone(f.mustPull(number).comments)
+}
+
 // Requests returns the requests the fake was sent, in order.
 func (f *Fake) Requests() []Request {
 	f.mu.Lock()
@@ -504,6 +515,22 @@ func (f *Fake) getPull(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, f.pullJSON(r, p))
+}
+
+func (f *Fake) issueComment(w http.ResponseWriter, r *http.Request) {
+	p := f.findPull(func(p *pull) bool { return strconv.Itoa(p.Number) == r.PathValue("number") })
+	if p == nil {
+		writeJSON(w, http.StatusNotFound, message("Not Found"))
+
+		return
+	}
+
+	var in struct{ Body string }
+
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	p.comments = append(p.comments, in.Body)
+
+	writeJSON(w, http.StatusCreated, map[string]any{"body": in.Body})
 }
 
 func (f *Fake) checkRuns(w http.ResponseWriter, r *http.Request) {

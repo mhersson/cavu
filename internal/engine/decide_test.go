@@ -2,6 +2,8 @@ package engine_test
 
 import (
 	"encoding/json"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +32,7 @@ func snap(f engine.Facts) engine.Snapshot {
 
 func snapWith(f engine.Facts, sw engine.Switches) engine.Snapshot {
 	return engine.Snapshot{
-		Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2},
+		Facts: f, Now: now, Switches: sw, Caps: engine.Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2, CIFixes: 2, CommentRuns: 3},
 		Limits: engine.Limits{Turns: 1000, SessionTime: 300 * time.Minute},
 	}
 }
@@ -117,6 +119,7 @@ func decideCases() []decideCase {
 	later := now.Add(2 * time.Hour)
 	fallback := now.Add(engine.UsageLimitFallback)
 	none := engine.Action{Kind: engine.KindNone}
+	clean := engine.Action{Kind: engine.KindClean}
 	contOff := engine.Switches{VerifyFix: true}
 	fixOff := engine.Switches{Continuations: true}
 	readiness := engine.Switches{Continuations: true, VerifyFix: true, Readiness: true}
@@ -157,6 +160,23 @@ func decideCases() []decideCase {
 	mergedStop := openStop(engine.StopUsageLimit, resets)
 	mergedStop.Exported, mergedStop.Merged = true, true
 
+	// A run ended and kept the task's home.
+	cancelledHome := engine.Facts{Started: true, Cancelled: true, Home: true}
+
+	cancelledStopHome := cancelledHome
+	cancelledStopHome.OpenStop = &engine.StopFact{Reason: engine.StopCancelled}
+
+	exportedHome := exported
+	exportedHome.Home = true
+
+	publishedHome := exportedHome
+	publishedHome.PR = &engine.PRFact{Number: 7, Head: "head1", Heads: []string{"head1"}}
+
+	mergedHome := publishedHome
+	mergedHome.Merged = true
+
+	environmentHome := engine.Facts{Started: true, Home: true, OpenStop: &engine.StopFact{Reason: engine.StopEnvironment}}
+
 	continueWork := work(engine.ModeContinue, false)
 	wait := func(until time.Time) engine.Action { return engine.Action{Kind: engine.KindWait, Until: until} }
 	prepare := engine.Action{Kind: engine.KindPrepare, NewRun: true}
@@ -170,6 +190,12 @@ func decideCases() []decideCase {
 		{name: "merged", snap: snap(merged), want: none},
 		{name: "merged with the run open", snap: snap(mergedOpen), want: engine.Action{Kind: engine.KindFinish}},
 		{name: "merged with a stale stop and the run open", snap: snap(mergedStop), want: engine.Action{Kind: engine.KindFinish}},
+		{name: "cancelled with the home kept", snap: snap(cancelledHome), want: halt(engine.StopCancelled, engine.ClearNone)},
+		{name: "cancelled with its stop recorded and the home kept", snap: snap(cancelledStopHome), want: clean},
+		{name: "merged through its pull request with the home kept", snap: snap(mergedHome), want: clean},
+		{name: "exported with no pull request and the home kept", snap: snap(exportedHome), want: clean},
+		{name: "exported with a pull request and the home kept", snap: snap(publishedHome), want: engine.Action{Kind: engine.KindWatch}},
+		{name: "stopped with the home kept", snap: snap(environmentHome), want: none},
 		{name: "usage limit before its reset", snap: snap(openStop(engine.StopUsageLimit, resets)), want: engine.Action{Kind: engine.KindWait, Until: resets}, clock: true},
 		{name: "usage limit reset reached", snap: snap(openStop(engine.StopUsageLimit, reset)), want: work(engine.ModeContinue, false), clock: true},
 		{name: "usage limit with no reset time", snap: snap(openStop(engine.StopUsageLimit, time.Time{})), want: work(engine.ModeContinue, false)},
@@ -342,7 +368,7 @@ func TestDecideFallback(t *testing.T) {
 }
 
 func TestDecideIsPure(t *testing.T) {
-	for _, tc := range append(decideCases(), reviewCases(t)...) {
+	for _, tc := range slices.Concat(decideCases(), reviewCases(t), watchCases()) {
 		t.Run(tc.name, func(t *testing.T) {
 			first := engine.Decide(tc.snap)
 			for range 100 {
@@ -353,7 +379,7 @@ func TestDecideIsPure(t *testing.T) {
 			later.Now = now.Add(time.Hour)
 			earlier.Now = now.Add(-time.Hour)
 
-			moved := engine.Decide(later) != first || engine.Decide(earlier) != first
+			moved := !reflect.DeepEqual(engine.Decide(later), first) || !reflect.DeepEqual(engine.Decide(earlier), first)
 			assert.Equal(t, tc.clock, moved)
 		})
 	}
@@ -436,5 +462,267 @@ func TestDecidePublish(t *testing.T) {
 		{name: "a rejected push waits for a person", snap: snapWith(rejected, on), want: engine.Action{Kind: engine.KindNone}},
 	} {
 		t.Run(tc.name, func(t *testing.T) { assertDecides(t, tc) })
+	}
+}
+
+// prURL is the address of the task's pull request in the watch's cases.
+const prURL = "https://github.com/acme/web/pull/7"
+
+// pull is the task's pull request: CAVU published head1, then head2 at since,
+// and o is what was seen of it since.
+func pull(since time.Time, o *engine.Observation) *engine.PRFact {
+	return &engine.PRFact{
+		Number: 7, URL: prURL, NodeID: "PR_7", Branch: "cavu/fix-the-login", Head: "head2", Heads: []string{"head1", "head2"},
+		Since: since, Seen: o, Looked: o != nil,
+	}
+}
+
+// open is an open draft pull request seen at head with checks.
+func open(head, checks string, failed ...string) *engine.Observation {
+	return &engine.Observation{State: engine.PROpen, Draft: true, Head: head, Checks: checks, Failed: failed}
+}
+
+// watched is a task with pull request pr and no run open.
+func watched(pr *engine.PRFact) engine.Facts {
+	return engine.Facts{Started: true, SessionID: "s1", RunReason: "initial", PR: pr}
+}
+
+// fixRun is a prepared fix run of reason on the pull request's head.
+func fixRun(reason string, pr *engine.PRFact) engine.Facts {
+	f := prepared()
+	f.SessionID, f.RunReason, f.RunHead, f.PR = "s1", reason, pr.Head, pr
+
+	return f
+}
+
+// watchSnap is s with ci_timeout_minutes at its default.
+func watchSnap(f engine.Facts) engine.Snapshot {
+	s := snapWith(f, engine.Switches{Continuations: true, VerifyFix: true, Review: true, Publish: true})
+	s.Watch.CITimeout = 120 * time.Minute
+
+	return s
+}
+
+// watchCases follow the rules that read a pull request, in their order.
+func watchCases() []decideCase {
+	watch := func(until time.Time) engine.Action { return engine.Action{Kind: engine.KindWatch, Until: until} }
+	ready := engine.Action{Kind: engine.KindReady}
+	finish := engine.Action{Kind: engine.KindFinish}
+	publish := engine.Action{Kind: engine.KindPublish}
+	reply := engine.Action{Kind: engine.KindReply}
+	grace := 3 * time.Minute
+
+	byPerson := watched(pull(now, open("head2", engine.ChecksPassed)))
+	byPerson.Cancelled = true
+
+	closed := watched(pull(now, &engine.Observation{State: engine.PRClosed, Head: "head2", Checks: engine.ChecksPassed}))
+	closed.Cancelled = true
+
+	closedInRun := fixRun(engine.ReasonCIFix, pull(now, &engine.Observation{State: engine.PRClosed, Head: "head2"}))
+	closedInRun.Cancelled = true
+
+	mergedInRun := fixRun(engine.ReasonCIFix, pull(now, &engine.Observation{State: engine.PRMerged, Head: "head2"}))
+	mergedInRun.Merged = true
+
+	stopped := watched(pull(now, open("head2", engine.ChecksFailed, "lint")))
+	stopped.OpenStop = &engine.StopFact{Reason: engine.StopCIFailed}
+
+	askedInRun := fixRun(engine.ReasonComments, pull(now, nil))
+	askedInRun.OpenStop = &engine.StopFact{Reason: engine.StopQuestion}
+
+	cancelledStop := watched(pull(now, open("head2", engine.ChecksPassed)))
+	cancelledStop.Cancelled, cancelledStop.OpenStop = true, &engine.StopFact{Reason: engine.StopCancelled}
+
+	exportedInRun := fixRun(engine.ReasonCIFix, pull(now, open("theirs", engine.ChecksPending)))
+	exportedInRun.Session = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head3"}
+	exportedInRun.Verify, exportedInRun.Exported, exportedInRun.Export = engine.ResultPassed, true, engine.ExportedPayload{HeadCommit: "head3"}
+
+	unchanged := func(reason string) engine.Facts {
+		f := fixRun(reason, pull(now, open("head2", engine.ChecksFailed, "lint")))
+		f.Session = &engine.SessionFact{Outcome: engine.OutcomeDone, HeadCommit: "head2"}
+
+		return f
+	}
+
+	// changedTo is a fix run of reason whose session moved the head to head3,
+	// which is verified and exported when exported is set, and published when published is.
+	changedTo := func(reason string, exported, published bool) engine.Facts {
+		f := fixRun(reason, pull(now, nil))
+		f.Session = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head3"}
+
+		if exported {
+			f.Verify, f.Exported, f.Export = engine.ResultPassed, true, engine.ExportedPayload{HeadCommit: "head3"}
+		}
+
+		if published {
+			f.PR.Head, f.PR.Heads = "head3", append(f.PR.Heads, "head3")
+		}
+
+		return f
+	}
+
+	answered := func(f engine.Facts) engine.Facts {
+		f.Replied = true
+
+		return f
+	}
+
+	fixedHead := func(head string, fixes int) engine.Facts {
+		pr := pull(now, open("head2", engine.ChecksFailed, "lint", "test"))
+		pr.FixedHead = head
+		f := watched(pr)
+		f.RunReason, f.CIFixes = engine.ReasonCIFix, fixes
+
+		return f
+	}
+
+	asked := func(checks string, runs int, answered ...string) engine.Facts {
+		o := open("head2", checks)
+		o.Comments = []engine.Comment{{ID: "c1", Author: "ana", Body: "Rename it."}, {ID: "c2", Author: "ana"}, {ID: "c3", Author: "bo"}}
+		pr := pull(now, o)
+		pr.Answered = answered
+		f := watched(pr)
+		f.CommentRuns = runs
+
+		return f
+	}
+
+	conflict := open("head2", engine.ChecksPassed)
+	conflict.Conflict = true
+
+	marked := func(since time.Time, checks string) engine.Facts {
+		pr := pull(since, open("head2", checks))
+		pr.MarkedReady = true
+
+		return watched(pr)
+	}
+
+	notDraft := open("head2", engine.ChecksPassed)
+	notDraft.Draft = false
+
+	// before is a look recorded before since, which a person's action or a ready-marking moved.
+	before := pull(now, open("head2", engine.ChecksFailed, "lint"))
+	before.Looked = false
+
+	owed := pull(now, open("theirs", engine.ChecksPassed))
+	owed.Looked, owed.TakeBack = false, true
+
+	noCI := func(o *engine.Observation) engine.Snapshot {
+		s := watchSnap(watched(pull(now, o)))
+		s.Watch.NoCI = true
+
+		return s
+	}
+
+	noTimeout := watchSnap(watched(pull(now.Add(-10*time.Hour), open("head2", engine.ChecksPending))))
+	noTimeout.Watch.CITimeout = 0
+
+	stillRunning := fixRun(engine.ReasonCIFix, pull(now, open("head2", engine.ChecksFailed, "lint")))
+	stillRunning.Prepared = false
+
+	retried := func(reason string, requests ...string) engine.Facts {
+		o := open("head2", engine.ChecksFailed, "lint")
+		o.Comments = []engine.Comment{{ID: "c1"}, {ID: "c4"}}
+		pr := pull(now, o)
+		pr.FixedHead, pr.Answered = "head2", requests
+		f := watched(pr)
+		f.RunReason, f.RunRequests, f.Resumed = reason, requests, &engine.Resume{From: engine.StopEnvironment}
+
+		return f
+	}
+
+	commentsRun := fixRun(engine.ReasonComments, pull(now, open("head2", engine.ChecksPassed)))
+	commentsRun.RunRequests = []string{"c2", "c3"}
+
+	fixPassed := fixRun(engine.ReasonCIFix, pull(now, nil))
+	fixPassed.Session = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head3"}
+	fixPassed.Verify = engine.ResultPassed
+
+	endedUnexported := asked(engine.ChecksPassed, 1, "c1", "c2", "c3")
+	endedUnexported.RunReason, endedUnexported.RunRequests = engine.ReasonComments, []string{"c1", "c2", "c3"}
+	endedUnexported.PR.Seen.Draft = false
+
+	return []decideCase{
+		{name: "cancelled by a person, the pull request stays open", snap: watchSnap(byPerson), want: halt(engine.StopCancelled, engine.ClearNone)},
+		{name: "the pull request closed without a merge", snap: watchSnap(closed), want: halt(engine.StopCancelled, engine.ClearNone)},
+		{name: "the pull request closed while a fix run is open", snap: watchSnap(closedInRun), want: halt(engine.StopCancelled, engine.ClearNone)},
+		{name: "merged while a fix run with no export is open", snap: watchSnap(mergedInRun), want: finish},
+		{name: "a stop with a pull request is watched", snap: watchSnap(stopped), want: watch(time.Time{})},
+		{name: "a stop in a fix run is watched", snap: watchSnap(askedInRun), want: watch(time.Time{})},
+		{name: "a cancelled task's pull request is not watched", snap: watchSnap(cancelledStop), want: engine.Action{Kind: engine.KindNone}},
+		{name: "a head CAVU never published, no run open", snap: watchSnap(watched(pull(now, open("theirs", engine.ChecksPassed)))), want: halt(engine.StopTakenOver, engine.ClearRetry)},
+		{name: "a head CAVU never published, before the open run's publish", snap: watchSnap(exportedInRun), want: halt(engine.StopTakenOver, engine.ClearRetry)},
+		{name: "a follow-up run's change is verified before it answers", snap: watchSnap(changedTo(engine.ReasonComments, false, false)), want: engine.Action{Kind: engine.KindVerify}},
+		{name: "a follow-up run's change is published before it answers", snap: watchSnap(changedTo(engine.ReasonComments, true, false)), want: publish},
+		{name: "a follow-up run whose change is published answers", snap: watchSnap(changedTo(engine.ReasonComments, true, true)), want: reply},
+		{name: "a follow-up run that answered after its publish ends", snap: watchSnap(answered(changedTo(engine.ReasonComments, true, true))), want: finish},
+		{name: "a fix run on failed checks ends after its publish without an answer", snap: watchSnap(changedTo(engine.ReasonCIFix, true, true)), want: finish},
+		{name: "a fix run on failed checks that changed nothing", snap: watchSnap(unchanged(engine.ReasonCIFix)), want: finish},
+		{name: "a follow-up run that changed nothing answers", snap: watchSnap(unchanged(engine.ReasonComments)), want: reply},
+		{name: "a follow-up run that changed nothing and answered ends", snap: watchSnap(answered(unchanged(engine.ReasonComments))), want: finish},
+		{name: "a head CAVU never published, before the look a retry takes it back at", snap: watchSnap(watched(owed)), want: watch(time.Time{})},
+		{name: "nothing seen since the head was published", snap: watchSnap(watched(pull(now, nil))), want: watch(time.Time{})},
+		{name: "nothing seen since a person's action or a ready-marking", snap: watchSnap(watched(before)), want: watch(time.Time{})},
+		{name: "an earlier head of CAVU's own", snap: watchSnap(watched(pull(now, open("head1", engine.ChecksFailed, "lint")))), want: watch(time.Time{})},
+		{name: "a conflict", snap: watchSnap(watched(pull(now, conflict))), want: halt(engine.StopConflict, engine.ClearRetry)},
+		{name: "failed checks on a head a fix run had", snap: watchSnap(fixedHead("head2", 1)), want: halt(engine.StopCIFailed, engine.ClearRetry), explainHas: "lint"},
+		{name: "failed checks after the fix runs are used up", snap: watchSnap(fixedHead("head1", 2)), want: halt(engine.StopCIFailed, engine.ClearRetry), explainHas: "test"},
+		{name: "failed checks", snap: watchSnap(fixedHead("head1", 1)), want: engine.Action{Kind: engine.KindPrepare, NewRun: true, Reason: engine.ReasonCIFix}},
+		{name: "a check failed while others still run", snap: watchSnap(watched(pull(now, open("head2", engine.ChecksPending, "lint")))), want: watch(now.Add(2 * time.Hour))},
+		{name: "requests after the follow-up runs are used up", snap: watchSnap(asked(engine.ChecksPending, 3, "c1")), want: halt(engine.StopChangesRequested, engine.ClearRetry)},
+		{
+			name: "requests no follow-up run was given", snap: watchSnap(asked(engine.ChecksPending, 2, "c1")),
+			want: engine.Action{Kind: engine.KindPrepare, NewRun: true, Reason: engine.ReasonComments, Requests: []string{"c2", "c3"}},
+		},
+		{name: "every request answered", snap: watchSnap(asked(engine.ChecksPassed, 3, "c1", "c2", "c3")), want: ready},
+		{
+			name: "checks running past ci_timeout_minutes", snap: watchSnap(watched(pull(now.Add(-2*time.Hour), open("head2", engine.ChecksPending)))),
+			want: halt(engine.StopCITimeout, engine.ClearRetry), explainHas: "ci_timeout_minutes", clock: true,
+		},
+		{
+			name: "checks running", snap: watchSnap(watched(pull(now.Add(-90*time.Minute), open("head2", engine.ChecksPending)))),
+			want: watch(now.Add(30 * time.Minute)), clock: true,
+		},
+		{name: "checks running with no ci_timeout_minutes", snap: noTimeout, want: watch(time.Time{})},
+		{name: "no check yet, within the grace", snap: watchSnap(watched(pull(now.Add(-time.Minute), open("head2", engine.ChecksNone)))), want: watch(now.Add(grace - time.Minute)), clock: true},
+		{name: "no check after the grace", snap: watchSnap(watched(pull(now.Add(-grace), open("head2", engine.ChecksNone)))), want: ready, clock: true},
+		{name: "no check since the ready-marking, within the grace", snap: watchSnap(marked(now.Add(-time.Minute), engine.ChecksNone)), want: watch(now.Add(grace - time.Minute)), clock: true},
+		{
+			name: "no check after the ready-marking's grace", snap: watchSnap(marked(now.Add(-grace), engine.ChecksNone)),
+			want: halt(engine.StopNoChecks, engine.ClearRetry), explainHas: "no_ci", clock: true,
+		},
+		{name: "checks passed on a draft", snap: watchSnap(watched(pull(now, open("head2", engine.ChecksPassed)))), want: ready},
+		{name: "no check on a draft of a project without CI", snap: noCI(open("head2", engine.ChecksNone)), want: ready},
+		{name: "checks passed, not a draft", snap: watchSnap(watched(pull(now, notDraft))), want: watch(time.Time{})},
+		{name: "a draft again after CAVU marked it ready", snap: watchSnap(marked(now, engine.ChecksPassed)), want: watch(time.Time{})},
+		{name: "a fix run open is not watched", snap: watchSnap(stillRunning), want: engine.Action{Kind: engine.KindPrepare}},
+		{
+			name: "a retry after a fix run's failed prepare starts it again", snap: watchSnap(retried(engine.ReasonCIFix)),
+			want: engine.Action{Kind: engine.KindPrepare, NewRun: true, Reason: engine.ReasonCIFix},
+		},
+		{
+			name: "a retry after a follow-up run's failed prepare gives its requests and those since", snap: watchSnap(retried(engine.ReasonComments, "c1")),
+			want: engine.Action{Kind: engine.KindPrepare, NewRun: true, Reason: engine.ReasonComments, Requests: []string{"c1", "c4"}},
+		},
+		{name: "a fix run on failed checks starts its session", snap: watchSnap(fixRun(engine.ReasonCIFix, pull(now, nil))), want: work(engine.ModeFixCI, false)},
+		{
+			name: "a follow-up run starts its session with its requests", snap: watchSnap(commentsRun),
+			want: engine.Action{Kind: engine.KindWork, WorkMode: engine.ModeComments, Requests: []string{"c2", "c3"}},
+		},
+		{name: "a fix run is not reviewed", snap: watchSnap(fixPassed), want: engine.Action{Kind: engine.KindExport}},
+		{name: "a follow-up run that ended without an export is watched", snap: watchSnap(endedUnexported), want: watch(time.Time{})},
+	}
+}
+
+// Every stop of the watch names the pull request's address.
+func TestDecideWatch(t *testing.T) {
+	for _, tc := range watchCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			assertDecides(t, tc)
+
+			if got := engine.Decide(tc.snap); got.Kind == engine.KindStop {
+				assert.Contains(t, got.Explain, prURL)
+			}
+		})
 	}
 }

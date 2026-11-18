@@ -714,8 +714,9 @@ func TestTaskRunDrivesWhenTheLockIsFree(t *testing.T) {
 
 	require.Equal(t, 0, code, stderr)
 	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork, engine.KindVerify, engine.KindReview, engine.KindExport}, fake.runner.actions)
-	require.Len(t, fake.runner.releases, 1)
-	assert.True(t, fake.runner.releases[0].removeVolumes, "the exported run ends")
+	require.Len(t, fake.runner.releases, 2)
+	assert.Equal(t, engine.RemoveRun, fake.runner.releases[0].remove, "the exported run ends")
+	assert.Equal(t, engine.RemoveAll, fake.runner.releases[1].remove, "nothing publishes the change, so the task's home goes")
 
 	events := storedEvents(t, dir, id)
 	assert.Equal(t, engine.TaskStarted, events[0].Type, "the draft is started")
@@ -748,7 +749,7 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 		assert.Equal(t, 3, code)
 		assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork}, fake.runner.actions)
 		require.Len(t, fake.runner.releases, 1)
-		assert.False(t, fake.runner.releases[0].removeVolumes, "a question keeps the run")
+		assert.Equal(t, engine.KeepVolumes, fake.runner.releases[0].remove, "a question keeps the run")
 
 		events := storedEvents(t, dir, id)
 		tail := eventLines(t, stdout, events)
@@ -784,8 +785,9 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 		code, stdout, _ := runCavu("task", "run", id, "--data-dir", dir)
 
 		assert.Equal(t, 3, code)
-		require.Len(t, fake.runner.releases, 1)
-		assert.True(t, fake.runner.releases[0].removeVolumes, "a cancel ends the run")
+		require.Len(t, fake.runner.releases, 2)
+		assert.Equal(t, engine.RemoveRun, fake.runner.releases[0].remove, "a cancel ends the run")
+		assert.Equal(t, engine.RemoveAll, fake.runner.releases[1].remove, "a cancelled task's home goes")
 		// The lines come from the store, so the other terminal's cancel is printed too.
 		assert.Contains(t, strings.Join(eventLines(t, stdout, storedEvents(t, dir, id)), "\n"), string(engine.StatusCancelled))
 	})
@@ -891,7 +893,7 @@ func TestTaskRunEndsTheRunOfACancelledTask(t *testing.T) {
 			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
 			TaskID: task.ID, RunID: run.ID, ProjectID: task.ProjectID,
 		},
-		removeVolumes: true,
+		remove: engine.RemoveAll,
 	}, "the cancelled task's run ends and its volumes go")
 	assert.NotContains(t, fake.removals[len(fake.removals)-1].keepRuns, run.ID)
 	assert.Equal(t, engine.StatusCancelled, engine.StatusOf(engine.Reduce(storedEvents(t, dir, blocked))))
@@ -933,7 +935,7 @@ func TestTaskRunInterruptReleasesAndExits130(t *testing.T) {
 			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
 			TaskID: task.ID, RunID: run.ID, ProjectID: task.ProjectID,
 		},
-		removeVolumes: false,
+		remove: engine.KeepVolumes,
 	}}, fake.runner.releases, "the run's containers stop and its volumes stay, on a context the interrupt did not cancel")
 }
 
@@ -1093,6 +1095,39 @@ func TestTaskRunFollowsUnderAServer(t *testing.T) {
 	assert.Len(t, events, 6)
 
 	tail := eventLines(t, stdout, events)
+	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+}
+
+// The follow ends once the task's pull request is watched: the watch is the server's.
+func TestTaskRunEndsAtTheWatch(t *testing.T) {
+	dir, id, _ := runSetup(t)
+	server := holdLock(t, dir, "serve")
+	refuseRuntime(t)
+
+	n := taskID(t, id)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	out, done := taskInBackground(ctx, "run", id, "--data-dir", dir)
+
+	require.Eventually(t, func() bool {
+		last, err := server.store.LastEventID(ctx, n)
+
+		return err == nil && last > 0
+	}, within, time.Millisecond, "the verb starts the task")
+
+	_, err := server.store.Append(ctx, n, -1, []store.Event{
+		event(engine.Exported, "runner", engine.ExportedPayload{HeadCommit: "head456", DiffPath: "/srv/diff.patch"}),
+		event(engine.Published, "runner", engine.PublishedPayload{
+			Branch: "cavu/fix-the-login", Head: "head456", Number: 7, URL: "https://github.com/acme/web/pull/7", NodeID: "PR_7",
+		}),
+	}, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, exitCodeOf(t, done), out.String())
+
+	tail := eventLines(t, out.String(), storedEvents(t, dir, id))
 	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
 }
 

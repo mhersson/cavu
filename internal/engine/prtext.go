@@ -23,8 +23,6 @@ type PullRequestData struct {
 	ReviewFailed            string // why the review gave no verdict, "" when it gave one
 	Open, Minor             []Finding
 	Model, Effort           string
-	CostEstimateUSD         float64
-	CostMissing             int // sessions the estimate leaves out
 	Duration                time.Duration
 }
 

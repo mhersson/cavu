@@ -25,7 +25,7 @@ func StatusOf(f Facts) Status {
 		return StatusDone
 	case f.OpenStop != nil:
 		return StatusBlocked
-	case f.Exported:
+	case f.Exported, f.PR != nil && !f.RunOpen:
 		return StatusInReview
 	case !f.RunOpen:
 		return StatusQueued

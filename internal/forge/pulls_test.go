@@ -88,6 +88,28 @@ func TestReadyTwice(t *testing.T) {
 	assert.Equal(t, []string{"Draft", "Ready", "Draft"}, operations(f), "a ready one is only asked")
 }
 
+func TestCommentIsPosted(t *testing.T) {
+	bare, _ := newBareRepo(t)
+	f, c := newFake(t, bare, nil)
+	openPR(t, c)
+
+	second, err := c.OpenPR(t.Context(), fakeRepo, fakeAccess, NewPR{Title: "Y", Base: "main", Head: "cavu/y"})
+	require.NoError(t, err)
+
+	require.NoError(t, c.Comment(t.Context(), fakeRepo, fakeAccess, second.Number, "Done."))
+	assert.Equal(t, []string{"Done."}, f.Comments(second.Number))
+	assert.Empty(t, f.Comments(1))
+
+	f.Fail(1)
+
+	err = c.Comment(t.Context(), fakeRepo, fakeAccess, second.Number, "Again.")
+	he, ok := errors.AsType[*httpError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, http.StatusBadGateway, he.status)
+	assert.Contains(t, err.Error(), "https://ghe.example/api/v3/repos/o/n/issues/2/comments")
+	assert.Equal(t, []string{"Done."}, f.Comments(second.Number))
+}
+
 func TestObserveStates(t *testing.T) {
 	bare, head := newBareRepo(t)
 

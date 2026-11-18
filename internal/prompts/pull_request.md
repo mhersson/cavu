@@ -75,6 +75,5 @@ The review found these, and they are still open:
 
 ---
 
-Model `{{.Model}}`{{with .Effort}} at effort `{{.}}`{{end}}. Cost estimate ${{printf "%.2f" .CostEstimateUSD}} from list prices
-{{- with .CostMissing}}, leaving out {{.}} session{{if gt . 1}}s{{end}} that ended without a cost{{end}}. The task took {{.Duration}} from its start to this change.
+Model `{{.Model}}`{{with .Effort}} at effort `{{.}}`{{end}}. The task took {{.Duration}} from its start to this change.
 {{- define "pull_request_finding"}}- **{{.Severity}}**{{with .Where}} `{{.}}`{{end}}: {{.What}}{{with .Why}} {{.}}{{end}}{{end}}

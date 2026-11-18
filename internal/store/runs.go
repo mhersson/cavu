@@ -11,7 +11,7 @@ import (
 // Run is one execution of the agent on a task.
 type Run struct {
 	ID, TaskID         int64
-	Reason             string // "initial" or "retry"
+	Reason             string // "initial" or "retry", or for a run on the task's pull request "ci_fix" or "comments"
 	SessionID, Outcome string
 	StartedAt          time.Time
 	EndedAt            *time.Time

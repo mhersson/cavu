@@ -71,6 +71,21 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 	return c, nil
 }
 
+// forgeConfig builds the config of a call on the task's pull request as an
+// environment check's is built, without the instance's files, since the watch
+// looks every 10 seconds. runID is the open run's, 0 when none is open.
+func (l *Loop) forgeConfig(ctx context.Context, t store.Task, runID int64, pr *PRFact) (RunConfig, error) {
+	p, err := l.Store.Project(ctx, t.ProjectID)
+	if err != nil {
+		return RunConfig{}, fmt.Errorf("project %d: %w", t.ProjectID, err)
+	}
+
+	c, err := l.runConfig(ctx, p, t, store.Run{ID: runID}, t.Overrides)
+	c.Repo.Branch = pr.Branch
+
+	return c, err
+}
+
 // readSkills reads every file below root but those in a .git directory,
 // following links, by its slash path under root. The bound is checked
 // before each read, so a link to a large tree fails early; a link loop ends

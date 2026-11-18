@@ -331,7 +331,7 @@ func TestSessionResumesAfterDown(t *testing.T) {
 
 	n := len(mock.Requests())
 
-	require.NoError(t, r.Release(t.Context(), refOf(c), false))
+	require.NoError(t, r.Release(t.Context(), refOf(c), engine.KeepVolumes))
 
 	res := work(t, r, c, engine.WorkRequest{Mode: engine.ModeContinue, SessionID: w.SessionID, Resume: true})
 	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
@@ -405,7 +405,7 @@ func TestFixRunStartsAtTheHeadWithItsSession(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 
-		assert.NoError(t, r.Release(ctx, refOf(fix), true))
+		assert.NoError(t, r.Release(ctx, refOf(fix), engine.RemoveAll))
 	})
 
 	prep, err := r.Prepare(t.Context(), fix)

@@ -421,7 +421,7 @@ func TestLoopReviewRound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
 	assert.Equal(t, []string{
-		"prepare", "work/start", "verify", "review", "work/fix_review", "verify", "review/scoped", "export", "release/remove",
+		"prepare", "work/start", "verify", "review", "work/fix_review", "verify", "review/scoped", "export", "release/run", "release/remove",
 	}, h.runner.trace())
 
 	works := h.runner.callsOf("work")
@@ -579,7 +579,7 @@ func TestLoopReviewFixChangesNothing(t *testing.T) {
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"prepare", "work/start", "verify", "review", "work/fix_review", "verify", "export", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "work/start", "verify", "review", "work/fix_review", "verify", "export", "release/run", "release/remove"}, h.runner.trace())
 	assert.Equal(t, "head456", h.runner.callsOf("export")[0].commit)
 
 	snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
@@ -598,7 +598,7 @@ func TestLoopReviewWithoutAVerdict(t *testing.T) {
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"prepare", "work/start", "verify", "review", "export", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "work/start", "verify", "review", "export", "release/run", "release/remove"}, h.runner.trace())
 
 	snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
 	require.NoError(t, err)
@@ -625,7 +625,7 @@ func TestLoopRetryAfterAReviewHalt(t *testing.T) {
 	status, err = h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"review", "export", "release/remove"}, h.runner.trace()[before:])
+	assert.Equal(t, []string{"review", "export", "release/run", "release/remove"}, h.runner.trace()[before:])
 }
 
 func TestLoopVerifyFixInsideAReviewRound(t *testing.T) {
@@ -670,7 +670,7 @@ func TestLoopVerifyFixInsideAReviewRound(t *testing.T) {
 		assert.Equal(t, engine.StatusInReview, status)
 		assert.Equal(t, []string{
 			"prepare", "work/start", "verify", "review", "work/fix_review", "verify", "work/fix_verify", "verify", "review/scoped",
-			"export", "release/remove",
+			"export", "release/run", "release/remove",
 		}, h.runner.trace())
 		check(t, h, "head456")
 		assert.Equal(t, engine.RoleWork, h.runner.callsOf("work")[2].work.Role)
@@ -711,7 +711,7 @@ func TestLoopVerifyFixInsideAReviewRound(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, engine.StatusInReview, status)
 		assert.Equal(t, []string{
-			"work/fix_review", "verify", "work/fix_verify", "verify", "review/scoped", "export", "release/remove",
+			"work/fix_review", "verify", "work/fix_verify", "verify", "review/scoped", "export", "release/run", "release/remove",
 		}, h.runner.trace())
 		check(t, h, "head4")
 

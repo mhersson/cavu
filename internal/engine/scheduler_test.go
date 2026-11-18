@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
@@ -412,7 +413,7 @@ func TestSchedulerDependencyChain(t *testing.T) {
 	require.NoError(t, h.loop.Done(t.Context(), h.task.ID))
 	s.Nudge()
 
-	h.eventually(func() bool { return h.inReview(b.ID) })
+	h.eventually(func() bool { return h.inReview(b.ID) && slices.Contains(h.runner.callsFor(b.ID), "release/remove") }, "B rests with its home removed")
 	assert.Equal(t, happyTrace, h.runner.callsFor(b.ID))
 	assert.Empty(t, s.Waiting(b.ID))
 	assert.Empty(t, s.errs())
@@ -429,15 +430,16 @@ func TestSchedulerCancelInterruptsASession(t *testing.T) {
 	s.Nudge()
 
 	h.eventually(func() bool { return slices.Equal(g.cutOf("work"), []int64{h.task.ID}) }, "the session's context ends")
-	h.eventually(func() bool { return !h.runOpen() })
+	h.eventually(func() bool { return len(h.recordedOf(h.task.ID, engine.HomeRemoved)) == 1 }, "the cancelled task's home is recorded removed")
+	assert.False(t, h.runOpen())
 
 	evs := h.events()
-	require.GreaterOrEqual(t, len(evs), 2)
-	assert.Equal(t, []string{engine.Stopped, engine.RunEnded}, types(evs[len(evs)-2:]))
+	require.GreaterOrEqual(t, len(evs), 3)
+	assert.Equal(t, []string{engine.Stopped, engine.RunEnded, engine.HomeRemoved}, types(evs[len(evs)-3:]))
 	assert.Equal(t, engine.StopCancelled, h.lastStop().Reason)
 
 	work := h.runner.callsOf("work")[0]
-	assert.Equal(t, []string{"prepare", "work/start", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "work/start", "release/run", "release/remove"}, h.runner.trace())
 	assert.Equal(t, work.runID, h.runner.callsOf("release")[0].runID)
 	assert.Empty(t, s.errs())
 }
@@ -474,7 +476,7 @@ func TestSchedulerRestartContinuesEveryTask(t *testing.T) {
 
 	for _, id := range ids {
 		require.Contains(t, releases, id)
-		assert.False(t, releases[id].remove, "task %d keeps its volumes", id)
+		assert.Equal(t, engine.KeepVolumes, releases[id].remove, "task %d keeps its volumes", id)
 		assert.Equal(t, first[id].runID, releases[id].runID)
 	}
 
@@ -528,9 +530,9 @@ func TestSchedulerWaitsThenActs(t *testing.T) {
 	h.clock.Advance(time.Millisecond)
 	s.Nudge()
 
-	h.eventually(func() bool { return h.inReview(h.task.ID) })
+	h.eventually(func() bool { return h.inReview(h.task.ID) && slices.Contains(h.runner.trace(), "release/remove") }, "the task rests with its home removed")
 	assert.Equal(t, []string{
-		"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/remove",
+		"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/run", "release/remove",
 	}, h.runner.trace())
 	assert.Empty(t, s.errs())
 }
@@ -787,7 +789,7 @@ func TestSchedulerStopTakesNoSlot(t *testing.T) {
 
 	h.eventually(func() bool { return slices.Equal(g.held("work"), []int64{h.task.ID}) }, "the answered task takes the slot")
 	h.eventually(func() bool { return slices.Contains(h.runner.callsFor(second.ID), "release/remove") }, "the cancelled run is released")
-	assert.Equal(t, []string{"prepare", "work/start", "release/remove"}, h.runner.callsFor(second.ID))
+	assert.Equal(t, []string{"prepare", "work/start", "release/run", "release/remove"}, h.runner.callsFor(second.ID))
 	assert.Equal(t, []int64{h.task.ID}, g.held("work"), "the answered task still holds the slot")
 	assert.Equal(t, engine.StatusCancelled, h.statusOf(second.ID))
 
@@ -914,5 +916,415 @@ func TestSchedulerDrivingCoversARelease(t *testing.T) {
 	g.free("release")
 	h.eventually(func() bool { return !s.Driving() })
 	assert.True(t, h.inReview(h.task.ID))
+	assert.Empty(t, s.errs())
+}
+
+// lookLog records the clock's time at each look at a pull request the runner
+// is asked for, as an offset from when it began, and counts each task's reads:
+// every snapshot of a task begins with its newest event id.
+type lookLog struct {
+	engine.Store
+
+	h      *harness
+	start  time.Time
+	mu     sync.Mutex
+	at     []time.Duration
+	reads  map[int64]int
+	looked int // the reads of the task looked at, when the newest look began
+}
+
+// logLooks makes the runner record each look and the loop's store count each
+// read. Call it before the scheduler runs.
+func (h *harness) logLooks() *lookLog {
+	l := &lookLog{Store: h.loop.Store, h: h, start: h.clock.Now(), reads: map[int64]int{}}
+	h.loop.Store = l
+
+	h.runner.onCall = func(c call) {
+		if c.method == "observe" {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+
+			l.at = append(l.at, h.clock.Now().Sub(l.start))
+			l.looked = l.reads[c.task]
+		}
+	}
+
+	return l
+}
+
+func (l *lookLog) LastEventID(ctx context.Context, taskID int64) (int64, error) {
+	l.mu.Lock()
+	l.reads[taskID]++
+	l.mu.Unlock()
+
+	return l.Store.LastEventID(ctx, taskID)
+}
+
+func (l *lookLog) offsets() []time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return slices.Clone(l.at)
+}
+
+func (l *lookLog) readsOf(id int64) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.reads[id]
+}
+
+// after waits for the newest look's end, then moves the clock to a millisecond
+// short of gap past that look, where the task is not read, and to gap past it,
+// where the task is looked at again.
+func (l *lookLog) after(t *testing.T, s *running, gap time.Duration) {
+	t.Helper()
+
+	id := l.h.task.ID
+
+	l.h.eventually(func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+
+		return l.reads[id] > l.looked
+	}, "the look's end has the task read again")
+
+	seen, reads := l.offsets(), l.readsOf(id)
+	l.h.clock.Advance(l.start.Add(seen[len(seen)-1] + gap - time.Millisecond).Sub(l.h.clock.Now()))
+	s.passes(t, 2)
+	require.Equal(t, reads, l.readsOf(id), "the task is not read before %s", gap)
+
+	l.h.clock.Advance(time.Millisecond)
+	s.Nudge()
+	l.h.eventually(func() bool { return len(l.offsets()) > len(seen) }, "a look %s after the last", gap)
+}
+
+func seconds(ss ...int) []time.Duration {
+	out := make([]time.Duration, len(ss))
+	for i, s := range ss {
+		out[i] = time.Duration(s) * time.Second
+	}
+
+	return out
+}
+
+// why is the reason of the action Decide gives the task now.
+func (h *harness) why(id int64) string {
+	snap, err := h.loop.Snapshot(context.Background(), id)
+	if err != nil {
+		return ""
+	}
+
+	return engine.Decide(snap).Why
+}
+
+func TestSchedulerPollsWhileChecksArePending(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+
+	passed := checksPassed
+	passed.Draft = false
+	h.runner.observes = []step[engine.Observation]{{res: checksPending}, {res: checksPending}, {res: passed}, {res: passed}, {res: passed}}
+	looks := h.logLooks()
+
+	s := h.schedule(nil)
+
+	h.eventually(func() bool { return len(looks.offsets()) == 1 }, "the first pass looks")
+
+	for _, gap := range []time.Duration{10 * time.Second, 10 * time.Second, time.Minute, time.Minute} {
+		looks.after(t, s, gap)
+	}
+
+	assert.Equal(t, seconds(0, 10, 20, 80, 140), looks.offsets())
+	h.eventually(func() bool { return s.Waiting(h.task.ID) == h.why(h.task.ID) }, "the task waits for what the watch waits for")
+	assert.NotEmpty(t, s.Waiting(h.task.ID))
+	assert.Empty(t, s.errs())
+}
+
+func TestSchedulerBacksOffOnForgeErrors(t *testing.T) {
+	t.Run("GitHub fails", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+
+		down := errors.New("GitHub answered 502 Bad Gateway")
+		failed := step[engine.Observation]{err: down}
+		h.runner.observes = []step[engine.Observation]{failed, failed, failed, failed, failed, failed, failed, {res: checksPending}, failed}
+		looks := h.logLooks()
+
+		s := h.schedule(nil)
+
+		h.eventually(func() bool { return len(looks.offsets()) == 1 }, "the first pass looks")
+
+		for _, gap := range []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second, 5 * time.Minute} {
+			looks.after(t, s, gap)
+		}
+
+		next := looks.start.Add(910 * time.Second).UTC().Format(time.RFC3339)
+		h.eventually(func() bool {
+			why := s.Waiting(h.task.ID)
+
+			return strings.Contains(why, down.Error()) && strings.Contains(why, next)
+		}, "the task names the error and when the next look comes, %s", next)
+		assert.Equal(t, []int64{h.task.ID}, s.errs(), "a run of failures is reported once")
+
+		looks.after(t, s, 5*time.Minute) // never longer; this look succeeds
+		h.eventually(func() bool { return s.Waiting(h.task.ID) == h.why(h.task.ID) }, "a success ends the run of failures")
+
+		looks.after(t, s, 10*time.Second) // the cadence again; this look fails
+		h.eventually(func() bool { return len(s.errs()) == 2 }, "a new run of failures is reported")
+
+		assert.Equal(t, seconds(0, 10, 30, 70, 150, 310, 610, 910, 920), looks.offsets())
+	})
+
+	t.Run("the look's config cannot be built", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+
+		p := h.project()
+		p.SecretVars = []string{"NPM_TOKEN"}
+		require.NoError(t, h.store.UpdateProject(t.Context(), p))
+
+		before := len(h.events())
+
+		s := h.schedule(nil)
+
+		h.eventually(func() bool { return strings.Contains(s.Waiting(h.task.ID), "project.web.NPM_TOKEN") }, "the task names the secret it misses")
+		s.passes(t, 2)
+		assert.Empty(t, h.runner.callsOf("observe"))
+		assert.Len(t, h.events(), before, "nothing is recorded")
+		assert.Equal(t, []int64{h.task.ID}, s.errs())
+	})
+}
+
+func TestSchedulerWaitsOutARateLimit(t *testing.T) {
+	tests := []struct {
+		name         string
+		resets, wait time.Duration // from the look that met the limit
+	}{
+		{name: "the limit lifts within the hour", resets: 20 * time.Minute, wait: 20 * time.Minute},
+		{name: "the limit lifts later", resets: 3 * time.Hour, wait: time.Hour},
+		{name: "the limit has lifted already", wait: 10 * time.Second}, // a Retry-After of 0, or a clock ahead of GitHub's: the backoff
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.watching()
+
+			limited := &engine.RateLimited{Until: h.clock.Now().Add(tt.resets)}
+			h.runner.observes = []step[engine.Observation]{{err: limited}, {res: checksPending}}
+			looks := h.logLooks()
+
+			s := h.schedule(nil)
+
+			h.eventually(func() bool { return len(looks.offsets()) == 1 }, "the first pass looks")
+
+			next := looks.start.Add(tt.wait).UTC().Format(time.RFC3339)
+			h.eventually(func() bool { return strings.Contains(s.Waiting(h.task.ID), next) }, "the task says when the next look comes, %s", next)
+
+			looks.after(t, s, tt.wait)
+			assert.Equal(t, []time.Duration{0, tt.wait}, looks.offsets())
+			assert.Equal(t, []int64{h.task.ID}, s.errs())
+		})
+	}
+
+	// The checks' timeout is Decide's clock: the task is read and stops when it
+	// comes, and the stop brings no look before the limit's wait ends.
+	t.Run("the checks' timeout comes during the wait", func(t *testing.T) {
+		h := newHarness(t)
+		h.set("ci_timeout_minutes", "30")
+		h.watching()
+
+		limited := &engine.RateLimited{Until: h.clock.Now().Add(3 * time.Hour)}
+		h.runner.observes = []step[engine.Observation]{{res: checksPending}, {err: limited}, {res: checksPending}}
+		looks := h.logLooks()
+
+		s := h.schedule(nil)
+
+		h.eventually(func() bool { return len(looks.offsets()) == 1 }, "the first pass looks")
+		looks.after(t, s, 10*time.Second) // meets the limit
+
+		next := looks.start.Add(time.Hour + 10*time.Second).UTC().Format(time.RFC3339)
+		h.eventually(func() bool { return strings.Contains(s.Waiting(h.task.ID), next) }, "the task says when the next look comes, %s", next)
+
+		h.clock.Advance(30*time.Minute - 10*time.Second - time.Millisecond)
+		s.passes(t, 2)
+		assert.Empty(t, h.stopsOf())
+
+		h.clock.Advance(time.Millisecond)
+		s.Nudge()
+
+		h.eventually(func() bool {
+			return slices.Equal(h.stopsOf(), []string{engine.StopCITimeout}) && !s.Driving()
+		}, "the task stops when its checks' time is up")
+		s.passes(t, 2) // the pass after the stop's drive reads the task again
+		assert.Contains(t, s.Waiting(h.task.ID), next, "the stopped task is watched on the same clock")
+
+		looks.after(t, s, time.Hour)
+		assert.Equal(t, seconds(0, 10, 3610), looks.offsets())
+	})
+}
+
+// A look, a ready-marking and a clean start no container, so a watched task's
+// merge is recorded and its home removed while a session holds the only slot.
+func TestSchedulerWatchNeedsNoSlot(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+	h.set("concurrency", "1")
+
+	merged := checksPassed
+	merged.State = engine.PRMerged
+	h.runner.observes = []step[engine.Observation]{{res: checksPending}, {res: checksPassed}, {res: merged}}
+	looks := h.logLooks()
+	second := h.started()
+	g := h.gate("work")
+
+	s := h.schedule(nil)
+
+	var slotWaits atomic.Int64
+
+	s.watchEach(func() {
+		if s.Waiting(h.task.ID) == engine.WaitingForSlot {
+			slotWaits.Add(1)
+		}
+	})
+
+	h.eventually(func() bool { return slices.Equal(g.held("work"), []int64{second.ID}) && len(looks.offsets()) == 1 })
+	looks.after(t, s, 10*time.Second) // the checks passed on a draft
+	h.eventually(func() bool { return len(h.recordedOf(h.task.ID, engine.PRReady)) == 1 }, "the pull request is marked ready")
+
+	h.clock.Advance(time.Minute)
+	s.Nudge()
+
+	h.eventually(func() bool {
+		return h.statusOf(h.task.ID) == engine.StatusDone && len(h.recordedOf(h.task.ID, engine.HomeRemoved)) == 1
+	}, "the merge is recorded and the task's home removed")
+	assert.Equal(t, []int64{second.ID}, g.held("work"), "the session still holds the only slot")
+	assert.Zero(t, slotWaits.Load(), "the watched task never waits for a slot")
+
+	trace := h.runner.callsFor(h.task.ID)
+	assert.Equal(t, []string{"observe", "observe", "ready", "observe", "release/remove"}, trace[len(trace)-5:])
+	assert.Empty(t, s.errs())
+}
+
+// A new scheduler keeps no clock of the old one's: it looks at a watched task
+// in its first pass.
+func TestSchedulerRestartResumesTheWatch(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+	h.runner.observes = []step[engine.Observation]{{res: checksPending}, {res: checksPending}}
+	g := h.gate("observe")
+
+	first := h.schedule(nil)
+
+	h.eventually(func() bool { return slices.Equal(g.held("observe"), []int64{h.task.ID}) })
+	g.let(t, "observe", h.task.ID)
+	h.eventually(func() bool { return len(h.eventsOf(engine.PRObserved)) == 1 })
+	h.clock.Advance(5 * time.Second) // short of the old scheduler's next look
+	require.NoError(t, first.stop())
+	assert.Empty(t, first.errs())
+
+	again := h.schedule(nil)
+
+	h.eventually(func() bool { return slices.Equal(g.held("observe"), []int64{h.task.ID}) && again.ended.Load() == 1 })
+	assert.Equal(t, int64(1), again.ended.Load(), "the look starts in the first pass")
+	assert.Len(t, h.runner.callsOf("observe"), 2)
+
+	require.NoError(t, again.stop())
+	assert.Equal(t, []int64{h.task.ID}, g.cutOf("observe"))
+	assert.Empty(t, again.errs(), "a look cut by Run's end is not reported")
+}
+
+// Run's end waits for a look in flight, as for a drive. In a bubble, Wait
+// returns once every other goroutine is durably blocked, so a Run that has not
+// returned is seen, not raced; a look left behind fails the bubble.
+func TestSchedulerEndWaitsForALook(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+
+	synctest.Test(t, func(t *testing.T) {
+		g := h.gate("observe")
+
+		// A look cut by Run's end returns only once the test lets it.
+		release := make(chan struct{})
+		h.runner.gate = func(ctx context.Context, c call) error {
+			err := g.wait(ctx, c)
+			if err != nil {
+				<-release
+			}
+
+			return err
+		}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		s := &engine.Scheduler{Loop: h.loop, Tick: time.Hour}
+		ended := make(chan error, 1)
+
+		go func() { ended <- s.Run(ctx) }()
+
+		synctest.Wait()
+		require.Equal(t, []int64{h.task.ID}, g.held("observe"), "the first pass looks")
+
+		cancel()
+		synctest.Wait()
+		require.Equal(t, []int64{h.task.ID}, g.cutOf("observe"))
+		assert.Empty(t, ended, "Run has not returned while the look is in flight")
+
+		close(release)
+		synctest.Wait()
+		require.Len(t, ended, 1, "Run returns once the look has")
+		assert.NoError(t, <-ended)
+	})
+}
+
+// A drive that fails is tried again only after an event, as on any task: the
+// clock of a task whose pull request was watched does not read it again.
+func TestSchedulerFailedDriveAfterAWatchWaitsForAnEvent(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+
+	merged := checksPassed
+	merged.State = engine.PRMerged
+	h.runner.observes = []step[engine.Observation]{{res: merged}}
+	h.runner.releaseErr = errors.New("the volume is in use")
+	looks := h.logLooks()
+	releases := len(h.runner.callsOf("release"))
+
+	s := h.schedule(nil)
+
+	h.eventually(func() bool { return len(s.errs()) == 1 }, "the clean of the merged task fails")
+	s.passes(t, 2)
+
+	reads := looks.readsOf(h.task.ID)
+	h.clock.Advance(2 * time.Minute) // past the look's next
+	s.passes(t, 2)
+
+	assert.Equal(t, reads, looks.readsOf(h.task.ID), "the task is not read again without an event")
+	assert.Len(t, h.runner.callsOf("release"), releases+1)
+	assert.Equal(t, []int64{h.task.ID}, s.errs())
+}
+
+// A failed check's fix run starts a container, so it waits for a free slot.
+func TestWatchStartsAFixRunInASlot(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+	h.set("concurrency", "1")
+	h.runner.observes = []step[engine.Observation]{{res: checksFailed}}
+	second := h.started()
+	g := h.gate("work")
+
+	s := h.schedule(nil)
+
+	h.eventually(func() bool { return slices.Equal(g.held("work"), []int64{second.ID}) })
+	h.eventually(func() bool { return s.Waiting(h.task.ID) == engine.WaitingForSlot }, "the fix run waits for the slot")
+	s.passes(t, 2)
+	assert.Equal(t, []engine.RunStartedPayload{initialRun}, h.runStarts(), "no fix run starts while the session holds the slot")
+	assert.Len(t, h.runner.callsOf("observe"), 1, "a task that waits for a slot is not looked at")
+
+	g.holdOn("prepare")
+	g.free("work")
+
+	h.eventually(func() bool { return slices.Equal(g.held("prepare"), []int64{h.task.ID}) }, "the fix run starts once the slot is free")
+	assert.Equal(t, []engine.RunStartedPayload{initialRun, ciFixFrom("head456")}, h.runStarts())
 	assert.Empty(t, s.errs())
 }
