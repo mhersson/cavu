@@ -107,7 +107,8 @@ type Runner interface {
 	Work(ctx context.Context, c RunConfig, w WorkRequest, progress func(Progress)) (WorkResult, error)
 	Verify(ctx context.Context, c RunConfig) (VerifyResult, error)
 	// Review runs one read-only review session on the frozen head and changes
-	// nothing. An error comes with the session's Usage and Turns so far.
+	// nothing in the workspace. An error comes with the session's Usage and
+	// Turns so far.
 	Review(ctx context.Context, c RunConfig, r ReviewRequest, progress func(Progress)) (ReviewResult, error)
 	// Export exports commit, the work a session froze, never the working tree.
 	// It is safe to repeat for the same run.
@@ -201,6 +202,14 @@ type ExportResult struct {
 	HeadCommit   string
 	Diff, Bundle []byte
 	FilesChanged int
-	DiffStat     []string // git's summary of the diff: a line per file, a long list cut short, then the totals
-	Problem      string   // non-empty: stop as agent_error with this text
+	DiffStat     []string      // git's summary of the diff: a line per file, a long list cut short, then the totals
+	Files        []ChangedFile // every path the change adds, modifies or deletes, a rename as a delete and an add
+	Problem      string        // non-empty: stop as agent_error with this text
+}
+
+// ChangedFile is a path a change touches.
+type ChangedFile struct {
+	Path  string
+	Added bool
+	Size  int64 // of the file as the change leaves it, 0 for a deleted one
 }

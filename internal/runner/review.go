@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strings"
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
@@ -21,6 +20,10 @@ const (
 	fixPatch    = "/run/cavu/fix.patch"
 )
 
+// diffOptions keep git from running a program the repository names to render
+// a file, and show a submodule's change in full.
+const diffOptions = "--no-ext-diff --no-textconv --ignore-submodules=none"
+
 // diffScript writes, for each commit $1, commit $2 and file $3 it is given,
 // git's summary and the diff from $1 to $2 into $3, over what is there.
 var diffScript = proc.SandboxOnly(gitFunc + `while [ "$#" -ge 3 ]; do
@@ -28,17 +31,16 @@ var diffScript = proc.SandboxOnly(gitFunc + `while [ "$#" -ge 3 ]; do
 	shift 3
 done`)
 
-// Review writes the diffs a reviewer reads in the read-only phase, then runs
-// one review session there. It changes nothing and is never frozen.
+// bundleScript writes a bundle of the task branch $2 from the base commit $1
+// to $3. It writes nothing in the workspace.
+var bundleScript = proc.SandboxOnly(gitFunc + `g bundle create -q "$3" "$1..refs/heads/$2"`)
+
+// Review puts the diffs a reviewer reads in the read-only phase, then runs one
+// review session there. It changes nothing in the workspace and is never frozen.
 func (r *Runner) Review(ctx context.Context, c engine.RunConfig, rq engine.ReviewRequest, progress func(engine.Progress)) (engine.ReviewResult, error) {
 	return act(ctx, r, c, sandbox.PhaseReadOnly, func(ctx context.Context, st *run, mask func(string) string) (engine.ReviewResult, error) {
-		diffs := []string{c.Repo.BaseCommit, rq.Head, reviewPatch}
-		if scoped(rq) {
-			diffs = append(diffs, rq.FixBase, rq.Head, fixPatch)
-		}
-
 		// Without its diff the review gives no verdict, which never blocks the task.
-		problem, err := writeDiffs(ctx, st, c, diffs...)
+		problem, err := st.reviewDiffs(ctx, c, rq)
 		if err != nil || problem != "" {
 			return engine.ReviewResult{Outcome: engine.ReviewFailed, Detail: mask(problem)}, err
 		}
@@ -56,21 +58,55 @@ func (r *Runner) Review(ctx context.Context, c engine.RunConfig, rq engine.Revie
 // previous review left open.
 func scoped(rq engine.ReviewRequest) bool { return rq.FixBase != "" }
 
-// writeDiffs runs diffScript with args in the session phase that is up. A
-// diff git cannot write is a problem, not an error.
+// reviewDiffs makes the task branch's bundle in the read-only container,
+// imports it, and copies into the read-only container the diffs git writes
+// from the mirror. A bundle the import refuses, or a diff git cannot write, is
+// a problem, not an error.
+func (st *run) reviewDiffs(ctx context.Context, c engine.RunConfig, rq engine.ReviewRequest) (string, error) {
+	cmd := proc.Command{Argv: scriptArgv(bundleScript, c.Repo.BaseCommit, c.Repo.Branch, tmpfsBundle), Env: agentEnv(st.ecosystems, c.Repo.BaseCommit), Dir: workspace}
+
+	_, problem, err := gitStep(ctx, st.agent, cmd)
+	if err != nil || problem != "" {
+		return problem, err
+	}
+
+	bundle, problem, err := copyOut(ctx, st.agent, tmpfsBundle)
+	if err != nil || problem != "" {
+		return problem, err
+	}
+
+	diffs := []string{c.Repo.BaseCommit, rq.Head, reviewPatch}
+	if scoped(rq) {
+		diffs = append(diffs, rq.FixBase, rq.Head, fixPatch)
+	}
+
+	return st.imported(ctx, c, bundle, rq.Head, c.Repo.BaseCommit, func(imp container) (string, error) {
+		if _, problem, err := gitStep(ctx, imp, importCommand(diffScript, diffs...)); err != nil || problem != "" {
+			return problem, err
+		}
+
+		files := map[string][]byte{}
+
+		for i := 2; i < len(diffs); i += 3 {
+			b, problem, err := copyOut(ctx, imp, diffs[i])
+			if err != nil || problem != "" {
+				return problem, err
+			}
+
+			files[diffs[i]] = b
+		}
+
+		return "", st.agent.CopyIn(ctx, files)
+	})
+}
+
+// writeDiffs runs diffScript with args in the agent phase's workspace, where
+// the agent's configuration applies. A diff git cannot write is a problem,
+// not an error.
 func writeDiffs(ctx context.Context, st *run, c engine.RunConfig, args ...string) (string, error) {
-	cmd := proc.Command{Argv: scriptArgv(diffScript, args...), Env: agentEnv(st.ecosystems, c.Repo.BaseCommit), Dir: workspace}
+	_, problem, err := gitStep(ctx, st.agent, proc.Command{Argv: scriptArgv(diffScript, args...), Env: agentEnv(st.ecosystems, c.Repo.BaseCommit), Dir: workspace})
 
-	out, err := st.agent.Run(ctx, cmd, gitTimeout)
-	if err != nil {
-		return "", err
-	}
-
-	if out.ExitCode != 0 || out.TimedOut {
-		return strings.TrimSpace(output(out, gitTimeout)), nil
-	}
-
-	return "", nil
+	return problem, err
 }
 
 // review runs the review session under the agent's time limit and maps how it

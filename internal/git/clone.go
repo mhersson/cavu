@@ -19,6 +19,14 @@ var allowFileURLs bool
 // branch name first, and a pushed branch could then pick the base commit.
 var commitRE = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
+func allowedProtocols() string {
+	if allowFileURLs {
+		return "https:file"
+	}
+
+	return "https"
+}
+
 // CloneSpec says what to clone and where. The token is not stored anywhere
 // under MirrorDir or WorkspaceDir.
 type CloneSpec struct {
@@ -36,11 +44,6 @@ func Clone(ctx context.Context, s CloneSpec) (string, error) {
 		return "", err
 	}
 
-	allowed := "https"
-	if allowFileURLs {
-		allowed += ":file"
-	}
-
 	// No call inherits the caller's working directory, which could be any
 	// repository. The directories that hold the mirror and the workspace exist
 	// before git creates them, and a refused spec must leave no mirror behind.
@@ -54,7 +57,7 @@ func Clone(ctx context.Context, s CloneSpec) (string, error) {
 	fetch := call{
 		dir:  s.MirrorDir,
 		args: []string{"fetch", "--prune", "--no-tags", "--quiet", "--", s.URL, "+refs/heads/*:refs/heads/*"},
-		env:  netEnv(s.URL, s.Token, allowed),
+		env:  netEnv(s.URL, s.Token, allowedProtocols()),
 		net:  true, noHooks: true,
 	}
 	if _, err := run(ctx, fetch); err != nil {
@@ -116,38 +119,59 @@ func freshBranch(ctx context.Context, ws, branch string) error {
 	return err
 }
 
+type field struct{ name, v string }
+
+// inputs are the values of a spec that reach git or the network.
+type inputs struct {
+	url      string
+	plain    []field // required
+	commits  []field // full object ids, empty allowed
+	branches []field
+}
+
 // validate refuses an input that could act as a git option or smuggle a
-// control character, and a relative directory, before any git command that
+// control character before any git command that
 // touches the network runs. It names the field and never echoes the value.
 func validate(ctx context.Context, s CloneSpec) error {
-	for _, f := range []struct{ name, v string }{
-		{"url", s.URL},
-		{"base branch", s.BaseBranch},
-		{"branch", s.Branch},
-		{"mirror dir", s.MirrorDir},
-		{"workspace dir", s.WorkspaceDir},
-		{"name", s.Name},
-		{"email", s.Email},
-	} {
+	return inputs{
+		url: s.URL,
+		plain: []field{
+			{"base branch", s.BaseBranch},
+			{"branch", s.Branch},
+			{"mirror dir", s.MirrorDir},
+			{"workspace dir", s.WorkspaceDir},
+			{"name", s.Name},
+			{"email", s.Email},
+		},
+		commits:  []field{{"commit", s.Commit}},
+		branches: []field{{"base branch", s.BaseBranch}, {"branch", s.Branch}},
+	}.validate(ctx, filepath.Dir(s.MirrorDir))
+}
+
+// validate runs the checks every spec shares; dir exists, for check-ref-format.
+func (in inputs) validate(ctx context.Context, dir string) error {
+	for _, f := range append([]field{{"url", in.url}}, in.plain...) {
 		if err := plain(f.name, f.v, true); err != nil {
 			return err
 		}
 	}
 
-	if err := plain("commit", s.Commit, false); err != nil {
+	for _, f := range in.commits {
+		if err := plain(f.name, f.v, false); err != nil {
+			return err
+		}
+
+		if f.v != "" && !commitRE.MatchString(f.v) {
+			return fmt.Errorf("%s: not a hexadecimal object id", f.name)
+		}
+	}
+
+	if err := checkURL(in.url); err != nil {
 		return err
 	}
 
-	if s.Commit != "" && !commitRE.MatchString(s.Commit) {
-		return errors.New("commit: not a hexadecimal object id")
-	}
-
-	if err := checkURL(s.URL); err != nil {
-		return err
-	}
-
-	for _, f := range []struct{ name, v string }{{"base branch", s.BaseBranch}, {"branch", s.Branch}} {
-		out, err := run(ctx, call{dir: filepath.Dir(s.MirrorDir), args: []string{"check-ref-format", "--branch", f.v}, read: true})
+	for _, f := range in.branches {
+		out, err := run(ctx, call{dir: dir, args: []string{"check-ref-format", "--branch", f.v}, read: true})
 		if err != nil || strings.TrimSpace(string(out)) != f.v {
 			return fmt.Errorf("%s: not a valid branch name", f.name)
 		}

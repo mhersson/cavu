@@ -24,7 +24,8 @@ import (
 
 const (
 	configDir = home + "/.claude-cavu"
-	// gitTimeout bounds the freeze and the export, each a few git commands.
+	// gitTimeout bounds each of CAVU's own git steps, such as the freeze, a bundle
+	// or an import, each a few git commands.
 	gitTimeout = 5 * time.Minute
 )
 

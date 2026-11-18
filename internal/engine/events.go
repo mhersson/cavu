@@ -215,6 +215,7 @@ type (
 		BundlePath   string   `json:"bundle_path"`
 		FilesChanged int      `json:"files_changed"`
 		DiffStat     []string `json:"diff_stat"`
+		Flagged      Flagged  `json:"flagged"`
 	}
 
 	StoppedPayload struct {

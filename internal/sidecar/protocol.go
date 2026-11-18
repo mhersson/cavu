@@ -7,6 +7,7 @@ import "github.com/mhersson/cavu/internal/proxy"
 type Request struct {
 	Proxy *ProxyRequest
 	Clone *CloneRequest
+	Push  *PushRequest
 }
 
 // ProxyRequest configures the proxy op.
@@ -24,11 +25,19 @@ type CloneRequest struct {
 	Name, Email                            string // commit identity configured in the workspace
 }
 
+// PushRequest configures the push op. Token is the forge token.
+type PushRequest struct {
+	URL, Token, MirrorDir string
+	Ref, Commit           string // the mirror's ref for the task, and the commit it must be at
+	Branch, Expect        string // Expect: the head published before, "" for a first push
+}
+
 // Line is one JSON line on standard output.
 type Line struct {
-	Type   string       // "ready", "denied", "usage", "budget", "cloned", "error"
+	Type   string       // "ready", "denied", "usage", "budget", "cloned", "pushed", "rejected", "error"
 	Host   string       `json:",omitempty"`
 	Usage  *proxy.Usage `json:",omitempty"`
 	Commit string       `json:",omitempty"` // cloned: the base commit
-	Error  string       `json:",omitempty"` // budget: why the spend cannot be counted, "" when the cap is spent
+	Branch string       `json:",omitempty"` // pushed, rejected: the branch the push was for
+	Error  string       `json:",omitempty"` // budget: why the spend cannot be counted, "" when the cap is spent; rejected: why the forge refused
 }

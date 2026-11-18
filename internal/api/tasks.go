@@ -67,9 +67,10 @@ type budgetJSON struct {
 }
 
 type changeJSON struct {
-	HeadCommit   string   `json:"head_commit"`
-	FilesChanged int      `json:"files_changed"`
-	DiffStat     []string `json:"diff_stat"`
+	HeadCommit   string         `json:"head_commit"`
+	FilesChanged int            `json:"files_changed"`
+	DiffStat     []string       `json:"diff_stat"`
+	Flagged      engine.Flagged `json:"flagged"`
 }
 
 // taskItemJSON is a task in a list.
@@ -163,7 +164,13 @@ func (s *server) taskView(ctx context.Context, id int64) (taskJSON, error) {
 	}
 
 	if x := f.Export; f.Exported {
-		v.Change = &changeJSON{HeadCommit: x.HeadCommit, FilesChanged: x.FilesChanged, DiffStat: append([]string{}, x.DiffStat...)}
+		v.Change = &changeJSON{
+			HeadCommit: x.HeadCommit, FilesChanged: x.FilesChanged, DiffStat: append([]string{}, x.DiffStat...),
+			Flagged: engine.Flagged{
+				Workflows: append([]string{}, x.Flagged.Workflows...), Instructions: append([]string{}, x.Flagged.Instructions...),
+				Large: append([]string{}, x.Flagged.Large...),
+			},
+		}
 	}
 
 	for _, u := range usage {
