@@ -53,6 +53,8 @@ type Pull struct {
 type CheckRun struct {
 	ID             int64  // its job's id when App is github-actions
 	App            string // the app's slug
+	Run            int64  // its workflow run's id; 0 for a check run no workflow run accounts for
+	Attempt        int    // its run's attempt; 0 and 1 both mean the first
 	Name           string
 	Status         string // queued, in_progress or completed
 	Conclusion     string // once completed
@@ -89,6 +91,8 @@ type Fake struct {
 	pulls    []*pull
 	runs     map[string][]CheckRun
 	statuses map[string][]Status
+	jobless  map[string][]int64  // workflow runs without a job, by commit
+	denied   map[string][]string // permissions denied, by token
 	logs     map[int64]string
 	perms    map[string]string
 	noDrafts bool
@@ -133,7 +137,8 @@ func New(t *testing.T, bareDir string) *Fake {
 
 	f := &Fake{
 		t: t, bare: bareDir, mux: http.NewServeMux(),
-		runs: map[string][]CheckRun{}, statuses: map[string][]Status{}, logs: map[int64]string{}, perms: map[string]string{},
+		runs: map[string][]CheckRun{}, statuses: map[string][]Status{}, jobless: map[string][]int64{},
+		denied: map[string][]string{}, logs: map[int64]string{}, perms: map[string]string{},
 	}
 
 	const repo = "/api/v3/repos/{o}/{n}"
@@ -145,9 +150,11 @@ func New(t *testing.T, bareDir string) *Fake {
 	f.mux.HandleFunc("POST "+repo+"/pulls", f.createPull)
 	f.mux.HandleFunc("GET "+repo+"/pulls/{number}", f.getPull)
 	f.mux.HandleFunc("POST "+repo+"/issues/{number}/comments", f.issueComment)
-	f.mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", f.checkRuns)
-	f.mux.HandleFunc("GET "+repo+"/commits/{sha}/status", f.status)
-	f.mux.HandleFunc("GET "+repo+"/actions/jobs/{id}/logs", f.jobLog)
+	f.mux.HandleFunc("GET "+repo+"/commits/{sha}/check-runs", f.needs("checks", f.checkRuns))
+	f.mux.HandleFunc("GET "+repo+"/commits/{sha}/status", f.needs("statuses", f.status))
+	f.mux.HandleFunc("GET "+repo+"/actions/runs", f.needs("actions", f.workflowRuns))
+	f.mux.HandleFunc("GET "+repo+"/actions/runs/{run_id}/jobs", f.needs("actions", f.jobs))
+	f.mux.HandleFunc("GET "+repo+"/actions/jobs/{id}/logs", f.needs("actions", f.jobLog))
 	f.mux.HandleFunc("GET "+repo+"/collaborators/{login}/permission", f.permission)
 
 	return f
@@ -206,6 +213,26 @@ func (f *Fake) SetStatus(sha string, statuses ...Status) {
 	defer f.mu.Unlock()
 
 	f.statuses[sha] = statuses
+}
+
+// AddRun adds workflow run id to commit sha without a job, as a run awaiting
+// approval is.
+func (f *Fake) AddRun(sha string, id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.jobless[sha] = append(f.jobless[sha], id)
+}
+
+// Deny refuses token each route that needs one of permissions, with 403 and
+// the message GitHub gives a personal access token: checks for a commit's
+// check runs, statuses for its statuses, and actions for its workflow runs,
+// a run's jobs and a job's log. A later call for token replaces its set.
+func (f *Fake) Deny(token string, permissions ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.denied[token] = permissions
 }
 
 // SetJobLog sets the log of Actions job id; an empty log answers 416, as
@@ -533,23 +560,93 @@ func (f *Fake) issueComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"body": in.Body})
 }
 
+// needs answers 403 with GitHub's message to a token Deny denied permission.
+func (f *Fake) needs(permission string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if slices.Contains(f.denied[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")], permission) {
+			writeJSON(w, http.StatusForbidden, message("Resource not accessible by personal access token"))
+
+			return
+		}
+
+		h(w, r)
+	}
+}
+
+// checkRuns answers the check runs of commit sha.
 func (f *Fake) checkRuns(w http.ResponseWriter, r *http.Request) {
-	runs := f.runs[r.PathValue("sha")]
+	runs := newest(r, f.runs[r.PathValue("sha")])
 	out := make([]map[string]any, len(runs))
 
 	for i, c := range runs {
-		var conclusion any
-		if c.Conclusion != "" {
-			conclusion = c.Conclusion
-		}
-
 		out[i] = map[string]any{
 			"id": c.ID, "app": map[string]any{"slug": c.App}, "name": c.Name, "status": c.Status,
-			"conclusion": conclusion, "html_url": c.URL, "output": map[string]any{"title": c.Title, "summary": c.Summary},
+			"conclusion": orNull(c.Conclusion), "html_url": c.URL, "output": map[string]any{"title": c.Title, "summary": c.Summary},
 		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"total_count": len(out), "check_runs": out})
+}
+
+// workflowRuns answers the workflow runs of commit head_sha: those its check
+// runs belong to, then those AddRun added.
+func (f *Fake) workflowRuns(w http.ResponseWriter, r *http.Request) {
+	sha := r.URL.Query().Get("head_sha")
+
+	var ids []int64
+
+	for _, c := range f.runs[sha] {
+		if c.Run != 0 && !slices.Contains(ids, c.Run) {
+			ids = append(ids, c.Run)
+		}
+	}
+
+	out := []map[string]any{}
+	for _, id := range append(ids, f.jobless[sha]...) {
+		out = append(out, map[string]any{"id": id})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"total_count": len(out), "workflow_runs": out})
+}
+
+// jobs answers the check runs of workflow run run_id as its jobs.
+func (f *Fake) jobs(w http.ResponseWriter, r *http.Request) {
+	run, _ := strconv.ParseInt(r.PathValue("run_id"), 10, 64)
+
+	var runs []CheckRun
+
+	for _, commit := range f.runs {
+		for _, c := range commit {
+			if c.Run == run {
+				runs = append(runs, c)
+			}
+		}
+	}
+
+	out := []map[string]any{}
+	for _, c := range newest(r, runs) {
+		out = append(out, map[string]any{
+			"id": c.ID, "run_id": c.Run, "run_attempt": max(c.Attempt, 1), "name": c.Name, "status": c.Status,
+			"conclusion": orNull(c.Conclusion), "html_url": c.URL,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"total_count": len(out), "jobs": out})
+}
+
+// newest is those of runs that belong to their workflow run's newest attempt,
+// or for filter=all all of runs.
+func newest(r *http.Request, runs []CheckRun) []CheckRun {
+	if r.URL.Query().Get("filter") == "all" {
+		return runs
+	}
+
+	attempt := map[int64]int{}
+	for _, c := range runs {
+		attempt[c.Run] = max(attempt[c.Run], c.Attempt, 1)
+	}
+
+	return slices.DeleteFunc(slices.Clone(runs), func(c CheckRun) bool { return max(c.Attempt, 1) < attempt[c.Run] })
 }
 
 func (f *Fake) status(w http.ResponseWriter, r *http.Request) {
@@ -721,6 +818,15 @@ func graphQLError(w http.ResponseWriter, typ, msg string) {
 }
 
 func message(msg string) map[string]string { return map[string]string{"message": msg} }
+
+// orNull is s, or JSON's null for "".
+func orNull(s string) any {
+	if s == "" {
+		return nil
+	}
+
+	return s
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
