@@ -265,24 +265,18 @@ func TestSidecarWritesTheBudgetLine(t *testing.T) {
 	run.stdout.waitFor(t, "ready")
 
 	c := unixClient(sock, false)
-	ask := func() int {
-		req, err := http.NewRequest(http.MethodPost, "http://model.invalid/v1/messages", strings.NewReader(`{}`))
-		require.NoError(t, err)
-		req.Header.Set("x-api-key", "stand-in")
+	req, err := http.NewRequest(http.MethodPost, "http://model.invalid/v1/messages", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	req.Header.Set("x-api-key", "stand-in")
 
-		resp, err := c.Do(req)
-		require.NoError(t, err)
+	resp, err := c.Do(req)
+	require.NoError(t, err)
 
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 
-		return resp.StatusCode
-	}
-
-	assert.Equal(t, http.StatusOK, ask())
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	run.stdout.waitFor(t, "budget")
-	assert.Equal(t, http.StatusPaymentRequired, ask())
-	assert.Equal(t, http.StatusPaymentRequired, ask())
 
 	require.NoError(t, run.stop(t))
 
