@@ -533,6 +533,25 @@ func TestObserveLosesToAPersonsAction(t *testing.T) {
 	assert.Equal(t, engine.StatusCancelled, status)
 }
 
+// The poller waits out a rate limit, so it reaches Observe's caller as the runner returned it.
+func TestObserveReturnsARateLimit(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+
+	until := now.Add(time.Hour)
+	h.runner.observes = []step[engine.Observation]{{err: &engine.RateLimited{Until: until}}}
+	before := len(h.events())
+
+	fast, err := h.loop.Observe(t.Context(), h.task.ID)
+
+	var limited *engine.RateLimited
+	require.ErrorAs(t, err, &limited)
+	assert.True(t, until.Equal(limited.Until))
+	assert.False(t, fast)
+	assert.Len(t, h.runner.callsOf("observe"), 1)
+	assert.Len(t, h.events(), before, "nothing is recorded")
+}
+
 // Just after a publish GitHub may still show the head published before.
 func TestAnEarlierHeadIsNotATakeover(t *testing.T) {
 	h := newHarness(t)
@@ -544,8 +563,9 @@ func TestAnEarlierHeadIsNotATakeover(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, h.eventsOf(engine.Published), 2)
 
+	// The checks that failed on the earlier head, which the fix run answered.
 	earlier := checksPassed
-	earlier.Draft = false
+	earlier.Draft, earlier.Checks, earlier.Failed = false, engine.ChecksFailed, []string{"lint"}
 
 	later := checksPending
 	later.Draft, later.Head = false, "fix789"
@@ -565,6 +585,7 @@ func TestAnEarlierHeadIsNotATakeover(t *testing.T) {
 	assert.Len(t, h.eventsOf(engine.PRObserved), 2)
 	assert.Empty(t, h.stopsOf())
 	assert.Empty(t, h.runner.callsOf("ready"))
+	assert.Empty(t, h.runner.callsOf("prepare"), "no new fix run")
 }
 
 func TestStoppedTaskStillSeesTheMerge(t *testing.T) {
@@ -783,6 +804,8 @@ func TestObserveIsFastWhileChecksAreDue(t *testing.T) {
 		name   string
 		checks string
 		after  time.Duration // since the publish
+		stop   string        // an open stop's reason, "" for none
+		noCI   bool
 		fast   bool
 	}{
 		{name: "checks pending", checks: engine.ChecksPending, after: time.Hour, fast: true},
@@ -790,13 +813,26 @@ func TestObserveIsFastWhileChecksAreDue(t *testing.T) {
 		{name: "no check after the grace", checks: engine.ChecksNone, after: 3 * time.Minute},
 		{name: "checks passed", checks: engine.ChecksPassed},
 		{name: "checks failed", checks: engine.ChecksFailed},
+		{name: "checks pending under a stop", checks: engine.ChecksPending, after: 3 * time.Hour, stop: engine.StopCITimeout},
+		{name: "no check inside the grace under a stop", checks: engine.ChecksNone, after: time.Minute, stop: engine.StopConflict},
+		{name: "no check inside the grace on a project without CI", checks: engine.ChecksNone, after: time.Minute, noCI: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
+			if tt.noCI {
+				p := h.project()
+				p.Forge.NoCI = true
+				require.NoError(t, h.store.UpdateProject(t.Context(), p))
+			}
+
 			h.watching()
 			h.clock.Advance(tt.after)
+
+			if tt.stop != "" {
+				h.stopped(tt.stop)
+			}
 
 			o := checksPending
 			o.Checks = tt.checks
@@ -862,8 +898,9 @@ func TestReadyFaultIsRetried(t *testing.T) {
 	})
 }
 
-// A look at the pull request and its ready-marking come every few seconds, so
-// their config holds none of the instance's files, which a run's config holds.
+// A look at the pull request, which comes every few seconds, and the
+// ready-marking build their config without the instance's files, which a run's
+// config holds.
 func TestTheWatchReadsNoInstanceFiles(t *testing.T) {
 	h := newHarness(t)
 

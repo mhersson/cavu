@@ -93,9 +93,9 @@ func (p *pass) publish(ctx context.Context, v view, a Action, o openRun) error {
 
 // Observe reads the task's pull request when Decide says watch, and records
 // what it saw when that differs from the last record. fast reports that the
-// next look should come soon: the checks run, or none has started and the
-// grace has not passed. A runner error, a rate limit among them, is returned
-// as it is and records nothing.
+// next look should come soon: no stop is open, and the checks run, or none has
+// started on a project with CI and the grace has not passed. A runner error, a
+// rate limit among them, is returned as it is and records nothing.
 func (l *Loop) Observe(ctx context.Context, taskID int64) (fast bool, err error) {
 	s, _, err := l.snapshot(ctx, taskID)
 	if err != nil {
@@ -142,7 +142,10 @@ func (l *Loop) Observe(ctx context.Context, taskID int64) (fast bool, err error)
 		}
 	}
 
-	return o.Checks == ChecksPending || o.Checks == ChecksNone && s.Now.Before(pr.Since.Add(checksGrace)), nil
+	// Under a stop only a merge or a close counts, and a project without CI waits for no check.
+	due := o.Checks == ChecksPending || o.Checks == ChecksNone && !s.Watch.NoCI && s.Now.Before(pr.Since.Add(checksGrace))
+
+	return due && s.Facts.OpenStop == nil, nil
 }
 
 // ready marks the task's pull request ready for review. It runs with no run
