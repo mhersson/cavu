@@ -54,6 +54,9 @@ func rootFiles() map[string]string {
 	}
 }
 
+// phaseImport stands for the import container in the fake's records.
+const phaseImport sandbox.Phase = "import"
+
 type upCall struct {
 	phase sandbox.Phase
 	req   sidecar.ProxyRequest
@@ -77,7 +80,8 @@ type fakeSandbox struct {
 	runs     []runCall
 	reads    []string // the commit of each read
 	clones   []sidecar.CloneRequest
-	copied   map[string][]byte
+	copied   map[string][]byte // into a phase container
+	imported map[string][]byte // into the import container
 	lines    func(sidecar.Line)
 	phase    sandbox.Phase // of the last Up, "" after Down
 	files    map[string]string
@@ -90,11 +94,14 @@ type fakeSandbox struct {
 	onRun    func(name string) // runs as a command starts, before its answer
 	downErr  error
 	volErr   error
-	out      map[string][]byte // what CopyOut copies, by path
+	out      map[string][]byte // what CopyOut copies, by path, from any container
 }
 
 func newFake() *fakeSandbox {
-	return &fakeSandbox{files: rootFiles(), results: map[string]sandbox.Result{}, runErrs: map[string]error{}, copied: map[string][]byte{}}
+	return &fakeSandbox{
+		files: rootFiles(), results: map[string]sandbox.Result{}, runErrs: map[string]error{},
+		copied: map[string][]byte{}, imported: map[string][]byte{},
+	}
 }
 
 // runner returns a Runner whose every sandbox is f.
@@ -163,6 +170,16 @@ func (h *fakeHandle) Up(ctx context.Context, phase sandbox.Phase, p sidecar.Prox
 	}
 
 	return h.fakeSandbox.Up(ctx, phase, p, lines)
+}
+
+func (h *fakeHandle) Importer(ctx context.Context) (container, error) {
+	if !h.volumes {
+		h.record("importer")
+
+		return nil, errFakeNoVolumes
+	}
+
+	return h.fakeSandbox.Importer(ctx)
 }
 
 func (f *fakeSandbox) record(entry string) {
@@ -259,6 +276,18 @@ func (f *fakeSandbox) Up(_ context.Context, phase sandbox.Phase, p sidecar.Proxy
 	return fakeContainer{f: f, phase: phase}, nil
 }
 
+func (f *fakeSandbox) Importer(context.Context) (container, error) {
+	f.record("importer")
+
+	return fakeContainer{f: f, phase: phaseImport}, nil
+}
+
+func (f *fakeSandbox) RemoveImporter(context.Context) error {
+	f.record("importer removed")
+
+	return nil
+}
+
 func (f *fakeSandbox) Restart(context.Context) (container, error) {
 	f.record("restart")
 
@@ -320,6 +349,15 @@ type fakeContainer struct {
 	phase sandbox.Phase
 }
 
+// at names a record of what c did: the import container's are marked.
+func (c fakeContainer) at(entry string) string {
+	if c.phase == phaseImport {
+		return "import/" + entry
+	}
+
+	return entry
+}
+
 // stepName names a command by its argv: a wrapped command by what it wraps.
 func stepName(argv []string) string {
 	if len(argv) == 3 && argv[0] == "bash" {
@@ -351,7 +389,7 @@ func (c fakeContainer) Start(_ context.Context, cmd proc.Command) (proc.Process,
 
 func (c fakeContainer) Run(ctx context.Context, cmd proc.Command, timeout time.Duration) (sandbox.Result, error) {
 	name := stepName(cmd.Argv)
-	c.f.record("run/" + name)
+	c.f.record(c.at("run/" + name))
 
 	c.f.mu.Lock()
 	c.f.runs = append(c.f.runs, runCall{name: name, phase: c.phase, cmd: cmd, timeout: timeout})
@@ -381,18 +419,22 @@ func (c fakeContainer) Run(ctx context.Context, cmd proc.Command, timeout time.D
 }
 
 func (c fakeContainer) CopyIn(_ context.Context, files map[string][]byte) error {
-	c.f.record("copy")
+	c.f.record(c.at("copy"))
 
 	c.f.mu.Lock()
 	defer c.f.mu.Unlock()
 
-	maps.Copy(c.f.copied, files)
+	if c.phase == phaseImport {
+		maps.Copy(c.f.imported, files)
+	} else {
+		maps.Copy(c.f.copied, files)
+	}
 
 	return nil
 }
 
 func (c fakeContainer) CopyOut(_ context.Context, p string, w io.Writer) error {
-	c.f.record("copyout " + p)
+	c.f.record(c.at("copyout " + p))
 
 	c.f.mu.Lock()
 	data := c.f.out[p]

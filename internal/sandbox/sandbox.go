@@ -435,13 +435,44 @@ read:
 // command that needs the image and nothing else: network none, hardened, no
 // volume, and the tmpfs a command runs with. Down removes it.
 func (s *Sandbox) Scratch(ctx context.Context) (Container, error) {
+	return s.idle(ctx, "scratch", sidecarMemoryMB)
+}
+
+// Importer starts the import container beside the sandbox, for CAVU's own git
+// on a change: Scratch's container with the project's mirror at /mirror,
+// writable, and none of the run's volumes. RemoveImporter removes it, and so
+// does Down.
+func (s *Sandbox) Importer(ctx context.Context) (Container, error) {
+	if !s.volumes {
+		return Container{}, errNoVolumes
+	}
+
+	// The clone's limit: the import's fetch indexes the bundle's pack as the clone's indexes the forge's.
+	return s.idle(ctx, "import", cloneMemoryMB, s.mount("mirror", "/mirror", false))
+}
+
+// RemoveImporter removes the import container, on a cancelled ctx too.
+func (s *Sandbox) RemoveImporter(ctx context.Context) error {
+	cleanup, cancel := cleanupContext(ctx)
+	defer cancel()
+
+	if err := s.o.Runtime.Remove(cleanup, s.name("import")); err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+
+	return nil
+}
+
+// idle starts a container named for kind that runs nothing of its own, with
+// mounts, network none, hardened, and the tmpfs a command runs with.
+func (s *Sandbox) idle(ctx context.Context, kind string, memoryMB int, mounts ...Mount) (Container, error) {
 	if err := s.readMemory(ctx); err != nil {
 		return Container{}, err
 	}
 
 	spec := ContainerSpec{
-		Name: s.name("scratch"), Image: s.o.Image, Argv: []string{"sleep", "infinity"}, Labels: s.labels("scratch"),
-		Tmpfs: []string{pidDir}, Network: "none", Hardened: true, MemoryMB: min(sidecarMemoryMB, s.totalMB),
+		Name: s.name(kind), Image: s.o.Image, Argv: []string{"sleep", "infinity"}, Labels: s.labels(kind), Mounts: mounts,
+		Tmpfs: []string{pidDir}, Network: "none", Hardened: true, MemoryMB: min(memoryMB, s.totalMB),
 	}
 
 	if err := s.o.Runtime.Remove(ctx, spec.Name); err != nil {
@@ -531,9 +562,9 @@ func (s *Sandbox) restart(ctx context.Context, phase Phase) (Container, error) {
 	return s.check(ctx)
 }
 
-// Down removes the containers, the scratch one too, and keeps the volumes. It
-// does so on a cancelled ctx too, so a cancelled run leaves no container
-// running.
+// Down removes the containers, the scratch and import ones too, and keeps the
+// volumes. It does so on a cancelled ctx too, so a cancelled run leaves no
+// container running.
 func (s *Sandbox) Down(ctx context.Context) error {
 	s.stopSidecar()
 	s.phase = ""
@@ -541,7 +572,7 @@ func (s *Sandbox) Down(ctx context.Context) error {
 	cleanup, cancel := cleanupContext(ctx)
 	defer cancel()
 
-	if err := s.o.Runtime.Remove(cleanup, append(s.phaseNames(), s.name("sidecar"), s.name("clone"), s.name("push"), s.name("scratch"))...); err != nil {
+	if err := s.o.Runtime.Remove(cleanup, append(s.phaseNames(), s.name("sidecar"), s.name("clone"), s.name("push"), s.name("scratch"), s.name("import"))...); err != nil {
 		return fmt.Errorf("sandbox: %w", err)
 	}
 

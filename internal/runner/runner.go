@@ -87,6 +87,8 @@ type sandboxer interface {
 	EnsureVolumes(ctx context.Context) error
 	Clone(ctx context.Context, r sidecar.CloneRequest) (string, error)
 	Push(ctx context.Context, r sidecar.PushRequest) (branch, rejected string, err error)
+	Importer(ctx context.Context) (container, error)
+	RemoveImporter(ctx context.Context) error
 	Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error)
 	Restart(ctx context.Context) (container, error)
 	Down(ctx context.Context) error
@@ -101,8 +103,17 @@ type container interface {
 	CopyOut(ctx context.Context, p string, w io.Writer) error
 }
 
-// realSandbox returns Up's and Restart's container as a container.
+// realSandbox returns Up's, Restart's and Importer's container as a container.
 type realSandbox struct{ *sandbox.Sandbox }
+
+func (s realSandbox) Importer(ctx context.Context) (container, error) {
+	c, err := s.Sandbox.Importer(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
+}
 
 func (s realSandbox) Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error) {
 	c, err := s.Sandbox.Up(ctx, phase, p, lines)
