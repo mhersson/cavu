@@ -459,6 +459,7 @@ func TestPushOpWritesRejectedLine(t *testing.T) {
 	lines := out.lines()
 	require.Len(t, lines, 1)
 	assert.Equal(t, "rejected", lines[0].Type)
+	assert.Equal(t, "cavu/x", lines[0].Branch)
 	assert.NotEmpty(t, lines[0].Error)
 	assert.NotContains(t, lines[0].Error, pushToken)
 	assert.NotContains(t, lines[0].Error, "://")

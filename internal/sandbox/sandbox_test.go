@@ -641,7 +641,7 @@ func TestMirrorOnlyInCloneAndPushContainers(t *testing.T) {
 	for _, c := range calls {
 		if c.argv[0] == "run" {
 			holds := slices.Contains(c.argv, "--name="+s.name("clone")) || slices.Contains(c.argv, "--name="+s.name("push"))
-			assert.Equal(t, holds, slices.Contains(c.argv, mirror), strings.Join(c.argv, " "))
+			assert.Equal(t, holds, slices.ContainsFunc(c.argv, func(a string) bool { return strings.HasPrefix(a, mirror) }), strings.Join(c.argv, " "))
 		}
 	}
 
@@ -681,11 +681,11 @@ func TestMirrorOnlyInCloneAndPushContainers(t *testing.T) {
 
 func TestPushResults(t *testing.T) {
 	s, f := ensured(t)
-	f.set(t, "out.sidecar", []byte(`{"Type":"rejected","Error":"[rejected] (fetch first)"}`+"\n"))
+	f.set(t, "out.sidecar", []byte(`{"Type":"rejected","Branch":"cavu/x-2","Error":"[rejected] (fetch first)"}`+"\n"))
 
 	branch, rejected, err := s.Push(t.Context(), sidecar.PushRequest{URL: "https://git.example/repo.git", Branch: "cavu/x"})
 	require.NoError(t, err)
-	assert.Equal(t, "cavu/x", branch)
+	assert.Equal(t, "cavu/x-2", branch)
 	assert.Equal(t, "[rejected] (fetch first)", rejected)
 
 	calls := f.calls(t)

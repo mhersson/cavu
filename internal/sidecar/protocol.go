@@ -38,6 +38,6 @@ type Line struct {
 	Host   string       `json:",omitempty"`
 	Usage  *proxy.Usage `json:",omitempty"`
 	Commit string       `json:",omitempty"` // cloned: the base commit
-	Branch string       `json:",omitempty"` // pushed: the branch the commit is on
+	Branch string       `json:",omitempty"` // pushed, rejected: the branch the push was for
 	Error  string       `json:",omitempty"` // budget: why the spend cannot be counted, "" when the cap is spent; rejected: why the forge refused
 }

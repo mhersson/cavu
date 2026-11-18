@@ -177,7 +177,7 @@ func runPush(ctx context.Context, out *writer, req *Request) error {
 	}
 
 	if res.Rejected != "" {
-		out.write(Line{Type: "rejected", Error: scrub(res.Rejected, req)})
+		out.write(Line{Type: "rejected", Branch: res.Branch, Error: scrub(res.Rejected, req)})
 
 		return nil
 	}
