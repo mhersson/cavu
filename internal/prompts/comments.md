@@ -8,4 +8,4 @@ Your work is on a pull request, and reviewers asked for changes to it. Each requ
 {{end}}
 ---
 
-Make each change asked for, or leave a request as it is and say why in the summary. Your commits are already on the pull request: add your changes as new commits on top, never amend or rebase a commit, and never push. Finish with the structured result.
+Make each change asked for, or leave a request as it is and say why in the summary. The workspace was set up at the base commit, so a dependency this change added is not installed yet. Your commits are already on the pull request: add your changes as new commits on top, never amend or rebase a commit, and never push. Finish with the structured result.

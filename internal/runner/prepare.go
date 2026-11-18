@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -40,8 +39,8 @@ const (
 var reshimScript = proc.SandboxOnly("exec mise reshim")
 
 // Prepare starts the run from empty volumes and leaves the agent phase up. A
-// run with a head starts at that commit of the task branch instead, and keeps
-// the task's home, where its session is.
+// run with a head keeps the task's home, where its session is; it is set up at
+// the base commit as any run is, then its task branch moves to the head.
 func (r *Runner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
 	res, _, err := r.prepare(ctx, c, false)
 
@@ -111,7 +110,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return engine.PrepareResult{}, err
 	}
 
-	start, err := p.clone(ctx)
+	base, err := p.clone(ctx)
 	if err != nil {
 		if sandboxFault(ctx, err) {
 			return engine.PrepareResult{}, err
@@ -120,15 +119,11 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return failure(engine.PrepareResult{}, &stepFailure{stepClone, err.Error()}), nil
 	}
 
+	res := engine.PrepareResult{BaseCommit: base}
 	// A first prepare's config has no base commit yet: the clone's is the run's.
-	// A run at a head keeps the base its config names.
-	if c.Repo.Head == "" {
-		p.c.Repo.BaseCommit = start
-	}
+	p.c.Repo.BaseCommit = base
 
-	res := engine.PrepareResult{BaseCommit: p.c.Repo.BaseCommit}
-
-	det, failed, err := p.detect(ctx, start)
+	det, failed, err := p.detect(ctx, base)
 	if err != nil || failed != nil {
 		return failure(res, failed), err
 	}
@@ -156,7 +151,15 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		}
 	}
 
-	return p.baseline(ctx, res)
+	// The head is the agent's code: the workspace takes it only once the setup,
+	// the one step with the project's secrets, is over.
+	if c.Repo.Head != "" {
+		if failed, err := p.checkout(ctx); err != nil || failed != nil {
+			return failure(res, failed), err
+		}
+	}
+
+	return p.baseline(ctx, res, base)
 }
 
 func (p *preparation) clone(ctx context.Context) (string, error) {
@@ -168,7 +171,7 @@ func (p *preparation) clone(ctx context.Context) (string, error) {
 	}
 
 	return p.st.sb.Clone(ctx, sidecar.CloneRequest{
-		URL: c.Repo.URL, Token: p.token, BaseBranch: c.Repo.BaseBranch, Commit: cmp.Or(c.Repo.Head, c.Repo.BaseCommit), Branch: c.Repo.Branch,
+		URL: c.Repo.URL, Token: p.token, BaseBranch: c.Repo.BaseBranch, Commit: c.Repo.BaseCommit, Branch: c.Repo.Branch,
 		Name: c.Identity.Name, Email: c.Identity.Email,
 	})
 }
@@ -189,16 +192,16 @@ func CloneToken(ctx context.Context, f *forge.Client, repoURL string, a engine.F
 	return f.Token(ctx, repo, forge.Access(a), false)
 }
 
-// detect reads the root files at commit under an empty allowlist, the one
-// command that runs under it, and detects the tools. Root files that detection
-// cannot parse, or that are too large to read, fail the toolchain step.
-func (p *preparation) detect(ctx context.Context, commit string) (env.Detection, *stepFailure, error) {
+// detect reads the root files under an empty allowlist, the one command that
+// runs under it, and detects the tools. Root files that detection cannot
+// parse, or that are too large to read, fail the toolchain step.
+func (p *preparation) detect(ctx context.Context, base string) (env.Detection, *stepFailure, error) {
 	sc, err := p.st.up(ctx, sandbox.PhaseSetup, sidecar.ProxyRequest{})
 	if err != nil {
 		return env.Detection{}, nil, err
 	}
 
-	p.files, err = readFiles(ctx, sc, commit)
+	p.files, err = readFiles(ctx, sc, base)
 
 	switch {
 	case errors.Is(err, errFilesTooLarge):
@@ -281,7 +284,7 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 // baseline verifies the base commit unless the run starts at a head, the
 // project waives it, or a prepare that is not a check finds it passed on this
 // commit before.
-func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult) (engine.PrepareResult, error) {
+func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult, base string) (engine.PrepareResult, error) {
 	v := p.c.Verify
 
 	switch {
@@ -293,7 +296,7 @@ func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult) (e
 		res.Baseline = engine.ResultWaived
 
 		return res, nil
-	case !p.check && v.BaselinePassed && v.BaselineCommit == res.BaseCommit:
+	case !p.check && v.BaselinePassed && v.BaselineCommit == base:
 		res.Baseline = baselineReused
 
 		return res, nil
@@ -351,6 +354,21 @@ func (p *preparation) cleanTree(ctx context.Context, step string) (*stepFailure,
 		"or use a command that leaves tracked files alone: the baseline runs on the base commit and the exported diff holds only what the agent did.\n"}, nil
 }
 
+// headScript points the task branch $1 at the commit $2 and checks it out,
+// replacing the workspace's tracked files.
+var headScript = proc.SandboxOnly(gitFunc + `g checkout -B "$1" "$2"`)
+
+// checkout moves the workspace to the run's head. Its failure is the clone
+// step's: both get the commit the run starts at into the workspace.
+func (p *preparation) checkout(ctx context.Context) (*stepFailure, error) {
+	cmd := proc.Command{
+		Argv: scriptArgv(headScript, p.c.Repo.Branch, p.c.Repo.Head),
+		Env:  agentEnv(p.st.ecosystems, p.c.Repo.BaseCommit), Dir: workspace,
+	}
+
+	return runStep(ctx, p.st, p.st.agent, stepClone, cmd, gitTimeout)
+}
+
 // runVerify runs the verify command in the agent phase, under the same
 // network rule as the agent. A blank command is a fault, never a pass: an
 // empty shell command exits 0.
@@ -380,8 +398,8 @@ func runVerify(ctx context.Context, st *run, c engine.RunConfig) (engine.VerifyR
 	return vr, nil
 }
 
-// runStep runs a setup-phase command as step. A command that cannot start is
-// an error; one that exits non-zero or times out is the step's failure.
+// runStep runs a prepare's command in c as step. A command that cannot start
+// is an error; one that exits non-zero or times out is the step's failure.
 func runStep(ctx context.Context, st *run, c container, step string, cmd proc.Command, timeout time.Duration) (*stepFailure, error) {
 	st.resetDenied()
 

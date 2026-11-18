@@ -41,7 +41,14 @@ func bash(command string) mockapi.Step {
 func agentRun(t *testing.T, steps ...mockapi.Step) (*Runner, engine.RunConfig, *mockapi.Server) {
 	t.Helper()
 
-	r, c, _ := fixtureRun(t, map[string]string{"notes.txt": "first line\n"})
+	return agentRunOn(t, map[string]string{"notes.txt": "first line\n"}, steps...)
+}
+
+// agentRunOn is agentRun on a repository holding files, notes.txt among them.
+func agentRunOn(t *testing.T, files map[string]string, steps ...mockapi.Step) (*Runner, engine.RunConfig, *mockapi.Server) {
+	t.Helper()
+
+	r, c, _ := fixtureRun(t, files)
 	mock := mockapi.Start(t, steps)
 
 	c.Endpoint.Mode, c.Endpoint.URL, c.Endpoint.AuthHeader = "key", mock.HostURL(), "bearer"
@@ -348,21 +355,26 @@ func carries(r mockapi.Request, marker string) bool {
 }
 
 // A fix run starts at the pull request's head with the task's session: the
-// first run's session leaves a marker in the home and a commit the export takes
-// into the mirror, the run ends with the home kept, and a new run's prepare at
-// that head has the workspace there, the marker in place, and runs no verify.
-// Its fix of the head's failed checks resumes the first session with what the
-// forge's job log holds.
+// first run's session leaves a marker in the home and a commit, adding a file
+// the base lacks, that the export takes into the mirror, and the run ends with
+// the home kept. A new run's prepare at that head runs the setup on the base's
+// files, then has the workspace at the head with the marker in place, and runs
+// no verify. Its fix of the head's failed checks resumes the first session
+// with what the forge's job log holds.
 func TestFixRunStartsAtTheHeadWithItsSession(t *testing.T) {
 	const (
 		marker      = "CAVU-HOME-MARKER-3f9a"
 		verified    = "CAVU-VERIFIED-7c21"
 		firstPrompt = "CAVU-FIRST-PROMPT-1a6e"
 		logged      = "CAVU-JOB-LOG-6d0b"
+		sawBase     = "CAVU-SETUP-SAW-BASE-52e8"
+		headOnly    = "head-only.txt"
+		saw         = "setup-saw.txt" // the setup's output, which the base ignores
 	)
 
-	r, c, mock := agentRun(t,
-		bash(`echo `+marker+` > "$HOME/marker" && echo CAVU-FIRST-RUN >> notes.txt && git commit -qam 'docs(notes): add a line'`), done, done)
+	r, c, mock := agentRunOn(t, map[string]string{"notes.txt": "first line\n", ".gitignore": saw + "\n"},
+		bash(`echo `+marker+` > "$HOME/marker" && echo CAVU-FIRST-RUN >> notes.txt && echo x > `+headOnly+
+			` && git add -A && git commit -qm 'docs(notes): add a line'`), done, done)
 	c.Task.Title = firstPrompt
 	// Each verify leaves a line in the home: a count that grows is a verify that ran.
 	c.Verify.Command = "echo " + verified + " >> " + home + "/verified"
@@ -387,6 +399,7 @@ func TestFixRunStartsAtTheHeadWithItsSession(t *testing.T) {
 	fix := c
 	fix.RunID, fix.Repo.Head, fix.Ecosystems = randomID(t), res.HeadCommit, nil
 	fix.Repo.Access.Token = "forge-token-" + randomInstance(t)
+	fix.Setup.Command = "if [ -e " + headOnly + " ]; then echo CAVU-SETUP-SAW-HEAD; else echo " + sawBase + "; fi > " + saw
 
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -402,8 +415,10 @@ func TestFixRunStartsAtTheHeadWithItsSession(t *testing.T) {
 	assert.Equal(t, baselineSkipped, prep.Baseline)
 
 	fix.Ecosystems = prep.Ecosystems
+	assert.Contains(t, runIn(t, r.state(fix.RunID), "cat", saw).Output, sawBase, "the setup ran on other files than the base's")
 	assert.Equal(t, res.HeadCommit, git(t, r, fix, "rev-parse", "HEAD"))
 	assert.Equal(t, "refs/heads/"+fix.Repo.Branch, git(t, r, fix, "symbolic-ref", "HEAD"))
+	assert.Empty(t, git(t, r, fix, "status", "--porcelain"), "the working tree is not the head's")
 	assert.Contains(t, runIn(t, r.state(fix.RunID), "cat", home+"/marker").Output, marker, "the first session's home is gone")
 	assert.Equal(t, 1, verifies(fix.RunID), "only the first run's verify ran")
 
