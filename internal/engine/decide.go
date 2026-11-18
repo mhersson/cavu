@@ -433,7 +433,8 @@ func watch(s Snapshot, pr *PRFact) Action {
 
 	if seen.Conflict {
 		return halt(StopConflict, ClearRetry, "The pull request conflicts with its base branch.",
-			line(fmt.Sprintf("Pull request %s conflicts with its base branch.", pr.URL)))
+			line(fmt.Sprintf("Pull request %s conflicts with its base branch. CAVU resolves no conflict: "+
+				"resolve it on the pull request's branch, and a retry goes on from your commit.", pr.URL)))
 	}
 
 	// Every check has finished when they read failed, so one fix run sees every failure.

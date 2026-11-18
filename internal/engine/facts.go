@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -136,9 +137,11 @@ func (f *Facts) apply(e store.Event) {
 		f.humanAction(e)
 		f.Answers = append(f.Answers, text)
 	case HumanRetried:
-		// A retry of a takeover gives the branch back to CAVU at the head seen.
-		if f.stoppedFor(StopTakenOver) && f.PR != nil && f.PR.Seen != nil {
-			f.PR.Head, f.PR.Heads = f.PR.Seen.Head, append(f.PR.Heads, f.PR.Seen.Head)
+		// A retry of a takeover gives the branch back to CAVU at the head seen, and
+		// so does one of a conflict at a person's head: resolving a conflict is a commit.
+		if pr := f.PR; pr != nil && pr.Seen != nil &&
+			(f.stoppedFor(StopTakenOver) || f.stoppedFor(StopConflict) && !slices.Contains(pr.Heads, pr.Seen.Head)) {
+			pr.Head, pr.Heads = pr.Seen.Head, append(pr.Heads, pr.Seen.Head)
 		}
 
 		// A sandbox stop is a fault that cut an action short, a review's halt cut

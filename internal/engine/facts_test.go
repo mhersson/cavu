@@ -794,4 +794,48 @@ func TestARetryDecidesFromWhatWasSeen(t *testing.T) {
 		got.Why = ""
 		assert.Equal(t, engine.Action{Kind: engine.KindPrepare, NewRun: true, Reason: engine.ReasonCIFix}, got)
 	})
+
+	// stopped is the published task stopped as reason on what o showed.
+	stopped := func(o engine.Observation, reason string) []store.Event {
+		return append(publishedTask(), observed(o), ev(engine.Stopped, `{"reason":"`+reason+`","explanation":"Stopped.","action":"retry"}`))
+	}
+	conflict := engine.Observation{State: engine.PROpen, Head: "def456", Conflict: true, Checks: engine.ChecksPassed}
+	resolved := observed(engine.Observation{State: engine.PROpen, Head: "merge789", Checks: engine.ChecksPending})
+
+	t.Run("one retry after a conflict goes on from the person's resolution", func(t *testing.T) {
+		events := stopped(conflict, engine.StopConflict)
+		require.Equal(t, engine.StopConflict, decide(events[:len(events)-1]).Stop)
+
+		events = append(events, resolved, at(retried, now))
+
+		f := engine.Reduce(events)
+		require.NotNil(t, f.PR)
+		assert.Nil(t, f.OpenStop)
+		assert.Equal(t, "merge789", f.PR.Head)
+		assert.Equal(t, []string{"def456", "merge789"}, f.PR.Heads)
+
+		got := decide(events)
+		assert.Equal(t, engine.KindWatch, got.Kind)
+		assert.Equal(t, now.Add(2*time.Hour), got.Until, "the checks on the person's commit get their time from the retry")
+	})
+
+	t.Run("a retry after a conflict on CAVU's own head takes nothing back", func(t *testing.T) {
+		events := append(stopped(conflict, engine.StopConflict), retried)
+
+		f := engine.Reduce(events)
+		require.NotNil(t, f.PR)
+		assert.Equal(t, "def456", f.PR.Head)
+		assert.Equal(t, []string{"def456"}, f.PR.Heads)
+		assert.Equal(t, engine.StopConflict, decide(events).Stop, "it still conflicts")
+	})
+
+	t.Run("a retry of another stop takes nothing back", func(t *testing.T) {
+		failing := engine.Observation{State: engine.PROpen, Head: "def456", Checks: engine.ChecksFailed, Failed: []string{"lint"}}
+		events := append(stopped(failing, engine.StopCIFailed), resolved, retried)
+
+		f := engine.Reduce(events)
+		require.NotNil(t, f.PR)
+		assert.Equal(t, "def456", f.PR.Head)
+		assert.Equal(t, engine.StopTakenOver, decide(events).Stop)
+	})
 }
