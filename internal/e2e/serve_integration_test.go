@@ -281,15 +281,16 @@ func (s *server) tool(name string, args, out any) {
 }
 
 // project adds a project on the fixture repository over REST with env and the
-// switches at their defaults, asks for its check, waits for the check to end
-// and requires its baseline passed. It returns the project's id.
+// switches at their defaults but publish, which is off since no forge is
+// behind the fixture repository, asks for its check, waits for the check to
+// end and requires its baseline passed. It returns the project's id.
 func (s *server) project(name string, env map[string]string) int64 {
 	s.in.t.Helper()
 
 	var p struct{ ID int64 }
 
 	s.call(http.MethodPost, "/api/projects", map[string]any{
-		"name": name, "repo_url": s.in.repo, "verify_command": verify, "env": env,
+		"name": name, "repo_url": s.in.repo, "verify_command": verify, "env": env, "switches": map[string]bool{"publish": false},
 	}, http.StatusCreated, &p)
 	s.call(http.MethodPost, fmt.Sprintf("/api/projects/%d/check", p.ID), nil, http.StatusAccepted, nil)
 
