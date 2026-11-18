@@ -241,8 +241,8 @@ type (
 		Explanation string    `json:"explanation"`
 		Action      string    `json:"action"` // the one action that clears the stop
 		ResetsAt    time.Time `json:"resets_at,omitzero"`
-		Why         string    `json:"why,omitempty"`    // empty for a runner fault, a run config that cannot be built or an export problem
-		Detail      string    `json:"detail,omitempty"` // the whole text of a runner fault, a run config that cannot be built or an export problem
+		Why         string    `json:"why,omitempty"`    // empty for a runner fault, a run config that cannot be built, an export problem or a rejected push
+		Detail      string    `json:"detail,omitempty"` // the whole text of a runner fault, a run config that cannot be built, an export problem or a rejected push
 	}
 
 	RunEndedPayload struct {
