@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"time"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -87,6 +89,83 @@ func (p *pass) publish(ctx context.Context, v view, a Action, o openRun) error {
 	}
 
 	return p.result(ctx, o, nil, draft{Published, actorRunner, pub})
+}
+
+// Observe reads the task's pull request when Decide says watch, and records
+// what it saw when that differs from the last record. fast reports that the
+// next look should come soon: the checks run, or none has started and the
+// grace has not passed. A runner error, a rate limit among them, is returned
+// as it is and records nothing.
+func (l *Loop) Observe(ctx context.Context, taskID int64) (fast bool, err error) {
+	s, _, err := l.snapshot(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+
+	if Decide(s).Kind != KindWatch {
+		return false, nil
+	}
+
+	// A stop in a fix run keeps the run open, and its pull request is watched.
+	pr, runID := s.Facts.PR, int64(0)
+	if s.Facts.RunOpen {
+		runID = s.Facts.LastRun
+	}
+
+	c, err := l.forgeConfig(ctx, s.Task, runID, pr)
+	if err != nil {
+		return false, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	o, err := l.Runner.Observe(ctx, c, pr.Number)
+	if err != nil {
+		return false, err
+	}
+
+	p, err := l.newPass(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+
+	// Compared as the record holds it: masked, a secret in a comment would differ at every look.
+	raw, err := p.encode(o)
+	if err != nil {
+		return false, fmt.Errorf("task %d: encode %s: %w", taskID, PRObserved, err)
+	}
+
+	seen := decode[Observation](raw)
+	if pr.Seen == nil || !reflect.DeepEqual(seen, *pr.Seen) {
+		// A person's action recorded since the snapshot wins, and the next look sees the pull request again.
+		err := p.write(ctx, s.LastEventID, runID, nil, draft{PRObserved, actorRunner, seen})
+		if err != nil && !errors.Is(err, store.ErrConflict) {
+			return false, err
+		}
+	}
+
+	return o.Checks == ChecksPending || o.Checks == ChecksNone && s.Now.Before(pr.Since.Add(checksGrace)), nil
+}
+
+// ready marks the task's pull request ready for review. It runs with no run
+// open, so its events carry none and a fault of it stops the task with no run.
+func (p *pass) ready(ctx context.Context, v view, a Action) error {
+	pr := v.Facts.PR
+
+	cfg, err := p.forgeConfig(ctx, v.Task, 0, pr)
+	if err != nil {
+		return p.unconfigured(ctx, v, a, nil, err)
+	}
+
+	o := openRun{task: v.Task, cfg: cfg}
+
+	if err := p.claim(ctx, v, o, draft{ReadyStarted, actorEngine, ReadyStartedPayload{Why: a.Why}}); err != nil {
+		return err
+	}
+
+	if err := p.Runner.Ready(ctx, o.cfg, pr.NodeID); err != nil {
+		return p.fault(ctx, o, 0, nil, err)
+	}
+
+	return p.result(ctx, o, nil, draft{PRReady, actorRunner, struct{}{}})
 }
 
 // pullRequestText writes the title and the text of the task's pull request

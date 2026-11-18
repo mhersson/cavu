@@ -375,7 +375,8 @@ func (p *pass) repair(ctx context.Context) error {
 
 func (p *pass) act(ctx context.Context, v view, a Action) error {
 	// A stop, a finish and a clean build no run config, so a broken setting
-	// cannot keep a person's cancel, or the ends that follow it, out of the record.
+	// cannot keep a person's cancel, or the ends that follow it, out of the
+	// record. A ready-marking runs with no run open, on a forge call's config.
 	switch a.Kind {
 	case KindStop:
 		var run *store.Run
@@ -409,6 +410,8 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		}
 
 		return p.write(ctx, v.LastEventID, ref.RunID, nil, draft{HomeRemoved, actorEngine, HomeRemovedPayload{Why: a.Why}})
+	case KindReady:
+		return p.ready(ctx, v, a)
 	}
 
 	row := v.run
@@ -427,7 +430,7 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 
 	o, err := p.open(ctx, v.Task, row)
 	if err != nil {
-		return p.unconfigured(ctx, v, a, row, err)
+		return p.unconfigured(ctx, v, a, &row, err)
 	}
 
 	if v.Limits.capped() {
@@ -467,13 +470,12 @@ func (p *pass) open(ctx context.Context, t store.Task, row store.Run) (openRun, 
 
 // unconfigured stops a task whose run config cannot be built, as a runner
 // fault does, so a person fixes the cause and retries. The stop is claimed
-// like an action. An open run keeps its volumes; a new run's row is abandoned
-// and the stop carries no run.
-func (p *pass) unconfigured(ctx context.Context, v view, a Action, row store.Run, cause error) error {
-	run := &row
-
+// like an action. An open run keeps its volumes. A new run's row is abandoned
+// and the stop carries no run, as does the stop of an action that runs with no
+// run open, whose run is nil.
+func (p *pass) unconfigured(ctx context.Context, v view, a Action, run *store.Run, cause error) error {
 	if a.NewRun {
-		if err := p.endRun(ctx, row, RunAbandoned); err != nil {
+		if err := p.endRun(ctx, *run, RunAbandoned); err != nil {
 			return fmt.Errorf("%w (abandoning after: %v)", err, cause)
 		}
 
@@ -838,7 +840,13 @@ func (p *pass) fault(ctx context.Context, o openRun, turns int, usage []store.Us
 		return err
 	}
 
-	return p.halt(ctx, -1, o.task, &o.row, StoppedPayload{
+	// An action that runs with no run open stops with no run to release.
+	var run *store.Run
+	if o.row.ID != 0 {
+		run = &o.row
+	}
+
+	return p.halt(ctx, -1, o.task, run, StoppedPayload{
 		Reason: StopSandbox, Explanation: line(p.mask("The runner failed: " + cause.Error())), Action: ClearRetry,
 		Detail: cause.Error(),
 	}, usage)

@@ -2300,41 +2300,56 @@ func TestLoopStopsOnABrokenRunConfig(t *testing.T) {
 // resumes the session; once the task can run no more, the release of its
 // newest run removes the home, once, and the task rests.
 func TestHomeIsRemovedWhenTheTaskIsOver(t *testing.T) {
+	cancel := func(h *harness) { require.NoError(h.t, h.loop.Cancel(h.t.Context(), h.task.ID)) }
+	merge := func(h *harness) {
+		h.observe(engine.Observation{State: engine.PRMerged, Head: "head456", Checks: engine.ChecksPassed})
+	}
+
 	tests := []struct {
-		name   string
-		script func(r *fakeRunner)
-		cancel bool // a person cancels the task once it rests
-		trace  []string
-		status engine.Status
+		name    string
+		publish bool
+		script  func(r *fakeRunner)
+		end     func(h *harness) // what ends the task once it rests, nil when it is over then
+		trace   []string
+		status  engine.Status
 	}{
 		{
 			name: "cancelled after a stop ended its run",
 			script: func(r *fakeRunner) {
 				r.prepares = []step[engine.PrepareResult]{{res: engine.PrepareResult{FailedStep: "setup", Output: "exit 1"}}}
 			},
-			cancel: true, trace: []string{"prepare", "release/run", "release/remove"}, status: engine.StatusCancelled,
+			end: cancel, trace: []string{"prepare", "release/run", "release/remove"}, status: engine.StatusCancelled,
 		},
 		{
 			name: "cancelled with its run open",
 			script: func(r *fakeRunner) {
 				r.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeBlocked, Questions: []string{"Which port?"}}}}
 			},
-			cancel: true, trace: []string{"prepare", "work/start", "release/keep", "release/run", "release/remove"}, status: engine.StatusCancelled,
+			end: cancel, trace: []string{"prepare", "work/start", "release/keep", "release/run", "release/remove"}, status: engine.StatusCancelled,
 		},
 		{name: "exported with publish off", script: func(*fakeRunner) {}, trace: happyTrace, status: engine.StatusInReview},
+		{
+			name: "merged", publish: true, script: func(*fakeRunner) {}, end: merge,
+			trace:  []string{"prepare", "work/start", "verify", "export", "publish", "release/run", "observe", "release/remove"},
+			status: engine.StatusDone,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
+			if tt.publish {
+				h.withPublish()
+			}
+
 			tt.script(h.runner)
 
 			_, err := h.run(t.Context())
 			require.NoError(t, err)
 
-			if tt.cancel {
-				assert.NotContains(t, h.runner.trace(), "release/remove", "the home stays while a person can still act")
-				require.NoError(t, h.loop.Cancel(t.Context(), h.task.ID))
+			if tt.end != nil {
+				assert.NotContains(t, h.runner.trace(), "release/remove", "the home stays while the task can run again")
+				tt.end(h)
 
 				_, err = h.run(t.Context())
 				require.NoError(t, err)
@@ -2360,7 +2375,7 @@ func TestHomeIsRemovedWhenTheTaskIsOver(t *testing.T) {
 			assert.Equal(t, engine.RemoveAll, releases[len(releases)-1].remove)
 			assert.Equal(t, runs[0].RunID, releases[len(releases)-1].runID, "the newest run's release removes the home")
 
-			if tt.cancel {
+			if tt.status == engine.StatusCancelled {
 				var cancels int
 
 				for _, e := range h.eventsOf(engine.Stopped) {
