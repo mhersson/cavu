@@ -21,6 +21,8 @@ func TestEveryPromptRenders(t *testing.T) {
 		Title, Body, DiffFile, FixDiffFile string
 		Findings                           []struct{ Number int }
 	}{Findings: []struct{ Number int }{{Number: 1}}}
+	// A comment with its body alone.
+	bodyOnly := struct{ Comments []struct{ Body string } }{Comments: []struct{ Body string }{{Body: "body"}}}
 
 	tests := []struct {
 		name   string
@@ -57,6 +59,17 @@ func TestEveryPromptRenders(t *testing.T) {
 			name:   prompts.FixReviewFresh,
 			data:   prompts.FixReviewFreshData{Title: "title-18", Body: "body-19", Findings: findings, DiffFile: "/diff-20"},
 			values: append([]string{"title-18", "body-19", "/diff-20"}, found...), wrong: []any{partial},
+		},
+		{name: prompts.FixCI, data: prompts.FixCIData{Logs: "logs-23"}, values: []string{"logs-23"}},
+		{
+			name: prompts.Comments,
+			data: prompts.CommentsData{Comments: []prompts.ReviewComment{
+				{Author: "author-24", Path: "path-25", Line: 26, Body: "body-27"},
+				{Author: "author-28", Path: "path-29", Body: "body-30"},
+				{Author: "author-31", Body: "body-32"},
+			}},
+			values: []string{"author-24", "path-25", "26", "body-27", "author-28", "path-29", "body-30", "author-31", "body-32"},
+			wrong:  []any{bodyOnly},
 		},
 	}
 

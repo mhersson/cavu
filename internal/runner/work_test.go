@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,17 +14,20 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
 	"github.com/mhersson/cavu/internal/store"
+	"github.com/mhersson/cavu/internal/testkit/forgefake"
 )
 
 const (
 	sessionUUID = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 	headCommit  = "89abcdef0123456789abcdef0123456789abcdef"
+	fixHead     = "fedcba9876543210fedcba9876543210fedcba98" // the pull request's head a fix run starts at
 )
 
 func workConfig() engine.RunConfig {
@@ -48,7 +52,18 @@ func structured(v map[string]any) json.RawMessage {
 
 // freezeName is how the fake names the freeze of c's work under message.
 func freezeName(c engine.RunConfig, message string) string {
-	return stepName(scriptArgv(freezeScript, c.Repo.BaseCommit, c.Repo.Branch, message))
+	return stepName(scriptArgv(freezeScript, cmp.Or(c.Repo.Head, c.Repo.BaseCommit), c.Repo.Branch, message))
+}
+
+// failChecks makes fake's test and lint jobs fail on fixHead, the test job's
+// log holding a planted secret.
+func failChecks(fake *forgefake.Fake) {
+	fake.SetChecks(fixHead,
+		forgefake.CheckRun{ID: 1, App: "github-actions", Name: "test", Status: "completed", Conclusion: "failure"},
+		forgefake.CheckRun{ID: 2, App: "github-actions", Name: "lint", Status: "completed", Conclusion: "failure"},
+	)
+	fake.SetJobLog(1, "--- FAIL: TestLogin with "+plantedSetup+"\n")
+	fake.SetJobLog(2, "login.go:3: unused variable\n")
 }
 
 func render(t *testing.T, name string, data any) string {
@@ -163,15 +178,18 @@ func ran(f *fakeSandbox, name string) bool {
 }
 
 // The freeze runs as one script in the agent container, wrapped so it runs
-// only in a sandbox, with the base, the branch and the message as arguments.
+// only in a sandbox, with the commit the run started at, the branch and the
+// message as arguments; its environment still names the base commit.
 func TestWorkFreezeScript(t *testing.T) {
-	for _, tt := range []struct{ name, title, message string }{
-		{name: "the result's title", title: "Fix the login form", message: "Fix the login form"},
-		{name: "the task's title", message: "Fix login"},
+	for _, tt := range []struct{ name, title, message, head, start string }{
+		{name: "the result's title", title: "Fix the login form", message: "Fix the login form", start: baseCommit},
+		{name: "the task's title", message: "Fix login", start: baseCommit},
+		{name: "a fix run", message: "Fix login", head: fixHead, start: fixHead},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFake()
 			c := workConfig()
+			c.Repo.Head = tt.head
 			f.results[freezeName(c, tt.message)] = sandbox.Result{Output: headCommit + "\n"}
 			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "done", "title": tt.title})}}}
 
@@ -183,12 +201,57 @@ func TestWorkFreezeScript(t *testing.T) {
 			assert.Equal(t, sandbox.PhaseAgent, run.phase)
 			assert.Equal(t, workspace, run.cmd.Dir)
 			assert.True(t, strings.HasPrefix(run.cmd.Argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox")
-			assert.Equal(t, []string{baseCommit, "cavu/fix-login", tt.message}, run.cmd.Argv[4:])
+			assert.Equal(t, []string{tt.start, "cavu/fix-login", tt.message}, run.cmd.Argv[4:])
+			assert.Contains(t, run.cmd.Env, "CAVU_BASE_COMMIT="+baseCommit)
+		})
+	}
+}
+
+// A fix run starts at the pull request's head, so a session that adds no
+// commit leaves the change as it was, and one that adds a commit changed it.
+func TestFixRunThatChangesNothingIsNotChanged(t *testing.T) {
+	for _, tt := range []struct {
+		name, frozen string
+		changed      bool
+	}{
+		{name: "no commit", frozen: fixHead},
+		{name: "a commit on top", frozen: headCommit, changed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+			c := workConfig()
+			c.Repo.Head = fixHead
+			f.results[freezeName(c, c.Task.Title)] = sandbox.Result{Output: tt.frozen + "\n"}
+			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "done"})}}}
+			w := engine.WorkRequest{Mode: engine.ModeComments, SessionID: sessionUUID, Resume: true}
+
+			res, err := f.workRunner(d).Work(t.Context(), c, w, noProgress)
+			require.NoError(t, err)
+			assert.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+			assert.Equal(t, tt.frozen, res.HeadCommit)
+			assert.Equal(t, tt.changed, res.Changed)
 		})
 	}
 }
 
 func TestWorkSpec(t *testing.T) {
+	// Every session runs at a pull request's head, whose test and lint jobs
+	// failed; the project ignores lint.
+	client, fake, url := fakeForge(t)
+	failChecks(fake)
+
+	repo, err := forge.ParseRepo(url)
+	require.NoError(t, err)
+
+	logs, err := client.FailedLogs(t.Context(), repo, forge.Access{Token: plantedForge}, fixHead, []string{"lint"})
+	require.NoError(t, err)
+	require.Contains(t, logs, "--- FAIL: TestLogin")
+
+	comments := []engine.Comment{
+		{ID: "PRRC_1", Author: "alice", Path: "login.go", Line: 12, Body: "Trim only the newline."},
+		{ID: "PRR_2", Author: "bob", Body: "Add a test."},
+	}
+
 	tests := []struct {
 		name   string
 		w      engine.WorkRequest
@@ -216,6 +279,21 @@ func TestWorkSpec(t *testing.T) {
 				return render(t, prompts.Answer, prompts.AnswerData{Answer: "The admin form."})
 			},
 		},
+		{
+			name: "fix ci", w: engine.WorkRequest{Mode: engine.ModeFixCI, SessionID: sessionUUID, Resume: true},
+			prompt: func(t *testing.T, c engine.RunConfig) string {
+				return render(t, prompts.FixCI, prompts.FixCIData{Logs: masker(c)(logs)})
+			},
+		},
+		{
+			name: "comments", w: engine.WorkRequest{Mode: engine.ModeComments, SessionID: sessionUUID, Resume: true, Comments: comments},
+			prompt: func(t *testing.T, _ engine.RunConfig) string {
+				return render(t, prompts.Comments, prompts.CommentsData{Comments: []prompts.ReviewComment{
+					{Author: "alice", Path: "login.go", Line: 12, Body: "Trim only the newline."},
+					{Author: "bob", Body: "Add a test."},
+				}})
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -224,9 +302,12 @@ func TestWorkSpec(t *testing.T) {
 			c := workConfig()
 			c.Endpoint.Mode = "subscription"
 			c.Agent.WebTools = true
+			c.Repo.URL, c.Repo.Head, c.Repo.IgnoredChecks = url, fixHead, []string{"lint"}
 			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}
+			r := f.workRunner(d)
+			r.forge = client
 
-			_, err := f.workRunner(d).Work(t.Context(), c, tt.w, noProgress)
+			_, err := r.Work(t.Context(), c, tt.w, noProgress)
 			require.NoError(t, err)
 			require.Len(t, d.specs, 1)
 
@@ -245,8 +326,26 @@ func TestWorkSpec(t *testing.T) {
 
 			assert.Equal(t, want, d.specs[0])
 			assert.Contains(t, d.specs[0].Env, "CAVU_BASE_COMMIT="+baseCommit)
+			assertMasked(t, d.specs[0].Prompt)
 		})
 	}
+}
+
+// Logs of the failed checks that the forge cannot give fail the call, which
+// the engine retries, and no session runs without them.
+func TestWorkFailsWithoutTheFailedLogs(t *testing.T) {
+	client, fake, url := fakeForge(t)
+	fake.Fail(1)
+
+	c := workConfig()
+	c.Repo.URL, c.Repo.Head = url, fixHead
+	d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}
+	r := newFake().workRunner(d)
+	r.forge = client
+
+	_, err := r.Work(t.Context(), c, engine.WorkRequest{Mode: engine.ModeFixCI, SessionID: sessionUUID, Resume: true}, noProgress)
+	require.Error(t, err)
+	assert.Empty(t, d.specs)
 }
 
 func TestWorkSpecCarriesNoRealCredential(t *testing.T) {

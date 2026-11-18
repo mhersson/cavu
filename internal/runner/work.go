@@ -14,6 +14,7 @@ import (
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/mhersson/cavu/internal/proxy"
@@ -36,9 +37,10 @@ const gitFunc = "g() { git --no-replace-objects -c core.hooksPath=/dev/null -c c
 
 // freezeScript commits what the session left uncommitted with message $3,
 // points the task branch $2 at HEAD and prints HEAD. It refuses a workspace
-// without .git, or whose HEAD does not descend from the base commit $1.
+// without .git, or whose HEAD does not descend from the commit $1 the run
+// started at: a fix run's commits are on the pull request, never force-pushed.
 var freezeScript = proc.SandboxOnly(gitFunc + `[ -d .git ] || { echo "The session removed the repository's .git directory."; exit 1; }
-g merge-base --is-ancestor "$1" HEAD || { echo "The session left HEAD on a commit that does not descend from the base commit."; exit 1; }
+g merge-base --is-ancestor "$1" HEAD || { echo "The session left HEAD on a commit that does not descend from the commit the run started at."; exit 1; }
 if [ -n "$(g status --porcelain)" ]; then g add -A && g commit -q -m "$3" || exit 1; fi
 g update-ref "refs/heads/$2" HEAD && g rev-parse HEAD`)
 
@@ -52,7 +54,8 @@ func (budgetCut) Error() string { return "runner: the proxy stopped the session'
 
 // Work runs one session of the agent, a readiness turn in the read-only phase
 // and any other in the agent phase, and, when it ends done, freezes its work
-// into a commit on the task branch.
+// into a commit on the task branch. A fix of failed checks first reads from
+// the forge what they printed.
 func (r *Runner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequest, progress func(engine.Progress)) (engine.WorkResult, error) {
 	phase := sandbox.PhaseAgent
 	if w.Mode == engine.ModeReadiness {
@@ -60,13 +63,36 @@ func (r *Runner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequ
 	}
 
 	return act(ctx, r, c, phase, func(ctx context.Context, st *run, mask func(string) string) (engine.WorkResult, error) {
+		var logs string
+
+		if w.Mode == engine.ModeFixCI {
+			var err error
+			if logs, err = r.failedLogs(ctx, c); err != nil {
+				return engine.WorkResult{}, err
+			}
+
+			// A job may print a secret the project also gives its setup.
+			logs = mask(logs)
+		}
+
 		res, usage, err := runSession(st, c, mask, progress, func(s *session) (engine.WorkResult, []driver.Usage, error) {
-			return s.run(ctx, r.driver, w)
+			return s.run(ctx, r.driver, w, logs)
 		})
 		res.Usage = usage
 
 		return res, err
 	})
+}
+
+// failedLogs is what the failed checks of the run's head printed, but those
+// the project ignores.
+func (r *Runner) failedLogs(ctx context.Context, c engine.RunConfig) (string, error) {
+	repo, err := forge.ParseRepo(c.Repo.URL)
+	if err != nil {
+		return "", err
+	}
+
+	return r.forge.FailedLogs(ctx, repo, forge.Access(c.Repo.Access), c.Repo.Head, c.Repo.IgnoredChecks)
 }
 
 // runSession builds a session, runs it with the sidecar's lines watched, and
@@ -98,8 +124,9 @@ type session struct {
 // run runs the session under the agent's time limit, maps how it ended and
 // freezes the work of one that ended done. It also returns the agent's usage,
 // and with an error the turns and usage so far. A fresh fix of a review's
-// findings first gets the diff the review read.
-func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest) (engine.WorkResult, []driver.Usage, error) {
+// findings first gets the diff the review read; logs are what a fix of failed
+// checks opens with.
+func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest, logs string) (engine.WorkResult, []driver.Usage, error) {
 	if w.Mode == engine.ModeFixReview && !w.Resume {
 		problem, err := writeDiffs(ctx, s.st, s.c, s.c.Repo.BaseCommit, "refs/heads/"+s.c.Repo.Branch, reviewPatch)
 		if err != nil || problem != "" {
@@ -109,7 +136,7 @@ func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest
 		}
 	}
 
-	spec, err := s.spec(w)
+	spec, err := s.spec(w, logs)
 	if err != nil {
 		return engine.WorkResult{}, nil, err
 	}
@@ -117,7 +144,7 @@ func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest
 	dr, limit, err := s.drive(ctx, d, spec)
 	if err == nil && dr.Reason == driver.ReasonResumeRefused {
 		// A new session under the engine's id, which every later step resumes.
-		if spec, err = s.spec(engine.WorkRequest{Mode: engine.ModeStart, SessionID: w.SessionID, Role: w.Role}); err == nil {
+		if spec, err = s.spec(engine.WorkRequest{Mode: engine.ModeStart, SessionID: w.SessionID, Role: w.Role}, ""); err == nil {
 			dr, limit, err = s.drive(ctx, d, spec)
 		}
 	}
@@ -189,8 +216,8 @@ func (s *session) limited(limit error, outcome, detail string) (string, string) 
 	return outcome, detail
 }
 
-func (s *session) spec(w engine.WorkRequest) (driver.Spec, error) {
-	text, err := prompt(s.c, w)
+func (s *session) spec(w engine.WorkRequest, logs string) (driver.Spec, error) {
+	text, err := prompt(s.c, w, logs)
 	if err != nil {
 		return driver.Spec{}, err
 	}
@@ -311,8 +338,9 @@ func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (drive
 }
 
 // prompt is the user message that opens or resumes a session in w's mode;
-// w's detail is the verify output of a fix and the text of an answer.
-func prompt(c engine.RunConfig, w engine.WorkRequest) (string, error) {
+// w's detail is the verify output of a fix and the text of an answer, and
+// logs what the failed checks printed for a fix of them.
+func prompt(c engine.RunConfig, w engine.WorkRequest, logs string) (string, error) {
 	task := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}
 
 	switch w.Mode {
@@ -337,9 +365,24 @@ func prompt(c engine.RunConfig, w engine.WorkRequest) (string, error) {
 		return prompts.Render(prompts.FixReviewFresh, prompts.FixReviewFreshData{
 			Title: c.Task.Title, Body: c.Task.Body, Findings: numberFindings(w.Findings), DiffFile: reviewPatch,
 		})
+	case engine.ModeFixCI:
+		return prompts.Render(prompts.FixCI, prompts.FixCIData{Logs: logs})
+	case engine.ModeComments:
+		return prompts.Render(prompts.Comments, prompts.CommentsData{Comments: reviewComments(w.Comments)})
 	}
 
 	return prompts.Render(prompts.Work, task)
+}
+
+// reviewComments are a reviewer's requests as the prompt gives them; their ids
+// stay with the engine, which knows which were answered.
+func reviewComments(comments []engine.Comment) []prompts.ReviewComment {
+	out := make([]prompts.ReviewComment, len(comments))
+	for i, c := range comments {
+		out[i] = prompts.ReviewComment{Author: c.Author, Path: c.Path, Line: c.Line, Body: c.Body}
+	}
+
+	return out
 }
 
 // event forwards what a person follows a session by. Every string is masked:
@@ -470,11 +513,13 @@ func (s *session) readiness(structured json.RawMessage, res *engine.WorkResult) 
 }
 
 // freeze commits the session's work and points the task branch at it. A
-// workspace the freeze refuses fails the session with the reason.
+// workspace the freeze refuses fails the session with the reason. The work
+// changed when its head is not the commit the run started at.
 func (s *session) freeze(ctx context.Context, res *engine.WorkResult) error {
+	start := cmp.Or(s.c.Repo.Head, s.c.Repo.BaseCommit)
 	message := cmp.Or(res.Title, s.c.Task.Title)
 	cmd := proc.Command{
-		Argv: scriptArgv(freezeScript, s.c.Repo.BaseCommit, s.c.Repo.Branch, message),
+		Argv: scriptArgv(freezeScript, start, s.c.Repo.Branch, message),
 		Env:  agentEnv(s.st.ecosystems, s.c.Repo.BaseCommit), Dir: workspace,
 	}
 
@@ -492,7 +537,7 @@ func (s *session) freeze(ctx context.Context, res *engine.WorkResult) error {
 		return nil
 	}
 
-	res.HeadCommit, res.Changed = head, head != s.c.Repo.BaseCommit
+	res.HeadCommit, res.Changed = head, head != start
 
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"math/big"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,13 +44,14 @@ func fixtureRun(t *testing.T, files map[string]string) (*Runner, engine.RunConfi
 	repo := gitrepo.New(t, files)
 	head := gitrepo.Git(t, repo, "rev-parse", "HEAD")
 	bare := strings.TrimPrefix(gitrepo.Bare(t, repo), "file://")
-	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, rt), gitrepo.Handler(t, bare))
+	// Under an owner, as on a forge, so the address names a repository there.
+	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, rt), http.StripPrefix("/cavu", gitrepo.Handler(t, bare)))
 
 	var c engine.RunConfig
 
 	c.TaskID, c.RunID, c.ProjectID = randomID(t), randomID(t), randomID(t)
 	c.InstanceID, c.Image = randomInstance(t), image
-	c.Repo.URL = "https://host.docker.internal:" + port + "/" + filepath.Base(bare)
+	c.Repo.URL = "https://host.docker.internal:" + port + "/cavu/" + filepath.Base(bare)
 	c.Repo.BaseBranch, c.Repo.Branch = "main", "cavu/fixture"
 	c.Endpoint.Mode = "subscription"
 	c.Identity.Name, c.Identity.Email = "CAVU Test", "cavu@example.com"

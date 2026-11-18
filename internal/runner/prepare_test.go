@@ -551,10 +551,10 @@ func assertMasked(t *testing.T, s string) {
 	}
 }
 
-// appRunner returns a runner whose every sandbox is f and whose forge client
-// reaches a fake GitHub, on the real clock since the fake's tokens expire by
-// it, with the fake and a repository's address on it.
-func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string) {
+// fakeForge returns a forge client that reaches a fake GitHub, on the real
+// clock since the fake's tokens expire by it, with the fake and a
+// repository's address on it.
+func fakeForge(t *testing.T) (*forge.Client, *forgefake.Fake, string) {
 	t.Helper()
 
 	fake := forgefake.New(t, t.TempDir())
@@ -564,10 +564,19 @@ func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string)
 	client, err := forge.New(forge.Options{Transport: srv.Client().Transport, Version: "test"})
 	require.NoError(t, err)
 
+	return client, fake, srv.URL + "/o/n"
+}
+
+// appRunner returns a runner whose every sandbox is f and whose forge client
+// reaches a fake GitHub, with the fake and a repository's address on it.
+func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string) {
+	t.Helper()
+
+	client, fake, url := fakeForge(t)
 	r := f.runner()
 	r.forge = client
 
-	return r, fake, srv.URL + "/o/n"
+	return r, fake, url
 }
 
 // appConfig is testConfig for a GitHub App's repository at url.
