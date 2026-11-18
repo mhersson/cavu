@@ -151,27 +151,34 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 	return p.baseline(ctx, res, base)
 }
 
-// clone clones with a personal access token as it is, without reading the
-// address, so another git host's repository clones too; with an App, with a token it mints.
 func (p *preparation) clone(ctx context.Context) (string, error) {
 	c := p.c
-	p.token = c.Repo.Access.Token
 
-	if c.Repo.Access.AppID != 0 {
-		repo, err := forge.ParseRepo(c.Repo.URL)
-		if err != nil {
-			return "", err
-		}
-
-		if p.token, err = p.r.forge.Token(ctx, repo, forge.Access(c.Repo.Access), false); err != nil {
-			return "", err
-		}
+	var err error
+	if p.token, err = CloneToken(ctx, p.r.forge, c.Repo.URL, c.Repo.Access); err != nil {
+		return "", err
 	}
 
 	return p.st.sb.Clone(ctx, sidecar.CloneRequest{
 		URL: c.Repo.URL, Token: p.token, BaseBranch: c.Repo.BaseBranch, Commit: c.Repo.BaseCommit, Branch: c.Repo.Branch,
 		Name: c.Identity.Name, Email: c.Identity.Email,
 	})
+}
+
+// CloneToken is the token a clone of repoURL uses: a personal access token as
+// it is, without reading the address, so another git host's repository clones
+// too; with an App, a token f mints for the repository.
+func CloneToken(ctx context.Context, f *forge.Client, repoURL string, a engine.ForgeAccess) (string, error) {
+	if a.AppID == 0 {
+		return a.Token, nil
+	}
+
+	repo, err := forge.ParseRepo(repoURL)
+	if err != nil {
+		return "", err
+	}
+
+	return f.Token(ctx, repo, forge.Access(a), false)
 }
 
 // detect reads the root files under an empty allowlist, the one command that

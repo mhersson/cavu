@@ -190,6 +190,22 @@ func TestFailAndLimit(t *testing.T) {
 	assert.Equal(t, "Draft", reqs[4].Operation)
 }
 
+// A repository's read answers with its name, its default branch and whether
+// it is private, as GitHub does.
+func TestRepository(t *testing.T) {
+	fx := newFixture(t)
+
+	status, _, repo := fx.call(http.MethodGet, "/api/v3/repos/o/n", nil)
+	require.Equal(t, http.StatusOK, status)
+	assert.Equal(t, "o/n", field(t, repo, "full_name"))
+	assert.Equal(t, "main", field(t, repo, "default_branch"))
+	assert.IsType(t, true, field(t, repo, "private"))
+
+	reqs := fx.fake.Requests()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, "/api/v3/repos/o/n", reqs[0].Path)
+}
+
 // The App's token routes mint a token for each request and record what it may
 // do, so a test can tell a push token from an API token.
 func TestTokens(t *testing.T) {

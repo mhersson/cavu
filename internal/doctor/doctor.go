@@ -14,6 +14,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/mhersson/cavu/internal/redact"
@@ -46,7 +47,9 @@ type Deps struct {
 	Credential   string            // the secret endpoint_credential
 	CABundle     []byte            // the configured CA bundle the image must carry, empty for none
 	ForgeToken   string
-	Project      *Project // the project the forge check fetches; nil for none
+	ForgeAppKey  string        // the secret forge_app_key
+	Forge        *forge.Client // the client the forge check mints and reads with
+	Project      *Project      // the project the forge check fetches; nil for none
 	Driver       driver.Driver
 
 	host host // nil drives the runtime; the unit tests set a fake
@@ -56,6 +59,7 @@ type Deps struct {
 type Project struct {
 	ID                  int64
 	RepoURL, BaseBranch string
+	Publish             bool // the switch publish
 }
 
 // host is the doctor's seam over internal/sandbox.
@@ -92,6 +96,7 @@ type doctor struct {
 	scratch target           // its scratch container, when the image is there
 	err     error            // of reading the image or starting the box
 	config  engine.RunConfig // the settings and the credential, read as a run reads them
+	token   string           // the forge check's clone token, which an App mints
 	agent   proc.Target
 	spec    driver.Spec // a session in the agent phase, but its prompt and id
 	checks  []Check
@@ -129,8 +134,9 @@ func Run(ctx context.Context, d Deps) []Check {
 
 	r.step(ctx, "forge", r.forge, "image", "settings")
 
-	// In key mode the session's token is a stand-in only this mask knows.
-	mask := redact.New(d.Credential, d.ForgeToken, r.spec.Auth.Token)
+	// In key mode the session's token is a stand-in only this mask knows, and
+	// an App's token is the forge check's own.
+	mask := redact.New(d.Credential, d.ForgeToken, d.ForgeAppKey, r.spec.Auth.Token, r.token)
 	for i := range r.checks {
 		r.checks[i].Detail, r.checks[i].Fix = mask(r.checks[i].Detail), mask(r.checks[i].Fix)
 	}
@@ -391,33 +397,63 @@ func (r *doctor) endpointFix() string {
 	return "check endpoint_mode, endpoint_url, endpoint_auth_header, model_work and the secret endpoint_credential"
 }
 
-// forge fetches the project into its own mirror, with run and task id 0.
+// forge fetches the project into its own mirror, with run and task id 0 and
+// the token a run's clone gets, then reads the repository over the API when
+// the project publishes.
 func (r *doctor) forge(ctx context.Context) Check {
-	if r.ForgeToken == "" || r.Project == nil {
-		return Check{Skipped: true, Detail: "skipped: no forge token or no project"}
+	a := r.config.Repo.Access
+	a.Token, a.AppKey = r.ForgeToken, r.ForgeAppKey
+
+	if a.Token == "" && a.AppID == 0 || r.Project == nil {
+		return Check{Skipped: true, Detail: "skipped: no forge credential or no project"}
 	}
 
+	const fix = "check the secret forge_token, or the setting forge_app_id and the secret forge_app_key, and the project's repository address"
+
+	var err error
+	if r.token, err = runner.CloneToken(ctx, r.Forge, r.Project.RepoURL, a); err != nil {
+		return failed(err, fix)
+	}
+
+	if err := r.clone(ctx); err != nil {
+		return failed(err, fix)
+	}
+
+	if !r.Project.Publish {
+		return Check{OK: true}
+	}
+
+	repo, err := forge.ParseRepo(r.Project.RepoURL)
+	if err == nil {
+		err = r.Forge.Check(ctx, repo, forge.Access(a))
+	}
+
+	if err != nil {
+		return failed(err, fix+"; or turn the project's switch publish off")
+	}
+
+	return Check{OK: true}
+}
+
+// clone clones the project in a sandbox of its own, which it destroys.
+func (r *doctor) clone(ctx context.Context) error {
 	b, err := r.host.open(r.Project.ID)
 	if err == nil {
 		err = b.Destroy(ctx, false)
 	}
 
-	if err == nil {
-		if err = b.EnsureVolumes(ctx); err == nil {
-			_, err = b.Clone(ctx, sidecar.CloneRequest{
-				URL: r.Project.RepoURL, Token: r.ForgeToken, BaseBranch: r.Project.BaseBranch, Branch: "cavu/doctor",
-				Name: r.Settings["commit_name"], Email: r.Settings["commit_email"],
-			})
-		}
-
-		err = errors.Join(err, b.Destroy(ctx, false))
-	}
-
 	if err != nil {
-		return failed(err, "check the secret forge_token and the project's repository address")
+		return err
 	}
 
-	return Check{OK: true}
+	if err = b.EnsureVolumes(ctx); err == nil {
+		_, err = b.Clone(ctx, sidecar.CloneRequest{
+			URL: r.Project.RepoURL, Token: r.token, BaseBranch: r.Project.BaseBranch, Branch: "cavu/doctor",
+			Name: r.Settings["commit_name"], Email: r.Settings["commit_email"],
+		})
+	}
+
+	return errors.Join(err, b.Destroy(ctx, false))
 }
 
 // runtimeHost drives the runtime through internal/sandbox.

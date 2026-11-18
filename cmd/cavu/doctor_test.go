@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/doctor"
 	"github.com/mhersson/cavu/internal/driver/claudecode"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,13 +37,18 @@ func fakeDoctor(t *testing.T, checks []doctor.Check) *doctor.Deps {
 func TestDoctorVerb(t *testing.T) {
 	dir := t.TempDir()
 	bundle := filepath.Join(t.TempDir(), "ca.pem")
-	require.NoError(t, os.WriteFile(bundle, []byte("PEM"), 0o600))
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) }))
+	t.Cleanup(srv.Close)
+	require.NoError(t, os.WriteFile(bundle, bundleOf(srv), 0o600))
+
+	srvRepo, err := forge.ParseRepo(srv.URL + "/o/n")
+	require.NoError(t, err)
 
 	cavuIn(t, dir, "settings", "set", "ca_bundle_path", bundle)
 	cavuIn(t, dir, "project", "add", "web", "--repo", repo, "--verify", "make test")
 	cavuIn(t, dir, "project", "add", "api", "--repo", "https://example.com/api.git", "--base", "dev", "--verify", "make test")
 
-	for name, value := range map[string]string{"endpoint_credential": "cred", "forge_token": "tok"} {
+	for name, value := range map[string]string{"endpoint_credential": "cred", "forge_token": "tok", "forge_app_key": "app-key"} {
 		code, _, stderr := withStdin(value+"\n", "secret", "set", name, "--data-dir", dir)
 		require.Equal(t, 0, code, stderr)
 	}
@@ -91,14 +99,26 @@ func TestDoctorVerb(t *testing.T) {
 			assert.Equal(t, claudecode.Version, got.AgentVersion)
 			assert.Equal(t, "cred", got.Credential)
 			assert.Equal(t, "tok", got.ForgeToken)
-			assert.Equal(t, []byte("PEM"), got.CABundle)
+			assert.Equal(t, "app-key", got.ForgeAppKey)
+			assert.Equal(t, bundleOf(srv), got.CABundle)
 			assert.Equal(t, bundle, got.Settings["ca_bundle_path"])
 			assert.NotNil(t, got.Driver)
+			require.NotNil(t, got.Forge)
+			require.NoError(t, got.Forge.Check(t.Context(), srvRepo, forge.Access{Token: "tok"}), "the forge client trusts the CA bundle")
 			require.NotNil(t, got.Project)
 			assert.Equal(t, "https://example.com/api.git", got.Project.RepoURL)
 			assert.Equal(t, "dev", got.Project.BaseBranch)
+			assert.True(t, got.Project.Publish, "publish is on by default")
 		})
 	}
+
+	cavuIn(t, dir, "project", "set", "api", "--switch", "publish=off")
+
+	got := fakeDoctor(t, nil)
+	code, _, stderr := runCavu("doctor", "--data-dir", dir)
+	require.Equal(t, 0, code, stderr)
+	require.NotNil(t, got.Project)
+	assert.False(t, got.Project.Publish)
 }
 
 func TestDoctorWithoutProject(t *testing.T) {

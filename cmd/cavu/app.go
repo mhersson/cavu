@@ -178,17 +178,28 @@ func (a *app) runtime(ctx context.Context) (containerRuntime, error) {
 		return nil, err
 	}
 
-	bundle, err := a.caBundle(ctx)
+	f, _, err := a.forgeClient(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	f, err := forge.New(forge.Options{CABundle: bundle, Version: version})
+	return detectRuntime(ctx, name, f)
+}
+
+// forgeClient is the forge client that trusts the CA bundle ca_bundle_path
+// names, and the bundle, nil when unset.
+func (a *app) forgeClient(ctx context.Context) (*forge.Client, []byte, error) {
+	bundle, err := a.caBundle(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("ca_bundle_path: %w", err)
+		return nil, nil, err
 	}
 
-	return detectRuntime(ctx, name, f)
+	f, err := forge.New(forge.Options{CABundle: bundle, Version: version})
+	if err != nil {
+		return nil, nil, fmt.Errorf("ca_bundle_path: %w", err)
+	}
+
+	return f, bundle, nil
 }
 
 // caBundle reads the CA bundle the ca_bundle_path setting names, nil when unset.
