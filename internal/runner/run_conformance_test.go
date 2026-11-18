@@ -4,6 +4,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -320,6 +321,61 @@ func carries(r mockapi.Request, marker string) bool {
 	}
 
 	return false
+}
+
+// A fix run starts at the pull request's head with the task's session: the
+// first run's session leaves a marker in the home and a commit the export takes
+// into the mirror, the run ends with the home kept, and a new run's prepare at
+// that head has the workspace there, the marker in place, and runs no verify.
+func TestFixRunStartsAtTheHeadWithItsSession(t *testing.T) {
+	const (
+		marker   = "CAVU-HOME-MARKER-3f9a"
+		verified = "CAVU-VERIFIED-7c21"
+	)
+
+	r, c, _ := agentRun(t,
+		bash(`echo `+marker+` > "$HOME/marker" && echo CAVU-FIRST-RUN >> notes.txt && git commit -qam 'docs(notes): add a line'`), done)
+	// Each verify leaves a line in the home: a count that grows is a verify that ran.
+	c.Verify.Command = "echo " + verified + " >> " + home + "/verified"
+	verifies := func(runID int64) int {
+		return strings.Count(runIn(t, r.state(runID), "cat", home+"/verified").Output, verified)
+	}
+
+	first := newSession(t)
+	res := work(t, r, c, first)
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+
+	vr, err := r.Verify(t.Context(), c)
+	require.NoError(t, err)
+	require.Equal(t, engine.ResultPassed, vr.Result, vr.Output)
+	export(t, r, c, res)
+	require.Equal(t, 1, verifies(c.RunID))
+
+	// The first run ends as a run that keeps its task's home does.
+	require.NoError(t, r.state(c.RunID).sb.Destroy(t.Context(), true))
+	r.setState(c.RunID, nil)
+
+	fix := c
+	fix.RunID, fix.Repo.Head, fix.Ecosystems = randomID(t), res.HeadCommit, nil
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+
+		assert.NoError(t, r.Release(ctx, refOf(fix), true))
+	})
+
+	prep, err := r.Prepare(t.Context(), fix)
+	require.NoError(t, err)
+	require.Empty(t, prep.FailedStep, prep.Output)
+	assert.Equal(t, c.Repo.BaseCommit, prep.BaseCommit)
+	assert.Equal(t, baselineSkipped, prep.Baseline)
+
+	fix.Ecosystems = prep.Ecosystems
+	assert.Equal(t, res.HeadCommit, git(t, r, fix, "rev-parse", "HEAD"))
+	assert.Equal(t, "refs/heads/"+fix.Repo.Branch, git(t, r, fix, "symbolic-ref", "HEAD"))
+	assert.Contains(t, runIn(t, r.state(fix.RunID), "cat", home+"/marker").Output, marker, "the first session's home is gone")
+	assert.Equal(t, 1, verifies(fix.RunID), "only the first run's verify ran")
 }
 
 // approved ends a review session with a verdict that passes.

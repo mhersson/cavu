@@ -96,6 +96,52 @@ func TestPrepareStartsFromEmptyVolumes(t *testing.T) {
 	}}, f.opened)
 }
 
+// A run that does not start at a pull request's head, a redone one too, starts
+// a fresh session in a fresh home.
+func TestPrepareFromTheBaseStillClearsTheHome(t *testing.T) {
+	for name, base := range map[string]string{"a first run": "", "a run redone from its base": baseCommit} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			c := testConfig()
+			c.Repo.BaseCommit = base
+
+			_, err := f.runner().Prepare(t.Context(), c)
+			require.NoError(t, err)
+			assert.Equal(t, "destroy", f.calls()[0], "the task's home goes with the run's volumes")
+		})
+	}
+}
+
+// A fix run starts at the pull request's head with the task's home, where its
+// session is: the tools come from the head's files, no baseline runs, and the
+// run keeps the config's base commit.
+func TestPrepareAtTheHeadKeepsTheHome(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Repo.BaseCommit, c.Repo.Head = baseCommit, headCommit
+
+	res, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, slices.Concat([]string{"destroy/keep-home"}, fullOrder[1:len(fullOrder)-2]), f.calls(),
+		"the home stays, and the agent phase comes up without a verify")
+	require.Len(t, f.clones, 1)
+	assert.Equal(t, headCommit, f.clones[0].Commit)
+	assert.Equal(t, []string{headCommit}, f.reads, "the files are read at the head")
+	assert.Equal(t, engine.PrepareResult{
+		BaseCommit: baseCommit, Tools: []string{"go@1.25.0"}, Ecosystems: []string{"go"}, Baseline: "skipped",
+	}, res)
+
+	require.Contains(t, f.run(t, "make setup").cmd.Env, "CAVU_BASE_COMMIT="+baseCommit)
+
+	for _, run := range f.runs {
+		for _, e := range run.cmd.Env {
+			if v, ok := strings.CutPrefix(e, "CAVU_BASE_COMMIT="); ok {
+				assert.Equal(t, baseCommit, v, run.name)
+			}
+		}
+	}
+}
+
 func TestPrepareAllowlists(t *testing.T) {
 	tests := []struct {
 		mode  string

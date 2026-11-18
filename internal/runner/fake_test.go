@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -258,7 +259,7 @@ func (f *fakeSandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (string
 		return "", f.cloneErr
 	}
 
-	return baseCommit, nil
+	return cmp.Or(r.Commit, baseCommit), nil
 }
 
 func (f *fakeSandbox) Push(_ context.Context, r sidecar.PushRequest) (string, string, error) {

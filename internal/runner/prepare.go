@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ const (
 	setupTimeout     = 30 * time.Minute
 	statusTimeout    = time.Minute
 	baselineReused   = "reused"
+	baselineSkipped  = "skipped"
 )
 
 // reshimScript makes the shims for what the setup command added to a tool,
@@ -37,7 +39,9 @@ const (
 // commands only through them.
 var reshimScript = proc.SandboxOnly("exec mise reshim")
 
-// Prepare starts the run from empty volumes and leaves the agent phase up.
+// Prepare starts the run from empty volumes and leaves the agent phase up. A
+// run with a head starts at that commit of the task branch instead, and keeps
+// the task's home, where its session is.
 func (r *Runner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
 	res, _, err := r.prepare(ctx, c, false)
 
@@ -59,8 +63,8 @@ func (r *Runner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (res 
 }
 
 // prepare runs a prepare and returns the root files it read. The task's home
-// goes first: every project's check shares task id 0, and a check that died
-// must not hand its home to the next.
+// goes first unless the run starts at a head: every project's check shares
+// task id 0, and a check that died must not hand its home to the next.
 func (r *Runner) prepare(ctx context.Context, c engine.RunConfig, check bool) (engine.PrepareResult, map[string][]byte, error) {
 	// The run's earlier state goes: its volumes are about to be destroyed.
 	r.setState(c.RunID, nil)
@@ -99,7 +103,7 @@ type preparation struct {
 func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 	sb, c := p.st.sb, p.c
 
-	if err := sb.Destroy(ctx, false); err != nil {
+	if err := sb.Destroy(ctx, c.Repo.Head != ""); err != nil {
 		return engine.PrepareResult{}, err
 	}
 
@@ -107,7 +111,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return engine.PrepareResult{}, err
 	}
 
-	base, err := p.clone(ctx)
+	start, err := p.clone(ctx)
 	if err != nil {
 		if sandboxFault(ctx, err) {
 			return engine.PrepareResult{}, err
@@ -116,11 +120,15 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return failure(engine.PrepareResult{}, &stepFailure{stepClone, err.Error()}), nil
 	}
 
-	res := engine.PrepareResult{BaseCommit: base}
 	// A first prepare's config has no base commit yet: the clone's is the run's.
-	p.c.Repo.BaseCommit = base
+	// A run at a head keeps the base its config names.
+	if c.Repo.Head == "" {
+		p.c.Repo.BaseCommit = start
+	}
 
-	det, failed, err := p.detect(ctx, base)
+	res := engine.PrepareResult{BaseCommit: p.c.Repo.BaseCommit}
+
+	det, failed, err := p.detect(ctx, start)
 	if err != nil || failed != nil {
 		return failure(res, failed), err
 	}
@@ -148,7 +156,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		}
 	}
 
-	return p.baseline(ctx, res, base)
+	return p.baseline(ctx, res)
 }
 
 func (p *preparation) clone(ctx context.Context) (string, error) {
@@ -160,7 +168,7 @@ func (p *preparation) clone(ctx context.Context) (string, error) {
 	}
 
 	return p.st.sb.Clone(ctx, sidecar.CloneRequest{
-		URL: c.Repo.URL, Token: p.token, BaseBranch: c.Repo.BaseBranch, Commit: c.Repo.BaseCommit, Branch: c.Repo.Branch,
+		URL: c.Repo.URL, Token: p.token, BaseBranch: c.Repo.BaseBranch, Commit: cmp.Or(c.Repo.Head, c.Repo.BaseCommit), Branch: c.Repo.Branch,
 		Name: c.Identity.Name, Email: c.Identity.Email,
 	})
 }
@@ -181,16 +189,16 @@ func CloneToken(ctx context.Context, f *forge.Client, repoURL string, a engine.F
 	return f.Token(ctx, repo, forge.Access(a), false)
 }
 
-// detect reads the root files under an empty allowlist, the one command that
-// runs under it, and detects the tools. Root files that detection cannot
-// parse, or that are too large to read, fail the toolchain step.
-func (p *preparation) detect(ctx context.Context, base string) (env.Detection, *stepFailure, error) {
+// detect reads the root files at commit under an empty allowlist, the one
+// command that runs under it, and detects the tools. Root files that detection
+// cannot parse, or that are too large to read, fail the toolchain step.
+func (p *preparation) detect(ctx context.Context, commit string) (env.Detection, *stepFailure, error) {
 	sc, err := p.st.up(ctx, sandbox.PhaseSetup, sidecar.ProxyRequest{})
 	if err != nil {
 		return env.Detection{}, nil, err
 	}
 
-	p.files, err = readFiles(ctx, sc, base)
+	p.files, err = readFiles(ctx, sc, commit)
 
 	switch {
 	case errors.Is(err, errFilesTooLarge):
@@ -270,17 +278,22 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 	return runStep(ctx, p.st, sc, stepSetup, reshim, toolchainTimeout)
 }
 
-// baseline verifies the base commit unless the project waives it, or a
-// prepare that is not a check finds it passed on this commit before.
-func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult, base string) (engine.PrepareResult, error) {
+// baseline verifies the base commit unless the run starts at a head, the
+// project waives it, or a prepare that is not a check finds it passed on this
+// commit before.
+func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult) (engine.PrepareResult, error) {
 	v := p.c.Verify
 
 	switch {
+	case p.c.Repo.Head != "":
+		res.Baseline = baselineSkipped
+
+		return res, nil
 	case v.Waived:
 		res.Baseline = engine.ResultWaived
 
 		return res, nil
-	case !p.check && v.BaselinePassed && v.BaselineCommit == base:
+	case !p.check && v.BaselinePassed && v.BaselineCommit == res.BaseCommit:
 		res.Baseline = baselineReused
 
 		return res, nil
