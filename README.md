@@ -45,14 +45,14 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    `ci_timeout_minutes` takes a whole number of minutes, 120 when unset and `0` for no limit.
 
-3. Store the secrets from standard input, never as arguments. `forge_token` is a personal access token, for a private repository. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
+3. Store the secrets from standard input, never as arguments. `forge_token` is a personal access token. CAVU clones a private repository with it and, with the switch `publish` on, pushes the task's branch and opens its pull request with it, on a public repository too, so it must be allowed to push to the repository and to open pull requests on it. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
 
    ```
    cavu secret set endpoint_credential < credential.txt
    cavu secret set forge_token < token.txt
    ```
 
-   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token for the clone from the App's installation on the repository. The App must grant these repository permissions: Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read-only; an App granted less fails the clone or the push. Whoever wants CAVU to change a workflow grants Workflows read and write too. With `forge_app_id` empty, `forge_token` is used.
+   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token from the App's installation on the repository for the clone, and a new one for each push. The App must grant these repository permissions: Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read-only; an App granted less fails the clone or the push. Whoever wants CAVU to change a workflow grants Workflows read and write too. With `forge_app_id` empty, `forge_token` is used.
 
    ```
    cavu settings set forge_app_id 123456
