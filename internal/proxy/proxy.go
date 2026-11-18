@@ -62,7 +62,7 @@ type Usage struct {
 type handler struct {
 	// lookup replaces DNS for the egress dialer; tests only.
 	lookup func(context.Context, string) ([]string, error)
-	// hold is how long a refused model request waits before it is answered.
+	// hold is refusalHold; tests shorten it.
 	hold   time.Duration
 	cfg    Config
 	allow  allowlist
