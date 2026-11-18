@@ -470,7 +470,7 @@ func onForge(t *testing.T, d *Deps) (*forgefake.Fake, string) {
 
 // withApp makes d's forge credential a GitHub App's.
 func withApp(t testing.TB, d *Deps) {
-	d.ForgeToken, d.ForgeAppKey = "", forgefake.AppKey(t)
+	d.ForgeToken, d.ForgeAppKey = "", forgefake.AppKey()
 	d.Settings["forge_app_id"] = "42"
 }
 

@@ -178,7 +178,7 @@ func CloneToken(ctx context.Context, f *forge.Client, repoURL string, a engine.F
 		return "", err
 	}
 
-	return f.Token(ctx, repo, forge.Access(a), false)
+	return f.Token(ctx, repo, forge.Access(a), forge.ForAPI)
 }
 
 // detect reads the root files under an empty allowlist, the one command that

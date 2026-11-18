@@ -60,7 +60,7 @@ func (p pull) pr() PR { return PR{Number: p.Number, URL: p.HTMLURL, NodeID: p.No
 // A forge that offers no drafts refuses one with 422, and is asked once more for a pull request
 // that is ready.
 func (c *Client) OpenPR(ctx context.Context, r Repo, a Access, n NewPR) (PR, error) {
-	token, err := c.Token(ctx, r, a, false)
+	token, err := c.Token(ctx, r, a, ForAPI)
 	if err != nil {
 		return PR{}, err
 	}
@@ -111,7 +111,7 @@ func (c *Client) createPR(ctx context.Context, r Repo, token string, n NewPR, dr
 // Ready marks a draft ready for review; one that is ready already is no error.
 // It asks first, since what the mutation does to a ready one is not documented.
 func (c *Client) Ready(ctx context.Context, r Repo, a Access, nodeID string) error {
-	token, err := c.Token(ctx, r, a, false)
+	token, err := c.Token(ctx, r, a, ForAPI)
 	if err != nil {
 		return err
 	}
@@ -138,7 +138,7 @@ func (c *Client) Ready(ctx context.Context, r Repo, a Access, nodeID string) err
 // Observe reads pull request q.Number: its state, its head's checks but those
 // q ignores, and the reviewer requests on it, answered or not.
 func (c *Client) Observe(ctx context.Context, r Repo, a Access, q Query) (Observation, error) {
-	token, err := c.Token(ctx, r, a, false)
+	token, err := c.Token(ctx, r, a, ForAPI)
 	if err != nil {
 		return Observation{}, err
 	}

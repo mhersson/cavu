@@ -36,7 +36,7 @@ var appKey = sync.OnceValue(func() string {
 })
 
 // AppKey is a GitHub App's private key in PEM, generated once per test binary.
-func AppKey(testing.TB) string { return appKey() }
+func AppKey() string { return appKey() }
 
 // Pull is a pull request the fake holds.
 type Pull struct {
@@ -92,6 +92,7 @@ type Fake struct {
 	logs     map[int64]string
 	perms    map[string]string
 	noDrafts bool
+	lacks    string // a permission the App lacks
 	fail     int
 	limit    time.Time
 	requests []Request
@@ -323,6 +324,15 @@ func (f *Fake) NoDrafts() {
 	f.noDrafts = true
 }
 
+// Lack makes the App lack permission: the fake answers 422 to a request for a
+// token that asks for it.
+func (f *Fake) Lack(permission string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.lacks = permission
+}
+
 // Fail makes the next n requests answer 502.
 func (f *Fake) Fail(n int) {
 	f.mu.Lock()
@@ -432,6 +442,12 @@ func (f *Fake) accessToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = json.NewDecoder(r.Body).Decode(&in)
+
+	if _, ok := in.Permissions[f.lacks]; ok {
+		writeJSON(w, http.StatusUnprocessableEntity, message("The permissions requested are not granted to this installation."))
+
+		return
+	}
 
 	tok := Token{Value: "ghs_fake" + strconv.Itoa(len(f.tokens)+1), Permissions: in.Permissions}
 	f.tokens = append(f.tokens, tok)

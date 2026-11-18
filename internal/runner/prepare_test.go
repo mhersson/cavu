@@ -528,7 +528,7 @@ func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string)
 func appConfig(t testing.TB, url string) engine.RunConfig {
 	c := testConfig()
 	c.Repo.URL = url
-	c.Repo.Access = engine.ForgeAccess{AppID: 42, AppKey: forgefake.AppKey(t)}
+	c.Repo.Access = engine.ForgeAccess{AppID: 42, AppKey: forgefake.AppKey()}
 
 	return c
 }

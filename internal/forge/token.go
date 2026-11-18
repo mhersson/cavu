@@ -16,13 +16,25 @@ import (
 const tokenRefresh = 5 * time.Minute
 
 var (
-	pushPermissions = map[string]string{"contents": "write"}
+	pushPermissions = map[Use]map[string]string{
+		ForPush:         {"contents": "write"},
+		ForWorkflowPush: {"contents": "write", "workflows": "write"},
+	}
 	// Metadata is named because a repository's read and a collaborator's
 	// permission need it, and a narrowed token is not documented to keep it.
 	apiPermissions = map[string]string{
 		"contents": "read", "pull_requests": "write", "checks": "read",
 		"statuses": "read", "actions": "read", "metadata": "read",
 	}
+)
+
+// Use is what a token is for.
+type Use int
+
+const (
+	ForAPI          Use = iota // the API calls this package makes, and a clone
+	ForPush                    // a push
+	ForWorkflowPush            // a push that changes a workflow
 )
 
 // Access is the credential for a repository's forge.
@@ -46,9 +58,10 @@ type appToken struct {
 }
 
 // Token is a token for git and for the API on r. For a personal access token it is that token.
-// For an App: with push, a new token each call for r's contents, write, and nothing else;
-// without, a token for the API calls this package makes and for a clone, kept until five minutes before it expires.
-func (c *Client) Token(ctx context.Context, r Repo, a Access, push bool) (string, error) {
+// For an App: for a push, a new token each call that may write r's contents and, for a push that
+// changes a workflow, its workflows, and nothing else; a 422 on that mint is a *TokenRefusedError.
+// For the API, a token kept until five minutes before it expires.
+func (c *Client) Token(ctx context.Context, r Repo, a Access, use Use) (string, error) {
 	switch {
 	case a.AppID == 0 && a.Token == "":
 		return "", errors.New("forge: no credential: a personal access token or a GitHub App is needed")
@@ -56,8 +69,11 @@ func (c *Client) Token(ctx context.Context, r Repo, a Access, push bool) (string
 		return a.Token, nil
 	case a.AppKey == "":
 		return "", errors.New("forge: the GitHub App has no private key")
-	case push:
-		token, _, err := c.mint(ctx, r, a, pushPermissions)
+	case use != ForAPI:
+		token, _, err := c.mint(ctx, r, a, pushPermissions[use])
+		if he, ok := errors.AsType[*httpError](err); ok && he.status == http.StatusUnprocessableEntity {
+			return "", &TokenRefusedError{Use: use, Message: he.message}
+		}
 
 		return token, err
 	}

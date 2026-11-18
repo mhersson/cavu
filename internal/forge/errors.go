@@ -30,6 +30,27 @@ func (e *RateLimitError) Error() string {
 
 func (e *RateLimitError) Is(target error) bool { return target == ErrRateLimited }
 
+// TokenRefusedError is an answer of 422 to the mint of a push token. Its text
+// names the permissions the token asked for, which the GitHub App must be granted.
+type TokenRefusedError struct {
+	Use     Use
+	Message string // the forge's, "" when it gave none
+}
+
+func (e *TokenRefusedError) Error() string {
+	perms := "Contents write"
+	if e.Use == ForWorkflowPush {
+		perms += " and Workflows write"
+	}
+
+	text := "The forge refused a push token with " + perms + ", which the GitHub App must be granted."
+	if e.Message != "" {
+		text += " The forge said: " + e.Message
+	}
+
+	return text
+}
+
 // httpError is an answer outside 2xx that is not a rate limit.
 type httpError struct {
 	status  int
