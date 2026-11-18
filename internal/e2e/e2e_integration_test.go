@@ -7,7 +7,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -144,9 +146,11 @@ type result struct {
 func (r result) String() string { return r.stdout + r.stderr }
 
 // start starts the child on the instance's data directory with stdin as its
-// input; ended is closed when it exits, and wait waits for that and returns
-// its result.
-func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-chan struct{}, wait func() result) {
+// input; out, unless nil, also gets its standard output as it is written.
+// ended is closed when it exits, and wait waits for that and returns its
+// result, which it keeps the first time. The test's end interrupts a child
+// still running, as Ctrl-C does, and kills it a minute later.
+func (in *instance) start(stdin string, out io.Writer, args ...string) (cmd *exec.Cmd, ended <-chan struct{}, wait func() result) {
 	in.t.Helper()
 
 	var stdout, stderr bytes.Buffer
@@ -154,6 +158,12 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-
 	cmd = exec.CommandContext(in.t.Context(), child(in.t), args...)
 	cmd.Env = append(os.Environ(), "CAVU_DATA_DIR="+in.dir)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &stdout, &stderr
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = time.Minute
+
+	if out != nil {
+		cmd.Stdout = io.MultiWriter(&stdout, out)
+	}
 
 	if in.path != "" {
 		cmd.Env = append(cmd.Env, "PATH="+in.path)
@@ -161,7 +171,10 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-
 
 	require.NoError(in.t, cmd.Start())
 
-	var err error
+	var (
+		err  error
+		kept sync.Once
+	)
 
 	done := make(chan struct{})
 
@@ -172,13 +185,15 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-
 
 		<-done
 
-		if err != nil {
+		// An interrupted child that exits 0 waits with the context's error.
+		if err != nil && !errors.Is(err, context.Canceled) {
 			var exit *exec.ExitError
 			require.ErrorAs(in.t, err, &exit)
 		}
 
 		r := result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
-		in.out.WriteString(r.String())
+
+		kept.Do(func() { in.out.WriteString(r.String()) })
 
 		return r
 	}
@@ -188,7 +203,7 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-
 func (in *instance) cavu(stdin string, args ...string) result {
 	in.t.Helper()
 
-	_, _, wait := in.start(stdin, args...)
+	_, _, wait := in.start(stdin, nil, args...)
 
 	return wait()
 }
@@ -200,25 +215,41 @@ func (in *instance) runHeld(mock *mockapi.Server, id string) (release func(), cm
 	in.t.Helper()
 
 	release = mock.Hold()
-	cmd, ended, wait := in.start("", "task", "run", id)
+	cmd, ended, wait := in.start("", nil, "task", "run", id)
 
+	if !modelCalled(mock, ended) {
+		_ = cmd.Process.Kill() // a run that has not ended is past the bound
+
+		in.t.Fatalf("task run ended, or made no model call within 3 minutes:\n%s", wait())
+	}
+
+	return release, cmd, wait
+}
+
+// modelCalls is every model call mock has logged, in arrival order.
+func modelCalls(mock *mockapi.Server) []mockapi.Request {
+	return slices.DeleteFunc(mock.Requests(), func(r mockapi.Request) bool { return !r.ModelCall })
+}
+
+// modelCalled waits until mock has logged a model call, and reports false
+// once the child whose ended is given ends or 3 minutes pass first.
+func modelCalled(mock *mockapi.Server, ended <-chan struct{}) bool {
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 
 	limit := time.After(3 * time.Minute)
 
-	for !slices.ContainsFunc(mock.Requests(), func(r mockapi.Request) bool { return r.ModelCall }) {
+	for len(modelCalls(mock)) == 0 {
 		select {
 		case <-ended:
-			in.t.Fatalf("task run ended before the held model call:\n%s", wait())
+			return false
 		case <-limit:
-			require.NoError(in.t, cmd.Process.Kill())
-			in.t.Fatalf("no model call within 3 minutes:\n%s", wait())
+			return false
 		case <-tick.C:
 		}
 	}
 
-	return release, cmd, wait
+	return true
 }
 
 // ok runs the child, requires exit code 0 and returns its standard output.
@@ -446,18 +477,39 @@ type sessionStart struct {
 	Resume bool
 }
 
-// eventPayloads decodes into T the payload of every event of kind in out, the
-// output of task show --events, where an event line is its id, time, type,
-// actor and payload.
-func eventPayloads[T any](t *testing.T, out, kind string) []T {
+// apiEvent is what the tests read of an event as the API gives it.
+type apiEvent struct {
+	ID      int64
+	TaskID  int64 `json:"task_id"`
+	Type    string
+	Payload json.RawMessage
+}
+
+// shown is the events in out, the output of task show --events, where an
+// event line is its id, time, type, actor and payload; another line with five
+// fields reads as an event of a type no test asks for.
+func shown(out string) []apiEvent {
+	var events []apiEvent
+
+	for line := range strings.Lines(out) {
+		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 {
+			events = append(events, apiEvent{Type: e[2], Payload: json.RawMessage(e[4])})
+		}
+	}
+
+	return events
+}
+
+// payloads decodes into T the payload of every event of kind.
+func payloads[T any](t *testing.T, events []apiEvent, kind string) []T {
 	t.Helper()
 
 	var ps []T
 
-	for line := range strings.Lines(out) {
-		if e := strings.SplitN(strings.TrimSpace(line), " ", 5); len(e) == 5 && e[2] == kind {
+	for _, e := range events {
+		if e.Type == kind {
 			var p T
-			require.NoError(t, json.Unmarshal([]byte(e[4]), &p))
+			require.NoError(t, json.Unmarshal(e.Payload, &p))
 			ps = append(ps, p)
 		}
 	}
@@ -465,11 +517,11 @@ func eventPayloads[T any](t *testing.T, out, kind string) []T {
 	return ps
 }
 
-// sessionStarts returns every session_started event in out.
-func sessionStarts(t *testing.T, out string) []sessionStart {
+// sessionStarts returns every session_started event among events.
+func sessionStarts(t *testing.T, events []apiEvent) []sessionStart {
 	t.Helper()
 
-	return eventPayloads[sessionStart](t, out, "session_started")
+	return payloads[sessionStart](t, events, "session_started")
 }
 
 func TestPipelineEndToEnd(t *testing.T) {
@@ -482,12 +534,12 @@ func TestPipelineEndToEnd(t *testing.T) {
 
 	show := in.ok("task", "show", id, "--events")
 	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
-	assert.Equal(t, []sessionStart{{Mode: "readiness"}, {Mode: "start", Resume: true}}, sessionStarts(t, show))
+	assert.Equal(t, []sessionStart{{Mode: "readiness"}, {Mode: "start", Resume: true}}, sessionStarts(t, shown(show)))
 	assert.Contains(t, strings.Split(in.ok("task", "diff", id), "\n"), "+"+marker)
 
 	var reviews []string
 
-	for _, r := range eventPayloads[struct{ Outcome string }](t, show, "review_ended") {
+	for _, r := range payloads[struct{ Outcome string }](t, shown(show), "review_ended") {
 		reviews = append(reviews, r.Outcome)
 	}
 
@@ -495,7 +547,7 @@ func TestPipelineEndToEnd(t *testing.T) {
 
 	// The review's second model call carries what its shell read, so the diff
 	// was written in its read-only container; the added line is in no earlier call.
-	calls := slices.DeleteFunc(mock.Requests(), func(r mockapi.Request) bool { return !r.ModelCall })
+	calls := modelCalls(mock)
 	require.Len(t, calls, 5)
 
 	for i, r := range calls {
@@ -700,7 +752,7 @@ func TestVerifyGateBlocks(t *testing.T) {
 	assert.Equal(t, []string{"verify_failed"}, values(show, "stop:"))
 
 	modes := map[string]int{}
-	for _, s := range sessionStarts(t, show) {
+	for _, s := range sessionStarts(t, shown(show)) {
 		modes[s.Mode]++
 	}
 
@@ -719,7 +771,7 @@ func TestGatewayBehindCustomCA(t *testing.T) {
 	id, run := in.pipeline("notes")
 	require.Zero(t, run.code, run)
 	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
-	assert.Len(t, slices.DeleteFunc(mock.Requests(), func(r mockapi.Request) bool { return !r.ModelCall }), 2)
+	assert.Len(t, modelCalls(mock), 2)
 
 	// A network adds a CA, so the configured bundle is no longer the image's.
 	ca, _, _ := sandboxtest.CA(t)
@@ -756,7 +808,7 @@ func TestKilledProcessResumes(t *testing.T) {
 
 	show := in.ok("task", "show", id, "--events")
 	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
-	assert.Equal(t, resumed, sessionStarts(t, show))
+	assert.Equal(t, resumed, sessionStarts(t, shown(show)))
 	assert.Equal(t, 1, in.runs(id))
 	assert.Empty(t, in.containers())
 }
@@ -778,25 +830,20 @@ func TestKilledSidecarResumes(t *testing.T) {
 
 	show := in.ok("task", "show", id, "--events")
 	assert.Equal(t, []string{"in_review"}, values(show, "status:"))
-	assert.Equal(t, resumed, sessionStarts(t, show))
+	assert.Equal(t, resumed, sessionStarts(t, shown(show)))
 	assert.Equal(t, 1, in.runs(id))
 	assert.Empty(t, in.containers())
 
 	var steps []string
 
-	for line := range strings.Lines(show) {
-		e := strings.SplitN(strings.TrimSpace(line), " ", 5)
-		if len(e) < 5 {
-			continue
-		}
-
-		switch e[2] {
+	for _, e := range shown(show) {
+		switch e.Type {
 		case "session_started":
-			steps = append(steps, e[2])
+			steps = append(steps, e.Type)
 		case "stopped":
 			var stop struct{ Reason string }
-			require.NoError(t, json.Unmarshal([]byte(e[4]), &stop))
-			steps = append(steps, e[2]+" "+stop.Reason)
+			require.NoError(t, json.Unmarshal(e.Payload, &stop))
+			steps = append(steps, e.Type+" "+stop.Reason)
 		}
 	}
 

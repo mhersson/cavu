@@ -282,3 +282,33 @@ func carries(r mockapi.Request, marker string) bool {
 
 	return false
 }
+
+// A fresh fix of a review gets the whole change as a file in the agent
+// container, and the new session reads it.
+func TestFreshFixReadsReviewPatch(t *testing.T) {
+	const line = "CAVU-DIFF-ONLY-LINE-5d3a"
+
+	r, c, mock := agentRun(t,
+		bash("echo "+line+" >> notes.txt && git commit -qam 'docs(notes): add a line'"), done,
+		bash("cat /run/cavu/review.patch"), done)
+
+	res := work(t, r, c, newSession(t))
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+	require.True(t, res.Changed)
+
+	before := len(mock.Requests())
+
+	fix := newSession(t)
+	fix.Mode, fix.Role = engine.ModeFixReview, engine.RoleStrong
+	// As the settings fill an unset model_strong with the work model.
+	c.Agent.Strong.Model = c.Agent.Model
+	fix.Findings = []engine.Finding{{Severity: "important", Where: "notes.txt", What: "The new line is unexplained.", Why: "A reader cannot tell why it is there."}}
+
+	res = work(t, r, c, fix)
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+
+	reqs := mock.Requests()[before:]
+	require.Len(t, reqs, 2, "the fresh session read the patch and then finished")
+	assert.False(t, carries(reqs[0], line), "the diff reached the model before the read")
+	assert.True(t, carries(reqs[1], line), "the diff did not reach the model after the read")
+}
