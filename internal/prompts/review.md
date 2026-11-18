@@ -20,6 +20,8 @@ The agent made these choices without asking:
 
 # The change
 
+{{if .VerifyWaived}}The project waives its verify command, so nothing has run the project's checks on this change.{{else}}CAVU ran the project's verify command, `{{.VerifyCommand}}`, on this change and it passed. You need not run it again.{{end}}
+
 `{{.DiffFile}}` holds the change: git's summary, then the diff from the commit the task started from. Read it whole: it is your view of the change. Look outside it only to check a risk you can name.
 {{- if .Summary}}
 

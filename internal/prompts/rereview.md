@@ -16,6 +16,8 @@ A review of the change found these problems, and the agent then tried to fix the
 
 # The fix
 
+{{if .VerifyWaived}}The project waives its verify command, so nothing has run the project's checks on this fix.{{else}}CAVU ran the project's verify command, `{{.VerifyCommand}}`, on this fix and it passed. You need not run it again.{{end}}
+
 `{{.FixDiffFile}}` holds the fix: git's summary, then the diff from the commit the review saw. `{{.DiffFile}}` holds the whole change the same way, from the commit the task started from.
 
 # Your verdicts

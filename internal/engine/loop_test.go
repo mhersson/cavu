@@ -1415,6 +1415,76 @@ func TestUsageOfAFaultedSessionIsRecorded(t *testing.T) {
 	}
 }
 
+// A session or review its caller cut keeps its usage on a session_cut event, which leaves the facts alone, so the next RunTask redoes the action.
+func TestCutSessionKeepsItsUsage(t *testing.T) {
+	used := []store.Usage{
+		{Source: "proxy", Model: "model-a", Input: 10, Output: 5},
+		{Source: "proxy", Model: "model-b", Input: 3, Output: 1, CacheRead: 2},
+	}
+
+	tests := map[string]struct {
+		method string
+		script func(h *harness)
+	}{
+		"a session": {"work", func(h *harness) {
+			h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Turns: 4, Usage: used}, err: context.Canceled}}
+		}},
+		"a review": {"review", func(h *harness) {
+			h.withReview()
+			h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456"}}}
+			h.runner.reviews = []step[engine.ReviewResult]{{res: engine.ReviewResult{Turns: 4, Usage: used}, err: context.Canceled}}
+		}},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			tc.script(h)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			h.runner.onCall = func(c call) {
+				if c.method == tc.method {
+					cancel()
+				}
+			}
+
+			_, err := h.run(ctx)
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Empty(t, h.eventsOf(engine.Stopped), "a cancelled call is not a fault")
+
+			cuts := h.eventsOf(engine.SessionCut)
+			require.Len(t, cuts, 1)
+			assert.Equal(t, "runner", cuts[0].Actor)
+			assert.Equal(t, h.runner.callsOf(tc.method)[0].runID, cuts[0].RunID)
+			assert.Equal(t, 4, payloadOf[engine.SessionCutPayload](t, cuts[0]).Turns)
+			assert.Equal(t, []string{engine.SessionCut}, h.spy.usageTies, "the rows are tied to the cut")
+
+			counted, err := h.store.UsageSince(t.Context(), h.task.ID, 0)
+			require.NoError(t, err)
+			assert.Equal(t, used, counted)
+
+			all := h.events()
+			before := all[:len(all)-1]
+			require.Equal(t, engine.SessionCut, all[len(all)-1].Type)
+			assert.Equal(t, engine.Reduce(before), engine.Reduce(all), "the cut leaves the facts alone")
+
+			h.runner.onCall = nil
+
+			status, err := h.run(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, engine.StatusInReview, status)
+
+			calls := h.runner.callsOf(tc.method)
+			require.Len(t, calls, 2, "the cut action starts again")
+
+			if tc.method == "work" {
+				assert.True(t, calls[1].work.Resume)
+				assert.Equal(t, calls[0].work.SessionID, calls[1].work.SessionID)
+			}
+		})
+	}
+}
+
 // A runner fault keeps its run: the action it cut is redone on that run and its
 // volumes, by itself after the backoff or at once on a person's retry. A
 // cancel ends that run and removes them.

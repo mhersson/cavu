@@ -73,6 +73,16 @@ func budgetHandler(t *testing.T, up string, b *Budget, hold time.Duration) (http
 	return h, stops
 }
 
+// TestNewHoldsRefusals pins the production hold of a budgeted handler, which budgetHandler replaces.
+func TestNewHoldsRefusals(t *testing.T) {
+	h, err := New(Config{Model: modelRoute("http://gateway.example", authBearer), Budget: &Budget{CapMicroUSD: 1}})
+	require.NoError(t, err)
+
+	hh, ok := h.(*handler)
+	require.True(t, ok)
+	assert.Equal(t, refusalHold, hh.hold)
+}
+
 // budgetProxy answers a refusal at once.
 func budgetProxy(t *testing.T, up string, b *Budget) (*httptest.Server, *deniedLog) {
 	t.Helper()

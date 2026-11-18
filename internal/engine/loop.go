@@ -482,7 +482,7 @@ func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 
 	res, err := p.Runner.Prepare(ctx, o.cfg)
 	if err != nil {
-		return p.fault(ctx, o, nil, err)
+		return p.fault(ctx, o, 0, nil, err)
 	}
 
 	// A failed baseline is an environment stop even when the runner names no step.
@@ -594,7 +594,7 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 	p.hold(stop())
 
 	if err != nil {
-		return p.fault(ctx, o, runUsage(o.row.ID, res.Usage), err)
+		return p.fault(ctx, o, res.Turns, runUsage(o.row.ID, res.Usage), err)
 	}
 
 	return p.result(ctx, o, runUsage(o.row.ID, res.Usage), draft{SessionEnded, actorRunner, SessionEndedPayload{
@@ -728,7 +728,7 @@ func (p *pass) verify(ctx context.Context, v view, a Action, o openRun) error {
 	}
 
 	if err != nil {
-		return p.fault(ctx, o, nil, err)
+		return p.fault(ctx, o, 0, nil, err)
 	}
 
 	return p.result(ctx, o, nil, draft{VerifyEnded, actorRunner, VerifyEndedPayload{
@@ -747,7 +747,7 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 
 	res, err := p.Runner.Export(ctx, o.cfg, s.HeadCommit)
 	if err != nil {
-		return p.fault(ctx, o, nil, err)
+		return p.fault(ctx, o, 0, nil, err)
 	}
 
 	if res.Problem != "" {
@@ -788,10 +788,18 @@ func writeArtifact(dir, name string, data []byte) (string, error) {
 }
 
 // fault records a runner error as a sandbox stop, with the usage of the
-// session it cut. While ctx is done the error is not a fault: the claim stays
-// pending and the next RunTask redoes it.
-func (p *pass) fault(ctx context.Context, o openRun, usage []store.Usage, cause error) error {
+// session it cut. While ctx is done the error is not a fault: the usage is kept
+// on a session_cut event, the claim stays pending and the next RunTask redoes it.
+func (p *pass) fault(ctx context.Context, o openRun, turns int, usage []store.Usage, cause error) error {
 	if err := ctx.Err(); err != nil {
+		if len(usage) == 0 {
+			return err
+		}
+
+		if werr := p.result(ctx, o, usage, draft{SessionCut, actorRunner, SessionCutPayload{Turns: turns}}); werr != nil {
+			return errors.Join(err, werr)
+		}
+
 		return err
 	}
 

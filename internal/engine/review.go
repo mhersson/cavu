@@ -152,7 +152,7 @@ func (p *pass) review(ctx context.Context, v view, a Action, o openRun) error {
 	p.hold(stop())
 
 	if err != nil {
-		return p.fault(ctx, o, runUsage(o.row.ID, res.Usage), err)
+		return p.fault(ctx, o, res.Turns, runUsage(o.row.ID, res.Usage), err)
 	}
 
 	return p.result(ctx, o, runUsage(o.row.ID, res.Usage), draft{ReviewEnded, actorRunner, ReviewEndedPayload{

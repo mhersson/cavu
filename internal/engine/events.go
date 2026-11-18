@@ -22,6 +22,7 @@ const (
 	RateLimit      = "rate_limit"      // agent
 	EgressDenied   = "egress_denied"   // runner
 	SessionEnded   = "session_ended"   // runner
+	SessionCut     = "session_cut"     // runner
 	VerifyStarted  = "verify_started"  // engine
 	VerifyEnded    = "verify_ended"    // runner
 	ReviewStarted  = "review_started"  // engine
@@ -33,7 +34,7 @@ const (
 	RunEnded       = "run_ended"       // engine
 )
 
-// ProgressTypes are the event types Reduce does not read.
+// ProgressTypes are the event types a session reports while it runs; Reduce reads none of them.
 var ProgressTypes = []string{AgentText, AgentTool, RateLimit, EgressDenied}
 
 // Session outcomes.
@@ -137,6 +138,12 @@ type (
 
 	EgressDeniedPayload struct {
 		Host string `json:"host"`
+	}
+
+	// SessionCutPayload is the payload of the event that carries the usage of a
+	// session or review its caller cut. Reduce does not read it.
+	SessionCutPayload struct {
+		Turns int `json:"turns"`
 	}
 
 	SessionEndedPayload struct {
