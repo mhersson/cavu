@@ -418,6 +418,7 @@ func (s *session) result(dr driver.Result, mode string) engine.WorkResult {
 		var out struct {
 			Status, Title, Summary string
 			Assumptions, Questions []string
+			WhereToLook            []string `json:"where_to_look"`
 		}
 
 		if json.Unmarshal(dr.Structured, &out) != nil ||
@@ -429,6 +430,7 @@ func (s *session) result(dr driver.Result, mode string) engine.WorkResult {
 
 		res.Outcome, res.Title, res.Summary = out.Status, s.mask(out.Title), s.mask(out.Summary)
 		res.Assumptions, res.Questions = maskEach(s.mask, out.Assumptions), maskEach(s.mask, out.Questions)
+		res.WhereToLook = maskEach(s.mask, out.WhereToLook)
 	default:
 		res.Outcome = engine.OutcomeCrashed
 	}

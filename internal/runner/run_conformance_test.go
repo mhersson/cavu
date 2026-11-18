@@ -125,6 +125,25 @@ func TestRunProducesDiff(t *testing.T) {
 	assertBundle(t, r, c, ex.Bundle, res.HeadCommit)
 }
 
+// The pinned claude takes a result that says where a reviewer should look, and
+// the list reaches the work result; a result without one still ends done.
+func TestResultCarriesWhereToLook(t *testing.T) {
+	where := []string{"notes.txt: the new line", "CAVU-WHERE-TO-LOOK-2c7e"}
+
+	r, c, _ := agentRun(t, mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
+		"status": "done", "title": "Add a line", "summary": "Added a line to notes.txt.", "where_to_look": where,
+	}}, done)
+
+	w := newSession(t)
+	res := work(t, r, c, w)
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+	assert.Equal(t, where, res.WhereToLook)
+
+	res = work(t, r, c, engine.WorkRequest{Mode: engine.ModeContinue, SessionID: w.SessionID, Resume: true})
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+	assert.Empty(t, res.WhereToLook)
+}
+
 // The freeze commits what a session left uncommitted and follows a HEAD that
 // moved ahead of the base; any other state fails the session.
 func TestFreezeGitStates(t *testing.T) {

@@ -5,7 +5,8 @@
     "title": {"type": "string", "description": "One line that names the change."},
     "summary": {"type": "string", "description": "What you changed and why, for the person who reviews it."},
     "assumptions": {"type": "array", "items": {"type": "string"}, "description": "The design choices you made without asking."},
-    "questions": {"type": "array", "items": {"type": "string"}, "description": "What you need answered to go on."}
+    "questions": {"type": "array", "items": {"type": "string"}, "description": "What you need answered to go on."},
+    "where_to_look": {"type": "array", "items": {"type": "string"}, "description": "The parts of the change a person reviewing it should read first."}
   },
   "required": ["status"],
   "if": {"properties": {"status": {"const": "blocked"}}},

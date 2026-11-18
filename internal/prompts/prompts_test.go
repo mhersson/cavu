@@ -106,6 +106,7 @@ func TestResultSchemaIsValidJSON(t *testing.T) {
 			Status                 struct{ Enum []string }
 			Title, Summary         struct{ Type string }
 			Assumptions, Questions array
+			WhereToLook            array `json:"where_to_look"`
 		}
 		If struct {
 			Properties struct{ Status struct{ Const string } }
@@ -128,7 +129,7 @@ func TestResultSchemaIsValidJSON(t *testing.T) {
 	assert.Equal(t, "string", schema.Properties.Title.Type)
 	assert.Equal(t, "string", schema.Properties.Summary.Type)
 
-	for _, a := range []array{schema.Properties.Assumptions, schema.Properties.Questions} {
+	for _, a := range []array{schema.Properties.Assumptions, schema.Properties.Questions, schema.Properties.WhereToLook} {
 		assert.Equal(t, "array", a.Type)
 		assert.Equal(t, "string", a.Items.Type)
 	}

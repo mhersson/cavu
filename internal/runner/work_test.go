@@ -64,11 +64,12 @@ func TestWorkMapsResults(t *testing.T) {
 	resets := time.Date(2026, 11, 16, 18, 0, 0, 0, time.UTC)
 	done := structured(map[string]any{
 		"status": "done", "title": "Fix the login form", "summary": "Trimmed the password.", "assumptions": []string{"Spaces are typos."},
+		"where_to_look": []string{"login.go: the trim"},
 	})
 	doneResult := driver.Result{Reason: driver.ReasonDone, SessionID: "agent-id", Turns: 7, CostEstimateUSD: 0.5, Structured: done}
 	doneWork := engine.WorkResult{
 		Outcome: engine.OutcomeDone, Title: "Fix the login form", Summary: "Trimmed the password.",
-		Assumptions: []string{"Spaces are typos."}, Turns: 7, CostEstimateUSD: 0.5,
+		Assumptions: []string{"Spaces are typos."}, WhereToLook: []string{"login.go: the trim"}, Turns: 7, CostEstimateUSD: 0.5,
 	}
 
 	// What a rootless Podman client prints after an exec's own output.
@@ -751,7 +752,7 @@ func TestWorkOutputIsRedacted(t *testing.T) {
 
 	f := newFake()
 	d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(map[string]any{
-		"status": "blocked", "title": leak, "summary": leak, "assumptions": []string{leak}, "questions": []string{leak},
+		"status": "blocked", "title": leak, "summary": leak, "assumptions": []string{leak}, "questions": []string{leak}, "where_to_look": []string{leak},
 	})}}, during: func(_ context.Context, sink func(driver.Event)) {
 		sink(driver.Event{Kind: driver.KindText, Text: leak})
 		sink(driver.Event{Kind: driver.KindToolUse, ToolName: "Bash", ToolInput: json.RawMessage(`"` + leak + `"`)})
