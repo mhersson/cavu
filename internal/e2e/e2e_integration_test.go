@@ -836,19 +836,14 @@ func TestKilledSidecarResumes(t *testing.T) {
 
 	var steps []string
 
-	for line := range strings.Lines(show) {
-		e := strings.SplitN(strings.TrimSpace(line), " ", 5)
-		if len(e) < 5 {
-			continue
-		}
-
-		switch e[2] {
+	for _, e := range shown(show) {
+		switch e.Type {
 		case "session_started":
-			steps = append(steps, e[2])
+			steps = append(steps, e.Type)
 		case "stopped":
 			var stop struct{ Reason string }
-			require.NoError(t, json.Unmarshal([]byte(e[4]), &stop))
-			steps = append(steps, e[2]+" "+stop.Reason)
+			require.NoError(t, json.Unmarshal(e.Payload, &stop))
+			steps = append(steps, e.Type+" "+stop.Reason)
 		}
 	}
 
