@@ -38,6 +38,11 @@ func TestFlag(t *testing.T) {
 		},
 		{name: "a deleted AGENTS.md", files: []engine.ChangedFile{{Path: "AGENTS.md"}}, want: engine.Flagged{Instructions: []string{"AGENTS.md"}}},
 		{name: "a path under .claude/", files: []engine.ChangedFile{{Path: ".claude/settings.json", Size: 80}}, want: engine.Flagged{Instructions: []string{".claude/settings.json"}}},
+		{
+			name:  "a path under a nested .claude/",
+			files: []engine.ChangedFile{{Path: "pkg/.claude/settings.json", Size: 80}, {Path: "pkg/x.claude/settings.json", Size: 80}},
+			want:  engine.Flagged{Instructions: []string{"pkg/.claude/settings.json"}},
+		},
 		{name: "an added file of 2 MiB", files: []engine.ChangedFile{{Path: "assets/video.mp4", Added: true, Size: 2 << 20}}, want: engine.Flagged{Large: []string{"assets/video.mp4"}}},
 		{name: "an added file of 1 MiB", files: []engine.ChangedFile{{Path: "assets/logo.png", Added: true, Size: 1 << 20}}},
 		{name: "a modified file of 2 MiB", files: []engine.ChangedFile{{Path: "assets/video.mp4", Size: 2 << 20}}},

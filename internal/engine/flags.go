@@ -16,12 +16,12 @@ const (
 // of, at most maxFlagged of each kind.
 type Flagged struct {
 	Workflows    []string `json:"workflows"`    // under .github/workflows/
-	Instructions []string `json:"instructions"` // AGENTS.md or CLAUDE.md in any directory, or under .claude/
+	Instructions []string `json:"instructions"` // AGENTS.md or CLAUDE.md, or under a .claude/ directory, in any directory
 	Large        []string `json:"large"`        // added, and over 1 MiB
 }
 
-// Flag flags workflows and instruction files on any path files list, a
-// deleted one included, and large files only where the change adds them.
+// Flag flags workflows and instruction files on any path in files, a deleted
+// one included, and large files only where the change adds them.
 func Flag(files []ChangedFile) Flagged {
 	var f Flagged
 
@@ -36,7 +36,7 @@ func Flag(files []ChangedFile) Flagged {
 			add(&f.Workflows, c.Path)
 		}
 
-		if name := path.Base(c.Path); name == "AGENTS.md" || name == "CLAUDE.md" || strings.HasPrefix(c.Path, ".claude/") {
+		if name := path.Base(c.Path); name == "AGENTS.md" || name == "CLAUDE.md" || strings.Contains("/"+c.Path, "/.claude/") {
 			add(&f.Instructions, c.Path)
 		}
 
