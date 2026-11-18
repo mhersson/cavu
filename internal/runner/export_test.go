@@ -82,12 +82,22 @@ func TestExportImportsTheBundle(t *testing.T) {
 	assert.Equal(t, []string{baseCommit, headCommit, "cavu/fix-login", bundleFile}, agent[0].cmd.Argv[4:])
 	assert.Equal(t, map[string][]byte{tmpfsBundle: []byte(exportedBundle)}, f.imported, "the import takes the bundle the agent container made")
 
-	runs := slices.Concat(agent, f.runsIn(phaseImport))
-	for _, r := range runs {
+	for _, r := range slices.Concat(agent, f.runsIn(phaseImport)) {
 		assert.True(t, strings.HasPrefix(r.cmd.Argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox: %s", r.name)
 	}
 
-	for _, r := range runs[1:] {
+	assertImportCommands(t, f)
+}
+
+// assertImportCommands wants every command of the import container run in
+// the mirror, under no git configuration but the mirror's.
+func assertImportCommands(t *testing.T, f *fakeSandbox) {
+	t.Helper()
+
+	runs := f.runsIn(phaseImport)
+	require.NotEmpty(t, runs)
+
+	for _, r := range runs {
 		assert.Equal(t, "/mirror", r.cmd.Dir, r.name)
 		assert.Equal(t, []string{"HOME=/run/cavu", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}, r.cmd.Env, "no configuration but the mirror's: %s", r.name)
 	}

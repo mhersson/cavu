@@ -146,6 +146,8 @@ func TestReviewReadsTheImportedDiffs(t *testing.T) {
 				assert.True(t, strings.HasPrefix(r.cmd.Argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox: %s", r.name)
 			}
 
+			assertImportCommands(t, f)
+
 			want := map[string][]byte{}
 			for _, file := range tt.files {
 				want[file] = f.out[file]
