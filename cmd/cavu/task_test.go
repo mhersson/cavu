@@ -1098,6 +1098,39 @@ func TestTaskRunFollowsUnderAServer(t *testing.T) {
 	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
 }
 
+// The follow ends once the task's pull request is watched: the watch is the server's.
+func TestTaskRunEndsAtTheWatch(t *testing.T) {
+	dir, id, _ := runSetup(t)
+	server := holdLock(t, dir, "serve")
+	refuseRuntime(t)
+
+	n := taskID(t, id)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	out, done := taskInBackground(ctx, "run", id, "--data-dir", dir)
+
+	require.Eventually(t, func() bool {
+		last, err := server.store.LastEventID(ctx, n)
+
+		return err == nil && last > 0
+	}, within, time.Millisecond, "the verb starts the task")
+
+	_, err := server.store.Append(ctx, n, -1, []store.Event{
+		event(engine.Exported, "runner", engine.ExportedPayload{HeadCommit: "head456", DiffPath: "/srv/diff.patch"}),
+		event(engine.Published, "runner", engine.PublishedPayload{
+			Branch: "cavu/fix-the-login", Head: "head456", Number: 7, URL: "https://github.com/acme/web/pull/7", NodeID: "PR_7",
+		}),
+	}, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, exitCodeOf(t, done), out.String())
+
+	tail := eventLines(t, out.String(), storedEvents(t, dir, id))
+	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+}
+
 func TestTaskRunPrintsAWaitOnce(t *testing.T) {
 	dir, _, fake := runSetup(t)
 	dep := addTask(t, dir, "First")

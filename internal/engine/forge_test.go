@@ -80,8 +80,8 @@ func TestPublishRecordsThePullRequest(t *testing.T) {
 	pr.Since = time.Time{}
 	assert.Equal(t, engine.PRFact{
 		Number: publishedOK.Number, URL: publishedOK.URL, NodeID: publishedOK.NodeID, Branch: publishedOK.Branch,
-		Head: publishedOK.Head, Heads: []string{publishedOK.Head},
-	}, pr)
+		Head: publishedOK.Head, Heads: []string{publishedOK.Head}, Export: payloadOf[engine.ExportedPayload](t, tail[0]),
+	}, pr, "the export it published is the change the pull request holds")
 }
 
 func TestPublishBodyHoldsNoCostOfTheTask(t *testing.T) {
@@ -177,6 +177,26 @@ func TestPublishFaultIsRetried(t *testing.T) {
 	assert.Equal(t, 1, h.spy.created(), "the retry publishes from the same run")
 }
 
+// publishedRun seeds the task's first run, which published head456 as pull
+// request 7 and ended.
+func (h *harness) publishedRun() {
+	h.t.Helper()
+
+	first := h.seed(
+		ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`),
+		ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
+		ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","head_commit":"head456"}`),
+		ev(engine.VerifyStarted, ""), ev(engine.VerifyEnded, `{"result":"passed","command":"make test"}`),
+		ev(engine.ExportStarted, ""), ev(engine.Exported, `{"head_commit":"head456"}`), ev(engine.PublishStarted, ""),
+		ev(engine.Published, `{"branch":"cavu/fix-the-login-2","head":"head456","number":7,"url":"https://example.com/web/pull/7","node_id":"PR_7"}`),
+		ev(engine.RunEnded, `{"outcome":"exported","kept_home":true}`),
+	)
+
+	end := now
+	first.Outcome, first.EndedAt = engine.RunExported, &end
+	require.NoError(h.t, h.store.UpdateRun(h.t.Context(), first))
+}
+
 // A publish of a task that has a pull request pushes onto its branch and
 // writes no title or text, which a person may have edited.
 func TestSecondPublishSendsNoText(t *testing.T) {
@@ -189,20 +209,7 @@ func TestSecondPublishSendsNoText(t *testing.T) {
 	exported, err := json.Marshal(engine.ExportedPayload{HeadCommit: "fix789", BundlePath: bundle})
 	require.NoError(t, err)
 
-	first := h.seed(
-		ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), ev(engine.Prepared, `{"base_commit":"base123"}`),
-		ev(engine.SessionStarted, `{"mode":"start","session_id":"`+seededSession+`"}`),
-		ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","head_commit":"head456"}`),
-		ev(engine.VerifyStarted, ""), ev(engine.VerifyEnded, `{"result":"passed","command":"make test"}`),
-		ev(engine.ExportStarted, ""), ev(engine.Exported, `{"head_commit":"head456"}`), ev(engine.PublishStarted, ""),
-		ev(engine.Published, `{"branch":"cavu/fix-the-login-2","head":"head456","number":7,"url":"https://example.com/web/pull/7","node_id":"PR_7"}`),
-		ev(engine.RunEnded, `{"outcome":"exported"}`),
-	)
-
-	end := now
-	first.Outcome, first.EndedAt = engine.RunExported, &end
-	require.NoError(t, h.store.UpdateRun(t.Context(), first))
-
+	h.publishedRun()
 	h.seed(
 		ev(engine.RunStarted, `{"reason":"ci_fix","head":"head456"}`), ev(engine.PrepareStarted, ""),
 		ev(engine.Prepared, `{"base_commit":"base123"}`),
@@ -236,4 +243,146 @@ func TestSecondPublishSendsNoText(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, snap.Facts.PR)
 	assert.Equal(t, []string{"head456", "fix789"}, snap.Facts.PR.Heads)
+}
+
+// A task whose pull request is watched rests: RunTask calls no runner and records nothing.
+func TestRunTaskRestsAtTheWatch(t *testing.T) {
+	h := newHarness(t)
+	h.withPublish()
+	h.publishedRun()
+
+	before := len(h.events())
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Empty(t, h.runner.calls)
+	assert.Len(t, h.events(), before)
+
+	snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, engine.KindWatch, engine.Decide(snap).Kind)
+}
+
+func TestSnapshotReadsTheWatchPolicy(t *testing.T) {
+	h := newHarness(t)
+
+	snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	assert.False(t, snap.Watch.NoCI)
+	assert.Equal(t, 120*time.Minute, snap.Watch.CITimeout, "ci_timeout_minutes at its default")
+
+	p := h.project()
+	p.Forge.NoCI = true
+	require.NoError(t, h.store.UpdateProject(t.Context(), p))
+	require.NoError(t, h.store.SetSetting(t.Context(), "ci_timeout_minutes", "30"))
+
+	snap, err = h.loop.Snapshot(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	assert.True(t, snap.Watch.NoCI)
+	assert.Equal(t, 30*time.Minute, snap.Watch.CITimeout)
+}
+
+// A fix run whose branch holds a head CAVU did not push ends before its
+// publish: its export cannot descend from the head a retry takes back.
+func TestATakeoverEndsTheOpenRun(t *testing.T) {
+	h := newHarness(t)
+	h.withPublish()
+	h.publishedRun()
+
+	run := h.seed(
+		ev(engine.RunStarted, `{"reason":"ci_fix","head":"head456"}`), ev(engine.PrepareStarted, ""),
+		ev(engine.Prepared, `{"base_commit":"base123"}`),
+		ev(engine.SessionStarted, `{"mode":"fix_ci","session_id":"`+seededSession+`","resume":true}`),
+		ev(engine.SessionEnded, `{"outcome":"done","changed":true,"head_commit":"fix789"}`),
+		ev(engine.VerifyStarted, ""), ev(engine.VerifyEnded, `{"result":"passed","command":"make test"}`),
+		ev(engine.ExportStarted, ""), ev(engine.Exported, `{"head_commit":"fix789"}`),
+	)
+	h.add(run.ID, engine.PRObserved, "runner", `{"state":"open","head":"theirs","checks":"pending"}`)
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusBlocked, status)
+	assert.Equal(t, []string{"release/run"}, h.runner.trace(), "nothing is pushed over the person's commit")
+
+	stop := h.lastStop()
+	assert.Equal(t, engine.StopTakenOver, stop.Reason)
+	assert.Contains(t, stop.Explanation, "https://example.com/web/pull/7")
+
+	ends := h.eventsOf(engine.RunEnded)
+	require.NotEmpty(t, ends)
+	assert.Equal(t, engine.RunEndedPayload{Outcome: engine.StopTakenOver, KeptHome: true}, payloadOf[engine.RunEndedPayload](t, ends[len(ends)-1]))
+	assert.Equal(t, map[int64]string{run.ID: engine.StopTakenOver}, h.spy.ended())
+}
+
+// A run whose work is over with no export ends as finished, not exported.
+func TestARunEndedWithoutAnExportIsFinished(t *testing.T) {
+	tests := []struct {
+		name   string
+		seen   string // the observation recorded before the fix run's start
+		more   []store.Event
+		merged string // the observation recorded last, "" for none
+		status engine.Status
+		trace  []string
+		stop   string // the stop the watch then records, "" for none
+	}{
+		{
+			name: "a fix run that changed nothing",
+			seen: `{"state":"open","draft":true,"head":"head456","checks":"failed","failed":["lint"]}`,
+			more: []store.Event{
+				ev(engine.SessionStarted, `{"mode":"fix_ci","session_id":"`+seededSession+`","resume":true}`),
+				ev(engine.SessionEnded, `{"outcome":"done","head_commit":"head456"}`),
+			},
+			status: engine.StatusBlocked, trace: []string{"release/run"}, stop: engine.StopCIFailed,
+		},
+		{
+			name:   "a merge while a fix run works",
+			seen:   `{"state":"open","draft":true,"head":"head456","checks":"failed","failed":["lint"]}`,
+			more:   []store.Event{ev(engine.SessionStarted, `{"mode":"fix_ci","session_id":"`+seededSession+`","resume":true}`)},
+			merged: `{"state":"merged","head":"head456","checks":"failed","failed":["lint"]}`,
+			status: engine.StatusDone, trace: []string{"release/run", "release/remove"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.withPublish()
+			h.publishedRun()
+			h.add(0, engine.PRObserved, "runner", tt.seen)
+
+			run := h.seed(append([]store.Event{
+				ev(engine.RunStarted, `{"reason":"ci_fix","head":"head456"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"base123"}`),
+			}, tt.more...)...)
+
+			if tt.merged != "" {
+				h.add(run.ID, engine.PRObserved, "runner", tt.merged)
+			}
+
+			status, err := h.run(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tt.status, status)
+			assert.Equal(t, tt.trace, h.runner.trace())
+
+			ends := h.eventsOf(engine.RunEnded)
+			require.NotEmpty(t, ends)
+
+			end := payloadOf[engine.RunEndedPayload](t, ends[len(ends)-1])
+			assert.Equal(t, engine.RunFinished, end.Outcome)
+			assert.True(t, end.KeptHome)
+			assert.Equal(t, map[int64]string{run.ID: engine.RunFinished}, h.spy.ended())
+
+			var stops []string
+			for _, e := range h.eventsOf(engine.Stopped) {
+				stops = append(stops, payloadOf[engine.StoppedPayload](t, e).Reason)
+			}
+
+			if tt.stop == "" {
+				assert.Empty(t, stops)
+			} else {
+				assert.Equal(t, []string{tt.stop}, stops, "a fix run that changed nothing is no stop; the watch's own follows")
+			}
+		})
+	}
 }

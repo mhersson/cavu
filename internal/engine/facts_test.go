@@ -153,7 +153,9 @@ func TestReduce(t *testing.T) {
 			name: "a merge after the export",
 			events: preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""),
 				ev(engine.Exported, `{"head_commit":"def456"}`), ev(engine.RunEnded, `{"outcome":"exported"}`), ev(engine.Merged, "")),
-			want: engine.Facts{Started: true, SessionID: "s1", Exported: true, Export: engine.ExportedPayload{HeadCommit: "def456"}, Merged: true},
+			want: engine.Facts{
+				Started: true, RunReason: "initial", SessionID: "s1", Exported: true, Export: engine.ExportedPayload{HeadCommit: "def456"}, Merged: true,
+			},
 		},
 		{
 			name:   "a retry with no open stop",
@@ -200,7 +202,7 @@ func TestReduce(t *testing.T) {
 		{
 			name:   "a closed run",
 			events: preparedRun(firstSession, doneChanged, ev(engine.RunEnded, `{"outcome":"agent_error"}`)),
-			want:   engine.Facts{Started: true, SessionID: "s1"},
+			want:   engine.Facts{Started: true, RunReason: "initial", SessionID: "s1"},
 		},
 		{
 			name: "a prepare after its run ended",
@@ -208,7 +210,7 @@ func TestReduce(t *testing.T) {
 				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
 				ev(engine.RunEnded, `{"outcome":"cancelled"}`), ev(engine.Prepared, `{"base_commit":"abc123"}`),
 			},
-			want: engine.Facts{Started: true},
+			want: engine.Facts{Started: true, RunReason: "initial"},
 		},
 		{
 			name: "an export outlives its run",
@@ -216,7 +218,7 @@ func TestReduce(t *testing.T) {
 				ev(engine.Exported, `{"head_commit":"def456","diff_path":"diff.patch","bundle_path":"task.bundle","files_changed":2}`),
 				ev(engine.RunEnded, `{"outcome":"exported"}`)),
 			want: engine.Facts{
-				Started: true, SessionID: "s1", Exported: true,
+				Started: true, RunReason: "initial", SessionID: "s1", Exported: true,
 				Export: engine.ExportedPayload{HeadCommit: "def456", DiffPath: "diff.patch", BundlePath: "task.bundle", FilesChanged: 2},
 			},
 		},
@@ -264,7 +266,7 @@ func TestReduce(t *testing.T) {
 				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
 				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.RunEnded, `{"outcome":"cancelled"}`),
 			},
-			want: engine.Facts{Started: true},
+			want: engine.Facts{Started: true, RunReason: "initial"},
 		},
 		{
 			name:   "a session end that does not decode",
@@ -511,7 +513,10 @@ func TestFixRunKeepsTheSessionAndTheReview(t *testing.T) {
 		assert.Equal(t, ended.SessionID, f.SessionID)
 		assert.Equal(t, ended.Role, f.Role)
 		assert.Equal(t, ended.Review, f.Review)
-		assert.Equal(t, ended.PR, f.PR)
+
+		pr := *ended.PR
+		pr.FixedHead = "fed789"
+		assert.Equal(t, &pr, f.PR, "a run on failed checks handles its head")
 		assert.Equal(t, engine.ReasonCIFix, f.RunReason)
 		assert.Equal(t, "fed789", f.RunHead)
 	})
@@ -592,5 +597,201 @@ func TestReduceHome(t *testing.T) {
 		require.NotNil(t, f.OpenStop)
 		assert.Equal(t, engine.StopCancelled, f.OpenStop.Reason)
 		assert.Equal(t, engine.KindNone, engine.Decide(snap(f)).Kind)
+	})
+}
+
+// at is e recorded at t.
+func at(e store.Event, t time.Time) store.Event {
+	e.At = t
+
+	return e
+}
+
+// publishedTask is a task whose first run published head def456 as pull
+// request 7 at now and ended, keeping its home.
+func publishedTask() []store.Event {
+	return preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""),
+		ev(engine.Exported, `{"head_commit":"def456","diff_path":"one.patch"}`), ev(engine.PublishStarted, ""),
+		at(ev(engine.Published, `{"branch":"cavu/fix-login","head":"def456","number":7,"url":"https://github.com/acme/web/pull/7","node_id":"PR_7"}`), now),
+		ev(engine.RunEnded, `{"outcome":"exported","kept_home":true}`))
+}
+
+// observed is the record of an observation o.
+func observed(o engine.Observation) store.Event {
+	raw, _ := json.Marshal(o)
+
+	return ev(engine.PRObserved, string(raw))
+}
+
+// A pull request's observations, its fix runs and a person's actions add up
+// to what the watch decides on.
+func TestReduceObservations(t *testing.T) {
+	failing := engine.Observation{State: engine.PROpen, Draft: true, Head: "def456", Checks: engine.ChecksFailed, Failed: []string{"lint"}}
+	asking := engine.Observation{
+		State: engine.PROpen, Draft: true, Head: "def456", Checks: engine.ChecksPassed,
+		Comments: []engine.Comment{{ID: "c1", Author: "ana", Body: "Rename it."}},
+	}
+	later := now.Add(time.Hour)
+
+	t.Run("merged", func(t *testing.T) {
+		f := engine.Reduce(append(publishedTask(), observed(engine.Observation{State: engine.PRMerged, Head: "def456"})))
+
+		assert.True(t, f.Merged)
+		assert.False(t, f.Cancelled)
+		assert.Equal(t, engine.StatusDone, engine.StatusOf(f))
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		f := engine.Reduce(append(publishedTask(), observed(engine.Observation{State: engine.PRClosed, Head: "def456"})))
+
+		assert.True(t, f.Cancelled)
+		assert.False(t, f.Merged)
+		assert.Equal(t, engine.StatusCancelled, engine.StatusOf(f))
+	})
+
+	t.Run("seen, with no run open, is in review", func(t *testing.T) {
+		f := engine.Reduce(append(publishedTask(), observed(failing)))
+
+		require.NotNil(t, f.PR)
+		assert.Equal(t, &failing, f.PR.Seen)
+		assert.Equal(t, engine.StatusInReview, engine.StatusOf(f))
+	})
+
+	// A fix run on the checks, which ends without an export, then one on a
+	// reviewer's request, then a person's retry of the stop that followed.
+	events := slices.Concat(publishedTask(), []store.Event{
+		observed(failing), ev(engine.RunStarted, `{"reason":"ci_fix","head":"def456"}`),
+		ev(engine.SessionStarted, `{"mode":"fix_ci","session_id":"s1","resume":true}`),
+		ev(engine.SessionEnded, `{"outcome":"done","head_commit":"def456"}`),
+		ev(engine.RunEnded, `{"outcome":"finished","kept_home":true}`),
+	})
+
+	t.Run("a fix run on failed checks counts and handles its head", func(t *testing.T) {
+		f := engine.Reduce(events)
+
+		require.NotNil(t, f.PR)
+		assert.Equal(t, 1, f.CIFixes)
+		assert.Equal(t, "def456", f.PR.FixedHead)
+		assert.False(t, f.Exported, "the run ended without an export")
+		assert.Equal(t, "def456", f.PR.Export.HeadCommit, "the change the pull request holds")
+		assert.Equal(t, engine.StatusInReview, engine.StatusOf(f), "a task with a pull request and no run is in review")
+	})
+
+	events = append(events, observed(asking), ev(engine.RunStarted, `{"reason":"comments","head":"def456","requests":["c1"]}`))
+
+	t.Run("a follow-up run counts and answers its requests", func(t *testing.T) {
+		f := engine.Reduce(events)
+
+		require.NotNil(t, f.PR)
+		assert.Equal(t, 1, f.CommentRuns)
+		assert.Equal(t, []string{"c1"}, f.PR.Answered)
+		assert.Equal(t, []string{"c1"}, f.RunRequests)
+		assert.Equal(t, engine.StatusRunning, engine.StatusOf(f))
+	})
+
+	events = append(events, ev(engine.PrepareStarted, ""), ev(engine.PrepareFailed, `{"step":"setup"}`),
+		ev(engine.Stopped, `{"reason":"environment","explanation":"Setup failed.","action":"retry"}`),
+		ev(engine.RunEnded, `{"outcome":"environment","kept_home":true}`))
+
+	t.Run("the newest run's reason and requests outlive it", func(t *testing.T) {
+		f := engine.Reduce(events)
+
+		assert.False(t, f.RunOpen)
+		assert.Equal(t, engine.ReasonComments, f.RunReason)
+		assert.Equal(t, []string{"c1"}, f.RunRequests)
+	})
+
+	t.Run("a person's action restarts the counts and the clock and keeps what was seen and answered", func(t *testing.T) {
+		f := engine.Reduce(append(slices.Clone(events), at(retried, later)))
+
+		require.NotNil(t, f.PR)
+		assert.Zero(t, f.CIFixes)
+		assert.Zero(t, f.CommentRuns)
+		assert.Empty(t, f.PR.FixedHead)
+		assert.True(t, later.Equal(f.PR.Since), "since moves to the action, at %s", f.PR.Since)
+		assert.Equal(t, &asking, f.PR.Seen)
+		assert.Equal(t, []string{"c1"}, f.PR.Answered)
+	})
+
+	t.Run("a ready-marking is a claim and moves the clock", func(t *testing.T) {
+		f := engine.Reduce(append(publishedTask(), sandboxStop, ev(engine.ReadyStarted, ""), at(ev(engine.PRReady, ""), later)))
+
+		require.NotNil(t, f.PR)
+		assert.Nil(t, f.OpenStop, "the claim closes the fault's stop")
+		assert.True(t, f.PR.MarkedReady)
+		assert.True(t, later.Equal(f.PR.Since), "since moves to the ready-marking, at %s", f.PR.Since)
+	})
+
+	t.Run("a publish clears what was seen and keeps the rest", func(t *testing.T) {
+		f := engine.Reduce(slices.Concat(publishedTask(), []store.Event{
+			ev(engine.PRReady, ""), observed(asking), ev(engine.RunStarted, `{"reason":"comments","head":"def456","requests":["c1"]}`),
+			observed(failing), ev(engine.RunStarted, `{"reason":"ci_fix","head":"def456"}`),
+			ev(engine.Exported, `{"head_commit":"fix789","diff_path":"two.patch"}`),
+			at(ev(engine.Published, `{"branch":"cavu/fix-login","head":"fix789","number":7,"url":"https://github.com/acme/web/pull/7","node_id":"PR_7"}`), later),
+		}))
+
+		require.NotNil(t, f.PR)
+		assert.Nil(t, f.PR.Seen)
+		assert.Equal(t, engine.ExportedPayload{HeadCommit: "fix789", DiffPath: "two.patch"}, f.PR.Export, "the export it published")
+		assert.Equal(t, []string{"def456", "fix789"}, f.PR.Heads)
+		assert.True(t, f.PR.MarkedReady)
+		assert.Equal(t, "def456", f.PR.FixedHead)
+		assert.Equal(t, []string{"c1"}, f.PR.Answered)
+		assert.True(t, later.Equal(f.PR.Since))
+	})
+
+	t.Run("a retry of a takeover takes the branch back at the head seen", func(t *testing.T) {
+		theirs := engine.Observation{State: engine.PROpen, Head: "theirs", Checks: engine.ChecksPending}
+		f := engine.Reduce(append(publishedTask(), observed(theirs),
+			ev(engine.Stopped, `{"reason":"taken_over","explanation":"Taken over.","action":"retry"}`), retried))
+
+		require.NotNil(t, f.PR)
+		assert.Equal(t, "theirs", f.PR.Head)
+		assert.Equal(t, []string{"def456", "theirs"}, f.PR.Heads)
+		assert.Equal(t, &theirs, f.PR.Seen, "a retry clears nothing that was seen")
+	})
+}
+
+// A retry decides again from what was seen: an equal observation is never
+// recorded again, so nothing new needs to come.
+func TestARetryDecidesFromWhatWasSeen(t *testing.T) {
+	decide := func(events []store.Event) engine.Action {
+		s := watchSnap(engine.Reduce(events))
+		s.Now = now.Add(time.Minute)
+
+		return engine.Decide(s)
+	}
+
+	t.Run("a takeover then watches the person's head", func(t *testing.T) {
+		events := append(publishedTask(), observed(engine.Observation{State: engine.PROpen, Head: "theirs", Checks: engine.ChecksPending}))
+
+		stop := decide(events)
+		require.Equal(t, engine.StopTakenOver, stop.Stop)
+
+		events = append(events, ev(engine.Stopped, `{"reason":"taken_over","explanation":"Taken over.","action":"retry"}`), at(retried, now))
+
+		got := decide(events)
+		assert.Equal(t, engine.KindWatch, got.Kind)
+		assert.Equal(t, now.Add(2*time.Hour), got.Until, "the checks on the person's head get their time from the retry")
+	})
+
+	t.Run("failed checks then start a new fix run", func(t *testing.T) {
+		events := slices.Concat(publishedTask(), []store.Event{
+			observed(engine.Observation{State: engine.PROpen, Head: "def456", Checks: engine.ChecksFailed, Failed: []string{"lint"}}),
+			ev(engine.RunStarted, `{"reason":"ci_fix","head":"def456"}`),
+			ev(engine.SessionStarted, `{"mode":"fix_ci","session_id":"s1","resume":true}`),
+			ev(engine.SessionEnded, `{"outcome":"done","head_commit":"def456"}`),
+			ev(engine.RunEnded, `{"outcome":"finished","kept_home":true}`),
+		})
+
+		stop := decide(events)
+		require.Equal(t, engine.StopCIFailed, stop.Stop)
+		assert.Contains(t, stop.Explain, "lint")
+
+		events = append(events, ev(engine.Stopped, `{"reason":"ci_failed","explanation":"Checks failed.","action":"retry"}`), retried)
+
+		got := decide(events)
+		got.Why = ""
+		assert.Equal(t, engine.Action{Kind: engine.KindPrepare, NewRun: true, Reason: engine.ReasonCIFix}, got)
 	})
 }

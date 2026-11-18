@@ -58,6 +58,7 @@ type Loop struct {
 // Run row outcomes besides the stop reasons that end a run.
 const (
 	RunExported  = "exported"
+	RunFinished  = "finished"  // the run ended with its work over and no export: a merge came first, or a fix run changed nothing
 	RunAbandoned = "abandoned" // the row's run was never claimed
 )
 
@@ -104,9 +105,9 @@ const recordTimeout = 10 * time.Second
 // row, on a context that outlives the caller's.
 const endTimeout = time.Minute
 
-// RunTask decides and acts until the task rests (action none) or waits, or ctx
-// ends. It returns the final status. The caller keeps one live RunTask per
-// task by holding the data-directory lock or a per-task lock: the
+// RunTask decides and acts until the task rests (action none or watch) or
+// waits, or ctx ends. It returns the final status. The caller keeps one live
+// RunTask per task by holding the data-directory lock or a per-task lock: the
 // compare-and-swap guards claims, not actions in flight.
 func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
 	p, err := l.newPass(ctx, taskID)
@@ -135,7 +136,7 @@ func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
 		a := Decide(v.Snapshot)
 
 		switch a.Kind {
-		case KindNone:
+		case KindNone, KindWatch:
 			return done(nil)
 		case KindWait:
 			// A waiting task holds no container. A stop's halt already released its run.
@@ -250,6 +251,11 @@ func (l *Loop) snapshot(ctx context.Context, taskID int64) (Snapshot, []store.Ev
 		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
 	}
 
+	ciTimeout, err := CITimeout(set)
+	if err != nil {
+		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
 	ids, err := l.Store.TaskDeps(ctx, taskID)
 	if err != nil {
 		return Snapshot{}, nil, fmt.Errorf("task %d: %w", taskID, err)
@@ -269,6 +275,7 @@ func (l *Loop) snapshot(ctx context.Context, taskID int64) (Snapshot, []store.Ev
 	s := Snapshot{
 		Task: t, Facts: Reduce(events), Deps: deps, Now: l.Now(), Switches: sw, Caps: defaultCaps, Limits: limits, LastEventID: last,
 	}
+	s.Watch.NoCI, s.Watch.CITimeout = pr.Forge.NoCI, ciTimeout
 
 	if limits.capped() {
 		if s.Spent, s.prices, err = l.spent(ctx, taskID, s.Facts.LastHumanEventID, set, s.Now); err != nil {
@@ -378,12 +385,17 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 
 		return p.halt(ctx, v.LastEventID, v.Task, run, stopPayload(a), nil)
 	case KindFinish:
+		outcome := RunFinished
+		if v.Facts.Exported {
+			outcome = RunExported
+		}
+
 		if err := p.write(ctx, v.LastEventID, v.run.ID, nil,
-			draft{RunEnded, actorEngine, RunEndedPayload{Outcome: RunExported, Why: a.Why, KeptHome: true}}); err != nil {
+			draft{RunEnded, actorEngine, RunEndedPayload{Outcome: outcome, Why: a.Why, KeptHome: true}}); err != nil {
 			return err
 		}
 
-		return p.free(ctx, v.Task, v.run, RemoveRun, RunExported)
+		return p.free(ctx, v.Task, v.run, RemoveRun, outcome)
 	case KindClean:
 		// The home outlives its runs, so the newest run's release removes it.
 		row := store.Run{ID: v.Facts.LastRun}
@@ -835,8 +847,9 @@ func stopPayload(a Action) StoppedPayload {
 // ends it, then releases the run. run is nil when no run is open. A stop that
 // is a runner call's result passes expectLast -1 and is recorded even after ctx ends.
 func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *store.Run, sp StoppedPayload, usage []store.Usage) error {
-	// A sandbox stop keeps the run, so a retry redoes the cut action on its volumes.
-	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment
+	// A sandbox stop keeps the run, so a retry redoes the cut action on its
+	// volumes. A takeover ends it: its export cannot descend from the head a retry takes back.
+	ends := sp.Reason == StopCancelled || sp.Reason == StopEnvironment || sp.Reason == StopTakenOver
 	drafts := []draft{{Stopped, actorEngine, sp}}
 
 	var runID int64

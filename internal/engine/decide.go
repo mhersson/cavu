@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,6 +45,13 @@ type Snapshot struct {
 	Spent       Spent
 	LastEventID int64 // for the loop; Decide does not read it
 
+	// Watch is the project's CI as the watch of its pull request reads it: none
+	// at all, and how long its checks may stay unfinished, 0 for no limit.
+	Watch struct {
+		NoCI      bool
+		CITimeout time.Duration
+	}
+
 	prices map[string]Price // for the budget of a run under a money cap; Decide does not read them
 }
 
@@ -60,6 +68,8 @@ const (
 	KindExport  ActionKind = "export"
 	KindPublish ActionKind = "publish"
 	KindFinish  ActionKind = "finish"
+	KindWatch   ActionKind = "watch"
+	KindReady   ActionKind = "ready"
 	KindClean   ActionKind = "clean"
 	KindWait    ActionKind = "wait"
 	KindStop    ActionKind = "stop"
@@ -96,6 +106,10 @@ const (
 	secondFaultWait = 2 * time.Minute
 )
 
+// checksGrace is how long a pull request's head may show no check before CAVU
+// marks the pull request ready, and again after, before the task stops.
+const checksGrace = 3 * time.Minute
+
 // UsageLimitFallback is how long a usage limit holds when its reset time is
 // unknown or already past, so a usage-limit cycle never resumes without real time passing.
 const UsageLimitFallback = 30 * time.Minute
@@ -117,7 +131,9 @@ type Action struct {
 	Scoped    bool      // review: a re-review of the open findings and of what the fix broke
 	Detail    string    // work: the answer text, or empty
 	NewRun    bool      // prepare: open a new run first
-	Until     time.Time // wait
+	Reason    string    // prepare of a new run: its reason, "" for the loop's own
+	Requests  []string  // prepare of a new comments run, and work comments: the ids of the requests the run is given
+	Until     time.Time // wait and watch: when a clock ends it, zero when none
 	Stop      string    // stop: the reason
 	Explain   string    // stop: one line for a person
 	Clear     string    // stop: the one action that clears it
@@ -165,10 +181,11 @@ func decide(s Snapshot) Action {
 	}
 
 	if f.Cancelled && !f.stoppedFor(StopCancelled) {
-		return halt(StopCancelled, ClearNone, "The task was cancelled.", "The task was cancelled.")
+		return halt(StopCancelled, ClearNone, "The task was cancelled.", cancelled(f.PR))
 	}
 
-	if f.Merged && f.Exported && f.RunOpen {
+	// A fix run may be open when the merge is seen; it ends, whatever it did.
+	if f.Merged && f.RunOpen {
 		return Action{Kind: KindFinish, Why: "The change was merged and its run is still open."}
 	}
 
@@ -210,8 +227,18 @@ func decide(s Snapshot) Action {
 		f.OpenStop = nil
 	}
 
+	// A cancelled task is over: its pull request, open or closed, is not watched.
+	if f.OpenStop != nil && f.PR != nil && !f.Cancelled {
+		return Action{Kind: KindWatch, Why: "The task is stopped until a person acts; its pull request is watched for a merge or a close."}
+	}
+
 	if f.OpenStop != nil {
 		return Action{Kind: KindNone, Why: "The task is stopped until a person acts."}
+	}
+
+	// Before the publish: the open run's export cannot descend from a head a retry takes back.
+	if pr := f.PR; pr != nil && pr.Seen != nil && !slices.Contains(pr.Heads, pr.Seen.Head) {
+		return halt(StopTakenOver, ClearRetry, "The task's branch holds a commit CAVU did not push.", takenOver(pr, f.RunOpen))
 	}
 
 	// A replay's shadow reruns an old task to compare outcomes: its change is never published.
@@ -221,6 +248,17 @@ func decide(s Snapshot) Action {
 
 	if f.Exported && f.RunOpen {
 		return Action{Kind: KindFinish, Why: "The change is exported and its run is still open."}
+	}
+
+	// A fix run that changed nothing is no stop: the watch decides what follows.
+	if f.RunOpen && f.RunHead != "" && f.Session != nil && f.Session.Outcome == OutcomeDone && !f.Session.Changed {
+		return Action{Kind: KindFinish, Why: "The fix run's session changed nothing, so the run ends."}
+	}
+
+	// Not only an exported task: a fix run that changed nothing ends without an
+	// export. A retry after a fix run's failed prepare goes on to start it again.
+	if f.PR != nil && !f.RunOpen && !f.resumedFrom(StopEnvironment) {
+		return watch(s, f.PR)
 	}
 
 	if f.Exported {
@@ -243,7 +281,7 @@ func decide(s Snapshot) Action {
 	}
 
 	if f.resumedFrom(StopEnvironment) || !f.RunOpen {
-		return Action{Kind: KindPrepare, Why: "The task needs a fresh run.", NewRun: true}
+		return newRun(f)
 	}
 
 	if !f.Prepared && f.PrepareFailure == nil {
@@ -272,6 +310,17 @@ func decide(s Snapshot) Action {
 
 	if f.Session == nil && f.SessionID == "" && s.Switches.Readiness {
 		return work(ModeReadiness, "The agent has not yet checked the task for missing facts.")
+	}
+
+	if f.Session == nil && f.RunReason == ReasonCIFix {
+		return work(ModeFixCI, "The fix run's session has not yet worked on the failed checks.")
+	}
+
+	if f.Session == nil && f.RunReason == ReasonComments {
+		a := work(ModeComments, "The follow-up run's session has not yet worked on the reviewers' requests.")
+		a.Requests = f.RunRequests
+
+		return a
 	}
 
 	if f.Session == nil {
@@ -342,7 +391,8 @@ func decide(s Snapshot) Action {
 		return halt(StopVerifyFailed, ClearRetry, "Verify failed.", "The change did not pass the verify command.")
 	}
 
-	if passed && s.Switches.Review {
+	// A fix run was reviewed with the change; verify, CI and the reviewer judge it.
+	if passed && s.Switches.Review && f.RunHead == "" {
 		return reviewLoop(s, f)
 	}
 
@@ -352,6 +402,149 @@ func decide(s Snapshot) Action {
 
 	return halt(StopAgentError, ClearRetry, "No rule matches the task's facts.",
 		"The task reached a state CAVU has no rule for.")
+}
+
+// newRun opens a run. With a pull request only a person's retry after a fix
+// run's failed prepare comes here: the run starts again as it was, and a
+// comments run is given the requests that came since too.
+func newRun(f Facts) Action {
+	if f.PR == nil || f.RunReason != ReasonCIFix && f.RunReason != ReasonComments {
+		return Action{Kind: KindPrepare, Why: "The task needs a fresh run.", NewRun: true}
+	}
+
+	a := Action{Kind: KindPrepare, Why: "A person retried the fix run whose prepare failed.", NewRun: true, Reason: f.RunReason}
+	if a.Reason == ReasonComments {
+		a.Requests = append(slices.Clone(f.RunRequests), unanswered(f.PR)...)
+	}
+
+	return a
+}
+
+// watch decides on what was seen of the pull request of a task with no run
+// open. Since is when the newest of its head, CAVU's ready-marking and a
+// person's action came, from which its checks get their time.
+func watch(s Snapshot, pr *PRFact) Action {
+	f, seen := s.Facts, pr.Seen
+
+	// An earlier head of CAVU's own is what GitHub showed before the newest push.
+	if seen == nil || seen.Head != pr.Head {
+		return Action{Kind: KindWatch, Why: "GitHub does not show the pull request's newest commit yet."}
+	}
+
+	if seen.Conflict {
+		return halt(StopConflict, ClearRetry, "The pull request conflicts with its base branch.",
+			line(fmt.Sprintf("Pull request %s conflicts with its base branch.", pr.URL)))
+	}
+
+	// Every check has finished when they read failed, so one fix run sees every failure.
+	if seen.Checks == ChecksFailed && (pr.FixedHead == pr.Head || f.CIFixes >= s.Caps.CIFixes) {
+		return halt(StopCIFailed, ClearRetry, "The pull request's checks still fail after CAVU's fix runs.",
+			line(fmt.Sprintf("Checks failed on pull request %s: %s.", pr.URL, strings.Join(seen.Failed, ", "))))
+	}
+
+	if seen.Checks == ChecksFailed {
+		return Action{Kind: KindPrepare, Why: "The pull request's checks failed; a fix run starts from its head.", NewRun: true, Reason: ReasonCIFix}
+	}
+
+	requests := unanswered(pr)
+	if len(requests) > 0 && f.CommentRuns >= s.Caps.CommentRuns {
+		return halt(StopChangesRequested, ClearRetry, "Reviewers still ask for changes after the follow-up runs.",
+			line(fmt.Sprintf("Reviewers still ask for changes on pull request %s after %d follow-up runs.", pr.URL, f.CommentRuns)))
+	}
+
+	if len(requests) > 0 {
+		return Action{
+			Kind: KindPrepare, Why: "Reviewers asked for changes on the pull request; a follow-up run starts from its head.", NewRun: true,
+			Reason: ReasonComments, Requests: requests,
+		}
+	}
+
+	if seen.Checks == ChecksPending {
+		return pending(s, pr)
+	}
+
+	if seen.Checks == ChecksNone && !s.Watch.NoCI {
+		return noChecks(s, pr)
+	}
+
+	// Checks none here is a project without CI, which has nothing to wait for.
+	if (seen.Checks == ChecksPassed || seen.Checks == ChecksNone) && seen.Draft && !pr.MarkedReady {
+		return Action{Kind: KindReady, Why: "The pull request's checks passed, or its project has no CI, so it is ready for review."}
+	}
+
+	return Action{Kind: KindWatch, Why: "The pull request waits for a person to merge it."}
+}
+
+// pending waits for checks that have not finished, up to ci_timeout_minutes.
+func pending(s Snapshot, pr *PRFact) Action {
+	if s.Watch.CITimeout == 0 {
+		return Action{Kind: KindWatch, Why: "The pull request's checks are running."}
+	}
+
+	until := pr.Since.Add(s.Watch.CITimeout)
+	if s.Now.Before(until) {
+		return Action{Kind: KindWatch, Why: "The pull request's checks are running.", Until: until}
+	}
+
+	return halt(StopCITimeout, ClearRetry, "The pull request's checks did not finish in time.",
+		line(fmt.Sprintf("The checks on pull request %s did not finish within %d minutes, the setting ci_timeout_minutes.",
+			pr.URL, int(s.Watch.CITimeout.Minutes()))))
+}
+
+// noChecks waits a grace for a first check, marks the pull request ready once,
+// since many repositories run no CI on a draft, and waits the grace again.
+func noChecks(s Snapshot, pr *PRFact) Action {
+	until := pr.Since.Add(checksGrace)
+
+	switch {
+	case s.Now.Before(until) && !pr.MarkedReady:
+		return Action{Kind: KindWatch, Why: "No check has started on the pull request yet.", Until: until}
+	case s.Now.Before(until):
+		return Action{Kind: KindWatch, Why: "No check has started on the pull request since CAVU marked it ready.", Until: until}
+	case !pr.MarkedReady:
+		return Action{Kind: KindReady, Why: "No check started on the pull request; it is marked ready, since many repositories run no CI on a draft."}
+	}
+
+	return halt(StopNoChecks, ClearRetry, "No check started on the pull request.",
+		line(fmt.Sprintf("No check started on pull request %s, even after CAVU marked it ready. "+
+			"A project without CI is marked no_ci: cavu project set NAME --no-ci on.", pr.URL)))
+}
+
+// unanswered is the ids of the requests seen holds that no follow-up run was
+// given, in seen's order.
+func unanswered(pr *PRFact) []string {
+	var ids []string
+
+	for _, c := range pr.Seen.Comments {
+		if !slices.Contains(pr.Answered, c.ID) {
+			ids = append(ids, c.ID)
+		}
+	}
+
+	return ids
+}
+
+// cancelled explains a cancel: a person's, which leaves the pull request
+// open, or the pull request's close.
+func cancelled(pr *PRFact) string {
+	switch {
+	case pr == nil:
+		return "The task was cancelled."
+	case pr.Seen != nil && pr.Seen.State == PRClosed:
+		return line(fmt.Sprintf("Pull request %s was closed without a merge.", pr.URL))
+	}
+
+	return line(fmt.Sprintf("The task was cancelled; pull request %s stays open.", pr.URL))
+}
+
+// takenOver explains a branch that holds a head CAVU did not push.
+func takenOver(pr *PRFact, runOpen bool) string {
+	text := fmt.Sprintf("The branch of pull request %s holds a commit CAVU did not push; a retry gives the branch back to CAVU at that commit.", pr.URL)
+	if runOpen {
+		text += " The open run's commits that were not pushed are dropped."
+	}
+
+	return line(text)
 }
 
 // sessionStop is the stop a session that ended as sess calls for, when its
