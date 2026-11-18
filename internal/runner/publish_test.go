@@ -115,6 +115,7 @@ func TestPublishOpensOnTheBranchThePushTook(t *testing.T) {
 	res, err := r.Publish(t.Context(), c, firstPublish())
 	require.NoError(t, err)
 	assert.Equal(t, engine.PublishResult{Branch: "cavu/fix-login-2", Head: headCommit, Number: 7, URL: "https://forge.example/o/n/pull/7", NodeID: "PR_7"}, res)
+	assert.Nil(t, r.state(c.RunID), "the sandbox opened for the publish is not kept")
 
 	assert.Equal(t, []sidecar.PushRequest{{
 		URL: url, Token: plantedForge, Ref: "refs/cavu/tasks/5", Commit: headCommit, Branch: "cavu/fix-login",
