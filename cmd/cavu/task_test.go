@@ -1546,6 +1546,30 @@ func TestEventLine(t *testing.T) {
 			},
 			[]string{engine.ReviewReviewed, "17", "4", "2", "6"},
 		},
+		{engine.SessionCut, engine.SessionCutPayload{Turns: 4}, []string{"4"}},
+		{engine.PublishStarted, engine.PublishStartedPayload{Why: "The change is not on GitHub yet."}, []string{"The change is not on GitHub yet."}},
+		{
+			engine.Published,
+			engine.PublishedPayload{Branch: "cavu/fix-the-login", Head: "fed789", Number: 7, URL: "https://github.com/acme/web/pull/7", NodeID: "PR_7"},
+			[]string{"cavu/fix-the-login", "https://github.com/acme/web/pull/7"},
+		},
+		{
+			engine.PRObserved,
+			engine.Observation{
+				State: engine.PROpen, Draft: true, Head: "fed789", Conflict: true, Checks: engine.ChecksFailed, Failed: []string{"lint", "unit-tests"},
+				Comments: []engine.Comment{{ID: "c1", Author: "octocat"}, {ID: "c2", Author: "hubot"}},
+			},
+			[]string{engine.PROpen, engine.ChecksFailed, "lint", "unit-tests", "2"},
+		},
+		{engine.ReadyStarted, engine.ReadyStartedPayload{Why: "The checks passed."}, []string{"The checks passed."}},
+		{engine.PRReady, struct{}{}, nil},
+		{engine.ReplyStarted, engine.ReplyStartedPayload{Why: "The follow-up run is over."}, []string{"The follow-up run is over."}},
+		{engine.Replied, struct{}{}, nil},
+		{engine.HomeRemoved, engine.HomeRemovedPayload{Why: "The task can run no more."}, nil},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: "initial"}, nil},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: "retry"}, nil},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: "fed789"}, []string{"fed789"}},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonComments, Head: "fed789", Requests: []string{"c1", "c2"}}, []string{"fed789", "c1", "c2"}},
 	}
 
 	for _, tc := range tests {
@@ -1561,10 +1585,52 @@ func TestEventLine(t *testing.T) {
 				assert.Contains(t, l, v)
 			}
 
+			// A type with no case prints its payload, as prepared does.
+			if tc.typ != engine.Prepared {
+				assert.NotContains(t, l, string(raw), "the line is words, not the payload")
+			}
+
 			assert.NotContains(t, l, "\n")
 			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
 		})
 	}
+
+	t.Run("a run's start tells why it started", func(t *testing.T) {
+		lines := map[string]bool{}
+
+		for _, reason := range []string{"initial", "retry", engine.ReasonCIFix, engine.ReasonComments} {
+			raw, err := json.Marshal(engine.RunStartedPayload{Reason: reason})
+			require.NoError(t, err)
+
+			lines[eventLine(store.Event{At: at, Type: engine.RunStarted, Payload: raw})] = true
+		}
+
+		assert.Len(t, lines, 4, "each reason its own line")
+	})
+
+	t.Run("a reviewer's request is counted, never quoted", func(t *testing.T) {
+		bodies := []string{"Rename the handler, please.", "Why is the timeout 30 seconds?"}
+		o := engine.Observation{State: engine.PROpen, Head: "fed789", Checks: engine.ChecksPassed}
+
+		for i, b := range bodies {
+			o.Comments = append(o.Comments, engine.Comment{ID: fmt.Sprintf("c%d", i), Author: "octocat", Path: "login.go", Line: 12, Body: b})
+		}
+
+		raw, err := json.Marshal(o)
+		require.NoError(t, err)
+
+		l := eventLine(store.Event{At: at, Type: engine.PRObserved, Payload: raw})
+
+		assert.Contains(t, l, strconv.Itoa(len(bodies)))
+
+		for _, b := range bodies {
+			for w := range strings.FieldsSeq(b) {
+				if len(w) > 4 {
+					assert.NotContains(t, l, w, "a word of a request's text")
+				}
+			}
+		}
+	})
 
 	t.Run("a review's start tells its scope", func(t *testing.T) {
 		line := func(p engine.ReviewStartedPayload) string {

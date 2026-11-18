@@ -746,6 +746,23 @@ func eventLine(e store.Event) string {
 	case engine.Stopped:
 		p := decoded[engine.StoppedPayload](e.Payload)
 		tell = p.Reason + ": " + p.Explanation
+	case engine.RunStarted:
+		tell = runText(decoded[engine.RunStartedPayload](e.Payload))
+	case engine.SessionCut:
+		tell = "cut after " + counted(decoded[engine.SessionCutPayload](e.Payload).Turns, "turn")
+	case engine.PublishStarted, engine.ReadyStarted, engine.ReplyStarted:
+		tell = decoded[struct{ Why string }](e.Payload).Why
+	case engine.Published:
+		p := decoded[engine.PublishedPayload](e.Payload)
+		tell = fmt.Sprintf("pull request %s on branch %s", p.URL, p.Branch)
+	case engine.PRObserved:
+		tell = observedText(decoded[engine.Observation](e.Payload))
+	case engine.PRReady:
+		tell = "the pull request is marked ready for review"
+	case engine.Replied:
+		tell = "the reviewers have CAVU's answer in a comment on the pull request"
+	case engine.HomeRemoved:
+		tell = "the task's home is removed, since the task can run no more"
 	default:
 		tell = string(e.Payload)
 	}
@@ -768,6 +785,37 @@ func eventLine(e store.Event) string {
 	}
 
 	return l[:n] + "..."
+}
+
+// runText says why a run started: "retry" is a fresh run of a task that ran before.
+func runText(p engine.RunStartedPayload) string {
+	switch p.Reason {
+	case "initial":
+		return "the task's first run"
+	case "retry":
+		return "a fresh run of the task, which ran before"
+	case engine.ReasonCIFix:
+		return "a fix run on the pull request's failed checks, from " + p.Head
+	case engine.ReasonComments:
+		return fmt.Sprintf("a follow-up run on the reviewers' requests %s, from %s", strings.Join(p.Requests, ", "), p.Head)
+	}
+
+	return p.Reason
+}
+
+// observedText is what a look showed of the pull request. A reviewer's
+// request is counted and never quoted.
+func observedText(o engine.Observation) string {
+	s := o.State
+	if o.Draft {
+		s += ", a draft"
+	}
+
+	if o.Conflict {
+		s += ", in conflict with its base branch"
+	}
+
+	return fmt.Sprintf("%s; checks %s; %s of reviewers", s, checksText(o.Checks, o.Failed), counted(len(o.Comments), "open request"))
 }
 
 // decoded is the payload as T, with zero values where it does not fit.
