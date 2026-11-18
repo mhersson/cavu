@@ -154,6 +154,10 @@ func decide(s Snapshot) Action {
 		return halt(StopCancelled, ClearNone, "The task was cancelled.", "The task was cancelled.")
 	}
 
+	if f.Merged && f.Exported && f.RunOpen {
+		return Action{Kind: KindFinish, Why: "The change was merged and its run is still open."}
+	}
+
 	if f.Merged {
 		return Action{Kind: KindNone, Why: "The change was merged."}
 	}
