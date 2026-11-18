@@ -125,6 +125,18 @@ func TestObserveComments(t *testing.T) {
 
 			return []Comment{{ID: th.ID, Author: "alice", Path: "main.go", Line: 20, Body: "Rename this."}}
 		}},
+		{"a pending comment by write", func(f *forgefake.Fake) []Comment {
+			f.Thread(1, "alice", "main.go", 12, "Rename this.").MarkPending()
+
+			return nil
+		}},
+		{"a thread whose newest comment by write is pending", func(f *forgefake.Fake) []Comment {
+			th := f.Thread(1, "alice", "main.go", 12, "Rename this.")
+			th.Reply("alice", "And this, once I submit.")
+			th.MarkPending()
+
+			return []Comment{{ID: th.ID, Author: "alice", Path: "main.go", Line: 12, Body: "Rename this."}}
+		}},
 		{"a thread with a reply by a read-only account", func(f *forgefake.Fake) []Comment {
 			th := f.Thread(1, "alice", "main.go", 12, "Rename this.")
 			th.Reply("rita", "Rename it to what?")

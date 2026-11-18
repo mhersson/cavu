@@ -19,7 +19,7 @@ const observeQuery = `query Observe($owner: String!, $name: String!, $number: In
       reviewThreads(last: 100) {
         nodes {
           isResolved path line originalLine
-          comments(last: 100) { nodes { id body author { __typename login } } }
+          comments(last: 100) { nodes { id state body author { __typename login } } }
         }
       }
     }
@@ -69,6 +69,7 @@ type pullRequestNode struct {
 			Comments     struct {
 				Nodes []struct {
 					ID     string `json:"id"`
+					State  string `json:"state"` // PENDING while its review is not submitted
 					Body   string `json:"body"`
 					Author author `json:"author"`
 				} `json:"nodes"`
@@ -146,7 +147,8 @@ func (c *Client) writer(ctx context.Context, r Repo, token, login string) (bool,
 // allowed. A thread counts when it is not resolved and holds a comment by an
 // allowed author: it is one request with the id and author of its newest such
 // comment, its line on the head else its original line, and the allowed
-// comments' bodies. Neither is held to a commit, so an outdated thread counts.
+// comments' bodies. A comment of a review not yet submitted is left out, and
+// neither is held to a commit, so an outdated thread counts.
 func requests(pr pullRequestNode, allowed func(author) (bool, error)) ([]Comment, error) {
 	var out []Comment
 
@@ -175,6 +177,10 @@ func requests(pr pullRequestNode, allowed func(author) (bool, error)) ([]Comment
 		var bodies []string
 
 		for _, cm := range th.Comments.Nodes {
+			if cm.State == "PENDING" {
+				continue
+			}
+
 			ok, err := allowed(cm.Author)
 			if err != nil {
 				return nil, err

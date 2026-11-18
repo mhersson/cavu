@@ -91,7 +91,10 @@ type pull struct {
 
 type review struct{ id, author, state, body string }
 
-type comment struct{ id, author, body string }
+type comment struct {
+	id, author, body string
+	pending          bool
+}
 
 // Thread is a review thread on a pull request.
 type Thread struct {
@@ -247,6 +250,15 @@ func (th *Thread) Resolve() {
 	defer th.f.mu.Unlock()
 
 	th.resolved = true
+}
+
+// MarkPending makes the thread's newest comment part of a review its author
+// has not submitted yet.
+func (th *Thread) MarkPending() {
+	th.f.mu.Lock()
+	defer th.f.mu.Unlock()
+
+	th.comments[len(th.comments)-1].pending = true
 }
 
 // Move sets the line the thread refers to on the head; 0 is a line gone from
@@ -597,7 +609,12 @@ func (f *Fake) reviewsJSON(p *pull) map[string]any {
 	for i, th := range p.threads {
 		comments := make([]map[string]any, len(th.comments))
 		for j, c := range th.comments {
-			comments[j] = map[string]any{"id": c.id, "body": c.body, "author": actor(c.author)}
+			state := "SUBMITTED"
+			if c.pending {
+				state = "PENDING"
+			}
+
+			comments[j] = map[string]any{"id": c.id, "state": state, "body": c.body, "author": actor(c.author)}
 		}
 
 		var line any
