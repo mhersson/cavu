@@ -191,6 +191,7 @@ func fold(checks []check) (string, []string) {
 	}
 
 	slices.Sort(failed)
+	failed = slices.Compact(failed)
 
 	switch {
 	case len(checks) == 0:

@@ -78,6 +78,11 @@ func TestObserveChecks(t *testing.T) {
 			statuses: []forgefake.Status{{Context: "mid", State: "failure"}},
 			checks:   "failed", failed: []string{"alpha", "mid", "zeta"},
 		},
+		{
+			name:   "two failed runs of one name give it once",
+			runs:   []forgefake.CheckRun{run("test", "completed", "failure"), run("test", "completed", "failure")},
+			checks: "failed", failed: []string{"test"},
+		},
 		{name: "the 300 runs of three pages", pages: true, checks: "pending", failed: []string{"deploy/m"}},
 	}
 
