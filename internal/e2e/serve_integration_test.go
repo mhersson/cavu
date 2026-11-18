@@ -317,24 +317,38 @@ type apiTask struct {
 	Status    string
 	Waiting   string
 	Requester string
-	Stop      struct{ Reason, Explanation string }
+	Stop      struct{ Reason, Explanation, Action string }
+	Budget    struct {
+		USD    float64
+		MaxUSD float64 `json:"max_usd"`
+	}
 }
 
-// rest polls each task over REST until it rests, in_review or blocked, and
-// requires it in_review.
+// rested polls the task over REST until it rests, in_review or blocked, and
+// returns it.
+func (s *server) rested(id int64) apiTask {
+	t := s.in.t
+	t.Helper()
+
+	var got apiTask
+
+	within(t, patience, func() (bool, string) {
+		got = apiTask{}
+		b := s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, &got)
+
+		return got.Status == "in_review" || got.Status == "blocked", b
+	})
+
+	return got
+}
+
+// rest waits until each task rests and requires it in_review.
 func (s *server) rest(ids ...int64) {
 	t := s.in.t
 	t.Helper()
 
 	for _, id := range ids {
-		var got apiTask
-
-		within(t, patience, func() (bool, string) {
-			got = apiTask{}
-			b := s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, &got)
-
-			return got.Status == "in_review" || got.Status == "blocked", b
-		})
+		got := s.rested(id)
 		require.Equal(t, "in_review", got.Status, "%+v", got)
 	}
 }
@@ -798,4 +812,63 @@ func TestServeRestartContinues(t *testing.T) {
 
 		return len(left) == 0, fmt.Sprintf("containers %v", left)
 	})
+}
+
+func TestServeBudgetStopsKeyMode(t *testing.T) {
+	// The work's first call, the second model call, reports usage that alone
+	// spends the task's cap. Its command changes nothing, so the script after
+	// the retry is the same whether the cut came before or after it ran.
+	costly := mockapi.Step{Tool: "Bash", Input: map[string]any{"command": "true"}, OutputTokens: 20000}
+	mock := mockapi.Start(t, []mockapi.Step{ready, costly, change, done, readDiff, passed})
+	in := setup(t, mock.HostURL())
+	s := in.serve()
+	s.project("notes", nil)
+
+	// At a dollar per million tokens of each kind a token costs a
+	// micro-dollar: the costly call passes the cap of $0.01 by itself, and
+	// every other answer, 15 tokens, leaves it far off.
+	s.call(http.MethodPatch, "/api/settings", map[string]any{"settings": map[string]any{
+		"model_prices":    map[string]any{"*": map[string]float64{"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}},
+		"task_budget_usd": "0.01",
+	}}, http.StatusOK, nil)
+
+	var task apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+
+	stopped := s.rested(task.ID)
+	reqs := mock.Requests()
+
+	require.Equal(t, "blocked", stopped.Status, "%+v", stopped)
+	assert.Equal(t, "budget", stopped.Stop.Reason, "%+v", stopped)
+	assert.Equal(t, "retry", stopped.Stop.Action)
+	assert.InDelta(t, 0.01, stopped.Budget.MaxUSD, 1e-9)
+	assert.GreaterOrEqual(t, stopped.Budget.USD, stopped.Budget.MaxUSD)
+
+	// No request reached the mock after the call that crossed the cap.
+	var calls []int
+
+	for i, r := range reqs {
+		if r.ModelCall {
+			calls = append(calls, i)
+		}
+	}
+
+	require.Len(t, calls, 2)
+	assert.Equal(t, len(reqs)-1, calls[1], "a request reached the mock after the call that crossed the cap")
+
+	// A retry gives the task its whole budget again, and the cut work session carries on.
+	s.tool("run_task", map[string]any{"id": task.ID}, &task)
+	s.rest(task.ID)
+
+	events := s.events(task.ID)
+	assert.Equal(t, []sessionStart{{Mode: "readiness"}, {Mode: "start", Resume: true}, {Mode: "continue", Resume: true}}, sessionStarts(t, events))
+
+	var outcomes []string
+	for _, e := range payloads[struct{ Outcome string }](t, events, "session_ended") {
+		outcomes = append(outcomes, e.Outcome)
+	}
+
+	assert.Equal(t, []string{"ready", "budget", "done"}, outcomes)
+	assert.Len(t, modelCalls(mock), 6)
 }
