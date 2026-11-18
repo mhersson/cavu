@@ -50,6 +50,7 @@ func TestLiveReadinessAsks(t *testing.T) {
 
 	res := work(t, r, c, w)
 	require.Equal(t, engine.OutcomeBlocked, res.Outcome, "detail: %s", res.Detail)
-	assert.NotEmpty(t, res.Questions)
-	assert.NotEmpty(t, res.SuggestedAnswers)
+	require.NotEmpty(t, res.Questions)
+	require.NotEmpty(t, res.SuggestedAnswers)
+	assert.NotEmpty(t, res.SuggestedAnswers[0])
 }
