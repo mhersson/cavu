@@ -5,6 +5,7 @@ package mockapi
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -38,10 +39,11 @@ const hostName = "host.docker.internal"
 // Step is one model call's answer: a text block, one tool_use block when Tool
 // is set, or the API's error body under Status when that is set.
 type Step struct {
-	Text   string
-	Tool   string // a tool name, or Structured
-	Input  any    // the tool input; nil is {}
-	Status int    // an HTTP error status
+	Text         string
+	Tool         string // a tool name, or Structured
+	Input        any    // the tool input; nil is {}
+	Status       int    // an HTTP error status
+	OutputTokens int    // the output tokens the answer's usage reports; 0 is 5
 }
 
 // errorTypes are the Messages API's error types by status; any other status
@@ -373,7 +375,7 @@ func (s *Server) stream(w http.ResponseWriter, n int, model string, step Step, t
 
 	send(w, "content_block_stop", map[string]any{"index": 0})
 	send(w, "message_delta", map[string]any{
-		"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": usage(5),
+		"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": usage(cmp.Or(step.OutputTokens, 5)),
 	})
 	send(w, "message_stop", map[string]any{})
 

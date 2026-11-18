@@ -34,6 +34,7 @@ type answer struct {
 	input     string
 	stop      string
 	usage     bool // message_start and message_delta both carry usage
+	output    int  // the output tokens message_delta's usage reports
 }
 
 func parseStream(t *testing.T, r io.Reader) []event {
@@ -96,8 +97,11 @@ func summarise(evs []event) answer {
 			delta, _ := ev.data["delta"].(map[string]any)
 			a.stop, _ = delta["stop_reason"].(string)
 
-			if ev.data["usage"] != nil {
+			if u, ok := ev.data["usage"].(map[string]any); ok {
 				usage++
+
+				n, _ := u["output_tokens"].(float64)
+				a.output = int(n)
 			}
 		}
 	}
@@ -314,6 +318,14 @@ func TestMockScriptsByMarker(t *testing.T) {
 	}
 
 	assert.Equal(t, []string{"MARK-B", "MARK-A", "MARK-A", "", "MARK-A"}, scripts)
+}
+
+func TestMockReportsStepOutputTokens(t *testing.T) {
+	s := Start(t, []Step{{Text: "costly", OutputTokens: 20000}, {Text: "plain"}})
+
+	assert.Equal(t, 20000, call(t, testClient, s.URL()).output)
+	assert.Equal(t, 5, call(t, testClient, s.URL()).output)
+	assert.Equal(t, 5, call(t, testClient, s.URL()).output, "the step after the last")
 }
 
 func TestMockErrorStatus(t *testing.T) {
