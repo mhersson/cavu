@@ -17,7 +17,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 - Hosts are Linux and macOS. The container runtime is Docker Engine or Podman, including VM-backed setups. Never mount a host path into a container and never write into a volume from the host: files move in and out as streams on a runtime exec.
 - `cavu` needs no git on the host: it runs every git command inside a container, and its host-side code never runs git.
 - Claude Code is driven as the unmodified `claude` binary and never redistributed; the sandbox image is built locally and never published.
-- No telemetry. `cavu` makes one kind of network request of its own outside the containers, to the API of the forge a project's repository is on, for that project's tasks, its environment checks and the doctor's forge check, which also reads the repository, and dials nothing else.
+- No telemetry. `cavu` makes one kind of network request of its own outside the containers, to the API of the forge a project's repository is on, for that project's tasks, its environment checks and the doctor's forge check, and dials nothing else.
 - Everything specific to Claude Code lives in one package. No other Go package names a `claude` flag, environment variable or stream field.
 - The server half never imports the container runtime half. What the runner needs crosses the boundary as serialisable values.
 

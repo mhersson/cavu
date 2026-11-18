@@ -8,12 +8,12 @@ import (
 	"github.com/mhersson/cavu/internal/store"
 )
 
-// Switches turn a project's removable steps on or off. Publish takes an
-// exported change to the forge as a pull request.
+// Switches hold a project's on or off choices. Publish is the project's choice
+// to put its tasks' changes on the forge as pull requests.
 type Switches struct{ Continuations, VerifyFix, WebTools, Readiness, Review, Publish bool }
 
-// Caps bound a task's automatic rounds. CIFixes bounds the runs that fix a
-// pull request's failed checks, CommentRuns those that answer its reviewers.
+// Caps are the counts a task's automatic rounds stop at. CIFixes counts runs
+// on a pull request's failed checks, CommentRuns runs on its reviewers' requests.
 type Caps struct {
 	Continuations, VerifyFixes, ReviewFixes, FaultRetries, CIFixes, CommentRuns int
 }

@@ -2,10 +2,6 @@ package runner
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -509,16 +505,6 @@ func assertMasked(t *testing.T, s string) {
 	}
 }
 
-// appKey is a GitHub App's private key in PEM, made for the tests.
-var appKey = sync.OnceValue(func() string {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		panic(err)
-	}
-
-	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-})
-
 // appRunner returns a runner whose every sandbox is f and whose forge client
 // reaches a fake GitHub, on the real clock since the fake's tokens expire by
 // it, with the fake and a repository's address on it.
@@ -539,10 +525,10 @@ func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string)
 }
 
 // appConfig is testConfig for a GitHub App's repository at url.
-func appConfig(url string) engine.RunConfig {
+func appConfig(t testing.TB, url string) engine.RunConfig {
 	c := testConfig()
 	c.Repo.URL = url
-	c.Repo.Access = engine.ForgeAccess{AppID: 42, AppKey: appKey()}
+	c.Repo.Access = engine.ForgeAccess{AppID: 42, AppKey: forgefake.AppKey(t)}
 
 	return c
 }
@@ -550,7 +536,7 @@ func appConfig(url string) engine.RunConfig {
 func TestCloneUsesAnAppToken(t *testing.T) {
 	f := newFake()
 	r, fake, url := f.appRunner(t)
-	c := appConfig(url)
+	c := appConfig(t, url)
 
 	_, err := r.Prepare(t.Context(), c)
 	require.NoError(t, err)
@@ -589,7 +575,7 @@ func TestRunnerMasksAMintedToken(t *testing.T) {
 	}
 	r, _, url := f.appRunner(t)
 
-	res, err := r.Prepare(t.Context(), appConfig(url))
+	res, err := r.Prepare(t.Context(), appConfig(t, url))
 	require.NoError(t, err)
 	require.Len(t, f.clones, 1)
 	assert.Equal(t, stepClone, res.FailedStep)
@@ -621,7 +607,7 @@ func TestCloneWithoutAnAppToken(t *testing.T) {
 	t.Run("an address that names no repository on a forge", func(t *testing.T) {
 		f := newFake()
 
-		res, err := f.runner().Prepare(t.Context(), appConfig("https://gitlab.example/group/subgroup/web.git"))
+		res, err := f.runner().Prepare(t.Context(), appConfig(t, "https://gitlab.example/group/subgroup/web.git"))
 		require.NoError(t, err)
 		assert.Equal(t, stepClone, res.FailedStep)
 		assert.NotEmpty(t, res.Output)
@@ -633,7 +619,7 @@ func TestCloneWithoutAnAppToken(t *testing.T) {
 		r, fake, url := f.appRunner(t)
 		fake.Fail(1)
 
-		res, err := r.Prepare(t.Context(), appConfig(url))
+		res, err := r.Prepare(t.Context(), appConfig(t, url))
 		require.NoError(t, err)
 		assert.Equal(t, stepClone, res.FailedStep)
 		assert.NotEmpty(t, res.Output)
@@ -646,7 +632,7 @@ func TestCloneWithoutAnAppToken(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		res, err := r.Prepare(ctx, appConfig(url))
+		res, err := r.Prepare(ctx, appConfig(t, url))
 		require.ErrorIs(t, err, context.Canceled)
 		assert.Empty(t, res.FailedStep)
 	})

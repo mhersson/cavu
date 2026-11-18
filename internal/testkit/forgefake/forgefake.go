@@ -6,7 +6,11 @@ package forgefake
 
 import (
 	"cmp"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -21,6 +25,18 @@ import (
 )
 
 const graphQLPath = "/api/graphql"
+
+var appKey = sync.OnceValue(func() string {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+})
+
+// AppKey is a GitHub App's private key in PEM, generated once per test binary.
+func AppKey(testing.TB) string { return appKey() }
 
 // Pull is a pull request the fake holds.
 type Pull struct {

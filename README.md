@@ -43,6 +43,8 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu settings set endpoint_auth_header x-api-key               # key mode only
    ```
 
+   `ci_timeout_minutes` takes a whole number of minutes, 120 when unset and `0` for no limit.
+
 3. Store the secrets from standard input, never as arguments. `forge_token` is a personal access token, for a private repository. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
 
    ```
@@ -56,8 +58,6 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu settings set forge_app_id 123456
    cavu secret set forge_app_key < app-key.pem
    ```
-
-   `ci_timeout_minutes` takes a whole number of minutes, 120 when unset and `0` for no limit.
 
 4. Check the setup. Each line is a check; `skipped` follows from an earlier failure, or for the forge check from having no forge credential (`forge_token` or `forge_app_id`) or no project yet, and `warning` passes. The forge check clones the first project by name with the credential a run's clone uses, and with the project's switch `publish` on it also reads the repository over GitHub's API. The exit code is 1 when a check failed.
 

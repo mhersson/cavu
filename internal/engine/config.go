@@ -230,8 +230,9 @@ func (l *Loop) requiredSecret(ctx context.Context, name string) (string, error) 
 
 // ReadSettings reads the part of a run's config the settings hold: the
 // instance id, the endpoint but its credential, the agent's models and
-// efforts, the identity and the verify timeout. Its error names every required
-// setting not set, else the first value that does not parse.
+// efforts, the identity, the verify timeout and the forge App id. Its error
+// names every required setting not set, else the first value that does not
+// parse.
 func ReadSettings(values map[string]string) (RunConfig, error) {
 	required := []string{"instance_id", "endpoint_mode", keyModelWork, "commit_name", "commit_email"}
 	if values["endpoint_mode"] == "key" {

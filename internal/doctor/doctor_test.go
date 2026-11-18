@@ -2,19 +2,14 @@ package doctor
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http/httptest"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -454,16 +449,6 @@ func TestDoctorExitCode(t *testing.T) {
 	}
 }
 
-// appKey is a GitHub App's private key in PEM, made for the tests.
-var appKey = sync.OnceValue(func() string {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		panic(err)
-	}
-
-	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-})
-
 // onForge puts d's project, with publish on, on a fake GitHub that d's client
 // reaches on the real clock, since the fake's tokens expire by it. It returns
 // the fake and its API address.
@@ -484,8 +469,8 @@ func onForge(t *testing.T, d *Deps) (*forgefake.Fake, string) {
 }
 
 // withApp makes d's forge credential a GitHub App's.
-func withApp(d *Deps) {
-	d.ForgeToken, d.ForgeAppKey = "", appKey()
+func withApp(t testing.TB, d *Deps) {
+	d.ForgeToken, d.ForgeAppKey = "", forgefake.AppKey(t)
 	d.Settings["forge_app_id"] = "42"
 }
 
@@ -502,7 +487,7 @@ func TestDoctorForgeReadsTheRepository(t *testing.T) {
 	t.Run("an App's token, publish on", func(t *testing.T) {
 		d, h, _ := green(t, "key")
 		fake, _ := onForge(t, &d)
-		withApp(&d)
+		withApp(t, &d)
 
 		forgeCheck := byName(t, Run(t.Context(), d))["forge"]
 		assert.True(t, forgeCheck.OK && !forgeCheck.Skipped, "%+v", forgeCheck)
@@ -527,16 +512,16 @@ func TestDoctorForgeReadsTheRepository(t *testing.T) {
 
 	for _, tc := range []struct {
 		name       string
-		credential func(*Deps)
+		credential func(testing.TB, *Deps)
 		clones     int
 	}{
-		{"the repository read", func(*Deps) {}, 1},
+		{"the repository read", func(testing.TB, *Deps) {}, 1},
 		{"the App's mint", withApp, 0},
 	} {
 		t.Run("a failure of "+tc.name+" names the API address", func(t *testing.T) {
 			d, h, _ := green(t, "key")
 			fake, api := onForge(t, &d)
-			tc.credential(&d)
+			tc.credential(t, &d)
 			fake.Fail(1)
 
 			checks := Run(t.Context(), d)
@@ -567,7 +552,7 @@ func TestDoctorForgeReadsTheRepository(t *testing.T) {
 func TestDoctorMasksTheForgeCredential(t *testing.T) {
 	d, h, _ := green(t, "key")
 	fake, _ := onForge(t, &d)
-	withApp(&d)
+	withApp(t, &d)
 
 	h.cloneErr = func(r sidecar.CloneRequest) error {
 		return fmt.Errorf("fatal: https://x-access-token:%s@forge.example/o/n refused; key %s", r.Token, d.ForgeAppKey)
