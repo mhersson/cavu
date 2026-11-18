@@ -97,6 +97,8 @@ type Runner interface {
 	// Prepare starts from empty run volumes: clone, toolchains, setup, baseline
 	// verify. Work, Review, Verify and Export bring the run's containers up
 	// themselves when they are not running, so a restart needs no second prepare.
+	// A prepare at a head keeps the task's home, runs no baseline and ends with
+	// the workspace at the head.
 	Prepare(ctx context.Context, c RunConfig) (PrepareResult, error)
 	// Work returns how the session ended as a result, endpoint failures and
 	// usage limits included; an error means the sandbox itself failed, and
@@ -126,7 +128,7 @@ type PrepareResult struct {
 	BaseCommit   string
 	Tools        []string
 	IgnoredTools []string // repository tool entries detection declined to install, as written
-	Ecosystems   []string // detected at the commit the run starts at; later actions of the run get them back
+	Ecosystems   []string // detected at the base commit; later actions of the run get them back
 	Baseline     string   // passed, reused, waived, failed, or skipped by a prepare at a head; a failed baseline sets FailedStep to "baseline"
 	FailedStep   string   // "", clone, toolchain, setup, baseline
 	Output       string
