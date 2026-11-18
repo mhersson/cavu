@@ -6,30 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// pullRequest has the fields of the engine's PullRequestData, which the pull
-// request's text reads.
-type pullRequest struct {
-	TaskID                  int64
-	TaskTitle, TaskBody     string
-	Title, Summary          string
-	WhereToLook             []string
-	Assumptions             []string
-	Flagged                 struct{ Workflows, Instructions, Large []string }
-	VerifyCommand           string
-	VerifyWaived            bool
-	ReadinessOff, ReviewOff bool
-	ReviewFailed            string
-	Open, Minor             []struct{ Severity, Where, What, Why string }
-	Model, Effort           string
-	CostEstimateUSD         float64
-	CostMissing             int
-	Duration                time.Duration
-}
 
 func TestEveryPromptRenders(t *testing.T) {
 	findings := []prompts.ReviewFinding{
@@ -43,14 +24,14 @@ func TestEveryPromptRenders(t *testing.T) {
 		Findings                           []struct{ Number int }
 	}{Findings: []struct{ Number int }{{Number: 1}}}
 
-	pr := pullRequest{
+	pr := engine.PullRequestData{
 		TaskID: 4242, TaskTitle: "title-23", TaskBody: "body-24", Summary: "summary-25", WhereToLook: []string{"where-26"},
 		Assumptions: []string{"assumption-27"}, VerifyCommand: "verify-28", ReviewFailed: "failed-29", Model: "model-30",
 		Effort: "effort-31", CostEstimateUSD: 12.34, CostMissing: 2, Duration: time.Hour,
+		Flagged: engine.Flagged{Workflows: []string{"workflow-32"}, Instructions: []string{"instruction-33"}, Large: []string{"large-34"}},
+		Open:    []engine.Finding{{Severity: "important", Where: "where-35", What: "what-36", Why: "why-37"}},
+		Minor:   []engine.Finding{{Severity: "minor", Where: "where-38", What: "what-39", Why: "why-40"}},
 	}
-	pr.Flagged.Workflows, pr.Flagged.Instructions, pr.Flagged.Large = []string{"workflow-32"}, []string{"instruction-33"}, []string{"large-34"}
-	pr.Open = []struct{ Severity, Where, What, Why string }{{"important", "where-35", "what-36", "why-37"}}
-	pr.Minor = []struct{ Severity, Where, What, Why string }{{"minor", "where-38", "what-39", "why-40"}}
 
 	tests := []struct {
 		name   string
