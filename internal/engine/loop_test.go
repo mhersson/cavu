@@ -69,6 +69,9 @@ type call struct {
 	remove engine.Remove
 	commit string // the commit an export was given
 	pub    engine.PublishRequest
+	number int    // the pull request an observe or a reply was given
+	nodeID string // the pull request a ready was given
+	body   string // a reply's
 	ref    engine.RunRef
 	eco    []string         // the config's ecosystems
 	cfg    engine.RunConfig // the config of every call but a release
@@ -99,6 +102,9 @@ type fakeRunner struct {
 	exports    []step[engine.ExportResult]
 	reviews    []step[engine.ReviewResult]
 	publishes  []step[engine.PublishResult]
+	observes   []step[engine.Observation]
+	readies    []step[struct{}]
+	replies    []step[struct{}]
 	releaseErr error
 	suggestion string                                  // every check's verify suggestion
 	progress   []engine.Progress                       // sent during every Work, each from its own goroutine
@@ -121,6 +127,7 @@ var (
 	publishedOK = engine.PublishResult{
 		Branch: "cavu/fix-the-login", Head: "head456", Number: 7, URL: "https://example.com/web/pull/7", NodeID: "PR_7",
 	}
+	observedOK = engine.Observation{State: engine.PROpen, Draft: true, Head: "head456", Checks: engine.ChecksPassed}
 )
 
 func (r *fakeRunner) begin(ctx context.Context, c call) error {
@@ -214,6 +221,43 @@ func (r *fakeRunner) Publish(ctx context.Context, c engine.RunConfig, p engine.P
 	defer r.mu.Unlock()
 
 	return pop(&r.publishes, publishedOK)
+}
+
+func (r *fakeRunner) Observe(ctx context.Context, c engine.RunConfig, number int) (engine.Observation, error) {
+	if err := r.begin(ctx, call{method: "observe", task: c.TaskID, runID: c.RunID, number: number, cfg: c}); err != nil {
+		return engine.Observation{}, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return pop(&r.observes, observedOK)
+}
+
+func (r *fakeRunner) Ready(ctx context.Context, c engine.RunConfig, nodeID string) error {
+	if err := r.begin(ctx, call{method: "ready", task: c.TaskID, runID: c.RunID, nodeID: nodeID, cfg: c}); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_, err := pop(&r.readies, struct{}{})
+
+	return err
+}
+
+func (r *fakeRunner) Reply(ctx context.Context, c engine.RunConfig, number int, body string) error {
+	if err := r.begin(ctx, call{method: "reply", task: c.TaskID, runID: c.RunID, number: number, body: body, cfg: c}); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_, err := pop(&r.replies, struct{}{})
+
+	return err
 }
 
 func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.ReviewRequest, _ func(engine.Progress)) (engine.ReviewResult, error) {

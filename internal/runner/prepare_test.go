@@ -582,7 +582,15 @@ func assertMasked(t *testing.T, s string) {
 func fakeForge(t *testing.T) (*forge.Client, *forgefake.Fake, string) {
 	t.Helper()
 
-	fake := forgefake.New(t, t.TempDir())
+	return fakeForgeOn(t, t.TempDir())
+}
+
+// fakeForgeOn is fakeForge whose pull requests' heads are their branches in
+// the bare repository at bare.
+func fakeForgeOn(t *testing.T, bare string) (*forge.Client, *forgefake.Fake, string) {
+	t.Helper()
+
+	fake := forgefake.New(t, bare)
 	srv := httptest.NewTLSServer(fake)
 	t.Cleanup(srv.Close)
 

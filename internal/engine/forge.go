@@ -9,6 +9,43 @@ import (
 	"github.com/mhersson/cavu/internal/store"
 )
 
+// The states of a pull request in an observation.
+const (
+	PROpen   = "open"
+	PRMerged = "merged"
+	PRClosed = "closed"
+)
+
+// The checks of a pull request's head in an observation, but those the
+// project ignores: pending while any runs, else failed when any failed or was
+// cancelled, else passed.
+const (
+	ChecksNone    = "none"
+	ChecksPending = "pending"
+	ChecksPassed  = "passed"
+	ChecksFailed  = "failed"
+)
+
+// Observation is the task's pull request as the forge has it: the payload of
+// pr_observed. Failed names the failed checks, sorted, and Comments are the
+// reviewers' open requests, answered or not.
+type Observation struct {
+	State    string    `json:"state"`
+	Draft    bool      `json:"draft"`
+	Head     string    `json:"head"`
+	Conflict bool      `json:"conflict"`
+	Checks   string    `json:"checks"`
+	Failed   []string  `json:"failed,omitempty"`
+	Comments []Comment `json:"comments,omitempty"`
+}
+
+// RateLimited is the error a Runner's forge call returns while the forge
+// limits its requests, until the limit lifts. Find it with errors.As into a
+// *RateLimited.
+type RateLimited struct{ Until time.Time }
+
+func (e *RateLimited) Error() string { return "rate limited until " + e.Until.Format(time.RFC3339) }
+
 // publish puts the exported change on the task's branch and, for a first
 // publish, opens a draft pull request with the text CAVU writes. A rejected
 // push stops the task and keeps the run, so a retry publishes from it again.

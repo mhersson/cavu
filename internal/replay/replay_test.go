@@ -100,6 +100,19 @@ func (r *fakeRunner) Publish(context.Context, engine.RunConfig, engine.PublishRe
 	return engine.PublishResult{}, errors.New("fake: the runner does not publish")
 }
 
+var errNoPullRequest = errors.New("fake: no pull request")
+
+// Observe, Ready and Reply are not scripted: a shadow never publishes, so it has no pull request.
+func (r *fakeRunner) Observe(context.Context, engine.RunConfig, int) (engine.Observation, error) {
+	return engine.Observation{}, errNoPullRequest
+}
+
+func (r *fakeRunner) Ready(context.Context, engine.RunConfig, string) error { return errNoPullRequest }
+
+func (r *fakeRunner) Reply(context.Context, engine.RunConfig, int, string) error {
+	return errNoPullRequest
+}
+
 func (r *fakeRunner) Release(_ context.Context, ref engine.RunRef, remove engine.Remove) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
