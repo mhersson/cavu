@@ -55,6 +55,8 @@ linters:
             desc: the server half must run where no container runtime exists
           - pkg: github.com/mhersson/cavu/internal/bridge
             desc: the server half must run where no container runtime exists
+          - pkg: github.com/mhersson/cavu/internal/forge
+            desc: the server half must run where no container runtime exists
     nakedret:
       max-func-lines: 5
     wsl_v5:
