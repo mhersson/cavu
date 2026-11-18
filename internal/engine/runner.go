@@ -126,8 +126,8 @@ type PrepareResult struct {
 	BaseCommit   string
 	Tools        []string
 	IgnoredTools []string // repository tool entries detection declined to install, as written
-	Ecosystems   []string // detected at the base commit; later actions of the run get them back
-	Baseline     string   // passed, reused, waived, failed; a failed baseline sets FailedStep to "baseline"
+	Ecosystems   []string // detected at the commit the run starts at; later actions of the run get them back
+	Baseline     string   // passed, reused, waived, failed, or skipped by a prepare at a head; a failed baseline sets FailedStep to "baseline"
 	FailedStep   string   // "", clone, toolchain, setup, baseline
 	Output       string
 }
