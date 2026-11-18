@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
 	"github.com/stretchr/testify/assert"
@@ -1011,7 +1012,7 @@ func refuseRuntime(t *testing.T) {
 	t.Helper()
 
 	prev := detectRuntime
-	detectRuntime = func(context.Context, string) (containerRuntime, error) {
+	detectRuntime = func(context.Context, string, *forge.Client) (containerRuntime, error) {
 		t.Error("the verb asked for the container runtime")
 
 		return nil, errors.New("no runtime here")

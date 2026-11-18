@@ -56,7 +56,7 @@ func fixtureRun(t *testing.T, files map[string]string) (*Runner, engine.RunConfi
 
 	removeInstanceAfter(t, rt, c.InstanceID)
 
-	r := New(rt, claudecode.New())
+	r := New(rt, claudecode.New(), nil)
 	r.labels = sandboxtest.Labels()
 
 	t.Cleanup(func() {

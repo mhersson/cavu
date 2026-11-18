@@ -50,6 +50,9 @@ func TestEditProjectClearsBaseline(t *testing.T) {
 		{"secret variables", func(p *store.Project) { p.SecretVars = []string{"NPM_TOKEN"} }, false},
 		{"egress hosts alone", func(p *store.Project) { p.EgressHosts = []string{"proxy.golang.org"} }, true},
 		{"switches alone", func(p *store.Project) { p.Switches = map[string]bool{"web_tools": true} }, true},
+		{"forge policy alone", func(p *store.Project) {
+			p.Forge = store.ForgePolicy{NoCI: true, IgnoredChecks: []string{"lint"}, ReviewBots: []string{"copilot[bot]"}}
+		}, true},
 	}
 
 	for _, tc := range tests {
@@ -92,7 +95,7 @@ func validProject() store.Project {
 	return store.Project{
 		Name: "api", RepoURL: "https://example.com/api.git", BaseBranch: "main", SetupCommand: "make deps", VerifyCommand: "make test",
 		Env: map[string]string{"CI": "1", "_X2": "y"}, SecretVars: []string{"NPM_TOKEN"}, ToolOverrides: map[string]string{"go": "1.27"},
-		Switches: map[string]bool{"continuations": false, "verify_fix": true, "web_tools": true, "readiness": false, "review": true}, EgressHosts: []string{"proxy.golang.org"},
+		Switches: map[string]bool{"continuations": false, "verify_fix": true, "web_tools": true, "readiness": false, "review": true, "publish": false}, EgressHosts: []string{"proxy.golang.org"},
 	}
 }
 

@@ -26,6 +26,7 @@ const (
 	plantedSetup    = "npm-secret-value"
 	plantedEndpoint = "sk-endpoint-secret"
 	plantedForge    = "forge-token-secret"
+	plantedAppKey   = "app-private-key-secret"
 )
 
 func testConfig() engine.RunConfig {
@@ -33,7 +34,8 @@ func testConfig() engine.RunConfig {
 
 	c.TaskID, c.RunID, c.ProjectID = 5, 7, 3
 	c.InstanceID, c.Image = "0123456789abcdef", "cavu-sandbox:test"
-	c.Repo.URL, c.Repo.BaseBranch, c.Repo.Branch, c.Repo.Token = "https://forge.example/web.git", "main", "cavu/fix-login", plantedForge
+	c.Repo.URL, c.Repo.BaseBranch, c.Repo.Branch = "https://forge.example/web.git", "main", "cavu/fix-login"
+	c.Repo.Access = engine.ForgeAccess{Token: plantedForge, AppKey: plantedAppKey}
 	c.Setup.Command = "make setup"
 	c.Setup.Env = map[string]string{"APP_ENV": "test"}
 	c.Setup.Secrets = map[string]string{"NPM_TOKEN": plantedSetup}
@@ -86,6 +88,7 @@ type fakeSandbox struct {
 	phase    sandbox.Phase // of the last Up, "" after Down
 	files    map[string]string
 	cloneErr error
+	onClone  func(sidecar.CloneRequest) error // over cloneErr: the clone fails with the error it makes from the request
 	upErr    error
 	readCode int
 	results  map[string]sandbox.Result // by step name
@@ -106,7 +109,7 @@ func newFake() *fakeSandbox {
 
 // runner returns a Runner whose every sandbox is f.
 func (f *fakeSandbox) runner() *Runner {
-	r := New(sandbox.Runtime{Bin: "docker", Kind: "docker"}, fakeDriver{})
+	r := New(sandbox.Runtime{Bin: "docker", Kind: "docker"}, fakeDriver{}, nil)
 	r.open = func(o sandbox.Options) (sandboxer, error) {
 		f.mu.Lock()
 		f.opened = append(f.opened, o)
@@ -245,6 +248,10 @@ func (f *fakeSandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (string
 
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+
+	if f.onClone != nil {
+		return "", f.onClone(r)
 	}
 
 	if f.cloneErr != nil {

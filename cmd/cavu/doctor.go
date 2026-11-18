@@ -63,7 +63,7 @@ func (a *app) doctorDeps(ctx context.Context) (doctor.Deps, error) {
 		return doctor.Deps{}, err
 	}
 
-	bundle, err := a.caBundle(ctx)
+	f, bundle, err := a.forgeClient(ctx)
 	if err != nil {
 		return doctor.Deps{}, err
 	}
@@ -73,6 +73,7 @@ func (a *app) doctorDeps(ctx context.Context) (doctor.Deps, error) {
 		AgentVersion: claudecode.Version,
 		Settings:     settings,
 		CABundle:     bundle,
+		Forge:        f,
 		Driver:       claudecode.New(),
 	}
 
@@ -84,13 +85,19 @@ func (a *app) doctorDeps(ctx context.Context) (doctor.Deps, error) {
 		return doctor.Deps{}, err
 	}
 
+	if d.ForgeAppKey, _, err = a.vault.Get(ctx, engine.SecretForgeAppKey); err != nil {
+		return doctor.Deps{}, err
+	}
+
 	ps, err := a.store.Projects(ctx)
 	if err != nil {
 		return doctor.Deps{}, err
 	}
 
 	if len(ps) > 0 {
-		d.Project = &doctor.Project{ID: ps[0].ID, RepoURL: ps[0].RepoURL, BaseBranch: ps[0].BaseBranch}
+		d.Project = &doctor.Project{
+			ID: ps[0].ID, RepoURL: ps[0].RepoURL, BaseBranch: ps[0].BaseBranch, Publish: engine.ProjectSwitches(ps[0])["publish"],
+		}
 	}
 
 	return d, nil

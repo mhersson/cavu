@@ -102,7 +102,7 @@ func checkProject(p store.Project) error {
 
 	for k := range p.Switches {
 		if known[k] == nil {
-			return refuse("switches %q: want continuations, verify_fix, web_tools, readiness or review", k)
+			return refuse("switches %q: want continuations, verify_fix, web_tools, readiness, review or publish", k)
 		}
 	}
 
@@ -132,8 +132,8 @@ func blank(command string) bool {
 }
 
 // sameBaselineGround reports whether a and b agree on what a baseline rests on.
-// Switches and caps change no command, and an edit of the egress hosts adds a
-// host far more often than it removes one a command needed.
+// Switches, caps and the forge policy change no command, and an edit of the
+// egress hosts adds a host far more often than it removes one a command needed.
 func sameBaselineGround(a, b store.Project) bool {
 	return a.RepoURL == b.RepoURL && a.BaseBranch == b.BaseBranch && a.SetupCommand == b.SetupCommand &&
 		a.VerifyCommand == b.VerifyCommand && a.VerifyWaived == b.VerifyWaived &&

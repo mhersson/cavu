@@ -69,6 +69,15 @@ const (
 	ModeFixVerify = "fix_verify"
 	ModeAnswer    = "answer"
 	ModeFixReview = "fix_review"
+	ModeFixCI     = "fix_ci"   // a resumed session on the checks that failed on the task's pull request
+	ModeComments  = "comments" // a resumed session on reviewers' requests on the task's pull request
+)
+
+// Run reasons of the runs that answer a pull request's failed checks and its
+// reviewers' requests.
+const (
+	ReasonCIFix    = "ci_fix"
+	ReasonComments = "comments"
 )
 
 // Roles of a session, each with its model and effort.

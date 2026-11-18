@@ -116,3 +116,27 @@ func TestProjectCheckFields(t *testing.T) {
 	require.Nil(t, got.CheckRequestedAt)
 	require.Equal(t, created.CheckResult, got.CheckResult)
 }
+
+func TestProjectForgePolicyRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+
+	p := fullProject()
+	p.Forge = ForgePolicy{NoCI: true, IgnoredChecks: []string{"lint"}, ReviewBots: []string{"copilot[bot]"}}
+
+	created, err := s.CreateProject(ctx, p)
+	require.NoError(t, err)
+
+	got, err := s.Project(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, p.Forge, got.Forge)
+
+	created.Forge = ForgePolicy{IgnoredChecks: []string{"a", "b"}}
+	require.NoError(t, s.UpdateProject(ctx, created))
+
+	got, err = s.Project(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, created.Forge, got.Forge)
+}

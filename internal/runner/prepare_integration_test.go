@@ -64,7 +64,7 @@ func TestPrepareGoRepository(t *testing.T) {
 
 	// A process that restarted brings the agent phase up from the config's
 	// ecosystems and verifies with the toolchain the prepare installed.
-	restarted := New(r.rt, claudecode.New())
+	restarted := New(r.rt, claudecode.New(), r.forge)
 	restarted.labels = sandboxtest.Labels()
 	c.Ecosystems = res.Ecosystems
 

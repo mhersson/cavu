@@ -26,7 +26,8 @@ func init() {
 const (
 	projectAddUsage = "cavu project add NAME --repo URL [--base BRANCH, default main] [--setup CMD] [--verify CMD | --no-verify] [--data-dir DIR]"
 	projectSetUsage = "cavu project set NAME [--base BRANCH] [--setup CMD] [--verify CMD | --no-verify] [--egress HOST]... [--env K=V]...\n" +
-		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--cap KEY=VALUE]... [--data-dir DIR]"
+		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--cap KEY=VALUE]...\n" +
+		"         [--no-ci on|off] [--ignore-check NAME]... [--review-bot LOGIN]... [--data-dir DIR]"
 	projectListUsage  = "cavu project list [--data-dir DIR]"
 	projectShowUsage  = "cavu project show NAME [--data-dir DIR]"
 	projectCheckUsage = "cavu project check NAME [--data-dir DIR]"
@@ -53,13 +54,15 @@ func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr 
 	return newVerbFlags(usage, stderr).helpOr(args)
 }
 
-// projectFlags are the flags of project add and project set; only set has the lists.
+// projectFlags are the flags of project add and project set; only set has the
+// lists and the forge policy.
 type projectFlags struct {
 	verbFlags
 
-	base, setup, verify                         string
+	base, setup, verify, noCI                   string
 	noVerify                                    bool
 	egress, env, secrets, tools, switches, caps listFlag
+	ignoredChecks, reviewBots                   listFlag
 }
 
 func newProjectFlags(usage string, stderr io.Writer, lists bool) *projectFlags {
@@ -74,8 +77,12 @@ func newProjectFlags(usage string, stderr io.Writer, lists bool) *projectFlags {
 		f.Var(&f.env, "env", "a variable K=V for the setup command; repeat for more, '' alone for none")
 		f.Var(&f.secrets, "secret", "a variable for the setup command from the secret project.NAME.VAR; repeat for more, '' alone for none")
 		f.Var(&f.tools, "tool", "a tool version NAME=VERSION over the repository's; repeat for more, '' alone for none")
-		f.Var(&f.switches, "switch", "continuations, verify_fix, web_tools, readiness or review, =on or =off; repeat for more")
+		f.Var(&f.switches, "switch", "continuations, verify_fix, web_tools, readiness, review or publish, =on or =off; repeat for more")
 		f.Var(&f.caps, "cap", "a cap KEY=VALUE over the setting for this project's tasks, task_max_turns, task_timeout_minutes or task_budget_usd; KEY= removes it; repeat for more")
+		f.StringVar(&f.noCI, "no-ci", "", "on when the repository has no CI, off when it has")
+		f.Var(&f.ignoredChecks, "ignore-check", "a check to ignore, by its name as GitHub shows it; repeat for more, '' alone for none")
+		f.Var(&f.reviewBots, "review-bot", "a login as GitHub shows it: a GitHub App's bot is written name[bot], and a name without [bot] is a user's account; "+
+			"repeat for more, '' alone for none")
 	}
 
 	return f
@@ -123,6 +130,10 @@ func (f *projectFlags) apply(p *store.Project) error {
 		return err
 	}
 
+	if given["no-ci"] && f.noCI != "on" && f.noCI != "off" {
+		return fmt.Errorf("--no-ci %q: want on or off", f.noCI)
+	}
+
 	switches := map[string]bool{}
 
 	for _, s := range f.switches {
@@ -161,6 +172,18 @@ func (f *projectFlags) apply(p *store.Project) error {
 
 	if given["tool"] {
 		p.ToolOverrides = tools
+	}
+
+	if given["no-ci"] {
+		p.Forge.NoCI = f.noCI == "on"
+	}
+
+	if given["ignore-check"] {
+		p.Forge.IgnoredChecks = f.ignoredChecks
+	}
+
+	if given["review-bot"] {
+		p.Forge.ReviewBots = f.reviewBots
 	}
 
 	if len(switches) > 0 && p.Switches == nil {
@@ -331,7 +354,7 @@ func projectShow(ctx context.Context, args []string, stdout, stderr io.Writer) e
 
 	state := engine.ProjectSwitches(p)
 	for _, k := range slices.Sorted(maps.Keys(state)) {
-		switches = append(switches, k+"="+map[bool]string{true: "on", false: "off"}[state[k]])
+		switches = append(switches, k+"="+onOff[state[k]])
 	}
 
 	list := func(vs []string) string {
@@ -342,14 +365,19 @@ func projectShow(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		return strings.Join(vs, ", ")
 	}
 
-	fmt.Fprintf(stdout, "project:  %s\nrepo:     %s\nbase:     %s\nsetup:    %s\nverify:   %s\negress:   %s\nenv:      %s\nsecrets:  %s\ntools:    %s\nswitches: %s\ncaps:     %s\nbaseline: %s\n",
+	fmt.Fprintf(stdout, "project:  %s\nrepo:     %s\nbase:     %s\nsetup:    %s\nverify:   %s\negress:   %s\nenv:      %s\nsecrets:  %s\ntools:    %s\nswitches: %s\ncaps:     %s\n",
 		p.Name, p.RepoURL, p.BaseBranch, cmp.Or(p.SetupCommand, "none"), verify, list(p.EgressHosts), list(env),
-		list(p.SecretVars), list(tools), list(switches), list(caps), baseline)
+		list(p.SecretVars), list(tools), list(switches), list(caps))
+
+	fmt.Fprintf(stdout, "no ci:    %s\nignored:  %s\nbots:     %s\nbaseline: %s\n",
+		onOff[p.Forge.NoCI], list(p.Forge.IgnoredChecks), list(p.Forge.ReviewBots), baseline)
 
 	fmt.Fprintf(stdout, "detected: %s\nsuggests: %s\n", list(p.CheckResult.Tools), cmp.Or(p.CheckResult.VerifySuggestion, "none"))
 
 	return nil
 }
+
+var onOff = map[bool]string{true: "on", false: "off"}
 
 // assignments are m's entries as KEY=VALUE, sorted by key.
 func assignments(m map[string]string) []string {

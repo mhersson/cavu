@@ -40,7 +40,8 @@ func TestBuildRunConfig(t *testing.T) {
 				want.TaskID, want.RunID, want.ProjectID = fx.task.ID, fx.run.ID, fx.task.ProjectID
 				want.InstanceID, want.Image = "inst-1", "cavu-sandbox:test"
 				want.Repo.URL, want.Repo.BaseBranch, want.Repo.BaseCommit = "https://example.com/web.git", "main", "abc123"
-				want.Repo.Branch, want.Repo.Token = "cavu/fix-the-login-page", "ghp_forgetokenvalue"
+				want.Repo.Branch, want.Repo.Access.Token = "cavu/fix-the-login-page", "ghp_forgetokenvalue"
+				want.Repo.IgnoredChecks, want.Repo.ReviewBots = []string{"lint"}, []string{"copilot[bot]"}
 				want.Setup.Command = "make setup"
 				want.Setup.Env = map[string]string{"CI": "1"}
 				want.Setup.Secrets = map[string]string{"NPM_AUTH": "npm-auth-value"}
@@ -72,7 +73,7 @@ func TestBuildRunConfig(t *testing.T) {
 				assert.Empty(t, got.Endpoint.AuthHeader)
 				assert.Empty(t, got.Agent.Effort)
 				assert.Equal(t, 10*time.Minute, got.Verify.Timeout)
-				assert.Empty(t, got.Repo.Token)
+				assert.Equal(t, engine.ForgeAccess{}, got.Repo.Access, "the App's key is read only with an App id")
 				assert.Empty(t, got.Endpoint.Credential)
 			},
 		},
@@ -168,6 +169,27 @@ func TestBuildRunConfigRoles(t *testing.T) {
 	})
 }
 
+func TestRunConfigCarriesTheAccess(t *testing.T) {
+	runConfigCases(t, []configCase{
+		{
+			name: "a token alone",
+			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
+				assert.Equal(t, engine.ForgeAccess{Token: "ghp_forgetokenvalue"}, got.Repo.Access) //nolint:gosec // a dummy
+			},
+		},
+		{
+			name:  "an App id with its key",
+			set:   map[string]string{"forge_app_id": "123456"},
+			unset: []string{"forge_token"},
+			check: func(t *testing.T, got engine.RunConfig, _ configFixture) {
+				assert.Equal(t, engine.ForgeAccess{AppID: 123456, AppKey: "app-key-value"}, got.Repo.Access)
+			},
+		},
+		{name: "an App id without its key", set: map[string]string{"forge_app_id": "123456"}, unset: []string{"forge_app_key"}, errHas: "forge_app_key"},
+		{name: "an App id that does not parse", set: map[string]string{"forge_app_id": "abc"}, errHas: "forge_app_id"},
+	})
+}
+
 func runConfigCases(t *testing.T, tests []configCase) {
 	t.Helper()
 
@@ -259,6 +281,49 @@ func TestCheckSetting(t *testing.T) {
 	}
 }
 
+func TestCheckSettingForge(t *testing.T) {
+	tests := []struct {
+		key, value string
+		ok         bool
+	}{
+		{"forge_app_id", "123456", true},
+		{"forge_app_id", "", true},
+		{"forge_app_id", "abc", false},
+		{"forge_app_id", "0", false},
+		{"ci_timeout_minutes", "90", true},
+		{"ci_timeout_minutes", "0", true},
+		{"ci_timeout_minutes", "", true},
+		{"ci_timeout_minutes", "-1", false},
+		{"ci_timeout_minutes", "1.5", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			err := engine.CheckSetting(tt.key, tt.value)
+			if tt.ok {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.key)
+		})
+	}
+
+	for value, want := range map[string]time.Duration{"": 120 * time.Minute, "0": 0, "90": 90 * time.Minute} {
+		got, err := engine.CITimeout(map[string]string{"ci_timeout_minutes": value})
+		require.NoError(t, err)
+		assert.Equal(t, want, got, value)
+	}
+}
+
+func TestProjectSwitchesDefaults(t *testing.T) {
+	assert.Equal(t, map[string]bool{
+		"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true,
+	}, engine.ProjectSwitches(store.Project{}))
+}
+
 func TestSettingsLimit(t *testing.T) {
 	assert.LessOrEqual(t, len(engine.SettableKeys())+1, 30, "the settable keys and instance_id")
 }
@@ -340,6 +405,7 @@ func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture)
 	sealed := [][2]string{
 		{"endpoint_credential", "sk-credential-value"},
 		{"forge_token", "ghp_forgetokenvalue"},
+		{"forge_app_key", "app-key-value"},
 		{"project.web.NPM_AUTH", "npm-auth-value"},
 	}
 
@@ -366,6 +432,7 @@ func configFixtureFor(t *testing.T, tt configCase) (*engine.Loop, configFixture)
 		Env: map[string]string{"CI": "1"}, SecretVars: []string{"NPM_AUTH"},
 		Switches: map[string]bool{"web_tools": true},
 		Baseline: &store.Baseline{Commit: "base999", Passed: true, At: now},
+		Forge:    store.ForgePolicy{NoCI: true, IgnoredChecks: []string{"lint"}, ReviewBots: []string{"copilot[bot]"}},
 	})
 	require.NoError(t, err)
 

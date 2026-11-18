@@ -138,3 +138,29 @@ func TestMigrationFiveRenamesTheCaps(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, p.Caps)
 }
+
+func TestMigrationSixKeepsProjects(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cavu.db")
+	ctx := context.Background()
+
+	old, err := open(ctx, path, migrations[:5])
+	require.NoError(t, err)
+
+	_, err = old.db.Exec(`INSERT INTO projects (name, repo_url, base_branch, setup_command, verify_command,
+		verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches)
+		VALUES ('p', 'r', 'main', '', '', 0, '{}', '[]', '{}', '[]', '{}')`)
+	require.NoError(t, err)
+	require.NoError(t, old.Close())
+
+	s, err := Open(ctx, path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = s.Close() })
+
+	p, err := s.ProjectByName(ctx, "p")
+	require.NoError(t, err)
+	require.Equal(t, "r", p.RepoURL)
+	require.Equal(t, ForgePolicy{}, p.Forge)
+}

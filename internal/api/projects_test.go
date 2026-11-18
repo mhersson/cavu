@@ -25,7 +25,7 @@ func TestProjectsRoundTrip(t *testing.T) {
 	assert.JSONEq(t, fmt.Sprintf(`{"id": 1, "name": "web", "repo_url": "https://example.com/web.git", "base_branch": "main",
 		"setup_command": "", "verify_command": "make test", "verify_waived": false,
 		"tool_overrides": {}, "egress_hosts": [], "env": {}, "secret_vars": [], "switches": %s, "caps": {},
-		"runnable": false, "baseline": null,
+		"no_ci": false, "ignored_checks": [], "review_bots": [], "runnable": false, "baseline": null,
 		"check": {"requested_at": null, "tools": [], "ignored_tools": [], "failed_step": "", "verify_suggestion": "",
 			"fault": "", "commit": "", "output": ""}}`, switches), created)
 
@@ -262,4 +262,54 @@ func TestCheckIsRequested(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, p.CheckRequestedAt)
 	assert.True(t, p.CheckRequestedAt.Equal(f.clock.Now()))
+}
+
+func TestProjectForgePolicyOverREST(t *testing.T) {
+	f := newServer(t)
+
+	status, body := f.call(t, "POST /api/projects", `{"name": "web", "repo_url": "https://example.com/web.git",
+		"no_ci": true, "ignored_checks": ["lint"]}`)
+	require.Equal(t, http.StatusCreated, status, body)
+
+	created := object(t, body)
+	assert.Equal(t, true, created["no_ci"])
+	assert.Equal(t, []any{"lint"}, created["ignored_checks"])
+	assert.Equal(t, []any{}, created["review_bots"], "a list is never null")
+	assert.Equal(t, true, created["switches"].(map[string]any)["publish"], "publish is on by default")
+
+	p, err := f.store.Project(t.Context(), 1)
+	require.NoError(t, err)
+
+	p.Baseline = &store.Baseline{Commit: "abc123", Passed: true, At: f.clock.Now()}
+	require.NoError(t, f.store.UpdateProject(t.Context(), p))
+
+	for _, tc := range []struct {
+		name, patch string
+		want        store.ForgePolicy
+	}{
+		{
+			"a list given replaces its whole value", `{"ignored_checks": ["build", "docs / deploy"], "review_bots": ["copilot[bot]"]}`,
+			store.ForgePolicy{NoCI: true, IgnoredChecks: []string{"build", "docs / deploy"}, ReviewBots: []string{"copilot[bot]"}},
+		},
+		{
+			"a field left out or null keeps its value", `{"no_ci": false, "review_bots": null}`,
+			store.ForgePolicy{IgnoredChecks: []string{"build", "docs / deploy"}, ReviewBots: []string{"copilot[bot]"}},
+		},
+		{"[] empties a list", `{"ignored_checks": []}`, store.ForgePolicy{IgnoredChecks: []string{}, ReviewBots: []string{"copilot[bot]"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := f.call(t, "PATCH /api/projects/1", tc.patch)
+			require.Equal(t, http.StatusOK, status, body)
+
+			stored, err := f.store.Project(t.Context(), 1)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, stored.Forge)
+			assert.NotNil(t, stored.Baseline, "the policy is no ground of the baseline")
+
+			shown := object(t, body)
+			assert.Equal(t, tc.want.NoCI, shown["no_ci"])
+			assert.ElementsMatch(t, tc.want.IgnoredChecks, shown["ignored_checks"])
+			assert.ElementsMatch(t, tc.want.ReviewBots, shown["review_bots"])
+		})
+	}
 }

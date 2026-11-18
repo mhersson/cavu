@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -47,8 +49,10 @@ func TestImageBuildUsesCABundleSetting(t *testing.T) {
 	dir := t.TempDir()
 	data := filepath.Join(dir, "data")
 	setting := filepath.Join(dir, "setting.pem")
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
 
-	require.NoError(t, os.WriteFile(setting, []byte("bundle of the setting"), 0o600))
+	require.NoError(t, os.WriteFile(setting, bundleOf(srv), 0o600))
 
 	build := func() int {
 		code, _, _ := runCavu("image", "build", "--cavu-binary", "/linux/cavu", "--data-dir", data)
@@ -71,7 +75,7 @@ func TestImageBuildUsesCABundleSetting(t *testing.T) {
 
 	require.Equal(t, 0, build())
 	require.Len(t, fake.builds, 2)
-	assert.Equal(t, []byte("bundle of the setting"), fake.builds[1].CABundle)
+	assert.Equal(t, bundleOf(srv), fake.builds[1].CABundle)
 	assert.Equal(t, "podman", fake.name)
 
 	set("ca_bundle_path", filepath.Join(dir, "missing.pem"))

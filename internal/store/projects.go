@@ -32,6 +32,14 @@ type Project struct {
 	Baseline                    *Baseline         // nil until an environment check ran
 	CheckRequestedAt            *time.Time        // set while a check is asked for or running
 	CheckResult                 CheckResult
+	Forge                       ForgePolicy
+}
+
+// ForgePolicy is a project's forge policy: whether it has no CI, the check
+// names it ignores, and the logins whose review comments may start a follow-up run.
+type ForgePolicy struct {
+	NoCI                      bool
+	IgnoredChecks, ReviewBots []string
 }
 
 // CheckResult is what the newest environment check that ended found.
@@ -44,7 +52,7 @@ type CheckResult struct {
 const projectColumns = `id, name, repo_url, base_branch, setup_command, verify_command,
 	verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches,
 	baseline_commit, baseline_passed, baseline_at, baseline_output,
-	check_requested_at, check_result, caps`
+	check_requested_at, check_result, caps, forge`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -54,7 +62,7 @@ func scanProject(sc scanner) (Project, error) {
 	var (
 		p                                  Project
 		tools, egress, env, secretVars, sw string
-		checkResult, caps                  string
+		checkResult, caps, forge           string
 		bCommit, bOutput                   sql.NullString
 		bPassed                            sql.NullBool
 		bAt, checkAt                       sql.NullInt64
@@ -62,7 +70,7 @@ func scanProject(sc scanner) (Project, error) {
 
 	if err := sc.Scan(&p.ID, &p.Name, &p.RepoURL, &p.BaseBranch, &p.SetupCommand, &p.VerifyCommand,
 		&p.VerifyWaived, &tools, &egress, &env, &secretVars, &sw,
-		&bCommit, &bPassed, &bAt, &bOutput, &checkAt, &checkResult, &caps); err != nil {
+		&bCommit, &bPassed, &bAt, &bOutput, &checkAt, &checkResult, &caps, &forge); err != nil {
 		return Project{}, err
 	}
 
@@ -77,6 +85,7 @@ func scanProject(sc scanner) (Project, error) {
 		{sw, &p.Switches},
 		{checkResult, &p.CheckResult},
 		{caps, &p.Caps},
+		{forge, &p.Forge},
 	} {
 		if err := json.Unmarshal([]byte(f.src), f.dst); err != nil {
 			return Project{}, fmt.Errorf("decode project %d: %w", p.ID, err)
@@ -102,9 +111,9 @@ func scanProject(sc scanner) (Project, error) {
 
 // projectArgs returns the column values in the order of the insert statement.
 func projectArgs(p Project) ([]any, error) {
-	var enc [7]string
+	var enc [8]string
 
-	for i, v := range []any{p.ToolOverrides, p.EgressHosts, p.Env, p.SecretVars, p.Switches, p.CheckResult, p.Caps} {
+	for i, v := range []any{p.ToolOverrides, p.EgressHosts, p.Env, p.SecretVars, p.Switches, p.CheckResult, p.Caps, p.Forge} {
 		b, err := json.Marshal(v)
 		if err != nil {
 			return nil, fmt.Errorf("encode project: %w", err)
@@ -126,7 +135,7 @@ func projectArgs(p Project) ([]any, error) {
 	return []any{
 		p.Name, p.RepoURL, p.BaseBranch, p.SetupCommand, p.VerifyCommand, p.VerifyWaived,
 		enc[0], enc[1], enc[2], enc[3], enc[4],
-		bCommit, bPassed, bAt, bOutput, checkAt, enc[5], enc[6],
+		bCommit, bPassed, bAt, bOutput, checkAt, enc[5], enc[6], enc[7],
 	}, nil
 }
 
@@ -140,8 +149,8 @@ func (s *Store) CreateProject(ctx context.Context, p Project) (Project, error) {
 	res, err := s.db.ExecContext(ctx, `INSERT INTO projects (name, repo_url, base_branch,
 		setup_command, verify_command, verify_waived, tool_overrides, egress_hosts, env,
 		secret_vars, switches, baseline_commit, baseline_passed, baseline_at, baseline_output,
-		check_requested_at, check_result, caps)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
+		check_requested_at, check_result, caps, forge)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Project{}, fmt.Errorf("project name %q: %w", p.Name, ErrConflict)
@@ -170,7 +179,7 @@ func (s *Store) UpdateProject(ctx context.Context, p Project) error {
 		setup_command = ?, verify_command = ?, verify_waived = ?, tool_overrides = ?,
 		egress_hosts = ?, env = ?, secret_vars = ?, switches = ?, baseline_commit = ?,
 		baseline_passed = ?, baseline_at = ?, baseline_output = ?, check_requested_at = ?,
-		check_result = ?, caps = ? WHERE id = ?`, append(args, p.ID)...)
+		check_result = ?, caps = ?, forge = ? WHERE id = ?`, append(args, p.ID)...)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("project name %q: %w", p.Name, ErrConflict)

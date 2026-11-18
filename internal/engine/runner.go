@@ -12,8 +12,14 @@ import (
 type RunConfig struct {
 	TaskID, RunID, ProjectID int64
 	InstanceID, Image        string
-	Repo                     struct{ URL, BaseBranch, BaseCommit, Branch, Token string }
-	Setup                    struct {
+	// Repo is the project's repository and the task's branch. Head is the
+	// branch's commit a run starts from, "" for a run from the base commit.
+	Repo struct {
+		URL, BaseBranch, BaseCommit, Branch, Head string
+		Access                                    ForgeAccess
+		IgnoredChecks, ReviewBots                 []string // the project's forge policy
+	}
+	Setup struct {
 		Command       string
 		Env, Secrets  map[string]string
 		ToolOverrides map[string]string
@@ -52,6 +58,23 @@ type RunConfig struct {
 	// Ecosystems are what the run's prepare detected, for Work, Verify and
 	// Export; never a setting, and empty for Prepare.
 	Ecosystems []string
+}
+
+// ForgeAccess is the credential for the forge a project's repository is on:
+// a personal access token, or a GitHub App's id and private key (PEM). Its
+// fields are forge.Access's, in the same order, so the runner converts it.
+type ForgeAccess struct {
+	Token  string
+	AppID  int64
+	AppKey string
+}
+
+// Comment is a reviewer's request on the task's pull request. ID is a
+// review's id, or the id of a thread's newest comment by an allowed author.
+type Comment struct {
+	ID, Author, Path string
+	Line             int
+	Body             string
 }
 
 // File is one file of the instance's skills directory.
@@ -116,6 +139,7 @@ type WorkRequest struct {
 	Role            string    // work or strong, which picks the model and effort
 	Detail          string    // the verify output for fix_verify, the answer for answer
 	Findings        []Finding // fix_review: the open findings
+	Comments        []Comment // comments: the reviewers' open requests
 }
 
 // ReviewRequest starts a review session, which never resumes.
@@ -141,6 +165,7 @@ type WorkResult struct {
 	Detail                 string // the upstream status or error text for endpoint, usage_limit and crashed
 	Assumptions, Questions []string
 	SuggestedAnswers       []string // one per question, the answer the agent would assume
+	WhereToLook            []string // the parts of the change the session says need a person's eyes first
 	Changed                bool
 	HeadCommit             string // the commit the session's work was frozen into
 	Turns                  int

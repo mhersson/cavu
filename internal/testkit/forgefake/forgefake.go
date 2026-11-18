@@ -6,7 +6,11 @@ package forgefake
 
 import (
 	"cmp"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -21,6 +25,18 @@ import (
 )
 
 const graphQLPath = "/api/graphql"
+
+var appKey = sync.OnceValue(func() string {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+})
+
+// AppKey is a GitHub App's private key in PEM, generated once per test binary.
+func AppKey(testing.TB) string { return appKey() }
 
 // Pull is a pull request the fake holds.
 type Pull struct {
@@ -120,6 +136,7 @@ func New(t *testing.T, bareDir string) *Fake {
 
 	const repo = "/api/v3/repos/{o}/{n}"
 
+	f.mux.HandleFunc("GET "+repo, f.repository)
 	f.mux.HandleFunc("GET "+repo+"/installation", f.installation)
 	f.mux.HandleFunc("POST /api/v3/app/installations/{id}/access_tokens", f.accessToken)
 	f.mux.HandleFunc("GET "+repo+"/pulls", f.listPulls)
@@ -396,6 +413,13 @@ func (f *Fake) pullJSON(r *http.Request, p *pull) map[string]any {
 		"head":      map[string]any{"ref": p.Head, "sha": f.branchHead(p.Head)},
 		"base":      map[string]any{"ref": p.Base},
 	}
+}
+
+// repository answers for a private repository whose default branch is main.
+func (f *Fake) repository(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"full_name": r.PathValue("o") + "/" + r.PathValue("n"), "default_branch": "main", "private": true,
+	})
 }
 
 func (f *Fake) installation(w http.ResponseWriter, _ *http.Request) {

@@ -87,9 +87,10 @@ Asks for an environment check, the one `cavu project check` runs, which the serv
  "setup_command": "npm ci", "verify_command": "npm test", "verify_waived": false,
  "tool_overrides": {"node": "22"}, "egress_hosts": ["registry.npmjs.org"], "env": {"CI": "1"},
  "secret_vars": ["NPM_TOKEN"],
- "switches": {"continuations": true, "readiness": true, "review": true, "verify_fix": true,
-              "web_tools": false},
+ "switches": {"continuations": true, "publish": true, "readiness": true, "review": true,
+              "verify_fix": true, "web_tools": false},
  "caps": {"task_timeout_minutes": "60"},
+ "no_ci": false, "ignored_checks": ["lint"], "review_bots": ["copilot[bot]"],
  "runnable": true,
  "baseline": {"commit": "4b825dc", "passed": true, "at": "2030-01-02T03:04:05Z", "output": ""},
  "check": {"requested_at": null, "tools": ["node"], "ignored_tools": [], "failed_step": "",
@@ -111,6 +112,9 @@ A list is `[]` and a map `{}` when empty, never null. These fields are set by a 
 | `env` | Variables for the setup command, the agent's sessions and verify. |
 | `switches` | Switch name to `true` or `false`. |
 | `caps` | `task_timeout_minutes`, `task_max_turns` or `task_budget_usd` to a value that setting takes, for the project's own tasks over the instance's setting. An empty value removes the cap. |
+| `no_ci` | `true` when the repository has no CI. |
+| `ignored_checks` | The checks the project ignores, each by its name as GitHub shows it. |
+| `review_bots` | The project's review bots, each by its login as GitHub shows it: a GitHub App's bot is written `name[bot]`, and a name without `[bot]` is a user's account. |
 | `secrets` | Variable to value, for the setup command. Each value is sealed as the secret `project.<name>.<VAR>` and the variable added to `secret_vars`; an empty value removes both. It is never given back. |
 
 The others are the server's:
@@ -130,7 +134,7 @@ Answers 200 with every key `cavu settings set` takes whose value is not empty, a
 
 ```json
 {"settings": {"endpoint_mode": "subscription", "model_work": "sonnet"},
- "secrets": {"endpoint_credential": true, "forge_token": false}}
+ "secrets": {"endpoint_credential": true, "forge_token": false, "forge_app_key": false}}
 ```
 
 A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given.
@@ -143,7 +147,7 @@ Sets settings and instance secrets; either part may be left out:
 {"settings": {"model_work": "opus", "effort_work": null}, "secrets": {"forge_token": "..."}}
 ```
 
-A setting's value is a string, null or a JSON object, which is stored as its text; null or `""` unsets the key. A secret is `endpoint_credential` or `forge_token`, sealed at rest; `""` removes it. Every value is checked before anything is written: a key that cannot be set, a value of another kind or one the server would not read, or another secret refuses the whole request with 400. Answers 200 with the settings as `GET` gives them.
+A setting's value is a string, null or a JSON object, which is stored as its text; null or `""` unsets the key. A secret is `endpoint_credential`, `forge_token` or `forge_app_key`, sealed at rest; `""` removes it. Every value is checked before anything is written: a key that cannot be set, a value of another kind or one the server would not read, or another secret refuses the whole request with 400. Answers 200 with the settings as `GET` gives them.
 
 ### `GET /api/tasks`
 

@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +24,7 @@ import (
 // that forgets --data-dir never reaches the real one, and refuses the runtime
 // to a test that forgets the fake.
 func TestMain(m *testing.M) {
-	detectRuntime = func(context.Context, string) (containerRuntime, error) {
+	detectRuntime = func(context.Context, string, *forge.Client) (containerRuntime, error) {
 		return nil, errors.New("a unit test drives no container runtime")
 	}
 	pollEvery = 5 * time.Millisecond
@@ -53,6 +57,7 @@ type fakeRuntime struct {
 	found    bool
 	removals []removal
 	runner   *fakeRunner
+	forge    *forge.Client // the client the runners would get
 }
 
 // removal is one RemoveOrphans call.
@@ -161,13 +166,59 @@ func useFakeRuntime(t *testing.T, fake *fakeRuntime) {
 	t.Helper()
 
 	prev := detectRuntime
-	detectRuntime = func(_ context.Context, name string) (containerRuntime, error) {
-		fake.name = name
+	detectRuntime = func(_ context.Context, name string, f *forge.Client) (containerRuntime, error) {
+		fake.name, fake.forge = name, f
 
 		return fake, nil
 	}
 
 	t.Cleanup(func() { detectRuntime = prev })
+}
+
+// bundleOf is srv's certificate as a CA bundle.
+func bundleOf(srv *httptest.Server) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+}
+
+// The forge client the runners get trusts the CA bundle ca_bundle_path names.
+func TestRuntimeForgeClientTrustsTheCABundle(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/repos/o/n" {
+			http.NotFound(w, r)
+
+			return
+		}
+
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	repo, err := forge.ParseRepo(srv.URL + "/o/n")
+	require.NoError(t, err)
+
+	fake := &fakeRuntime{}
+	useFakeRuntime(t, fake)
+
+	dir := t.TempDir()
+	check := func() error {
+		a, err := openApp(t.Context(), dir)
+		require.NoError(t, err)
+
+		defer a.close()
+
+		_, err = a.runtime(t.Context())
+		require.NoError(t, err)
+
+		return fake.forge.Check(t.Context(), repo, forge.Access{Token: "ghp_testtoken"})
+	}
+
+	require.Error(t, check(), "no bundle holds the server's certificate yet")
+
+	bundle := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(bundle, bundleOf(srv), 0o600))
+	cavuIn(t, dir, "settings", "set", "ca_bundle_path", bundle)
+
+	require.NoError(t, check())
 }
 
 // storedSettings reads the settings table of the data directory dir.

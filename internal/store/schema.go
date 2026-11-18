@@ -150,4 +150,10 @@ UPDATE settings SET key = 'task_max_turns' WHERE key = 'work_max_turns';
 
 ALTER TABLE projects ADD COLUMN caps TEXT NOT NULL DEFAULT '{}';
 `},
+	{Version: 6, SQL: `
+ALTER TABLE projects ADD COLUMN forge TEXT NOT NULL DEFAULT '{}';
+
+CREATE INDEX events_at ON events (at);
+CREATE INDEX usage_event_id ON usage (event_id);
+`},
 }

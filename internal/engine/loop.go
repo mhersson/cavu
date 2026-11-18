@@ -69,7 +69,7 @@ const (
 )
 
 // defaultCaps bounds the automatic continuations, fix rounds and fault retries Decide allows.
-var defaultCaps = Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2}
+var defaultCaps = Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2, CIFixes: 2, CommentRuns: 3}
 
 var (
 	// ErrActionCap is returned when RunTask decides maxActions times and the task has neither rested nor waited.

@@ -8,11 +8,15 @@ import (
 	"github.com/mhersson/cavu/internal/store"
 )
 
-// Switches turn a project's removable steps on or off.
-type Switches struct{ Continuations, VerifyFix, WebTools, Readiness, Review bool }
+// Switches hold a project's on or off choices. Publish is the project's choice
+// to put its tasks' changes on the forge as pull requests.
+type Switches struct{ Continuations, VerifyFix, WebTools, Readiness, Review, Publish bool }
 
-// Caps bound the automatic rounds counted in Facts.
-type Caps struct{ Continuations, VerifyFixes, ReviewFixes, FaultRetries int }
+// Caps are the counts a task's automatic rounds stop at. CIFixes counts runs
+// on a pull request's failed checks, CommentRuns runs on its reviewers' requests.
+type Caps struct {
+	Continuations, VerifyFixes, ReviewFixes, FaultRetries, CIFixes, CommentRuns int
+}
 
 // Pause is what other tasks' open stops mean for a task that wants a session.
 type Pause struct {
@@ -73,6 +77,14 @@ const (
 	StopSandbox      = "sandbox"
 	StopCancelled    = "cancelled"
 	StopDependency   = "dependency"
+
+	StopPushRejected     = "push_rejected"     // the forge refused the push of the task's branch
+	StopCIFailed         = "ci_failed"         // the pull request's checks still fail after the fix runs
+	StopCITimeout        = "ci_timeout"        // the checks stayed unfinished past ci_timeout_minutes
+	StopNoChecks         = "no_checks"         // no check started on the pull request
+	StopConflict         = "conflict"          // the pull request conflicts with its base
+	StopTakenOver        = "taken_over"        // the branch holds a head CAVU did not push
+	StopChangesRequested = "changes_requested" // reviewers still ask for changes after the follow-up runs
 )
 
 // The waits before a runner fault is retried: after the first fault since the

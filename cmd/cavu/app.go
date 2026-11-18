@@ -20,6 +20,7 @@ import (
 	"github.com/mhersson/cavu/internal/doctor"
 	"github.com/mhersson/cavu/internal/driver/claudecode"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/runner"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
@@ -144,10 +145,15 @@ type containerRuntime interface {
 	Runner() engine.Runner
 }
 
-// hostRuntime is the runtime on this host, with a runner of Claude Code over it.
-type hostRuntime struct{ sandbox.Runtime }
+// hostRuntime is the runtime on this host, with a runner of Claude Code over
+// it that reaches the forge through one client.
+type hostRuntime struct {
+	sandbox.Runtime
 
-func (r hostRuntime) Runner() engine.Runner { return runner.New(r.Runtime, claudecode.New()) }
+	forge *forge.Client
+}
+
+func (r hostRuntime) Runner() engine.Runner { return runner.New(r.Runtime, claudecode.New(), r.forge) }
 
 func (r hostRuntime) RemoveOrphans(ctx context.Context, instanceID string, keepRuns []int64) error {
 	return sandbox.RemoveOrphans(ctx, r.Runtime, instanceID, keepRuns)
@@ -155,23 +161,45 @@ func (r hostRuntime) RemoveOrphans(ctx context.Context, instanceID string, keepR
 
 // detectRuntime is the one seam to the container runtime: the unit tests
 // replace it, so they start no container and run no runtime binary.
-var detectRuntime = func(ctx context.Context, name string) (containerRuntime, error) {
+var detectRuntime = func(ctx context.Context, name string, f *forge.Client) (containerRuntime, error) {
 	rt, err := sandbox.Detect(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 
-	return hostRuntime{rt}, nil
+	return hostRuntime{rt, f}, nil
 }
 
-// runtime detects the runtime the runtime setting names, else the first found.
+// runtime detects the runtime the runtime setting names, else the first
+// found, with the forge client its runners share, which trusts the CA bundle.
 func (a *app) runtime(ctx context.Context) (containerRuntime, error) {
 	name, _, err := a.store.Setting(ctx, "runtime")
 	if err != nil {
 		return nil, err
 	}
 
-	return detectRuntime(ctx, name)
+	f, _, err := a.forgeClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return detectRuntime(ctx, name, f)
+}
+
+// forgeClient is the forge client that trusts the CA bundle ca_bundle_path
+// names, and the bundle, nil when unset.
+func (a *app) forgeClient(ctx context.Context) (*forge.Client, []byte, error) {
+	bundle, err := a.caBundle(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	f, err := forge.New(forge.Options{CABundle: bundle, Version: version})
+	if err != nil {
+		return nil, nil, fmt.Errorf("ca_bundle_path: %w", err)
+	}
+
+	return f, bundle, nil
 }
 
 // caBundle reads the CA bundle the ca_bundle_path setting names, nil when unset.

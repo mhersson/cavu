@@ -26,7 +26,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		return body
 	}
 
-	assert.JSONEq(t, `{"settings": {}, "secrets": {"endpoint_credential": false, "forge_token": false}}`, settings(t),
+	assert.JSONEq(t, `{"settings": {}, "secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false}}`, settings(t),
 		"a setting a person cannot set is not shown")
 
 	status, body := f.call(t, "PATCH /api/settings", `{"settings": {"endpoint_mode": "subscription", "model_work": "sonnet",
@@ -34,7 +34,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusOK, status, body)
 
 	want := `{"settings": {"endpoint_mode": "subscription", "model_work": "sonnet", "concurrency": "4",
-		"commit_name": {"b": 2, "a": [1, 2.50]}}, "secrets": {"endpoint_credential": false, "forge_token": true}}`
+		"commit_name": {"b": 2, "a": [1, 2.50]}}, "secrets": {"endpoint_credential": false, "forge_token": true, "forge_app_key": false}}`
 	assert.JSONEq(t, want, body)
 	assert.JSONEq(t, want, settings(t))
 
@@ -86,7 +86,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusOK, status, body)
 
 	want = `{"settings": {"endpoint_mode": "subscription", "commit_name": {"b": 2, "a": [1, 2.50]}},
-		"secrets": {"endpoint_credential": false, "forge_token": false}}`
+		"secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false}}`
 	assert.JSONEq(t, want, body, "null and an empty value unset a key, and an empty secret removes it")
 	assert.JSONEq(t, want, settings(t))
 
@@ -96,6 +96,46 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	for _, b := range f.bodies {
 		assert.NotContains(t, b, secret)
+	}
+}
+
+// The App's key is an instance secret: sealed when given, shown as set, and
+// removed with "", and refused only by the rules every request meets.
+func TestSettingsTakeTheAppKey(t *testing.T) {
+	const key = "sealed-app-key-value"
+
+	f := newServer(t)
+
+	secrets := func(t *testing.T, body string) any {
+		t.Helper()
+
+		return object(t, body)["secrets"]
+	}
+
+	status, body := f.call(t, "PATCH /api/settings", `{"settings": {"forge_app_id": "0"}, "secrets": {"forge_app_key": "x"}}`)
+	require.Equal(t, http.StatusBadRequest, status, body)
+
+	names, err := f.store.SecretNames(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, names, "a refused request seals nothing")
+
+	status, body = f.call(t, "PATCH /api/settings", `{"settings": {"forge_app_id": "123456"},
+		"secrets": {"forge_app_key": "`+key+`"}}`)
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, map[string]any{"endpoint_credential": false, "forge_token": false, "forge_app_key": true}, secrets(t, body))
+	assert.Equal(t, "123456", object(t, body)["settings"].(map[string]any)["forge_app_id"])
+
+	got, ok, err := f.vault.Get(t.Context(), engine.SecretForgeAppKey)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, key, got)
+
+	status, body = f.call(t, "PATCH /api/settings", `{"secrets": {"forge_app_key": ""}}`)
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, map[string]any{"endpoint_credential": false, "forge_token": false, "forge_app_key": false}, secrets(t, body))
+
+	for _, b := range f.bodies {
+		assert.NotContains(t, b, key)
 	}
 }
 

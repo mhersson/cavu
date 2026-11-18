@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -16,10 +18,12 @@ import (
 
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/runner"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
+	"github.com/mhersson/cavu/internal/testkit/forgefake"
 	"github.com/mhersson/cavu/internal/testkit/sandboxtest"
 )
 
@@ -40,6 +44,8 @@ type fakeHost struct {
 	found    bool
 	noMarker bool
 	route    bool
+
+	cloneErr func(sidecar.CloneRequest) error // the clone fails with the error it makes from the request
 
 	opened   []int64
 	destroys int
@@ -71,6 +77,10 @@ func (b fakeBox) Up(_ context.Context, _ sandbox.Phase, p sidecar.ProxyRequest, 
 
 func (b fakeBox) Clone(_ context.Context, r sidecar.CloneRequest) (string, error) {
 	b.h.clones = append(b.h.clones, r)
+
+	if b.h.cloneErr != nil {
+		return "", b.h.cloneErr(r)
+	}
 
 	return strings.Repeat("a", 40), nil
 }
@@ -436,5 +446,128 @@ func TestDoctorExitCode(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			assert.Equal(t, tc.want, ExitCode(tc.checks))
 		})
+	}
+}
+
+// onForge puts d's project, with publish on, on a fake GitHub that d's client
+// reaches on the real clock, since the fake's tokens expire by it. It returns
+// the fake and its API address.
+func onForge(t *testing.T, d *Deps) (*forgefake.Fake, string) {
+	t.Helper()
+
+	fake := forgefake.New(t, t.TempDir())
+	srv := httptest.NewTLSServer(fake)
+	t.Cleanup(srv.Close)
+
+	client, err := forge.New(forge.Options{Transport: srv.Client().Transport, Version: version})
+	require.NoError(t, err)
+
+	d.Forge = client
+	d.Project.RepoURL, d.Project.Publish = srv.URL+"/o/n", true
+
+	return fake, srv.URL + "/api/v3"
+}
+
+// withApp makes d's forge credential a GitHub App's.
+func withApp(t testing.TB, d *Deps) {
+	d.ForgeToken, d.ForgeAppKey = "", forgefake.AppKey(t)
+	d.Settings["forge_app_id"] = "42"
+}
+
+func paths(fake *forgefake.Fake) []string {
+	var out []string
+	for _, r := range fake.Requests() {
+		out = append(out, r.Path)
+	}
+
+	return out
+}
+
+func TestDoctorForgeReadsTheRepository(t *testing.T) {
+	t.Run("an App's token, publish on", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		fake, _ := onForge(t, &d)
+		withApp(t, &d)
+
+		forgeCheck := byName(t, Run(t.Context(), d))["forge"]
+		assert.True(t, forgeCheck.OK && !forgeCheck.Skipped, "%+v", forgeCheck)
+
+		minted := fake.Tokens()
+		require.Len(t, minted, 1, "the clone's token serves the read too")
+		require.Len(t, h.clones, 1)
+		assert.Equal(t, minted[0].Value, h.clones[0].Token)
+		assert.Contains(t, paths(fake), "/api/v3/repos/o/n")
+	})
+
+	t.Run("a personal access token, publish off", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		fake, _ := onForge(t, &d)
+		d.Project.Publish = false
+
+		assert.True(t, byName(t, Run(t.Context(), d))["forge"].OK)
+		require.Len(t, h.clones, 1)
+		assert.Equal(t, forgeToken, h.clones[0].Token)
+		assert.Empty(t, fake.Requests(), "no request reaches the forge")
+	})
+
+	for _, tc := range []struct {
+		name       string
+		credential func(testing.TB, *Deps)
+		clones     int
+	}{
+		{"the repository read", func(testing.TB, *Deps) {}, 1},
+		{"the App's mint", withApp, 0},
+	} {
+		t.Run("a failure of "+tc.name+" names the API address", func(t *testing.T) {
+			d, h, _ := green(t, "key")
+			fake, api := onForge(t, &d)
+			tc.credential(t, &d)
+			fake.Fail(1)
+
+			checks := Run(t.Context(), d)
+			forgeCheck := byName(t, checks)["forge"]
+			assert.False(t, forgeCheck.OK)
+			assert.Contains(t, forgeCheck.Detail, api)
+			assert.Len(t, h.clones, tc.clones)
+			assert.Equal(t, 1, ExitCode(checks))
+		})
+	}
+
+	t.Run("skipped without a credential or a project", func(t *testing.T) {
+		for name, edit := range map[string]func(*Deps){
+			"no credential": func(d *Deps) { d.ForgeToken = "" },
+			"no project":    func(d *Deps) { d.Project = nil },
+		} {
+			d, h, _ := green(t, "key")
+			edit(&d)
+
+			assert.True(t, byName(t, Run(t.Context(), d))["forge"].Skipped, name)
+			assert.Empty(t, h.clones, name)
+		}
+	})
+}
+
+// The forge check's token, an App's minted one too, and the App's key are
+// masked wherever a check's text holds them.
+func TestDoctorMasksTheForgeCredential(t *testing.T) {
+	d, h, _ := green(t, "key")
+	fake, _ := onForge(t, &d)
+	withApp(t, &d)
+
+	h.cloneErr = func(r sidecar.CloneRequest) error {
+		return fmt.Errorf("fatal: https://x-access-token:%s@forge.example/o/n refused; key %s", r.Token, d.ForgeAppKey)
+	}
+
+	checks := Run(t.Context(), d)
+	require.False(t, byName(t, checks)["forge"].OK)
+
+	minted := fake.Tokens()
+	require.Len(t, minted, 1)
+
+	for _, c := range checks {
+		for _, secret := range []string{minted[0].Value, d.ForgeAppKey} {
+			assert.NotContains(t, c.Detail, secret)
+			assert.NotContains(t, c.Fix, secret)
+		}
 	}
 }
