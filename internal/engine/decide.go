@@ -507,8 +507,8 @@ func noChecks(s Snapshot, pr *PRFact) Action {
 	}
 
 	return halt(StopNoChecks, ClearRetry, "No check started on the pull request.",
-		line(fmt.Sprintf("No check started on pull request %s, even after CAVU marked it ready. "+
-			"A project without CI is marked no_ci: cavu project set NAME --no-ci on.", pr.URL)))
+		line(fmt.Sprintf("No check started on pull request %s after CAVU marked it ready. A project whose pull requests "+
+			"may start no check, as with CI only for some paths, is marked no_ci: cavu project set NAME --no-ci on.", pr.URL)))
 }
 
 // unanswered is the ids of the requests seen holds that no follow-up run was

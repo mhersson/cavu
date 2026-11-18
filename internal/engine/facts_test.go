@@ -673,7 +673,7 @@ func TestReduceObservations(t *testing.T) {
 		assert.Equal(t, 1, f.CIFixes)
 		assert.Equal(t, "def456", f.PR.FixedHead)
 		assert.False(t, f.Exported, "the run ended without an export")
-		assert.Equal(t, "def456", f.PR.Export.HeadCommit, "the change the pull request holds")
+		assert.Equal(t, "def456", f.PR.Export.HeadCommit, "the export CAVU published last")
 		assert.Equal(t, engine.StatusInReview, engine.StatusOf(f), "a task with a pull request and no run is in review")
 	})
 

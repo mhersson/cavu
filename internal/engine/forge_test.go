@@ -105,7 +105,7 @@ func TestPublishRecordsThePullRequest(t *testing.T) {
 	assert.Equal(t, engine.PRFact{
 		Number: publishedOK.Number, URL: publishedOK.URL, NodeID: publishedOK.NodeID, Branch: publishedOK.Branch,
 		Head: publishedOK.Head, Heads: []string{publishedOK.Head}, Export: payloadOf[engine.ExportedPayload](t, tail[0]),
-	}, pr, "the export it published is the change the pull request holds")
+	}, pr, "the export it published")
 }
 
 func TestPublishBodyHoldsNoCostOfTheTask(t *testing.T) {

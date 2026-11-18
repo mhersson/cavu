@@ -60,7 +60,7 @@ type PRFact struct {
 	URL, NodeID, Branch, Head string
 	Heads                     []string        // every head CAVU published or took back
 	Since                     time.Time       // the latest of the head's publish, CAVU's ready-marking and a person's action
-	Export                    ExportedPayload // the export published last, the change the pull request holds
+	Export                    ExportedPayload // the export CAVU published last
 	Seen                      *Observation    // the newest observation since the head was published; nil when none
 	MarkedReady               bool            // CAVU marked the pull request ready for review
 	FixedHead                 string          // the head a run on failed checks was started from since the last human action
