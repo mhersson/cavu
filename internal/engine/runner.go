@@ -134,7 +134,7 @@ type Runner interface {
 	Publish(ctx context.Context, c RunConfig, p PublishRequest) (PublishResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
 	Release(ctx context.Context, ref RunRef, remove Remove) error
-	// Observe reads the task's pull request number from the forge. Observe,
+	// Observe reads pull request number from the forge. Observe,
 	// Ready and Reply start no container, and return a *RateLimited while the
 	// forge limits their requests.
 	Observe(ctx context.Context, c RunConfig, number int) (Observation, error)

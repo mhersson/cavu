@@ -54,7 +54,7 @@ type Scheduler struct {
 // round is what one Run keeps. Only Run's goroutine touches it.
 type round struct {
 	drives   map[int64]*flight
-	polls    map[int64]*poll // each watched task's clock, kept until it rests: a stop between two looks keeps a rate limit's wait
+	polls    map[int64]*poll // each watched task's clock, kept until it rests or a read or drive of it fails: a stop between two looks keeps a rate limit's wait
 	seen     map[int64]int64 // a task's newest event id when it was found with nothing to drive
 	loose    map[int64]bool  // tasks whose last drive may have left containers up
 	checking bool
