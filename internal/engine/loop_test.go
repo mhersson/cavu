@@ -68,6 +68,7 @@ type call struct {
 	review engine.ReviewRequest
 	remove bool
 	commit string // the commit an export was given
+	pub    engine.PublishRequest
 	ref    engine.RunRef
 	eco    []string         // the config's ecosystems
 	cfg    engine.RunConfig // the config of every call but a release
@@ -101,6 +102,7 @@ type fakeRunner struct {
 	verifies   []step[engine.VerifyResult]
 	exports    []step[engine.ExportResult]
 	reviews    []step[engine.ReviewResult]
+	publishes  []step[engine.PublishResult]
 	releaseErr error
 	suggestion string                                  // every check's verify suggestion
 	progress   []engine.Progress                       // sent during every Work, each from its own goroutine
@@ -119,6 +121,9 @@ var (
 	exportOK   = engine.ExportResult{
 		HeadCommit: "head456", Diff: []byte("diff --git a/AGENTS.md b/AGENTS.md\n"), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 1,
 		DiffStat: []string{"AGENTS.md | 1 +", "1 file changed, 1 insertion(+)"}, Files: []engine.ChangedFile{{Path: "AGENTS.md", Size: 12}},
+	}
+	publishedOK = engine.PublishResult{
+		Branch: "cavu/fix-the-login", Head: "head456", Number: 7, URL: "https://example.com/web/pull/7", NodeID: "PR_7",
 	}
 )
 
@@ -204,9 +209,15 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit stri
 	return pop(&r.exports, exportOK)
 }
 
-// Publish is not scripted: the fake does not publish.
-func (r *fakeRunner) Publish(context.Context, engine.RunConfig, engine.PublishRequest) (engine.PublishResult, error) {
-	return engine.PublishResult{}, errors.New("fake: the runner does not publish")
+func (r *fakeRunner) Publish(ctx context.Context, c engine.RunConfig, p engine.PublishRequest) (engine.PublishResult, error) {
+	if err := r.begin(ctx, call{method: "publish", task: c.TaskID, runID: c.RunID, pub: p, eco: c.Ecosystems, cfg: c}); err != nil {
+		return engine.PublishResult{}, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return pop(&r.publishes, publishedOK)
 }
 
 func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.ReviewRequest, _ func(engine.Progress)) (engine.ReviewResult, error) {
@@ -410,10 +421,10 @@ func newHarness(t *testing.T) *harness {
 		require.NoError(t, s.SetSetting(ctx, k, val))
 	}
 
-	// The readiness turn and the review are off: only the tests that turn them on are about them.
+	// The readiness turn, the review and the publish are off: only the tests that turn them on are about them.
 	p, err := s.CreateProject(ctx, store.Project{
-		Name: "web", RepoURL: "https://example.com/web.git", BaseBranch: "main",
-		SetupCommand: "make setup", VerifyCommand: "make test", Switches: map[string]bool{"readiness": false, "review": false},
+		Name: "web", RepoURL: "https://example.com/web.git", BaseBranch: "main", SetupCommand: "make setup", VerifyCommand: "make test",
+		Switches: map[string]bool{"readiness": false, "review": false, "publish": false},
 	})
 	require.NoError(t, err)
 
@@ -2066,13 +2077,13 @@ func TestLoopAnswerReachesTheAgent(t *testing.T) {
 	assert.Equal(t, works[0].work.SessionID, works[1].work.SessionID)
 }
 
-// withDefaultSwitches gives the harness's project the default switches, which
-// turn the readiness turn and the review on.
+// withDefaultSwitches gives the harness's project the default switches but
+// publish, which turn the readiness turn and the review on.
 func (h *harness) withDefaultSwitches() {
 	h.t.Helper()
 
 	p := h.project()
-	p.Switches = nil
+	p.Switches = map[string]bool{"publish": false}
 	require.NoError(h.t, h.store.UpdateProject(h.t.Context(), p))
 }
 

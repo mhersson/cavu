@@ -58,6 +58,7 @@ const (
 	KindVerify  ActionKind = "verify"
 	KindReview  ActionKind = "review"
 	KindExport  ActionKind = "export"
+	KindPublish ActionKind = "publish"
 	KindFinish  ActionKind = "finish"
 	KindWait    ActionKind = "wait"
 	KindStop    ActionKind = "stop"
@@ -204,6 +205,11 @@ func decide(s Snapshot) Action {
 
 	if f.OpenStop != nil {
 		return Action{Kind: KindNone, Why: "The task is stopped until a person acts."}
+	}
+
+	// A replay's shadow reruns an old task to compare outcomes: its change is never published.
+	if f.Exported && f.RunOpen && s.Switches.Publish && s.Task.ReplayID == 0 && (f.PR == nil || f.PR.Head != f.Export.HeadCommit) {
+		return Action{Kind: KindPublish, Why: "The exported change is not yet on the task's branch on GitHub."}
 	}
 
 	if f.Exported && f.RunOpen {

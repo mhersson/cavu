@@ -515,7 +515,9 @@ func TestServeVerbsBesideTheServer(t *testing.T) {
 	assert.Contains(t, r.stderr, in.dir)
 
 	// The server runs the check, and the verb exits 0 once it passed the baseline.
+	// No forge is behind the repository, so the publish is off.
 	in.ok("project", "add", "notes", "--repo", in.repo, "--verify", verify)
+	in.ok("project", "set", "notes", "--switch", "publish=off")
 	in.ok("project", "check", "notes")
 
 	id := in.task("notes")
