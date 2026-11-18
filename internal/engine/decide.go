@@ -554,7 +554,7 @@ func cancelled(pr *PRFact) string {
 
 // takenOver explains a branch that holds a head CAVU did not push.
 func takenOver(pr *PRFact, runOpen bool) string {
-	text := fmt.Sprintf("The branch of pull request %s holds a commit CAVU did not push; a retry gives the branch back to CAVU at that commit.", pr.URL)
+	text := fmt.Sprintf("The branch of pull request %s holds a commit CAVU did not push; a retry gives the branch back to CAVU as it then is, the head CAVU's next look shows.", pr.URL)
 	if runOpen {
 		text += " The open run's commits that were not pushed are dropped."
 	}

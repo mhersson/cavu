@@ -434,6 +434,151 @@ func TestTaskShowPrintsTheNewestExport(t *testing.T) {
 	assert.Equal(t, []string{string(engine.StatusInReview)}, labelled(out, "status:"))
 }
 
+// publishedTask is a task of web whose first run exported x and published it as
+// pull request 7 at url, and ended; files written under t.TempDir() hold its diff.
+func publishedTask(t *testing.T, dir string) (id, url string, x engine.ExportedPayload) {
+	t.Helper()
+
+	art := t.TempDir()
+	x = engine.ExportedPayload{
+		HeadCommit: "head1", DiffPath: filepath.Join(art, "published.diff"), BundlePath: filepath.Join(art, "published.bundle"),
+		DiffStat: []string{"login.go | 2 +-", "1 file changed, 1 insertion(+), 1 deletion(-)"},
+		Flagged: engine.Flagged{
+			Workflows: []string{".github/workflows/ci.yml", ".github/workflows/release.yml"}, Instructions: []string{"AGENTS.md"},
+			Large: []string{"assets/demo.mp4"},
+		},
+	}
+	require.NoError(t, os.WriteFile(x.DiffPath, []byte("diff --git a/login.go b/login.go\n"), 0o600))
+
+	id, url = addTask(t, dir, "Fix the login"), "https://github.com/acme/web/pull/7"
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}),
+		event(engine.Exported, "runner", x),
+		event(engine.Published, "runner", engine.PublishedPayload{Branch: "cavu/fix-the-login", Head: x.HeadCommit, Number: 7, URL: url, NodeID: "PR_7"}),
+		event(engine.RunEnded, "engine", engine.RunEndedPayload{Outcome: "exported", KeptHome: true}))
+
+	return id, url, x
+}
+
+// decided is what Decide gives for the task now, as a verb reads it.
+func decided(t *testing.T, dir, id string) engine.Action {
+	t.Helper()
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	snap, err := a.actions().Snapshot(t.Context(), taskID(t, id))
+	require.NoError(t, err)
+
+	return engine.Decide(snap)
+}
+
+func TestTaskShowPrintsThePullRequest(t *testing.T) {
+	dir := webData(t)
+	id, url, published := publishedTask(t, dir)
+	checks := []string{engine.ChecksNone, engine.ChecksPending, engine.ChecksPassed, engine.ChecksFailed}
+
+	out := cavuIn(t, dir, "task", "show", id)
+
+	pr := labelled(out, "pr:")
+	require.Len(t, pr, 1, out)
+	assert.Contains(t, pr[0], url)
+	assert.Contains(t, pr[0], engine.PROpen, "open before any look")
+
+	require.Len(t, labelled(out, "checks:"), 1, out)
+
+	for _, c := range checks {
+		assert.NotContains(t, labelled(out, "checks:")[0], c, "no look read the head's checks yet")
+	}
+
+	act := decided(t, dir, id)
+	require.Equal(t, engine.KindWatch, act.Kind)
+	require.Len(t, labelled(out, "wait:"), 1, out)
+	assert.Contains(t, labelled(out, "wait:")[0], act.Why, "why the watched task waits, as Decide says")
+
+	seedEvents(t, dir, id, nil, event(engine.PRObserved, "runner", engine.Observation{
+		State: engine.PROpen, Head: published.HeadCommit, Checks: engine.ChecksFailed, Failed: []string{"lint", "unit-tests"},
+	}))
+
+	out = cavuIn(t, dir, "task", "show", id)
+	require.Len(t, labelled(out, "checks:"), 1, out)
+
+	for _, v := range []string{engine.ChecksFailed, "lint", "unit-tests"} {
+		assert.Contains(t, labelled(out, "checks:")[0], v)
+	}
+
+	// A fix run works on the pull request: the change shown is the one published, not the run's newer export.
+	seedEvents(t, dir, id, nil, event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: published.HeadCommit}))
+
+	for _, newer := range []bool{false, true} {
+		if newer {
+			seedEvents(t, dir, id, nil, event(engine.Exported, "runner", engine.ExportedPayload{
+				HeadCommit: "head2", DiffPath: "/fix/change.diff", BundlePath: "/fix/change.bundle", DiffStat: []string{"fix.go | 1 +"},
+			}))
+		}
+
+		out = cavuIn(t, dir, "task", "show", id)
+		assert.Equal(t, []string{published.DiffPath}, labelled(out, "diff:"), "an export of the fix run: %v", newer)
+		assert.Equal(t, []string{published.BundlePath}, labelled(out, "bundle:"))
+		assert.Equal(t, published.DiffStat, labelled(out, "changed:"))
+	}
+
+	seedEvents(t, dir, id, nil,
+		event(engine.PRObserved, "runner", engine.Observation{State: engine.PRMerged, Head: published.HeadCommit, Checks: engine.ChecksPassed}))
+
+	out = cavuIn(t, dir, "task", "show", id)
+	require.Len(t, labelled(out, "pr:"), 1, out)
+	assert.Contains(t, labelled(out, "pr:")[0], engine.PRMerged)
+}
+
+func TestTaskShowPrintsTheFlaggedPaths(t *testing.T) {
+	dir := webData(t)
+	id, _, published := publishedTask(t, dir)
+	f := published.Flagged
+	kinds := [][]string{f.Workflows, f.Instructions, f.Large}
+
+	lines := labelled(cavuIn(t, dir, "task", "show", id), "flagged:")
+	require.Len(t, lines, len(kinds), lines)
+
+	for _, paths := range kinds {
+		var holding []string
+
+		for _, l := range lines {
+			if slices.ContainsFunc(paths, func(p string) bool { return strings.Contains(l, p) }) {
+				holding = append(holding, l)
+			}
+		}
+
+		require.Len(t, holding, 1, "a kind's paths are on one line of their own: %v", paths)
+
+		for _, p := range slices.Concat(kinds...) {
+			assert.Equal(t, slices.Contains(paths, p), strings.Contains(holding[0], p), "%q on the line of %v", p, paths)
+		}
+	}
+
+	none := addTask(t, dir, "Unflagged")
+	seedEvents(t, dir, none, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.Exported, "runner", engine.ExportedPayload{DiffPath: "/x/change.diff", DiffStat: []string{"x.go | 1 +"}}))
+
+	assert.Empty(t, labelled(cavuIn(t, dir, "task", "show", none), "flagged:"), "no line for a change with no flagged path")
+}
+
+func TestTaskDiffPrintsThePublishedChange(t *testing.T) {
+	dir := webData(t)
+	id, _, published := publishedTask(t, dir)
+
+	fixDiff := filepath.Join(t.TempDir(), "fix.diff")
+	require.NoError(t, os.WriteFile(fixDiff, []byte("diff --git a/fix.go b/fix.go\n"), 0o600))
+
+	seedEvents(t, dir, id, nil, event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: published.HeadCommit}))
+	assert.Equal(t, "diff --git a/login.go b/login.go\n", cavuIn(t, dir, "task", "diff", id), "in the middle of a fix run")
+
+	seedEvents(t, dir, id, nil, event(engine.Exported, "runner", engine.ExportedPayload{HeadCommit: "head2", DiffPath: fixDiff}))
+	assert.Equal(t, "diff --git a/login.go b/login.go\n", cavuIn(t, dir, "task", "diff", id), "the fix run's export is not published yet")
+}
+
 func TestTaskShowPrintsTurnsAndDuration(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix")
@@ -1131,6 +1276,80 @@ func TestTaskRunEndsAtTheWatch(t *testing.T) {
 	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
 }
 
+// The verb ends at the pull request it opened, though its own scheduler's look
+// at the pull request fails, as with GitHub down: the watch is cavu serve's.
+func TestTaskRunEndsAtThePullRequest(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	cavuIn(t, dir, "project", "set", "web", "--switch", "publish=on")
+
+	url := "https://github.com/acme/web/pull/7"
+	fake.runner.published = engine.PublishResult{Branch: "cavu/fix-the-login", Head: "head456", Number: 7, URL: url, NodeID: "PR_7"}
+
+	// The follow prints the publish only once the failed look has ended the
+	// scheduler, so the failure comes before the follow sees the watch.
+	var (
+		cut  = make(chan struct{})
+		once sync.Once
+		out  strings.Builder
+		errs strings.Builder
+	)
+
+	fake.runner.duringLook = func(ctx context.Context) { once.Do(func() { context.AfterFunc(ctx, func() { close(cut) }) }) }
+	stdout := writerFunc(func(p []byte) (int, error) {
+		if f := strings.Fields(string(p)); len(f) > 1 && f[1] == engine.Published {
+			select {
+			case <-cut:
+			case <-time.After(within):
+			}
+		}
+
+		return out.Write(p)
+	})
+
+	err := runTask(t.Context(), []string{"run", id, "--data-dir", dir}, nil, stdout, &errs)
+
+	require.NoError(t, err, errs.String())
+	assert.Contains(t, out.String(), url)
+	assert.Contains(t, errs.String(), errNoPullRequest.Error(), "the failed look is told")
+	assert.Contains(t, fake.runner.actions, engine.KindPublish)
+	assert.Equal(t, engine.KindWatch, decided(t, dir, id).Kind, "the task rests at its pull request")
+}
+
+// writerFunc is a function as an io.Writer.
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// On a task whose pull request is open already the verb returns at once: it
+// takes no lock, asks for no runtime and records nothing.
+func TestTaskRunReturnsAtAWatchedPullRequest(t *testing.T) {
+	for _, stopped := range []bool{false, true} {
+		t.Run(map[bool]string{false: "watched", true: "stopped"}[stopped], func(t *testing.T) {
+			dir := webData(t)
+			id, url, _ := publishedTask(t, dir)
+			want := 0
+
+			if stopped {
+				seedEvents(t, dir, id, nil, event(engine.Stopped, "engine", engine.StoppedPayload{
+					Reason: engine.StopCIFailed, Explanation: "Checks failed on " + url + ": lint.", Action: engine.ClearRetry,
+				}))
+
+				want = 3
+			}
+
+			refuseRuntime(t)
+			before := storedEvents(t, dir, id)
+
+			code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
+
+			assert.Equal(t, want, code, stderr)
+			assert.Contains(t, stdout, url)
+			assert.Equal(t, before, storedEvents(t, dir, id), "no event is recorded")
+			assert.NoFileExists(t, filepath.Join(dir, "lock"), "no lock is taken")
+		})
+	}
+}
+
 func TestTaskRunPrintsAWaitOnce(t *testing.T) {
 	dir, _, fake := runSetup(t)
 	dep := addTask(t, dir, "First")
@@ -1305,6 +1524,12 @@ func TestTaskShowPrintsDependenciesAndTheWait(t *testing.T) {
 func TestEventLine(t *testing.T) {
 	at := time.Date(2026, 11, 17, 9, 30, 15, 0, time.Local)
 
+	// A fix run's head as git gives it, and its first twelve characters; four
+	// requests, a count that neither the time nor the short head holds.
+	head := "fed789abcdef0123456789abcdef0123456789ab"
+	short := head[:12]
+	requests := []string{"PRRT_kwDOAbc1", "PRRT_kwDOAbc2", "PRR_kwDOAbc3", "PRRT_kwDOAbc4"}
+
 	tests := []struct {
 		typ     string
 		payload any
@@ -1327,6 +1552,30 @@ func TestEventLine(t *testing.T) {
 			},
 			[]string{engine.ReviewReviewed, "17", "4", "2", "6"},
 		},
+		{engine.SessionCut, engine.SessionCutPayload{Turns: 4}, []string{"4"}},
+		{engine.PublishStarted, engine.PublishStartedPayload{Why: "The change is not on GitHub yet."}, []string{"The change is not on GitHub yet."}},
+		{
+			engine.Published,
+			engine.PublishedPayload{Branch: "cavu/fix-the-login", Head: "fed789", Number: 7, URL: "https://github.com/acme/web/pull/7", NodeID: "PR_7"},
+			[]string{"cavu/fix-the-login", "https://github.com/acme/web/pull/7"},
+		},
+		{
+			engine.PRObserved,
+			engine.Observation{
+				State: engine.PROpen, Draft: true, Head: "fed789", Conflict: true, Checks: engine.ChecksFailed, Failed: []string{"lint", "unit-tests"},
+				Comments: []engine.Comment{{ID: "c1", Author: "octocat"}, {ID: "c2", Author: "hubot"}},
+			},
+			[]string{engine.PROpen, engine.ChecksFailed, "lint", "unit-tests", "2"},
+		},
+		{engine.ReadyStarted, engine.ReadyStartedPayload{Why: "The checks passed."}, []string{"The checks passed."}},
+		{engine.PRReady, struct{}{}, nil},
+		{engine.ReplyStarted, engine.ReplyStartedPayload{Why: "The follow-up run is over."}, []string{"The follow-up run is over."}},
+		{engine.Replied, struct{}{}, nil},
+		{engine.HomeRemoved, engine.HomeRemovedPayload{Why: "The task can run no more."}, nil},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: "initial"}, nil},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: "retry"}, nil},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: head}, []string{short}},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonComments, Head: head, Requests: requests}, []string{short, strconv.Itoa(len(requests))}},
 	}
 
 	for _, tc := range tests {
@@ -1342,10 +1591,67 @@ func TestEventLine(t *testing.T) {
 				assert.Contains(t, l, v)
 			}
 
+			// A type with no case prints its payload, as prepared does.
+			if tc.typ != engine.Prepared {
+				assert.NotContains(t, l, string(raw), "the line is words, not the payload")
+			}
+
 			assert.NotContains(t, l, "\n")
 			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
 		})
 	}
+
+	t.Run("a run's start tells why it started", func(t *testing.T) {
+		lines := map[string]bool{}
+
+		for _, reason := range []string{"initial", "retry", engine.ReasonCIFix, engine.ReasonComments} {
+			raw, err := json.Marshal(engine.RunStartedPayload{Reason: reason})
+			require.NoError(t, err)
+
+			lines[eventLine(store.Event{At: at, Type: engine.RunStarted, Payload: raw})] = true
+		}
+
+		assert.Len(t, lines, 4, "each reason its own line")
+	})
+
+	t.Run("a fix run's start names no request id and no whole head", func(t *testing.T) {
+		for _, p := range []engine.RunStartedPayload{{Reason: engine.ReasonCIFix, Head: head}, {Reason: engine.ReasonComments, Head: head, Requests: requests}} {
+			raw, err := json.Marshal(p)
+			require.NoError(t, err)
+
+			l := eventLine(store.Event{At: at, Type: engine.RunStarted, Payload: raw})
+
+			assert.NotContains(t, l, head, p.Reason)
+
+			for _, r := range requests {
+				assert.NotContains(t, l, r, p.Reason)
+			}
+		}
+	})
+
+	t.Run("a reviewer's request is counted, never quoted", func(t *testing.T) {
+		bodies := []string{"Rename the handler, please.", "Why is the timeout 30 seconds?"}
+		o := engine.Observation{State: engine.PROpen, Head: "fed789", Checks: engine.ChecksPassed}
+
+		for i, b := range bodies {
+			o.Comments = append(o.Comments, engine.Comment{ID: fmt.Sprintf("c%d", i), Author: "octocat", Path: "login.go", Line: 12, Body: b})
+		}
+
+		raw, err := json.Marshal(o)
+		require.NoError(t, err)
+
+		l := eventLine(store.Event{At: at, Type: engine.PRObserved, Payload: raw})
+
+		assert.Contains(t, l, strconv.Itoa(len(bodies)))
+
+		for _, b := range bodies {
+			for w := range strings.FieldsSeq(b) {
+				if len(w) > 4 {
+					assert.NotContains(t, l, w, "a word of a request's text")
+				}
+			}
+		}
+	})
 
 	t.Run("a review's start tells its scope", func(t *testing.T) {
 		line := func(p engine.ReviewStartedPayload) string {

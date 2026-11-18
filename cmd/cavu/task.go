@@ -297,13 +297,22 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 
-		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
-		printState(stdout, events)
+		var pauses engine.Pauses
+		if err := pauses.Read(ctx, a.store); err != nil {
+			return err
+		}
 
-		snap, err := printQueue(ctx, stdout, a, id)
+		l := a.actions()
+		l.Paused = pauses.Of
+
+		snap, err := l.Snapshot(ctx, id)
 		if err != nil {
 			return err
 		}
+
+		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
+		printState(stdout, snap)
+		printQueue(stdout, snap)
 
 		turns, d := engine.TurnsAndDuration(events)
 		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
@@ -351,21 +360,8 @@ func dollars(microUSD int64) string {
 }
 
 // printQueue prints the task's dependencies, each with its status, and why
-// Decide holds the task while it does, and returns the snapshot it decided.
-func printQueue(ctx context.Context, w io.Writer, a *app, id int64) (engine.Snapshot, error) {
-	var pauses engine.Pauses
-	if err := pauses.Read(ctx, a.store); err != nil {
-		return engine.Snapshot{}, err
-	}
-
-	l := a.actions()
-	l.Paused = pauses.Of
-
-	snap, err := l.Snapshot(ctx, id)
-	if err != nil {
-		return engine.Snapshot{}, err
-	}
-
+// Decide holds the task, or watches its pull request, while it does.
+func printQueue(w io.Writer, snap engine.Snapshot) {
 	if len(snap.Deps) > 0 {
 		deps := make([]string, len(snap.Deps))
 		for i, d := range snap.Deps {
@@ -375,19 +371,18 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) (engine.Snap
 		fmt.Fprintf(w, "depends: %s\n", strings.Join(deps, ", "))
 	}
 
-	if act := engine.Decide(snap); act.Kind == engine.KindWait {
+	if act := engine.Decide(snap); act.Kind == engine.KindWait || act.Kind == engine.KindWatch {
 		fmt.Fprintf(w, "wait:    %s\n", waitText(act))
 	}
-
-	return snap, nil
 }
 
 // printState prints the task's status, its open stop with every question the
-// agent asked and the answer it suggested, the review's findings left open,
-// its minor ones and why its newest review gave no verdict, and its newest
-// export with git's summary of it, and returns the status.
-func printState(w io.Writer, events []store.Event) engine.Status {
-	facts := engine.Reduce(events)
+// agent asked and the answer it suggested, its pull request, the review's
+// findings left open, its minor ones and why its newest review gave no
+// verdict, and the change it shows with git's summary of it and its flagged
+// paths, and returns the status.
+func printState(w io.Writer, s engine.Snapshot) engine.Status {
+	facts := s.Facts
 	status := engine.StatusOf(facts)
 
 	fmt.Fprintf(w, "status:  %s\n", status)
@@ -410,6 +405,15 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 		}
 	}
 
+	if pr := engine.PullRequestOf(facts, s.Watch.NoCI); pr != nil {
+		state := pr.State
+		if pr.Ready {
+			state += ", ready for your review"
+		}
+
+		fmt.Fprintf(w, "pr:      %s (%s)\nchecks:  %s\n", pr.URL, state, checksText(pr.Checks, pr.Failed))
+	}
+
 	for _, f := range facts.Review.Open {
 		fmt.Fprintf(w, "open:    %s\n", findingLine(f))
 	}
@@ -422,7 +426,7 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 		fmt.Fprintf(w, "review:  no verdict: %s\n", facts.Review.Failed)
 	}
 
-	if x := facts.Export; facts.Exported {
+	if x := engine.ChangeOf(facts); x != nil {
 		fmt.Fprintf(w, "diff:    %s\n", x.DiffPath)
 
 		for _, l := range x.DiffStat {
@@ -430,9 +434,32 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 		}
 
 		fmt.Fprintf(w, "bundle:  %s\n", x.BundlePath)
+
+		for _, k := range []struct {
+			kind  string
+			paths []string
+		}{
+			{"workflows", x.Flagged.Workflows}, {"agent instructions", x.Flagged.Instructions}, {"large files added", x.Flagged.Large},
+		} {
+			if len(k.paths) > 0 {
+				fmt.Fprintf(w, "flagged: %s: %s\n", k.kind, strings.Join(k.paths, ", "))
+			}
+		}
 	}
 
 	return status
+}
+
+// checksText is a pull request's checks, the failed ones named.
+func checksText(checks string, failed []string) string {
+	switch {
+	case checks == "":
+		return "not read yet"
+	case len(failed) == 0:
+		return checks
+	}
+
+	return checks + ": " + strings.Join(failed, ", ")
 }
 
 // findingLine is a finding's severity, where, what and why, each that is set.
@@ -498,12 +525,12 @@ func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 
-		facts := engine.Reduce(events)
-		if !facts.Exported {
+		x := engine.ChangeOf(engine.Reduce(events))
+		if x == nil {
 			return fmt.Errorf("task %d has no exported change yet", id)
 		}
 
-		diff, err := os.ReadFile(facts.Export.DiffPath)
+		diff, err := os.ReadFile(x.DiffPath)
 		if err != nil {
 			return err
 		}
@@ -515,7 +542,8 @@ func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 }
 
 // taskRun starts the task once something drives it, and prints its events
-// until it rests, then its state.
+// until it rests, then its state. The watch of a pull request is cavu
+// serve's: the verb ends at it, and returns at once on a task already there.
 func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return onTask(ctx, newVerbFlags(taskRunUsage, stderr), args, func(a *app, id int64) error {
 		t, err := a.store.Task(ctx, id)
@@ -529,6 +557,15 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 
 		l := a.actions()
+
+		snap, err := l.Snapshot(ctx, id)
+		if err != nil {
+			return err
+		}
+
+		if engine.Decide(snap).Kind == engine.KindWatch {
+			return ended(stdout, snap, true)
+		}
 
 		err = a.driven(ctx, func(t store.Task) bool { return t.ID == id }, func(ctx context.Context) error {
 			if err := startTask(ctx, l, id, p.Name); err != nil {
@@ -552,21 +589,40 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return exitError{code: 130}
 		}
 
-		if err != nil {
+		snap, serr := l.Snapshot(ctx, id)
+		if serr != nil {
+			return errors.Join(err, serr)
+		}
+
+		// The scheduler's look at a pull request that just opened can fail, with
+		// GitHub down or rate limited: told, it ends the verb as the watch does.
+		watched := engine.Decide(snap).Kind == engine.KindWatch
+		if err != nil && !watched {
 			return err
 		}
 
-		events, err := a.store.EventsOmitting(ctx, id, engine.ProgressTypes...)
 		if err != nil {
-			return err
+			fmt.Fprintf(stderr, "cavu: %v\n", err)
 		}
 
-		if s := printState(stdout, events); s == engine.StatusBlocked || s == engine.StatusCancelled {
-			return exitError{code: 3}
-		}
-
-		return nil
+		return ended(stdout, snap, watched)
 	})
+}
+
+// ended prints the task's state where task run ends, and when Decide watches
+// its pull request, that cavu serve does. A stopped task exits 3.
+func ended(w io.Writer, s engine.Snapshot, watched bool) error {
+	status := printState(w, s)
+
+	if watched {
+		fmt.Fprintln(w, "cavu serve watches the pull request from here; task run does not.")
+	}
+
+	if status == engine.StatusBlocked || status == engine.StatusCancelled {
+		return exitError{code: 3}
+	}
+
+	return nil
 }
 
 // follow prints each new event of the task as one line on events, and each
@@ -690,6 +746,23 @@ func eventLine(e store.Event) string {
 	case engine.Stopped:
 		p := decoded[engine.StoppedPayload](e.Payload)
 		tell = p.Reason + ": " + p.Explanation
+	case engine.RunStarted:
+		tell = runText(decoded[engine.RunStartedPayload](e.Payload))
+	case engine.SessionCut:
+		tell = "cut after " + counted(decoded[engine.SessionCutPayload](e.Payload).Turns, "turn")
+	case engine.PublishStarted, engine.ReadyStarted, engine.ReplyStarted:
+		tell = decoded[struct{ Why string }](e.Payload).Why
+	case engine.Published:
+		p := decoded[engine.PublishedPayload](e.Payload)
+		tell = fmt.Sprintf("pull request %s on branch %s", p.URL, p.Branch)
+	case engine.PRObserved:
+		tell = observedText(decoded[engine.Observation](e.Payload))
+	case engine.PRReady:
+		tell = "the pull request is marked ready for review"
+	case engine.Replied:
+		tell = "the reviewers have CAVU's answer in a comment on the pull request"
+	case engine.HomeRemoved:
+		tell = "the task's home is removed, since the task can run no more"
 	default:
 		tell = string(e.Payload)
 	}
@@ -712,6 +785,42 @@ func eventLine(e store.Event) string {
 	}
 
 	return l[:n] + "..."
+}
+
+// runText says why a run started: "retry" is a fresh run of a task that ran before.
+func runText(p engine.RunStartedPayload) string {
+	switch p.Reason {
+	case "initial":
+		return "the task's first run"
+	case "retry":
+		return "a fresh run of the task, which ran before"
+	case engine.ReasonCIFix:
+		return "a fix run on the pull request's failed checks, from " + shortCommit(p.Head)
+	case engine.ReasonComments:
+		return fmt.Sprintf("a follow-up run on %s of reviewers, from %s", counted(len(p.Requests), "request"), shortCommit(p.Head))
+	}
+
+	return p.Reason
+}
+
+// shortCommit is a commit id's first twelve characters, enough to tell it in a line.
+func shortCommit(id string) string {
+	return id[:min(12, len(id))]
+}
+
+// observedText is what a look showed of the pull request. A reviewer's
+// request is counted and never quoted.
+func observedText(o engine.Observation) string {
+	s := o.State
+	if o.Draft {
+		s += ", a draft"
+	}
+
+	if o.Conflict {
+		s += ", in conflict with its base branch"
+	}
+
+	return fmt.Sprintf("%s; checks %s; %s of reviewers", s, checksText(o.Checks, o.Failed), counted(len(o.Comments), "open request"))
 }
 
 // decoded is the payload as T, with zero values where it does not fit.

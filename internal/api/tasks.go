@@ -16,24 +16,25 @@ import (
 // taskJSON is a task as the API shows it. Its lists are never nil, so they go
 // out as [], never null.
 type taskJSON struct {
-	ID                  int64          `json:"id"`
-	Project             string         `json:"project"`
-	Title               string         `json:"title"`
-	Body                string         `json:"body"`
-	Requester           string         `json:"requester"`
-	CreatedAt           time.Time      `json:"created_at"`
-	Status              engine.Status  `json:"status"`
-	Waiting             string         `json:"waiting"`
-	DependsOn           []int64        `json:"depends_on"`
-	Stop                *stopJSON      `json:"stop"`
-	Questions           []questionJSON `json:"questions"`
-	Review              *reviewJSON    `json:"review"`
-	Change              *changeJSON    `json:"change"`
-	Turns               int            `json:"turns"`
-	DurationMS          int64          `json:"duration_ms"`
-	CostEstimateUSD     float64        `json:"cost_estimate_usd"`
-	CostMissingSessions int            `json:"cost_missing_sessions"`
-	Budget              budgetJSON     `json:"budget"`
+	ID                  int64            `json:"id"`
+	Project             string           `json:"project"`
+	Title               string           `json:"title"`
+	Body                string           `json:"body"`
+	Requester           string           `json:"requester"`
+	CreatedAt           time.Time        `json:"created_at"`
+	Status              engine.Status    `json:"status"`
+	Waiting             string           `json:"waiting"`
+	DependsOn           []int64          `json:"depends_on"`
+	Stop                *stopJSON        `json:"stop"`
+	Questions           []questionJSON   `json:"questions"`
+	Review              *reviewJSON      `json:"review"`
+	PullRequest         *pullRequestJSON `json:"pull_request"`
+	Change              *changeJSON      `json:"change"`
+	Turns               int              `json:"turns"`
+	DurationMS          int64            `json:"duration_ms"`
+	CostEstimateUSD     float64          `json:"cost_estimate_usd"`
+	CostMissingSessions int              `json:"cost_missing_sessions"`
+	Budget              budgetJSON       `json:"budget"`
 }
 
 type stopJSON struct {
@@ -66,6 +67,17 @@ type budgetJSON struct {
 	MaxUSD     *float64 `json:"max_usd,omitempty"`
 }
 
+type pullRequestJSON struct {
+	Number       int      `json:"number"`
+	URL          string   `json:"url"`
+	Branch       string   `json:"branch"`
+	Head         string   `json:"head"`
+	State        string   `json:"state"`
+	Ready        bool     `json:"ready"`
+	Checks       string   `json:"checks"`
+	FailedChecks []string `json:"failed_checks"`
+}
+
 type changeJSON struct {
 	HeadCommit   string         `json:"head_commit"`
 	FilesChanged int            `json:"files_changed"`
@@ -75,13 +87,14 @@ type changeJSON struct {
 
 // taskItemJSON is a task in a list.
 type taskItemJSON struct {
-	ID         int64         `json:"id"`
-	Project    string        `json:"project"`
-	Title      string        `json:"title"`
-	Status     engine.Status `json:"status"`
-	StopReason string        `json:"stop_reason"`
-	Waiting    string        `json:"waiting"`
-	CreatedAt  time.Time     `json:"created_at"`
+	ID               int64         `json:"id"`
+	Project          string        `json:"project"`
+	Title            string        `json:"title"`
+	Status           engine.Status `json:"status"`
+	StopReason       string        `json:"stop_reason"`
+	Waiting          string        `json:"waiting"`
+	PullRequestReady bool          `json:"pull_request_ready"`
+	CreatedAt        time.Time     `json:"created_at"`
 }
 
 // statuses is the status scale a list filters on.
@@ -163,7 +176,14 @@ func (s *server) taskView(ctx context.Context, id int64) (taskJSON, error) {
 		v.Budget.USD, v.Budget.MaxUSD = new(float64(snap.Spent.TaskMicroUSD)/1e6), new(float64(c)/1e6)
 	}
 
-	if x := f.Export; f.Exported {
+	if pr := engine.PullRequestOf(f, snap.Watch.NoCI); pr != nil {
+		v.PullRequest = &pullRequestJSON{
+			Number: pr.Number, URL: pr.URL, Branch: pr.Branch, Head: pr.Head, State: pr.State, Ready: pr.Ready,
+			Checks: pr.Checks, FailedChecks: append([]string{}, pr.Failed...),
+		}
+	}
+
+	if x := engine.ChangeOf(f); x != nil {
 		v.Change = &changeJSON{
 			HeadCommit: x.HeadCommit, FilesChanged: x.FilesChanged, DiffStat: append([]string{}, x.DiffStat...),
 			Flagged: engine.Flagged{
@@ -261,6 +281,10 @@ func (s *server) listTasks(ctx context.Context, project string, status engine.St
 
 		if st := snap.Facts.OpenStop; st != nil {
 			item.StopReason = st.Reason
+		}
+
+		if pr := engine.PullRequestOf(snap.Facts, snap.Watch.NoCI); pr != nil {
+			item.PullRequestReady = pr.Ready
 		}
 
 		l.Tasks = append(l.Tasks, item)
