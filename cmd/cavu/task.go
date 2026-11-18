@@ -461,7 +461,12 @@ func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64, 
 	fmt.Fprintf(w, "cost (estimate): $%.4f", cost)
 
 	if missing > 0 {
-		fmt.Fprintf(w, ", leaving out %d sessions that ended without one", missing)
+		noun := "sessions"
+		if missing == 1 {
+			noun = "session"
+		}
+
+		fmt.Fprintf(w, ", leaving out %d %s that ended without one", missing, noun)
 	}
 
 	fmt.Fprintln(w)
