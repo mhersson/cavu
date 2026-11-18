@@ -28,6 +28,8 @@ const (
 	Rereview       = "rereview"         // a scoped review of one fix; takes RereviewData
 	FixReview      = "fix_review"       // the findings, to the session that did the work; takes FixReviewData
 	FixReviewFresh = "fix_review_fresh" // the task, the diff and the findings, to a new session; takes FixReviewFreshData
+	FixCI          = "fix_ci"           // what the pull request's failed checks printed, to the session that did the work; takes FixCIData
+	Comments       = "comments"         // a reviewer's requests on the pull request, to the session that did the work; takes CommentsData
 	PullRequest    = "pull_request"     // the text of the pull request CAVU opens, not a prompt; takes the engine's PullRequestData
 )
 
@@ -80,6 +82,20 @@ type FixVerifyData struct{ Command, Output string }
 
 // AnswerData fills the answer prompt.
 type AnswerData struct{ Answer string }
+
+// FixCIData fills the fix_ci prompt. Logs is what the failed checks printed.
+type FixCIData struct{ Logs string }
+
+// ReviewComment is a reviewer's request as the comments prompt gives it: Path
+// is "" for a request about the whole change, and Line 0 for one on no line.
+type ReviewComment struct {
+	Author, Path string
+	Line         int
+	Body         string
+}
+
+// CommentsData fills the comments prompt.
+type CommentsData struct{ Comments []ReviewComment }
 
 var (
 	//go:embed *.md

@@ -96,6 +96,77 @@ func TestPrepareStartsFromEmptyVolumes(t *testing.T) {
 	}}, f.opened)
 }
 
+// A run that does not start at a pull request's head, a redone one too, starts
+// a fresh session in a fresh home, with the workspace where the clone left it.
+func TestPrepareFromTheBaseStillClearsTheHome(t *testing.T) {
+	for name, base := range map[string]string{"a first run": "", "a run redone from its base": baseCommit} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			c := testConfig()
+			c.Repo.BaseCommit = base
+
+			_, err := f.runner().Prepare(t.Context(), c)
+			require.NoError(t, err)
+			assert.Equal(t, "destroy", f.calls()[0], "the task's home goes with the run's volumes")
+
+			checkout := func(r runCall) bool { return slices.Contains(r.cmd.Argv, headScript) }
+			assert.False(t, slices.ContainsFunc(f.runs, checkout), "the workspace moved to a head")
+		})
+	}
+}
+
+// A fix run keeps the task's home, where its session is, and is set up at the
+// base commit as a first run is: the tools come from the base's files and the
+// setup runs on them. Only then does the agent phase move the task branch to
+// the head, and no baseline runs.
+func TestPrepareAtTheHeadKeepsTheHome(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Repo.BaseCommit, c.Repo.Head = baseCommit, headCommit
+	checkout := stepName(scriptArgv(headScript, c.Repo.Branch, headCommit))
+
+	res, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, slices.Concat([]string{"destroy/keep-home"}, fullOrder[1:len(fullOrder)-2], []string{"run/" + checkout}), f.calls(),
+		"the home stays, the setup runs before the checkout, and no verify runs")
+	require.Len(t, f.clones, 1)
+	assert.Equal(t, baseCommit, f.clones[0].Commit)
+	assert.Equal(t, []string{baseCommit}, f.reads, "the files are read at the base commit")
+	assert.Equal(t, engine.PrepareResult{
+		BaseCommit: baseCommit, Tools: []string{"go@1.25.0"}, Ecosystems: []string{"go"}, Baseline: "skipped",
+	}, res)
+
+	run := f.run(t, checkout)
+	assert.Equal(t, sandbox.PhaseAgent, run.phase)
+	assert.Equal(t, workspace, run.cmd.Dir)
+	assert.True(t, strings.HasPrefix(run.cmd.Argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox")
+	assert.Equal(t, []string{"cavu/fix-login", headCommit}, run.cmd.Argv[4:])
+
+	require.Contains(t, f.run(t, "make setup").cmd.Env, "CAVU_BASE_COMMIT="+baseCommit)
+
+	for _, run := range f.runs {
+		for _, e := range run.cmd.Env {
+			if v, ok := strings.CutPrefix(e, "CAVU_BASE_COMMIT="); ok {
+				assert.Equal(t, baseCommit, v, run.name)
+			}
+		}
+	}
+}
+
+// A head git cannot check out fails the prepare's clone step with git's
+// output, as a clone that fails does.
+func TestPrepareAtAHeadGitCannotCheckOut(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Repo.BaseCommit, c.Repo.Head = baseCommit, headCommit
+	f.results[stepName(scriptArgv(headScript, c.Repo.Branch, headCommit))] = sandbox.Result{ExitCode: 128, Output: "fatal: reference is not a tree\n"}
+
+	res, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, "clone", res.FailedStep)
+	assert.Equal(t, "fatal: reference is not a tree\n", res.Output)
+}
+
 func TestPrepareAllowlists(t *testing.T) {
 	tests := []struct {
 		mode  string
@@ -505,10 +576,10 @@ func assertMasked(t *testing.T, s string) {
 	}
 }
 
-// appRunner returns a runner whose every sandbox is f and whose forge client
-// reaches a fake GitHub, on the real clock since the fake's tokens expire by
-// it, with the fake and a repository's address on it.
-func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string) {
+// fakeForge returns a forge client that reaches a fake GitHub, on the real
+// clock since the fake's tokens expire by it, with the fake and a
+// repository's address on it.
+func fakeForge(t *testing.T) (*forge.Client, *forgefake.Fake, string) {
 	t.Helper()
 
 	fake := forgefake.New(t, t.TempDir())
@@ -518,10 +589,19 @@ func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string)
 	client, err := forge.New(forge.Options{Transport: srv.Client().Transport, Version: "test"})
 	require.NoError(t, err)
 
+	return client, fake, srv.URL + "/o/n"
+}
+
+// appRunner returns a runner whose every sandbox is f and whose forge client
+// reaches a fake GitHub, with the fake and a repository's address on it.
+func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string) {
+	t.Helper()
+
+	client, fake, url := fakeForge(t)
 	r := f.runner()
 	r.forge = client
 
-	return r, fake, srv.URL + "/o/n"
+	return r, fake, url
 }
 
 // appConfig is testConfig for a GitHub App's repository at url.

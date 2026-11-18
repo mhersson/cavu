@@ -35,8 +35,9 @@ const goVersion = "1.25.0"
 func fixtureRun(t *testing.T, files map[string]string) (*Runner, engine.RunConfig, string) {
 	t.Helper()
 
+	// Under an owner, as on a forge, so the address names a repository there.
 	return fixtureRunOn(t, files, func(bare string) (http.Handler, string) {
-		return gitrepo.Handler(t, bare), "/" + filepath.Base(bare)
+		return http.StripPrefix("/cavu", gitrepo.Handler(t, bare)), "/cavu/" + filepath.Base(bare)
 	})
 }
 

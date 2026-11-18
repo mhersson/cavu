@@ -101,6 +101,7 @@ func run(t *testing.T, c Container, argv ...string) Result {
 	return res
 }
 
+// The wait is long because one exec can take seconds when other suites share the machine.
 func requireNoProcess(t *testing.T, c Container, args string) {
 	t.Helper()
 
@@ -112,7 +113,7 @@ func requireNoProcess(t *testing.T, c Container, args string) {
 		}
 
 		return true
-	}, 3*time.Second, 100*time.Millisecond, "%q is still running", args)
+	}, 30*time.Second, 500*time.Millisecond, "%q is still running", args)
 }
 
 // TestDetectPodmanBehindDocker puts a docker that is the real Podman first on

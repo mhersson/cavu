@@ -23,14 +23,16 @@ func TestEveryPromptRenders(t *testing.T) {
 		Title, Body, DiffFile, FixDiffFile string
 		Findings                           []struct{ Number int }
 	}{Findings: []struct{ Number int }{{Number: 1}}}
+	// A comment with its body alone.
+	bodyOnly := struct{ Comments []struct{ Body string } }{Comments: []struct{ Body string }{{Body: "body"}}}
 
 	pr := engine.PullRequestData{
-		TaskID: 4242, TaskTitle: "title-23", TaskBody: "body-24", Summary: "summary-25", WhereToLook: []string{"where-26"},
-		Assumptions: []string{"assumption-27"}, VerifyCommand: "verify-28", ReviewFailed: "failed-29", Model: "model-30",
-		Effort: "effort-31", CostEstimateUSD: 12.34, CostMissing: 2, Duration: time.Hour,
-		Flagged: engine.Flagged{Workflows: []string{"workflow-32"}, Instructions: []string{"instruction-33"}, Large: []string{"large-34"}},
-		Open:    []engine.Finding{{Severity: "important", Where: "where-35", What: "what-36", Why: "why-37"}},
-		Minor:   []engine.Finding{{Severity: "minor", Where: "where-38", What: "what-39", Why: "why-40"}},
+		TaskID: 4242, TaskTitle: "title-33", TaskBody: "body-34", Summary: "summary-35", WhereToLook: []string{"where-36"},
+		Assumptions: []string{"assumption-37"}, VerifyCommand: "verify-38", ReviewFailed: "failed-39", Model: "model-40",
+		Effort: "effort-41", CostEstimateUSD: 12.34, CostMissing: 2, Duration: time.Hour,
+		Flagged: engine.Flagged{Workflows: []string{"workflow-42"}, Instructions: []string{"instruction-43"}, Large: []string{"large-44"}},
+		Open:    []engine.Finding{{Severity: "important", Where: "where-45", What: "what-46", Why: "why-47"}},
+		Minor:   []engine.Finding{{Severity: "minor", Where: "where-48", What: "what-49", Why: "why-50"}},
 	}
 
 	tests := []struct {
@@ -69,12 +71,23 @@ func TestEveryPromptRenders(t *testing.T) {
 			data:   prompts.FixReviewFreshData{Title: "title-18", Body: "body-19", Findings: findings, DiffFile: "/diff-20"},
 			values: append([]string{"title-18", "body-19", "/diff-20"}, found...), wrong: []any{partial},
 		},
+		{name: prompts.FixCI, data: prompts.FixCIData{Logs: "logs-23"}, values: []string{"logs-23"}},
+		{
+			name: prompts.Comments,
+			data: prompts.CommentsData{Comments: []prompts.ReviewComment{
+				{Author: "author-24", Path: "path-25", Line: 26, Body: "body-27"},
+				{Author: "author-28", Path: "path-29", Body: "body-30"},
+				{Author: "author-31", Body: "body-32"},
+			}},
+			values: []string{"author-24", "path-25", "26", "body-27", "author-28", "path-29", "body-30", "author-31", "body-32"},
+			wrong:  []any{bodyOnly},
+		},
 		{
 			name: prompts.PullRequest, data: pr,
 			values: []string{
-				"4242", "title-23", "body-24", "summary-25", "where-26", "assumption-27", "verify-28", "failed-29", "model-30",
-				"effort-31", "12.34", "workflow-32", "instruction-33", "large-34", "where-35", "what-36", "why-37", "where-38",
-				"what-39", "why-40",
+				"4242", "title-33", "body-34", "summary-35", "where-36", "assumption-37", "verify-38", "failed-39", "model-40",
+				"effort-41", "12.34", "workflow-42", "instruction-43", "large-44", "where-45", "what-46", "why-47", "where-48",
+				"what-49", "why-50",
 			},
 		},
 	}
@@ -125,6 +138,7 @@ func TestResultSchemaIsValidJSON(t *testing.T) {
 			Status                 struct{ Enum []string }
 			Title, Summary         struct{ Type string }
 			Assumptions, Questions array
+			WhereToLook            array `json:"where_to_look"`
 		}
 		If struct {
 			Properties struct{ Status struct{ Const string } }
@@ -147,7 +161,7 @@ func TestResultSchemaIsValidJSON(t *testing.T) {
 	assert.Equal(t, "string", schema.Properties.Title.Type)
 	assert.Equal(t, "string", schema.Properties.Summary.Type)
 
-	for _, a := range []array{schema.Properties.Assumptions, schema.Properties.Questions} {
+	for _, a := range []array{schema.Properties.Assumptions, schema.Properties.Questions, schema.Properties.WhereToLook} {
 		assert.Equal(t, "array", a.Type)
 		assert.Equal(t, "string", a.Items.Type)
 	}
