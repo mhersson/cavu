@@ -2,7 +2,6 @@ package engine
 
 import (
 	"cmp"
-	"strings"
 	"time"
 
 	"github.com/mhersson/cavu/internal/prompts"
@@ -30,7 +29,8 @@ type PullRequestData struct {
 }
 
 // PullRequestText returns the title of a task's pull request, the session's
-// title, else the task's, on one line, and its text, which pull_request.md holds.
+// title, else the task's, on one bounded line, and its text, which
+// pull_request.md holds.
 func PullRequestText(d PullRequestData) (title, body string, err error) {
 	d.Duration = d.Duration.Round(time.Second)
 
@@ -38,9 +38,5 @@ func PullRequestText(d PullRequestData) (title, body string, err error) {
 		return "", "", err
 	}
 
-	return cmp.Or(oneLine(d.Title), oneLine(d.TaskTitle)), body, nil
-}
-
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	return cmp.Or(line(d.Title), line(d.TaskTitle)), body, nil
 }
