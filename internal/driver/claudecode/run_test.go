@@ -740,8 +740,9 @@ func TestOutcomeIgnoresExitCode(t *testing.T) {
 	}
 }
 
-// settingsJSON is the settled --settings file: attribution and every hook off.
-const settingsJSON = `{"attribution":{"commit":"","pr":"","sessionUrl":false},"disableAllHooks":true}`
+// settingsJSON is the settled --settings file: attribution and every hook off,
+// and transcripts kept 3650 days.
+const settingsJSON = `{"attribution":{"commit":"","pr":"","sessionUrl":false},"disableAllHooks":true,"cleanupPeriodDays":3650}`
 
 func TestFilesWrittenThroughCommand(t *testing.T) {
 	f := newFakeRun(t, fakeScenario{Replay: fixture(t, "real/t1.jsonl")})
