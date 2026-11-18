@@ -7,7 +7,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -144,9 +146,11 @@ type result struct {
 func (r result) String() string { return r.stdout + r.stderr }
 
 // start starts the child on the instance's data directory with stdin as its
-// input; ended is closed when it exits, and wait waits for that and returns
-// its result.
-func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-chan struct{}, wait func() result) {
+// input; out, unless nil, also gets its standard output as it is written.
+// ended is closed when it exits, and wait waits for that and returns its
+// result. The test's end interrupts a child still running, as Ctrl-C does,
+// and kills it a minute later.
+func (in *instance) start(stdin string, out io.Writer, args ...string) (cmd *exec.Cmd, ended <-chan struct{}, wait func() result) {
 	in.t.Helper()
 
 	var stdout, stderr bytes.Buffer
@@ -154,6 +158,12 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-
 	cmd = exec.CommandContext(in.t.Context(), child(in.t), args...)
 	cmd.Env = append(os.Environ(), "CAVU_DATA_DIR="+in.dir)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &stdout, &stderr
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = time.Minute
+
+	if out != nil {
+		cmd.Stdout = io.MultiWriter(&stdout, out)
+	}
 
 	if in.path != "" {
 		cmd.Env = append(cmd.Env, "PATH="+in.path)
@@ -172,7 +182,8 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-
 
 		<-done
 
-		if err != nil {
+		// An interrupted child that exits 0 waits with the context's error.
+		if err != nil && !errors.Is(err, context.Canceled) {
 			var exit *exec.ExitError
 			require.ErrorAs(in.t, err, &exit)
 		}
@@ -188,7 +199,7 @@ func (in *instance) start(stdin string, args ...string) (cmd *exec.Cmd, ended <-
 func (in *instance) cavu(stdin string, args ...string) result {
 	in.t.Helper()
 
-	_, _, wait := in.start(stdin, args...)
+	_, _, wait := in.start(stdin, nil, args...)
 
 	return wait()
 }
@@ -200,7 +211,7 @@ func (in *instance) runHeld(mock *mockapi.Server, id string) (release func(), cm
 	in.t.Helper()
 
 	release = mock.Hold()
-	cmd, ended, wait := in.start("", "task", "run", id)
+	cmd, ended, wait := in.start("", nil, "task", "run", id)
 
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
