@@ -30,6 +30,7 @@ const (
 	setupTimeout     = 30 * time.Minute
 	statusTimeout    = time.Minute
 	baselineReused   = "reused"
+	baselineSkipped  = "skipped"
 )
 
 // reshimScript makes the shims for what the setup command added to a tool,
@@ -37,7 +38,9 @@ const (
 // commands only through them.
 var reshimScript = proc.SandboxOnly("exec mise reshim")
 
-// Prepare starts the run from empty volumes and leaves the agent phase up.
+// Prepare starts the run from empty volumes and leaves the agent phase up. A
+// run with a head keeps the task's home, where its session is; it is set up at
+// the base commit as any run is, then its task branch moves to the head.
 func (r *Runner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
 	res, _, err := r.prepare(ctx, c, false)
 
@@ -59,8 +62,8 @@ func (r *Runner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (res 
 }
 
 // prepare runs a prepare and returns the root files it read. The task's home
-// goes first: every project's check shares task id 0, and a check that died
-// must not hand its home to the next.
+// goes first unless the run starts at a head: every project's check shares
+// task id 0, and a check that died must not hand its home to the next.
 func (r *Runner) prepare(ctx context.Context, c engine.RunConfig, check bool) (engine.PrepareResult, map[string][]byte, error) {
 	// The run's earlier state goes: its volumes are about to be destroyed.
 	r.setState(c.RunID, nil)
@@ -99,7 +102,7 @@ type preparation struct {
 func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 	sb, c := p.st.sb, p.c
 
-	if err := sb.Destroy(ctx, false); err != nil {
+	if err := sb.Destroy(ctx, c.Repo.Head != ""); err != nil {
 		return engine.PrepareResult{}, err
 	}
 
@@ -144,6 +147,14 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 
 	if strings.TrimSpace(c.Setup.Command) != "" {
 		if failed, err := p.cleanTree(ctx, stepSetup); err != nil || failed != nil {
+			return failure(res, failed), err
+		}
+	}
+
+	// The head is the agent's code: the workspace takes it only once the setup,
+	// the one step with the project's secrets, is over.
+	if c.Repo.Head != "" {
+		if failed, err := p.checkout(ctx); err != nil || failed != nil {
 			return failure(res, failed), err
 		}
 	}
@@ -270,12 +281,17 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 	return runStep(ctx, p.st, sc, stepSetup, reshim, toolchainTimeout)
 }
 
-// baseline verifies the base commit unless the project waives it, or a
-// prepare that is not a check finds it passed on this commit before.
+// baseline verifies the base commit unless the run starts at a head, the
+// project waives it, or a prepare that is not a check finds it passed on this
+// commit before.
 func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult, base string) (engine.PrepareResult, error) {
 	v := p.c.Verify
 
 	switch {
+	case p.c.Repo.Head != "":
+		res.Baseline = baselineSkipped
+
+		return res, nil
 	case v.Waived:
 		res.Baseline = engine.ResultWaived
 
@@ -338,6 +354,21 @@ func (p *preparation) cleanTree(ctx context.Context, step string) (*stepFailure,
 		"or use a command that leaves tracked files alone: the baseline runs on the base commit and the exported diff holds only what the agent did.\n"}, nil
 }
 
+// headScript points the task branch $1 at the commit $2 and checks it out,
+// replacing the workspace's tracked files.
+var headScript = proc.SandboxOnly(gitFunc + `g checkout -B "$1" "$2"`)
+
+// checkout moves the workspace to the run's head. Its failure is the clone
+// step's: both get the commit the run starts at into the workspace.
+func (p *preparation) checkout(ctx context.Context) (*stepFailure, error) {
+	cmd := proc.Command{
+		Argv: scriptArgv(headScript, p.c.Repo.Branch, p.c.Repo.Head),
+		Env:  agentEnv(p.st.ecosystems, p.c.Repo.BaseCommit), Dir: workspace,
+	}
+
+	return runStep(ctx, p.st, p.st.agent, stepClone, cmd, gitTimeout)
+}
+
 // runVerify runs the verify command in the agent phase, under the same
 // network rule as the agent. A blank command is a fault, never a pass: an
 // empty shell command exits 0.
@@ -367,8 +398,8 @@ func runVerify(ctx context.Context, st *run, c engine.RunConfig) (engine.VerifyR
 	return vr, nil
 }
 
-// runStep runs a setup-phase command as step. A command that cannot start is
-// an error; one that exits non-zero or times out is the step's failure.
+// runStep runs a prepare's command in c as step. A command that cannot start
+// is an error; one that exits non-zero or times out is the step's failure.
 func runStep(ctx context.Context, st *run, c container, step string, cmd proc.Command, timeout time.Duration) (*stepFailure, error) {
 	st.resetDenied()
 
