@@ -30,8 +30,10 @@ const basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // settings turns attribution off (empty texts drop the Co-Authored-By trailer
 // and the PR footer, sessionUrl false the session link line) and every hook,
-// a staged skill's own included: CAVU uses none.
-const settings = `{"attribution":{"commit":"","pr":"","sessionUrl":false},"disableAllHooks":true}`
+// a staged skill's own included: CAVU uses none. The documentation rejects a
+// retention of 0 and gives 3650 days for long retention, which keeps a
+// session's transcript as long as its task's home.
+const settings = `{"attribution":{"commit":"","pr":"","sessionUrl":false},"disableAllHooks":true,"cleanupPeriodDays":3650}`
 
 // minTokenLen is the shortest secret internal/redact masks; a shorter token
 // would reach the record unmasked.
