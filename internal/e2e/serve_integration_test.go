@@ -759,15 +759,12 @@ func TestServeRestartContinues(t *testing.T) {
 
 	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
 	require.True(t, modelCalled(mock, s.ended), "cavu serve made no model call")
+	require.NotEmpty(t, in.containers())
 
-	// The second server's containers carry the first's names, so the first's are told apart by id.
-	ids := func(filter string) []string {
-		return strings.Fields(in.client("ps", "--all", "--quiet", "--no-trunc", "--filter="+filter))
-	}
-	first := ids("label=cavu.instance=" + in.id)
-	require.NotEmpty(t, first)
-
+	// The interrupted server releases the run it drove before it exits.
 	s.stop()
+	assert.Empty(t, in.containers(), "the first server left a container")
+
 	s.start()
 
 	task = s.await(task.ID, "in_review", "blocked")
@@ -782,8 +779,4 @@ func TestServeRestartContinues(t *testing.T) {
 
 		return len(left) == 0, fmt.Sprintf("containers %v", left)
 	})
-
-	for _, id := range first {
-		assert.Empty(t, ids("id="+id), "a container of the first server is left")
-	}
 }
