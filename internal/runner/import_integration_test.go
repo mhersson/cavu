@@ -190,6 +190,28 @@ func TestImportRefusesAMalformedTree(t *testing.T) {
 	requireRefused(t, st, c, branchBundle(t, st, c), strings.TrimSpace(out.Output))
 }
 
+// A retry starts from the base, so its head is a sibling of the head an
+// earlier import left in the task's ref: the import takes it all the same.
+func TestImportTakesARetryFromTheBase(t *testing.T) {
+	st, c := importRun(t)
+	first := taken(t, st, c)
+
+	reset := runIn(t, st, "git", "checkout", "-q", "-B", c.Repo.Branch, c.Repo.BaseCommit)
+	require.Equal(t, 0, reset.ExitCode, reset.Output)
+
+	retry := commit(t, st, c, "echo CAVU-RETRY >> notes.txt")
+
+	res, problem, err := st.change(t.Context(), c, branchBundle(t, st, c), retry)
+	require.NoError(t, err)
+	require.Empty(t, problem)
+	assert.Contains(t, string(res.Diff), "\n+CAVU-RETRY\n")
+	assert.NotContains(t, string(res.Diff), "CAVU-TAKEN")
+
+	refs := mirrorRefs(t, st)
+	assert.Contains(t, refs, retry+" "+taskRef(c.TaskID))
+	assert.NotContains(t, refs, first+" "+taskRef(c.TaskID))
+}
+
 func TestImportTwiceChangesNothing(t *testing.T) {
 	st, c := importRun(t)
 
