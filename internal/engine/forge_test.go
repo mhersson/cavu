@@ -30,6 +30,13 @@ func TestPublishRecordsThePullRequest(t *testing.T) {
 	res.WhereToLook = []string{"login.go: the redirect after the form"}
 	h.runner.works = []step[engine.WorkResult]{{res: res}}
 
+	// The publish takes time, so its result is recorded later than the export and the claim.
+	h.runner.onCall = func(c call) {
+		if c.method == "publish" {
+			h.clock.Advance(5 * time.Minute)
+		}
+	}
+
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
@@ -67,7 +74,7 @@ func TestPublishRecordsThePullRequest(t *testing.T) {
 	require.NotNil(t, snap.Facts.PR)
 
 	pr := *snap.Facts.PR
-	assert.True(t, now.Equal(pr.Since), "the wait begins at the publish")
+	assert.True(t, now.Add(5*time.Minute).Equal(pr.Since), "the wait begins when the publish is recorded, at %s", pr.Since)
 
 	pr.Since = time.Time{}
 	assert.Equal(t, engine.PRFact{
