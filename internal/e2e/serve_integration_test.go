@@ -423,6 +423,16 @@ func (st *stream) events(t *testing.T) []apiEvent {
 	return events
 }
 
+// scripts is the script each of calls took.
+func scripts(calls []mockapi.Request) []string {
+	out := make([]string, len(calls))
+	for i, r := range calls {
+		out[i] = r.Script
+	}
+
+	return out
+}
+
 // within calls ok every half second until it reports true, and fails the test
 // with what it last reported once bound passed.
 func within(t *testing.T, bound time.Duration, ok func() (bool, string)) {
@@ -652,6 +662,78 @@ func TestServeTaskEndToEnd(t *testing.T) {
 	second = s.await(second.ID, "in_review", "blocked")
 	require.Equal(t, "in_review", second.Status, "%+v", second)
 	assert.Greater(t, idOf(t, s.events(second.ID), "run_started"), idOf(t, s.events(first.ID), "merged"))
+}
+
+func TestServeRunsTwoTasksAtOnce(t *testing.T) {
+	// Each task follows the script its body names: the readiness turn, the
+	// work that resumes its session, then a review.
+	markers := []string{"E2E-SCRIPT-A", "E2E-SCRIPT-B", "E2E-SCRIPT-C", "E2E-SCRIPT-D"}
+	mock := mockapi.Start(t, nil)
+
+	for _, m := range markers {
+		mock.Script(m, []mockapi.Step{ready, change, done, readDiff, passed})
+	}
+
+	in := setup(t, mock.HostURL())
+	s := in.serve()
+	s.project("notes", nil)
+
+	add := func(marker string) int64 {
+		var task apiTask
+
+		s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "body": marker, "start": true}, http.StatusCreated, &task)
+
+		return task.ID
+	}
+	concurrency := func(n string) {
+		s.call(http.MethodPatch, "/api/settings", map[string]any{"settings": map[string]string{"concurrency": n}}, http.StatusOK, nil)
+	}
+	rest := func(ids ...int64) {
+		for _, id := range ids {
+			task := s.await(id, "in_review", "blocked")
+			require.Equal(t, "in_review", task.Status, "%+v", task)
+		}
+	}
+
+	// With two slots, each task's first answer waits until both tasks asked.
+	concurrency("2")
+
+	releaseOne, releaseOther := mock.Hold(), mock.Hold()
+	a, b := add(markers[0]), add(markers[1])
+
+	within(t, 3*time.Minute, func() (bool, string) {
+		got := scripts(modelCalls(mock))
+
+		return slices.Contains(got, markers[0]) && slices.Contains(got, markers[1]),
+			fmt.Sprintf("model calls of %v: one task made none while the other's first answer was held", got)
+	})
+	releaseOne()
+	releaseOther()
+	rest(a, b)
+
+	// With one slot, two tasks started together run one after the other.
+	concurrency("1")
+
+	c, d := add(markers[2]), add(markers[3])
+	rest(c, d)
+
+	// Every call took its task's script, a resumed session's too.
+	calls := modelCalls(mock)
+	counts := map[string]int{}
+
+	for _, m := range scripts(calls) {
+		counts[m]++
+	}
+
+	assert.Equal(t, map[string]int{markers[0]: 5, markers[1]: 5, markers[2]: 5, markers[3]: 5}, counts)
+
+	// The calls of the one-slot tasks do not interleave, and the later task's
+	// run starts after the earlier one's ended.
+	order := slices.Compact(slices.DeleteFunc(scripts(calls), func(m string) bool { return m != markers[2] && m != markers[3] }))
+	require.Len(t, order, 2, "the one-slot tasks' calls interleave")
+
+	ids := map[string]int64{markers[2]: c, markers[3]: d}
+	assert.Less(t, idOf(t, s.events(ids[order[0]]), "run_ended"), idOf(t, s.events(ids[order[1]]), "run_started"))
 }
 
 func TestServeRestartContinues(t *testing.T) {
