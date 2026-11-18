@@ -43,9 +43,9 @@ func (e *TokenRefusedError) Error() string {
 		perms += " and Workflows write"
 	}
 
-	text := "The forge refused a push token with " + perms + ", which the GitHub App must be granted."
+	text := "GitHub refused a push token with " + perms + ", which the GitHub App must be granted."
 	if e.Message != "" {
-		text += " The forge said: " + e.Message
+		text += " GitHub said: " + e.Message
 	}
 
 	return text
