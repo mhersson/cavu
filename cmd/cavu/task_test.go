@@ -434,6 +434,151 @@ func TestTaskShowPrintsTheNewestExport(t *testing.T) {
 	assert.Equal(t, []string{string(engine.StatusInReview)}, labelled(out, "status:"))
 }
 
+// publishedTask is a task of web whose first run exported x and published it as
+// pull request 7 at url, and ended; files written under t.TempDir() hold its diff.
+func publishedTask(t *testing.T, dir string) (id, url string, x engine.ExportedPayload) {
+	t.Helper()
+
+	art := t.TempDir()
+	x = engine.ExportedPayload{
+		HeadCommit: "head1", DiffPath: filepath.Join(art, "published.diff"), BundlePath: filepath.Join(art, "published.bundle"),
+		DiffStat: []string{"login.go | 2 +-", "1 file changed, 1 insertion(+), 1 deletion(-)"},
+		Flagged: engine.Flagged{
+			Workflows: []string{".github/workflows/ci.yml", ".github/workflows/release.yml"}, Instructions: []string{"AGENTS.md"},
+			Large: []string{"assets/demo.mp4"},
+		},
+	}
+	require.NoError(t, os.WriteFile(x.DiffPath, []byte("diff --git a/login.go b/login.go\n"), 0o600))
+
+	id, url = addTask(t, dir, "Fix the login"), "https://github.com/acme/web/pull/7"
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: "initial"}),
+		event(engine.Exported, "runner", x),
+		event(engine.Published, "runner", engine.PublishedPayload{Branch: "cavu/fix-the-login", Head: x.HeadCommit, Number: 7, URL: url, NodeID: "PR_7"}),
+		event(engine.RunEnded, "engine", engine.RunEndedPayload{Outcome: "exported", KeptHome: true}))
+
+	return id, url, x
+}
+
+// decided is what Decide gives for the task now, as a verb reads it.
+func decided(t *testing.T, dir, id string) engine.Action {
+	t.Helper()
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	snap, err := a.actions().Snapshot(t.Context(), taskID(t, id))
+	require.NoError(t, err)
+
+	return engine.Decide(snap)
+}
+
+func TestTaskShowPrintsThePullRequest(t *testing.T) {
+	dir := webData(t)
+	id, url, published := publishedTask(t, dir)
+	checks := []string{engine.ChecksNone, engine.ChecksPending, engine.ChecksPassed, engine.ChecksFailed}
+
+	out := cavuIn(t, dir, "task", "show", id)
+
+	pr := labelled(out, "pr:")
+	require.Len(t, pr, 1, out)
+	assert.Contains(t, pr[0], url)
+	assert.Contains(t, pr[0], engine.PROpen, "open before any look")
+
+	require.Len(t, labelled(out, "checks:"), 1, out)
+
+	for _, c := range checks {
+		assert.NotContains(t, labelled(out, "checks:")[0], c, "no look read the head's checks yet")
+	}
+
+	act := decided(t, dir, id)
+	require.Equal(t, engine.KindWatch, act.Kind)
+	require.Len(t, labelled(out, "wait:"), 1, out)
+	assert.Contains(t, labelled(out, "wait:")[0], act.Why, "why the watched task waits, as Decide says")
+
+	seedEvents(t, dir, id, nil, event(engine.PRObserved, "runner", engine.Observation{
+		State: engine.PROpen, Head: published.HeadCommit, Checks: engine.ChecksFailed, Failed: []string{"lint", "unit-tests"},
+	}))
+
+	out = cavuIn(t, dir, "task", "show", id)
+	require.Len(t, labelled(out, "checks:"), 1, out)
+
+	for _, v := range []string{engine.ChecksFailed, "lint", "unit-tests"} {
+		assert.Contains(t, labelled(out, "checks:")[0], v)
+	}
+
+	// A fix run works on the pull request: the change shown is the one published, not the run's newer export.
+	seedEvents(t, dir, id, nil, event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: published.HeadCommit}))
+
+	for _, newer := range []bool{false, true} {
+		if newer {
+			seedEvents(t, dir, id, nil, event(engine.Exported, "runner", engine.ExportedPayload{
+				HeadCommit: "head2", DiffPath: "/fix/change.diff", BundlePath: "/fix/change.bundle", DiffStat: []string{"fix.go | 1 +"},
+			}))
+		}
+
+		out = cavuIn(t, dir, "task", "show", id)
+		assert.Equal(t, []string{published.DiffPath}, labelled(out, "diff:"), "an export of the fix run: %v", newer)
+		assert.Equal(t, []string{published.BundlePath}, labelled(out, "bundle:"))
+		assert.Equal(t, published.DiffStat, labelled(out, "changed:"))
+	}
+
+	seedEvents(t, dir, id, nil,
+		event(engine.PRObserved, "runner", engine.Observation{State: engine.PRMerged, Head: published.HeadCommit, Checks: engine.ChecksPassed}))
+
+	out = cavuIn(t, dir, "task", "show", id)
+	require.Len(t, labelled(out, "pr:"), 1, out)
+	assert.Contains(t, labelled(out, "pr:")[0], engine.PRMerged)
+}
+
+func TestTaskShowPrintsTheFlaggedPaths(t *testing.T) {
+	dir := webData(t)
+	id, _, published := publishedTask(t, dir)
+	f := published.Flagged
+	kinds := [][]string{f.Workflows, f.Instructions, f.Large}
+
+	lines := labelled(cavuIn(t, dir, "task", "show", id), "flagged:")
+	require.Len(t, lines, len(kinds), lines)
+
+	for _, paths := range kinds {
+		var holding []string
+
+		for _, l := range lines {
+			if slices.ContainsFunc(paths, func(p string) bool { return strings.Contains(l, p) }) {
+				holding = append(holding, l)
+			}
+		}
+
+		require.Len(t, holding, 1, "a kind's paths are on one line of their own: %v", paths)
+
+		for _, p := range slices.Concat(kinds...) {
+			assert.Equal(t, slices.Contains(paths, p), strings.Contains(holding[0], p), "%q on the line of %v", p, paths)
+		}
+	}
+
+	none := addTask(t, dir, "Unflagged")
+	seedEvents(t, dir, none, nil, event(engine.TaskStarted, "user", struct{}{}),
+		event(engine.Exported, "runner", engine.ExportedPayload{DiffPath: "/x/change.diff", DiffStat: []string{"x.go | 1 +"}}))
+
+	assert.Empty(t, labelled(cavuIn(t, dir, "task", "show", none), "flagged:"), "no line for a change with no flagged path")
+}
+
+func TestTaskDiffPrintsThePublishedChange(t *testing.T) {
+	dir := webData(t)
+	id, _, published := publishedTask(t, dir)
+
+	fixDiff := filepath.Join(t.TempDir(), "fix.diff")
+	require.NoError(t, os.WriteFile(fixDiff, []byte("diff --git a/fix.go b/fix.go\n"), 0o600))
+
+	seedEvents(t, dir, id, nil, event(engine.RunStarted, "engine", engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: published.HeadCommit}))
+	assert.Equal(t, "diff --git a/login.go b/login.go\n", cavuIn(t, dir, "task", "diff", id), "in the middle of a fix run")
+
+	seedEvents(t, dir, id, nil, event(engine.Exported, "runner", engine.ExportedPayload{HeadCommit: "head2", DiffPath: fixDiff}))
+	assert.Equal(t, "diff --git a/login.go b/login.go\n", cavuIn(t, dir, "task", "diff", id), "the fix run's export is not published yet")
+}
+
 func TestTaskShowPrintsTurnsAndDuration(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix")

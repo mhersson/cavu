@@ -297,13 +297,22 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 
-		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
-		printState(stdout, events)
+		var pauses engine.Pauses
+		if err := pauses.Read(ctx, a.store); err != nil {
+			return err
+		}
 
-		snap, err := printQueue(ctx, stdout, a, id)
+		l := a.actions()
+		l.Paused = pauses.Of
+
+		snap, err := l.Snapshot(ctx, id)
 		if err != nil {
 			return err
 		}
+
+		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
+		printState(stdout, snap)
+		printQueue(stdout, snap)
 
 		turns, d := engine.TurnsAndDuration(events)
 		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
@@ -351,21 +360,8 @@ func dollars(microUSD int64) string {
 }
 
 // printQueue prints the task's dependencies, each with its status, and why
-// Decide holds the task while it does, and returns the snapshot it decided.
-func printQueue(ctx context.Context, w io.Writer, a *app, id int64) (engine.Snapshot, error) {
-	var pauses engine.Pauses
-	if err := pauses.Read(ctx, a.store); err != nil {
-		return engine.Snapshot{}, err
-	}
-
-	l := a.actions()
-	l.Paused = pauses.Of
-
-	snap, err := l.Snapshot(ctx, id)
-	if err != nil {
-		return engine.Snapshot{}, err
-	}
-
+// Decide holds the task, or watches its pull request, while it does.
+func printQueue(w io.Writer, snap engine.Snapshot) {
 	if len(snap.Deps) > 0 {
 		deps := make([]string, len(snap.Deps))
 		for i, d := range snap.Deps {
@@ -375,19 +371,18 @@ func printQueue(ctx context.Context, w io.Writer, a *app, id int64) (engine.Snap
 		fmt.Fprintf(w, "depends: %s\n", strings.Join(deps, ", "))
 	}
 
-	if act := engine.Decide(snap); act.Kind == engine.KindWait {
+	if act := engine.Decide(snap); act.Kind == engine.KindWait || act.Kind == engine.KindWatch {
 		fmt.Fprintf(w, "wait:    %s\n", waitText(act))
 	}
-
-	return snap, nil
 }
 
 // printState prints the task's status, its open stop with every question the
-// agent asked and the answer it suggested, the review's findings left open,
-// its minor ones and why its newest review gave no verdict, and its newest
-// export with git's summary of it, and returns the status.
-func printState(w io.Writer, events []store.Event) engine.Status {
-	facts := engine.Reduce(events)
+// agent asked and the answer it suggested, its pull request, the review's
+// findings left open, its minor ones and why its newest review gave no
+// verdict, and the change it shows with git's summary of it and its flagged
+// paths, and returns the status.
+func printState(w io.Writer, s engine.Snapshot) engine.Status {
+	facts := s.Facts
 	status := engine.StatusOf(facts)
 
 	fmt.Fprintf(w, "status:  %s\n", status)
@@ -410,6 +405,15 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 		}
 	}
 
+	if pr := engine.PullRequestOf(facts, s.Watch.NoCI); pr != nil {
+		state := pr.State
+		if pr.Ready {
+			state += ", ready for your review"
+		}
+
+		fmt.Fprintf(w, "pr:      %s (%s)\nchecks:  %s\n", pr.URL, state, checksText(pr.Checks, pr.Failed))
+	}
+
 	for _, f := range facts.Review.Open {
 		fmt.Fprintf(w, "open:    %s\n", findingLine(f))
 	}
@@ -422,7 +426,7 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 		fmt.Fprintf(w, "review:  no verdict: %s\n", facts.Review.Failed)
 	}
 
-	if x := facts.Export; facts.Exported {
+	if x := engine.ChangeOf(facts); x != nil {
 		fmt.Fprintf(w, "diff:    %s\n", x.DiffPath)
 
 		for _, l := range x.DiffStat {
@@ -430,9 +434,32 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 		}
 
 		fmt.Fprintf(w, "bundle:  %s\n", x.BundlePath)
+
+		for _, k := range []struct {
+			kind  string
+			paths []string
+		}{
+			{"workflows", x.Flagged.Workflows}, {"agent instructions", x.Flagged.Instructions}, {"large files added", x.Flagged.Large},
+		} {
+			if len(k.paths) > 0 {
+				fmt.Fprintf(w, "flagged: %s: %s\n", k.kind, strings.Join(k.paths, ", "))
+			}
+		}
 	}
 
 	return status
+}
+
+// checksText is a pull request's checks, the failed ones named.
+func checksText(checks string, failed []string) string {
+	switch {
+	case checks == "":
+		return "not read yet"
+	case len(failed) == 0:
+		return checks
+	}
+
+	return checks + ": " + strings.Join(failed, ", ")
 }
 
 // findingLine is a finding's severity, where, what and why, each that is set.
@@ -498,12 +525,12 @@ func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return err
 		}
 
-		facts := engine.Reduce(events)
-		if !facts.Exported {
+		x := engine.ChangeOf(engine.Reduce(events))
+		if x == nil {
 			return fmt.Errorf("task %d has no exported change yet", id)
 		}
 
-		diff, err := os.ReadFile(facts.Export.DiffPath)
+		diff, err := os.ReadFile(x.DiffPath)
 		if err != nil {
 			return err
 		}
@@ -556,12 +583,12 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return err
 		}
 
-		events, err := a.store.EventsOmitting(ctx, id, engine.ProgressTypes...)
+		snap, err := l.Snapshot(ctx, id)
 		if err != nil {
 			return err
 		}
 
-		if s := printState(stdout, events); s == engine.StatusBlocked || s == engine.StatusCancelled {
+		if s := printState(stdout, snap); s == engine.StatusBlocked || s == engine.StatusCancelled {
 			return exitError{code: 3}
 		}
 
