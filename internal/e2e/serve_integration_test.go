@@ -381,6 +381,25 @@ func eventLines(events []apiEvent) []string {
 	return out
 }
 
+// newestUser is r's newest user message, which after a tool call holds its
+// result; Claude Code can add a system message after it.
+func newestUser(t *testing.T, r mockapi.Request) string {
+	t.Helper()
+
+	for _, m := range slices.Backward(r.Messages) {
+		var msg struct{ Role string }
+		require.NoError(t, json.Unmarshal(m, &msg))
+
+		if msg.Role == "user" {
+			return string(m)
+		}
+	}
+
+	t.Fatal("no user message")
+
+	return ""
+}
+
 // stream is the live stream as a client following it got it: the data of
 // each message, in the order the messages came.
 type stream struct {
@@ -640,6 +659,14 @@ func TestServeTaskEndToEnd(t *testing.T) {
 		assert.Equal(t, i == 4 || i == 9, bytes.Contains(r.Body, []byte("+"+marker)), "model call %d holds the work's line", i+1)
 		assert.Equal(t, i == 8 || i == 9, bytes.Contains(r.Body, []byte("+"+fixed)), "model call %d holds the fix's line", i+1)
 	}
+
+	// The newest user message of the ninth and tenth calls holds what each
+	// read returned: fix.patch only the fix, review.patch both changes.
+	fixRead, reviewRead := newestUser(t, calls[8]), newestUser(t, calls[9])
+	assert.Contains(t, fixRead, "+"+fixed)
+	assert.NotContains(t, fixRead, "+"+marker)
+	assert.Contains(t, reviewRead, "+"+marker)
+	assert.Contains(t, reviewRead, "+"+fixed)
 
 	diff := strings.Split(in.ok("task", "diff", strconv.FormatInt(first.ID, 10)), "\n")
 	assert.Contains(t, diff, "+"+marker)
