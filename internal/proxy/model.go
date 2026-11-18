@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const (
@@ -104,7 +105,15 @@ func (m *modelHandler) serve(w http.ResponseWriter, r *http.Request) {
 
 	if m.ledger != nil {
 		if m.ledger.refusing() {
-			refuse(w)
+			// Wait so the session can be cut on the budget line before the agent takes the
+			// 402 for a failed endpoint; the client's going is seen only once the body is read.
+			_, _ = io.Copy(io.Discard, r.Body)
+
+			select {
+			case <-r.Context().Done():
+			case <-time.After(m.h.hold):
+				refuse(w)
+			}
 
 			return
 		}

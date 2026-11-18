@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,12 +57,29 @@ var uncountable = []namedAnswer{
 	{"no price", "claude-unpriced", answer{"application/json", "", strings.Replace(usageJSON, "claude-x", "claude-unpriced", 1)}},
 }
 
-func budgetProxy(t *testing.T, up string, b *Budget) (*httptest.Server, *deniedLog) {
+// budgetHandler builds the budgeted proxy handler, which holds a refusal for hold.
+func budgetHandler(t *testing.T, up string, b *Budget, hold time.Duration) (http.Handler, *deniedLog) {
 	t.Helper()
 
 	stops := &deniedLog{}
+	h, err := New(Config{Model: modelRoute(up, authBearer), Budget: b, OnBudget: stops.add})
+	require.NoError(t, err)
 
-	return startProxy(t, Config{Model: modelRoute(up, authBearer), Budget: b, OnBudget: stops.add}), stops
+	hh, ok := h.(*handler)
+	require.True(t, ok)
+
+	hh.hold = hold
+
+	return h, stops
+}
+
+// budgetProxy answers a refusal at once.
+func budgetProxy(t *testing.T, up string, b *Budget) (*httptest.Server, *deniedLog) {
+	t.Helper()
+
+	h, stops := budgetHandler(t, up, b, 0)
+
+	return serve(t, h), stops
 }
 
 // ask sends one model request and reads its whole answer.
@@ -320,5 +338,93 @@ func TestBudgetDefaultPrice(t *testing.T) {
 
 			requireRefused(t, p, "/v1/messages")
 		})
+	}
+}
+
+// spend takes the one-micro-dollar cap with one answered request to the proxy
+// at url, and returns once the budget call has been made.
+func spend(t *testing.T, url string, stops *deniedLog) {
+	t.Helper()
+
+	resp := post(t, url, "/v1/messages", authBearer, strings.NewReader("{}"))
+	_, err := io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	stopsOf(t, stops)
+}
+
+func TestBudgetHoldsARefusalUntilItsClientGoes(t *testing.T) {
+	up := serve(t, answer{"application/json", "", usageJSON})
+	h, stops := budgetHandler(t, up.URL, &Budget{CapMicroUSD: 1, Prices: flat}, time.Hour)
+	spend(t, serve(t, h).URL, stops)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/messages", strings.NewReader("{}"))
+	setStandIn(req, authBearer)
+
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+
+	go func() {
+		h.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the held refusal did not return when its client went")
+	}
+
+	assert.False(t, w.Flushed)
+	assert.Empty(t, w.Header())
+	assert.Zero(t, w.Body.Len())
+}
+
+func TestBudgetNoticesAHeldClientGoing(t *testing.T) {
+	up := serve(t, answer{"application/json", "", usageJSON})
+	h, stops := budgetHandler(t, up.URL, &Budget{CapMicroUSD: 1, Prices: flat}, time.Hour)
+
+	reached := make(chan struct{}, 2)
+	p := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached <- struct{}{}
+
+		h.ServeHTTP(w, r)
+	}))
+
+	spend(t, p.URL, stops)
+	<-reached
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL+"/v1/messages", strings.NewReader("{}"))
+	require.NoError(t, err)
+	setStandIn(req, authBearer)
+
+	go func() {
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	<-reached
+	cancel()
+
+	closed := make(chan struct{})
+
+	go func() {
+		p.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the server did not notice the held client going")
 	}
 }

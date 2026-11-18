@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// refusalHold bounds how long a refused model request waits for its client to go.
+const refusalHold = 30 * time.Second
+
 // Config configures the handler returned by New.
 type Config struct {
 	// AllowHosts lists "host", "host:port" or "*.example.com" (one label and
@@ -59,6 +62,8 @@ type Usage struct {
 type handler struct {
 	// lookup replaces DNS for the egress dialer; tests only.
 	lookup func(context.Context, string) ([]string, error)
+	// hold is how long a refused model request waits before it is answered.
+	hold   time.Duration
 	cfg    Config
 	allow  allowlist
 	egress *http.Transport
@@ -72,7 +77,7 @@ func New(c Config) (http.Handler, error) {
 		return nil, err
 	}
 
-	h := &handler{cfg: c, allow: allow}
+	h := &handler{cfg: c, allow: allow, hold: refusalHold}
 	h.egress = newTransport(h.dialContext)
 
 	if c.Model != nil {
