@@ -480,6 +480,7 @@ type sessionStart struct {
 // apiEvent is what the tests read of an event as the API gives it.
 type apiEvent struct {
 	ID      int64
+	TaskID  int64 `json:"task_id"`
 	Type    string
 	Payload json.RawMessage
 }

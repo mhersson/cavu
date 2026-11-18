@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/testkit/mockapi"
 )
 
@@ -313,6 +315,7 @@ func (s *server) project(name string, env map[string]string) int64 {
 type apiTask struct {
 	ID        int64
 	Status    string
+	Waiting   string
 	Requester string
 	Stop      struct{ Reason, Explanation string }
 }
@@ -356,6 +359,68 @@ func (s *server) events(id int64) []apiEvent {
 
 		all = append(all, page.Events...)
 	}
+}
+
+// idOf is the id of the first event of kind among events, which must hold one.
+func idOf(t *testing.T, events []apiEvent, kind string) int64 {
+	t.Helper()
+
+	i := slices.IndexFunc(events, func(e apiEvent) bool { return e.Type == kind })
+	require.GreaterOrEqual(t, i, 0, "no %s event", kind)
+
+	return events[i].ID
+}
+
+// stream is the live stream as a client following it got it: the data of
+// each message, in the order the messages came.
+type stream struct {
+	mu   sync.Mutex
+	data []string
+}
+
+// follow opens the live stream of every task's events with the API token and
+// keeps what it carries until the test ends.
+func (s *server) follow() *stream {
+	t := s.in.t
+	t.Helper()
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, s.url+"/api/events", nil)
+	require.NoError(t, err)
+
+	resp, err := (&http.Client{Transport: transport{s, s.byToken}}).Do(r)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	st := &stream{}
+
+	go func() {
+		defer func() { _ = resp.Body.Close() }()
+
+		for sc := bufio.NewScanner(resp.Body); sc.Scan(); {
+			if data, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+				st.mu.Lock()
+				st.data = append(st.data, data)
+				st.mu.Unlock()
+			}
+		}
+	}()
+
+	return st
+}
+
+// events decodes the events the stream carried so far.
+func (st *stream) events(t *testing.T) []apiEvent {
+	t.Helper()
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	events := make([]apiEvent, len(st.data))
+	for i, d := range st.data {
+		require.NoError(t, json.Unmarshal([]byte(d), &events[i]), d)
+	}
+
+	return events
 }
 
 // within calls ok every half second until it reports true, and fails the test
@@ -469,6 +534,124 @@ func TestServeCancelInterruptsSession(t *testing.T) {
 
 	s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", task.ID), nil, http.StatusOK, &got)
 	assert.Equal(t, "cancelled", got.Stop.Reason, "%+v", got)
+}
+
+// fixed is the line the fix of a review's finding adds.
+const fixed = "CAVU-E2E-FIXED"
+
+func TestServeTaskEndToEnd(t *testing.T) {
+	finding := map[string]string{
+		"severity": "important", "where": "notes.txt:2",
+		"what": "E2E-FINDING-WHAT the new line has no fix", "why": "E2E-FINDING-WHY a reader expects one",
+	}
+	flagged := mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
+		"asked": map[string]any{"pass": true, "reason": "It adds the line."}, "built": map[string]any{"pass": false, "reason": "The line needs a fix."},
+		"findings": []any{finding},
+	}}
+	fix := mockapi.Step{Tool: "Bash", Input: map[string]any{
+		"command": "echo " + fixed + " >> notes.txt && git commit -qam 'fix(notes): fix the line'",
+	}}
+	readFix := mockapi.Step{Tool: "Bash", Input: map[string]any{"command": "cat /run/cavu/fix.patch"}}
+	addressed := mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
+		"verdicts": []any{map[string]any{"finding": 1, "addressed": true, "evidence": "The fix adds its line."}}, "breakage": []any{},
+	}}
+
+	// The first task: the readiness turn, the work, a review with a finding,
+	// the fix, and a review of the fix that reads both diffs. Then the second
+	// task, which waits until the first is done.
+	mock := mockapi.Start(t, []mockapi.Step{
+		ready, change, done, readDiff, flagged, fix, done, readFix, readDiff, addressed,
+		ready, change, done, readDiff, passed,
+	})
+	in := setup(t, mock.HostURL())
+	s := in.serve()
+	s.project("notes", nil)
+
+	live := s.follow()
+
+	var first apiTask
+
+	s.tool("create_task", map[string]any{"project": "notes", "title": title, "start": true}, &first)
+	first = s.await(first.ID, "in_review", "blocked")
+	require.Equal(t, "in_review", first.Status, "%+v", first)
+
+	// The run ends once the change is exported.
+	var events []apiEvent
+
+	within(t, time.Minute, func() (bool, string) {
+		events = s.events(first.ID)
+
+		return slices.ContainsFunc(events, func(e apiEvent) bool { return e.Type == "run_ended" }), "the run has not ended"
+	})
+
+	var types []string
+
+	for _, e := range events {
+		if !slices.Contains(engine.ProgressTypes, e.Type) {
+			types = append(types, e.Type)
+		}
+	}
+
+	assert.Equal(t, []string{
+		"task_started", "run_started", "prepare_started", "prepared",
+		"session_started", "session_ended", // the readiness turn
+		"session_started", "session_ended", // the work, in its session
+		"verify_started", "verify_ended",
+		"review_started", "review_ended", // the finding
+		"session_started", "session_ended", // the fix, in the same session
+		"verify_started", "verify_ended",
+		"review_started", "review_ended", // the review of the fix
+		"export_started", "exported", "run_ended",
+	}, types)
+	assert.Equal(t, []sessionStart{{Mode: "readiness"}, {Mode: "start", Resume: true}, {Mode: "fix_review", Resume: true}}, sessionStarts(t, events))
+
+	// The review reads the work's diff before its fifth call, the fix starts
+	// with the sixth, and the review of the fix reads fix.patch before its
+	// ninth call and review.patch before its tenth. No other call holds a line
+	// either diff adds.
+	calls := modelCalls(mock)
+	require.Len(t, calls, 10)
+
+	for _, k := range []string{"where", "what", "why"} {
+		assert.Contains(t, string(calls[5].Body), finding[k], "the fix's first call holds the finding's %s", k)
+	}
+
+	for i, r := range calls {
+		assert.Equal(t, i == 4 || i == 9, bytes.Contains(r.Body, []byte("+"+marker)), "model call %d holds the work's line", i+1)
+		assert.Equal(t, i == 8 || i == 9, bytes.Contains(r.Body, []byte("+"+fixed)), "model call %d holds the fix's line", i+1)
+	}
+
+	diff := strings.Split(in.ok("task", "diff", strconv.FormatInt(first.ID, 10)), "\n")
+	assert.Contains(t, diff, "+"+marker)
+	assert.Contains(t, diff, "+"+fixed)
+
+	// The live stream, followed from before the task existed, carried the
+	// task's events as the pages give them, each once.
+	var streamed []apiEvent
+
+	within(t, time.Minute, func() (bool, string) {
+		streamed = slices.DeleteFunc(live.events(t), func(e apiEvent) bool { return e.TaskID != first.ID })
+
+		return slices.ContainsFunc(streamed, func(e apiEvent) bool { return e.ID == events[len(events)-1].ID }),
+			fmt.Sprintf("%d of %d events", len(streamed), len(events))
+	})
+	assert.Equal(t, events, streamed)
+
+	// A task that depends on the first waits until a person marks it done.
+	var second apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{
+		"project": "notes", "title": title, "depends_on": []int64{first.ID}, "start": true,
+	}, http.StatusCreated, &second)
+	assert.Equal(t, "queued", second.Status, "%+v", second)
+	assert.NotEmpty(t, second.Waiting)
+
+	s.send(s.byPage, http.MethodPost, fmt.Sprintf("/api/tasks/%d/actions", first.ID), map[string]string{"action": "done"}, http.StatusOK, &first)
+	assert.Equal(t, "done", first.Status)
+
+	second = s.await(second.ID, "in_review", "blocked")
+	require.Equal(t, "in_review", second.Status, "%+v", second)
+	assert.Greater(t, idOf(t, s.events(second.ID), "run_started"), idOf(t, s.events(first.ID), "merged"))
 }
 
 func TestServeRestartContinues(t *testing.T) {
