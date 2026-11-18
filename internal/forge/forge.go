@@ -171,7 +171,9 @@ func (c *Client) newRequest(ctx context.Context, method, addr, token string, bod
 // do sends req and reads its answer. One outside 2xx is an error: a
 // *RateLimitError, or an *httpError with the status and the forge's message.
 func (c *Client) do(req *http.Request) (*response, error) {
-	op := "forge: " + req.Method + " " + req.URL.Path
+	// The scheme and host name the API address tried, for a person fixing a
+	// setting. Never the query, and never a redirect's address.
+	op := "forge: " + req.Method + " " + req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
 
 	resp, err := c.http.Do(req)
 	if err != nil {

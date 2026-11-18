@@ -46,8 +46,11 @@ func TestCustomCA(t *testing.T) {
 	}
 
 	t.Run("refused without the bundle", func(t *testing.T) {
+		err := check(t, Options{})
+
 		var unknown *tls.CertificateVerificationError
-		require.ErrorAs(t, check(t, Options{}), &unknown)
+		require.ErrorAs(t, err, &unknown)
+		assert.Contains(t, err.Error(), srv.URL)
 	})
 
 	t.Run("read with the bundle", func(t *testing.T) {
