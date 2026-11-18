@@ -429,7 +429,7 @@ func TestSchedulerCancelInterruptsASession(t *testing.T) {
 	s.Nudge()
 
 	h.eventually(func() bool { return slices.Equal(g.cutOf("work"), []int64{h.task.ID}) }, "the session's context ends")
-	h.eventually(func() bool { return slices.Contains(h.runner.trace(), "release/remove") }, "the cancelled task's home is removed")
+	h.eventually(func() bool { return len(h.recordedOf(h.task.ID, engine.HomeRemoved)) == 1 }, "the cancelled task's home is recorded removed")
 	assert.False(t, h.runOpen())
 
 	evs := h.events()
