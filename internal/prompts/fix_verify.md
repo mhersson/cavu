@@ -1,4 +1,4 @@
-CAVU ran the verify command on your work, and it failed. Fix the cause, and finish with the structured result.
+CAVU ran the verify command on your work, and it failed. Fix the cause, and finish with the structured result. The result's title and summary describe the whole change as it now stands, not only this fix, and what you left and why.
 
 The command:
 
