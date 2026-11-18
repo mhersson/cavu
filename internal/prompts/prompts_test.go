@@ -4,11 +4,32 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// pullRequest has the fields of the engine's PullRequestData, which the pull
+// request's text reads.
+type pullRequest struct {
+	TaskID                  int64
+	TaskTitle, TaskBody     string
+	Title, Summary          string
+	WhereToLook             []string
+	Assumptions             []string
+	Flagged                 struct{ Workflows, Instructions, Large []string }
+	VerifyCommand           string
+	VerifyWaived            bool
+	ReadinessOff, ReviewOff bool
+	ReviewFailed            string
+	Open, Minor             []struct{ Severity, Where, What, Why string }
+	Model, Effort           string
+	CostEstimateUSD         float64
+	CostMissing             int
+	Duration                time.Duration
+}
 
 func TestEveryPromptRenders(t *testing.T) {
 	findings := []prompts.ReviewFinding{
@@ -21,6 +42,15 @@ func TestEveryPromptRenders(t *testing.T) {
 		Title, Body, DiffFile, FixDiffFile string
 		Findings                           []struct{ Number int }
 	}{Findings: []struct{ Number int }{{Number: 1}}}
+
+	pr := pullRequest{
+		TaskID: 4242, TaskTitle: "title-23", TaskBody: "body-24", Summary: "summary-25", WhereToLook: []string{"where-26"},
+		Assumptions: []string{"assumption-27"}, VerifyCommand: "verify-28", ReviewFailed: "failed-29", Model: "model-30",
+		Effort: "effort-31", CostEstimateUSD: 12.34, CostMissing: 2, Duration: time.Hour,
+	}
+	pr.Flagged.Workflows, pr.Flagged.Instructions, pr.Flagged.Large = []string{"workflow-32"}, []string{"instruction-33"}, []string{"large-34"}
+	pr.Open = []struct{ Severity, Where, What, Why string }{{"important", "where-35", "what-36", "why-37"}}
+	pr.Minor = []struct{ Severity, Where, What, Why string }{{"minor", "where-38", "what-39", "why-40"}}
 
 	tests := []struct {
 		name   string
@@ -57,6 +87,14 @@ func TestEveryPromptRenders(t *testing.T) {
 			name:   prompts.FixReviewFresh,
 			data:   prompts.FixReviewFreshData{Title: "title-18", Body: "body-19", Findings: findings, DiffFile: "/diff-20"},
 			values: append([]string{"title-18", "body-19", "/diff-20"}, found...), wrong: []any{partial},
+		},
+		{
+			name: prompts.PullRequest, data: pr,
+			values: []string{
+				"4242", "title-23", "body-24", "summary-25", "where-26", "assumption-27", "verify-28", "failed-29", "model-30",
+				"effort-31", "12.34", "workflow-32", "instruction-33", "large-34", "where-35", "what-36", "why-37", "where-38",
+				"what-39", "why-40",
+			},
 		},
 	}
 

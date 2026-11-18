@@ -1,5 +1,6 @@
-// Package prompts holds CAVU's own prompts to the agent and the schemas of the
-// results a session ends with, as embedded files.
+// Package prompts holds CAVU's own prompts to the agent, the text of the pull
+// requests it opens, and the schemas of the results a session ends with, as
+// embedded files.
 package prompts
 
 import (
@@ -27,6 +28,7 @@ const (
 	Rereview       = "rereview"         // a scoped review of one fix; takes RereviewData
 	FixReview      = "fix_review"       // the findings, to the session that did the work; takes FixReviewData
 	FixReviewFresh = "fix_review_fresh" // the task, the diff and the findings, to a new session; takes FixReviewFreshData
+	PullRequest    = "pull_request"     // the text of the pull request CAVU opens, not a prompt; takes the engine's PullRequestData
 )
 
 // WorkData fills the work and readiness prompts.
