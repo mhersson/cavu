@@ -17,9 +17,10 @@ const (
 	logsCap = 64 << 10
 )
 
-// FailedLogs is what a fix session reads of head's failed checks, at most 64 KiB: for an Actions
-// job its name and the end of its log, for any other check its name, output and address. Whole
-// entries are added in name order until the cap, and a last line names those that did not fit.
+// FailedLogs is what a fix session reads of head's failed checks, at most 64 KiB: each one's name
+// and conclusion, and for an Actions job the end of its log, for any other check or a job the forge
+// holds no log of its output and address. Whole entries are added in name order until the cap, and
+// a last line names those that did not fit.
 func (c *Client) FailedLogs(ctx context.Context, r Repo, a Access, head string, ignored []string) (string, error) {
 	token, err := c.Token(ctx, r, a, false)
 	if err != nil {
@@ -56,7 +57,7 @@ func (c *Client) FailedLogs(ctx context.Context, r Repo, a Access, head string, 
 
 // entry is a failed check's part of FailedLogs.
 func (c *Client) entry(ctx context.Context, r Repo, token string, ch check) (string, error) {
-	parts := []string{"## " + ch.name}
+	parts := []string{"## " + ch.name + " (" + ch.conclusion + ")"}
 
 	if ch.app == "github-actions" {
 		log, err := c.jobLog(ctx, r, token, ch.id)
@@ -64,12 +65,18 @@ func (c *Client) entry(ctx context.Context, r Repo, token string, ch check) (str
 			return "", err
 		}
 
-		parts = append(parts, log)
-	} else {
-		for _, s := range []string{ch.title, ch.summary, ch.url} {
-			if s != "" {
-				parts = append(parts, s)
-			}
+		if log != "" {
+			parts = append(parts, log)
+
+			return strings.Join(parts, "\n\n") + "\n\n", nil
+		}
+
+		parts = append(parts, "GitHub holds no log for this job.")
+	}
+
+	for _, s := range []string{ch.title, ch.summary, ch.url} {
+		if s != "" {
+			parts = append(parts, s)
 		}
 	}
 
@@ -90,9 +97,10 @@ func leftOut(rest []check) string {
 	return "Left out, past 64 KiB: " + strings.Join(names, ", ") + "\n"
 }
 
-// jobLog is the end of Actions job id's log, "" for a log the forge holds no
-// bytes of. The forge redirects to a storage host, and errors never quote its
-// signed address.
+// jobLog is the end of Actions job id's log, "" when the forge holds none: 416
+// for a log without bytes, 404 for a job cancelled before it got a runner or a
+// check run a workflow created, whose id is no job's. The forge redirects to a
+// storage host, and errors never quote its signed address.
 func (c *Client) jobLog(ctx context.Context, r Repo, token string, id int64) (string, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, fmt.Sprintf("%s%s/actions/jobs/%d/logs", r.restURL(), r.path(), id), token, nil)
 	if err != nil {
@@ -102,7 +110,8 @@ func (c *Client) jobLog(ctx context.Context, r Repo, token string, id int64) (st
 	req.Header.Set("Range", "bytes=-"+strconv.Itoa(logTail))
 
 	resp, err := c.do(req)
-	if he, ok := errors.AsType[*httpError](err); ok && he.status == http.StatusRequestedRangeNotSatisfiable {
+	if he, ok := errors.AsType[*httpError](err); ok &&
+		(he.status == http.StatusNotFound || he.status == http.StatusRequestedRangeNotSatisfiable) {
 		return "", nil
 	}
 

@@ -22,6 +22,21 @@ func failedJob(id int64, name string) forgefake.CheckRun {
 	return forgefake.CheckRun{ID: id, App: "github-actions", Name: name, Status: "completed", Conclusion: "failure"}
 }
 
+// lineWith is the first line of out that holds s.
+func lineWith(t *testing.T, out, s string) string {
+	t.Helper()
+
+	for line := range strings.Lines(out) {
+		if strings.Contains(line, s) {
+			return line
+		}
+	}
+
+	t.Fatalf("no line holds %q", s)
+
+	return ""
+}
+
 // numbered is a log of n bytes whose lines are numbered, so any tail of it
 // appears nowhere else in it.
 func numbered(n int) string {
@@ -105,8 +120,10 @@ func TestFailedLogsAreBounded(t *testing.T) {
 			http.Redirect(w, r, "https://"+logStorage+"/log?sig=signed", http.StatusFound)
 		})
 
-		gone := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "gone", http.StatusNotFound) })
-		c := newTestClient(t, nil, fakeRepo.Host, mux, map[string]http.Handler{logStorage: gone})
+		broken := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "broken", http.StatusInternalServerError)
+		})
+		c := newTestClient(t, nil, fakeRepo.Host, mux, map[string]http.Handler{logStorage: broken})
 
 		_, err := c.FailedLogs(t.Context(), fakeRepo, fakeAccess, head, nil)
 		require.Error(t, err)
@@ -121,7 +138,35 @@ func TestFailedLogsAreBounded(t *testing.T) {
 
 		out, err := c.FailedLogs(t.Context(), fakeRepo, fakeAccess, head, nil)
 		require.NoError(t, err)
-		assert.Contains(t, out, "unit-tests")
+		assert.Contains(t, lineWith(t, out, "unit-tests"), "failure")
+	})
+
+	t.Run("failed jobs without a log are entries", func(t *testing.T) {
+		f, c := newFake(t, bare, nil)
+		// The fake answers 404 for a job whose log is not set: one cancelled
+		// before it got a runner, or a check run a reporter created.
+		f.SetChecks(head,
+			failedJob(1, "linux"),
+			forgefake.CheckRun{ID: 2, App: "github-actions", Name: "macos", Status: "completed", Conclusion: "cancelled"},
+			forgefake.CheckRun{
+				ID: 3, App: "github-actions", Name: "report", Status: "completed", Conclusion: "failure",
+				Title: "3 tests failed", Summary: "TestA, TestB, TestC", URL: "https://ghe.example/o/n/runs/3",
+			})
+		f.SetJobLog(1, "the linux log")
+
+		out, err := c.FailedLogs(t.Context(), fakeRepo, fakeAccess, head, nil)
+		require.NoError(t, err)
+
+		assert.Contains(t, lineWith(t, out, "linux"), "failure")
+		assert.Contains(t, lineWith(t, out, "macos"), "cancelled")
+		assert.Contains(t, lineWith(t, out, "report"), "failure")
+
+		for _, s := range []string{"the linux log", "3 tests failed", "TestA, TestB, TestC", "https://ghe.example/o/n/runs/3"} {
+			assert.Contains(t, out, s)
+		}
+
+		assert.Less(t, strings.Index(out, "the linux log"), strings.Index(out, "macos"), "name order")
+		assert.Less(t, strings.Index(out, "macos"), strings.Index(out, "3 tests failed"))
 	})
 
 	t.Run("five failed jobs stop at 64 KiB and the last line names those left out", func(t *testing.T) {
@@ -172,25 +217,27 @@ func TestFailedLogsAreBounded(t *testing.T) {
 
 	t.Run("a failed status with no log gives its name and address", func(t *testing.T) {
 		f, c := newFake(t, bare, nil)
-		f.SetStatus(head, forgefake.Status{Context: "ci/jenkins", State: "failure", URL: "https://ci.example/build/9"})
+		f.SetStatus(head, forgefake.Status{Context: "ci/jenkins", State: "error", URL: "https://ci.example/build/9"})
 
 		out, err := c.FailedLogs(t.Context(), fakeRepo, fakeAccess, head, nil)
 		require.NoError(t, err)
-		assert.Contains(t, out, "ci/jenkins")
+		assert.Contains(t, lineWith(t, out, "ci/jenkins"), "error")
 		assert.Contains(t, out, "https://ci.example/build/9")
 	})
 
 	t.Run("a failed check of another app gives its title, summary and address", func(t *testing.T) {
 		f, c := newFake(t, bare, nil)
 		f.SetChecks(head, forgefake.CheckRun{
-			ID: 8, App: "codecov", Name: "coverage", Status: "completed", Conclusion: "failure",
+			ID: 8, App: "codecov", Name: "coverage", Status: "completed", Conclusion: "action_required",
 			Title: "Coverage fell", Summary: "81% of lines", URL: "https://codecov.example/9",
 		})
 
 		out, err := c.FailedLogs(t.Context(), fakeRepo, fakeAccess, head, nil)
 		require.NoError(t, err)
 
-		for _, s := range []string{"coverage", "Coverage fell", "81% of lines", "https://codecov.example/9"} {
+		assert.Contains(t, lineWith(t, out, "coverage"), "action_required")
+
+		for _, s := range []string{"Coverage fell", "81% of lines", "https://codecov.example/9"} {
 			assert.Contains(t, out, s)
 		}
 

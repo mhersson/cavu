@@ -26,6 +26,7 @@ type check struct {
 	name, url      string
 	title, summary string // a run's output
 	state          string // pending, passed or failed
+	conclusion     string // a run's, or a status's state
 }
 
 // checks reads the check runs of commit sha over at most five pages, then its
@@ -63,6 +64,7 @@ func (c *Client) checks(ctx context.Context, r Repo, token, sha string, ignored 
 			out = append(out, check{
 				id: run.ID, app: run.App.Slug, name: run.Name, url: cmp.Or(run.HTMLURL, run.DetailsURL),
 				title: run.Output.Title, summary: run.Output.Summary, state: runState(run.Status, run.Conclusion),
+				conclusion: run.Conclusion,
 			})
 		}
 	}
@@ -85,7 +87,7 @@ func (c *Client) checks(ctx context.Context, r Repo, token, sha string, ignored 
 	}
 
 	for _, s := range combined.Statuses {
-		out = append(out, check{name: s.Context, url: s.TargetURL, state: statusState(s.State)})
+		out = append(out, check{name: s.Context, url: s.TargetURL, state: statusState(s.State), conclusion: s.State})
 	}
 
 	return slices.DeleteFunc(out, func(ch check) bool { return slices.Contains(ignored, ch.name) }), nil
