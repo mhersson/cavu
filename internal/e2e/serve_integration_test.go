@@ -42,13 +42,15 @@ var probe = mockapi.Step{Tool: "Bash", Input: map[string]any{
 }}
 
 // server is a cavu serve child of an instance as a client reaches it: its
-// address, the API token, the session cookie, and every answer it gave.
+// address, the API token, the session cookie, every answer it gave, and the
+// running child's ended, as instance.start gives it.
 type server struct {
 	in      *instance
 	url     string
 	token   string
 	cookie  *http.Cookie
 	answers answers
+	ended   <-chan struct{}
 }
 
 // answers keeps the bodies of the server's answers as they are read.
@@ -156,6 +158,7 @@ func (s *server) start() {
 
 	l := &listening{addr: make(chan string, 1)}
 	_, ended, wait := s.in.start("", l, "serve")
+	s.ended = ended
 
 	t.Cleanup(func() {
 		if r := wait(); t.Failed() {
@@ -313,13 +316,6 @@ func (s *server) await(id int64, statuses ...string) apiTask {
 	return got
 }
 
-// apiEvent is what the tests read of an event as the API gives it.
-type apiEvent struct {
-	ID      int64
-	Type    string
-	Payload json.RawMessage
-}
-
 // events pages through the task's events over REST, oldest first.
 func (s *server) events(id int64) []apiEvent {
 	s.in.t.Helper()
@@ -342,23 +338,6 @@ func (s *server) events(id int64) []apiEvent {
 
 		all = append(all, page.Events...)
 	}
-}
-
-// payloads decodes into T the payload of every event of kind.
-func payloads[T any](t *testing.T, events []apiEvent, kind string) []T {
-	t.Helper()
-
-	var ps []T
-
-	for _, e := range events {
-		if e.Type == kind {
-			var p T
-			require.NoError(t, json.Unmarshal(e.Payload, &p))
-			ps = append(ps, p)
-		}
-	}
-
-	return ps
 }
 
 // within calls ok every half second until it reports true, and fails the test
@@ -451,9 +430,7 @@ func TestServeCancelInterruptsSession(t *testing.T) {
 	var task apiTask
 
 	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
-	within(t, patience, func() (bool, string) {
-		return slices.ContainsFunc(mock.Requests(), func(r mockapi.Request) bool { return r.ModelCall }), "no model call"
-	})
+	require.True(t, modelCalled(mock, s.ended), "cavu serve made no model call")
 
 	s.send(s.byPage, http.MethodPost, fmt.Sprintf("/api/tasks/%d/actions", task.ID), map[string]string{"action": "cancel"}, http.StatusOK, &task)
 	assert.Equal(t, "cancelled", task.Status)
