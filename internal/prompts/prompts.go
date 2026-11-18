@@ -40,19 +40,25 @@ type ReviewFinding struct {
 }
 
 // ReviewData fills the review prompt. Summary is the working session's own
-// account of its change; DiffFile holds the change.
+// account of its change; DiffFile holds the change. VerifyCommand is the
+// command the change passed, unless VerifyWaived says the project has none.
 type ReviewData struct {
 	Title, Body          string
 	Answers, Assumptions []string
 	Summary, DiffFile    string
+	VerifyCommand        string
+	VerifyWaived         bool
 }
 
 // RereviewData fills the rereview prompt: the findings left open, the whole
-// change in DiffFile and the fix in FixDiffFile.
+// change in DiffFile and the fix in FixDiffFile. VerifyCommand is the command
+// the fix passed, unless VerifyWaived says the project has none.
 type RereviewData struct {
 	Title, Body           string
 	Findings              []ReviewFinding
 	DiffFile, FixDiffFile string
+	VerifyCommand         string
+	VerifyWaived          bool
 }
 
 // FixReviewData fills the fix_review prompt.

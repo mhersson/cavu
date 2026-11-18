@@ -112,11 +112,13 @@ func reviewPrompt(c engine.RunConfig, rq engine.ReviewRequest) (string, error) {
 	if scoped(rq) {
 		return prompts.Render(prompts.Rereview, prompts.RereviewData{
 			Title: c.Task.Title, Body: c.Task.Body, Findings: numberFindings(rq.Findings), DiffFile: reviewPatch, FixDiffFile: fixPatch,
+			VerifyCommand: c.Verify.Command, VerifyWaived: c.Verify.Waived,
 		})
 	}
 
 	return prompts.Render(prompts.Review, prompts.ReviewData{
 		Title: c.Task.Title, Body: c.Task.Body, Answers: rq.Answers, Assumptions: rq.Assumptions, Summary: rq.Summary, DiffFile: reviewPatch,
+		VerifyCommand: c.Verify.Command, VerifyWaived: c.Verify.Waived,
 	})
 }
 

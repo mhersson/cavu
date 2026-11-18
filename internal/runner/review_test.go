@@ -116,6 +116,32 @@ func TestReviewWritesTheDiffFiles(t *testing.T) {
 	}
 }
 
+func TestReviewPromptCarriesTheGate(t *testing.T) {
+	const marker = "verify-marker-7f3a"
+
+	for _, tt := range []struct {
+		name   string
+		r      engine.ReviewRequest
+		waived bool
+		want   bool
+	}{
+		{name: "full", r: fullReview(), want: true},
+		{name: "scoped", r: scopedReview(), want: true},
+		{name: "full waived", r: fullReview(), waived: true},
+		{name: "scoped waived", r: scopedReview(), waived: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := workConfig()
+			c.Verify.Command, c.Verify.Waived = marker, tt.waived
+
+			text, err := reviewPrompt(c, tt.r)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, strings.Contains(text, marker))
+		})
+	}
+}
+
 func TestReviewSpec(t *testing.T) {
 	c := workConfig()
 	c.Endpoint.Mode = "subscription"
@@ -133,7 +159,7 @@ func TestReviewSpec(t *testing.T) {
 			name: "full", r: fullReview(), schema: prompts.ReviewSchema(), diff: []string{baseCommit, headCommit, wantReviewPatch},
 			prompt: render(t, prompts.Review, prompts.ReviewData{
 				Title: c.Task.Title, Body: c.Task.Body, Answers: []string{"The admin form."}, Assumptions: []string{"Spaces are typos."},
-				Summary: "Trimmed the password.", DiffFile: wantReviewPatch,
+				Summary: "Trimmed the password.", DiffFile: wantReviewPatch, VerifyCommand: c.Verify.Command, VerifyWaived: c.Verify.Waived,
 			}),
 		},
 		{
@@ -141,6 +167,7 @@ func TestReviewSpec(t *testing.T) {
 			diff: []string{baseCommit, headCommit, wantReviewPatch, fixBase, headCommit, wantFixPatch},
 			prompt: render(t, prompts.Rereview, prompts.RereviewData{
 				Title: c.Task.Title, Body: c.Task.Body, Findings: numbered(trimmed, untried), DiffFile: wantReviewPatch, FixDiffFile: wantFixPatch,
+				VerifyCommand: c.Verify.Command, VerifyWaived: c.Verify.Waived,
 			}),
 		},
 	} {
@@ -168,7 +195,7 @@ func TestReviewSpec(t *testing.T) {
 
 func TestReviewResultMapping(t *testing.T) {
 	resets := time.Date(2026, 11, 17, 18, 0, 0, 0, time.UTC)
-	leak := " token " + plantedSetup
+	leak := " marker " + plantedSetup
 	mask := masker(workConfig())
 
 	review := func(asked, built bool, findings ...map[string]any) driver.Result {
@@ -330,7 +357,7 @@ func TestReviewChangesNothing(t *testing.T) {
 }
 
 func TestReviewForwardsProgressMasked(t *testing.T) {
-	leak := "token " + plantedSetup
+	leak := "marker " + plantedSetup
 	d := &fakeAgent{results: []driver.Result{passing()}, during: func(_ context.Context, sink func(driver.Event)) {
 		sink(driver.Event{Kind: driver.KindText, Text: "Reading the diff " + leak})
 	}}

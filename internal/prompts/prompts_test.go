@@ -43,14 +43,14 @@ func TestEveryPromptRenders(t *testing.T) {
 			name: prompts.Review,
 			data: prompts.ReviewData{
 				Title: "title-8", Body: "body-9", Answers: []string{"answer-10"}, Assumptions: []string{"assumption-11"},
-				Summary: "summary-12", DiffFile: "/diff-13",
+				Summary: "summary-12", DiffFile: "/diff-13", VerifyCommand: "verify-21",
 			},
-			values: []string{"title-8", "body-9", "answer-10", "assumption-11", "summary-12", "/diff-13"},
+			values: []string{"title-8", "body-9", "answer-10", "assumption-11", "summary-12", "/diff-13", "verify-21"},
 		},
 		{
 			name:   prompts.Rereview,
-			data:   prompts.RereviewData{Title: "title-14", Body: "body-15", Findings: findings, DiffFile: "/diff-16", FixDiffFile: "/fix-17"},
-			values: append([]string{"title-14", "body-15", "/diff-16", "/fix-17"}, found...), wrong: []any{partial},
+			data:   prompts.RereviewData{Title: "title-14", Body: "body-15", Findings: findings, DiffFile: "/diff-16", FixDiffFile: "/fix-17", VerifyCommand: "verify-22"},
+			values: append([]string{"title-14", "body-15", "/diff-16", "/fix-17", "verify-22"}, found...), wrong: []any{partial},
 		},
 		{name: prompts.FixReview, data: prompts.FixReviewData{Findings: findings}, values: found, wrong: []any{partial}},
 		{
