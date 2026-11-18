@@ -48,13 +48,10 @@ func (e *httpError) Is(target error) bool {
 	return target == ErrUnauthorized && e.status == http.StatusUnauthorized
 }
 
-// rateLimit applies GitHub's rate-limit rules to an answer's status, headers
-// and message: when the limit lifts, and whether the answer is one.
-func rateLimit(status int, h http.Header, message string, now time.Time) (time.Time, bool) {
-	if status != http.StatusForbidden && status != http.StatusTooManyRequests {
-		return time.Time{}, false
-	}
-
+// rateLimit applies GitHub's rate-limit rules to the headers and message of a
+// REST answer of 403 or 429, or of a GraphQL answer with errors: when the
+// limit lifts, and whether the answer is one.
+func rateLimit(h http.Header, message string, now time.Time) (time.Time, bool) {
 	if v := h.Get("Retry-After"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
 			return now.Add(time.Duration(secs) * time.Second), true

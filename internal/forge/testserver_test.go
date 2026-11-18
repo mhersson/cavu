@@ -5,10 +5,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/mhersson/cavu/internal/testkit/forgefake"
+	"github.com/mhersson/cavu/internal/testkit/gitrepo"
 )
 
 const (
@@ -85,4 +89,71 @@ func serve(t *testing.T, h http.Handler) *url.URL {
 	require.NoError(t, err)
 
 	return u
+}
+
+// fakeRepo is the repository a forgefake serves, on a GitHub Enterprise host.
+var (
+	fakeRepo   = Repo{Host: "ghe.example", Owner: "o", Name: "n"}
+	fakeAccess = Access{Token: testToken}
+)
+
+// newBareRepo returns a bare repository holding main and the branches
+// cavu/x and cavu/y, and cavu/x's head.
+func newBareRepo(t *testing.T) (dir, head string) {
+	t.Helper()
+
+	work := gitrepo.New(t, map[string]string{"a.txt": "a\n"})
+	gitrepo.Git(t, work, "checkout", "-q", "-b", "cavu/y")
+	gitrepo.Commit(t, work, map[string]string{"y.txt": "y\n"}, "y")
+	gitrepo.Git(t, work, "checkout", "-q", "-b", "cavu/x", "main")
+	head = gitrepo.Commit(t, work, map[string]string{"x.txt": "x\n"}, "x")
+
+	return strings.TrimPrefix(gitrepo.Bare(t, work), "file://"), head
+}
+
+// newFake returns a fake forge over the bare repository at bare and a client
+// that reaches it; others are further hosts, as for newTestClient.
+func newFake(t *testing.T, bare string, others map[string]http.Handler) (*forgefake.Fake, *Client) {
+	t.Helper()
+
+	f := forgefake.New(t, bare)
+
+	return f, newTestClient(t, nil, fakeRepo.Host, f, others)
+}
+
+// openPR opens the draft pull request 1 for cavu/x.
+func openPR(t *testing.T, c *Client) PR {
+	t.Helper()
+
+	pr, err := c.OpenPR(t.Context(), fakeRepo, fakeAccess, NewPR{Title: "T", Body: "B", Base: "main", Head: "cavu/x"})
+	require.NoError(t, err)
+
+	return pr
+}
+
+// sent counts the requests f was sent whose method and path, query left out,
+// are method and path.
+func sent(f *forgefake.Fake, method, path string) int {
+	n := 0
+
+	for _, r := range f.Requests() {
+		if p, _, _ := strings.Cut(r.Path, "?"); r.Method == method && p == path {
+			n++
+		}
+	}
+
+	return n
+}
+
+// operations are the GraphQL operations f was sent, in order.
+func operations(f *forgefake.Fake) []string {
+	var ops []string
+
+	for _, r := range f.Requests() {
+		if r.Operation != "" {
+			ops = append(ops, r.Operation)
+		}
+	}
+
+	return ops
 }

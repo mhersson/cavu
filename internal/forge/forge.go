@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -197,12 +198,74 @@ func (c *Client) do(req *http.Request) (*response, error) {
 
 		_ = json.Unmarshal(body, &m)
 
-		if reset, ok := rateLimit(resp.StatusCode, resp.Header, m.Message, c.now()); ok {
-			return nil, fmt.Errorf("%s: %w", op, &RateLimitError{Reset: reset})
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			if reset, ok := rateLimit(resp.Header, m.Message, c.now()); ok {
+				return nil, fmt.Errorf("%s: %w", op, &RateLimitError{Reset: reset})
+			}
 		}
 
 		return nil, fmt.Errorf("%s: %w", op, &httpError{status: resp.StatusCode, message: m.Message})
 	}
 
 	return &response{op: op, header: resp.Header, body: body}, nil
+}
+
+// graphQL sends doc with vars to r's GraphQL API and reads the answer's data
+// into v unless v is nil. An answer with errors is an error: a
+// *RateLimitError when the rate-limit rules or an error's type say so.
+func (c *Client) graphQL(ctx context.Context, r Repo, token, doc string, vars map[string]any, v any) error {
+	req, err := c.newRequest(ctx, http.MethodPost, r.graphQLURL(), token, map[string]any{"query": doc, "variables": vars})
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+
+	var out struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := resp.decode(&out); err != nil {
+		return err
+	}
+
+	if len(out.Errors) > 0 {
+		msgs := make([]string, len(out.Errors))
+		limited := false
+
+		for i, e := range out.Errors {
+			msgs[i] = e.Message
+			limited = limited || e.Type == "RATE_LIMITED"
+		}
+
+		msg := strings.Join(msgs, "; ")
+
+		reset, ok := rateLimit(resp.header, msg, c.now())
+		if !ok && limited {
+			reset, ok = c.now().Add(rateLimitFallback), true
+		}
+
+		if ok {
+			return fmt.Errorf("%s: %w", resp.op, &RateLimitError{Reset: reset})
+		}
+
+		return errors.New(resp.op + ": " + msg)
+	}
+
+	if v == nil {
+		return nil
+	}
+
+	if err := json.Unmarshal(out.Data, v); err != nil {
+		return fmt.Errorf("%s: read the answer: %w", resp.op, err)
+	}
+
+	return nil
 }
