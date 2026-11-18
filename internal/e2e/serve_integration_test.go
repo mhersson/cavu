@@ -371,6 +371,16 @@ func idOf(t *testing.T, events []apiEvent, kind string) int64 {
 	return events[i].ID
 }
 
+// eventLines is each event as a line a failure can show: its id, type and payload.
+func eventLines(events []apiEvent) []string {
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = fmt.Sprintf("%d %s %s", e.ID, e.Type, e.Payload)
+	}
+
+	return out
+}
+
 // stream is the live stream as a client following it got it: the data of
 // each message, in the order the messages came.
 type stream struct {
@@ -645,7 +655,7 @@ func TestServeTaskEndToEnd(t *testing.T) {
 		return slices.ContainsFunc(streamed, func(e apiEvent) bool { return e.ID == events[len(events)-1].ID }),
 			fmt.Sprintf("%d of %d events", len(streamed), len(events))
 	})
-	assert.Equal(t, events, streamed)
+	assert.Equal(t, eventLines(events), eventLines(streamed))
 
 	// A task that depends on the first waits until a person marks it done.
 	var second apiTask
