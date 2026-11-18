@@ -19,17 +19,19 @@ func TestServerHalfHasNoRuntimeDependency(t *testing.T) {
 	require.NoError(t, err, "%s", out)
 	assert.Empty(t, runtimeDeps(strings.Fields(out)))
 
-	assert.Equal(t, []string{module + "/internal/driver/claudecode", module + "/internal/bridge"}, runtimeDeps([]string{
+	assert.Equal(t, []string{module + "/internal/driver/claudecode", module + "/internal/bridge", module + "/internal/forge"}, runtimeDeps([]string{
 		"context", module + "/internal/github", module + "/internal/driver/claudecode", module + "/internal/gitlab", module + "/internal/bridge",
+		module + "/internal/forge",
 	}), "the check fires on a denied package and nothing else")
 }
 
-// runtimeDeps returns the import paths that belong to the runtime half.
+// runtimeDeps returns the import paths that belong to the runtime half, and
+// the forge's, which the server half never calls.
 func runtimeDeps(paths []string) []string {
 	var hits []string
 
 	for _, p := range paths {
-		for _, d := range []string{"sandbox", "runner", "proxy", "sidecar", "git", "driver", "bridge"} {
+		for _, d := range []string{"sandbox", "runner", "proxy", "sidecar", "git", "driver", "bridge", "forge"} {
 			deny := "github.com/mhersson/cavu/internal/" + d
 			if p == deny || strings.HasPrefix(p, deny+"/") {
 				hits = append(hits, p)
