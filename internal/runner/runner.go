@@ -17,6 +17,7 @@ import (
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/redact"
@@ -63,6 +64,7 @@ var noProxyEnv = []string{"NO_PROXY=" + loopback, "no_proxy=" + loopback}
 type Runner struct {
 	rt     sandbox.Runtime
 	driver driver.Driver
+	forge  *forge.Client
 	labels map[string]string // added to every container and volume; tests set it
 	open   func(sandbox.Options) (sandboxer, error)
 
@@ -77,9 +79,10 @@ type Runner struct {
 
 var _ engine.Runner = (*Runner)(nil)
 
-// New returns a runner that runs sandboxes on rt and agents through d.
-func New(rt sandbox.Runtime, d driver.Driver) *Runner {
-	return &Runner{rt: rt, driver: d, open: openSandbox, runs: map[int64]*run{}, turns: map[int64]chan struct{}{}}
+// New returns a runner that runs sandboxes on rt and agents through d, and
+// gets a GitHub App's tokens from f.
+func New(rt sandbox.Runtime, d driver.Driver, f *forge.Client) *Runner {
+	return &Runner{rt: rt, driver: d, forge: f, open: openSandbox, runs: map[int64]*run{}, turns: map[int64]chan struct{}{}}
 }
 
 // sandboxer is the part of *sandbox.Sandbox the runner uses.
@@ -501,7 +504,7 @@ func allowlist(lists ...[]string) []string {
 
 // masker masks the secrets of a run's configuration and the extra ones.
 func masker(c engine.RunConfig, extra ...string) func(string) string {
-	secrets := append([]string{c.Endpoint.Credential, c.Repo.Token}, extra...)
+	secrets := append([]string{c.Endpoint.Credential, c.Repo.Access.Token, c.Repo.Access.AppKey}, extra...)
 	for _, v := range c.Setup.Secrets {
 		secrets = append(secrets, v)
 	}

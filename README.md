@@ -43,11 +43,18 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu settings set endpoint_auth_header x-api-key               # key mode only
    ```
 
-3. Store the secrets from standard input, never as arguments. `forge_token` is for a private repository. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
+3. Store the secrets from standard input, never as arguments. `forge_token` is a personal access token, for a private repository. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
 
    ```
    cavu secret set endpoint_credential < credential.txt
    cavu secret set forge_token < token.txt
+   ```
+
+   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token for the clone from the App's installation on the repository.
+
+   ```
+   cavu settings set forge_app_id 123456
+   cavu secret set forge_app_key < app-key.pem
    ```
 
 4. Check the setup. Each line is a check; `skipped` follows from an earlier failure, or for the forge check from having no forge token or no project yet, and `warning` passes. The exit code is 1 when a check failed.

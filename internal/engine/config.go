@@ -157,6 +157,7 @@ func (l *Loop) runConfig(ctx context.Context, p store.Project, t store.Task, r s
 
 	c.TaskID, c.RunID, c.ProjectID, c.Image = t.ID, r.ID, p.ID, l.Image
 	c.Repo.URL, c.Repo.BaseBranch, c.Repo.BaseCommit, c.Repo.Branch = p.RepoURL, p.BaseBranch, t.BaseCommit, BranchName(t.Title)
+	c.Repo.IgnoredChecks, c.Repo.ReviewBots = p.Forge.IgnoredChecks, p.Forge.ReviewBots
 	c.Setup.Command, c.Setup.Env, c.Setup.ToolOverrides, c.Setup.EgressHosts = p.SetupCommand, p.Env, p.ToolOverrides, p.EgressHosts
 	c.Verify.Command, c.Verify.Waived = p.VerifyCommand, p.VerifyWaived
 
@@ -178,6 +179,8 @@ func (l *Loop) runConfig(ctx context.Context, p store.Project, t store.Task, r s
 const (
 	// SecretForgeToken is the forge token.
 	SecretForgeToken = "forge_token"
+	// SecretForgeAppKey is the private key, PEM, of the GitHub App forge_app_id names.
+	SecretForgeAppKey = "forge_app_key" //nolint:gosec // a name, not a credential
 	// SecretEndpointCredential is the endpoint credential.
 	SecretEndpointCredential = "endpoint_credential" //nolint:gosec // a name, not a credential
 )
@@ -190,8 +193,14 @@ func ProjectSecretName(project, variable string) string {
 func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) error {
 	var err error
 
-	if c.Repo.Token, _, err = l.Vault.Get(ctx, SecretForgeToken); err != nil {
+	if c.Repo.Access.Token, _, err = l.Vault.Get(ctx, SecretForgeToken); err != nil {
 		return err
+	}
+
+	if c.Repo.Access.AppID != 0 {
+		if c.Repo.Access.AppKey, err = l.requiredSecret(ctx, SecretForgeAppKey); err != nil {
+			return err
+		}
 	}
 
 	if c.Endpoint.Credential, _, err = l.Vault.Get(ctx, SecretEndpointCredential); err != nil {
@@ -201,21 +210,22 @@ func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) e
 	c.Setup.Secrets = make(map[string]string, len(p.SecretVars))
 
 	for _, v := range p.SecretVars {
-		name := ProjectSecretName(p.Name, v)
-
-		val, ok, err := l.Vault.Get(ctx, name)
-		if err != nil {
+		if c.Setup.Secrets[v], err = l.requiredSecret(ctx, ProjectSecretName(p.Name, v)); err != nil {
 			return err
 		}
-
-		if !ok {
-			return fmt.Errorf("secret %s is not set", name)
-		}
-
-		c.Setup.Secrets[v] = val
 	}
 
 	return nil
+}
+
+// requiredSecret reads a secret the run's config cannot be built without.
+func (l *Loop) requiredSecret(ctx context.Context, name string) (string, error) {
+	v, ok, err := l.Vault.Get(ctx, name)
+	if err == nil && !ok {
+		err = fmt.Errorf("secret %s is not set", name)
+	}
+
+	return v, err
 }
 
 // ReadSettings reads the part of a run's config the settings hold: the
@@ -250,6 +260,7 @@ var settableKeys = []string{
 	keyModelWork, keyEffortWork, "model_review", "effort_review", "model_strong", "effort_strong",
 	keyTaskTimeout, keyTaskTurns, keyTaskBudget, keyDayBudget, keyPrices, "verify_timeout_minutes",
 	"commit_name", "commit_email", "concurrency", "listen_address", keySkillsPath, keyInstructionsPath,
+	"forge_app_id", "ci_timeout_minutes",
 }
 
 // SettableKeys lists the settings a person sets.
@@ -271,8 +282,9 @@ func CheckSetting(key, value string) error {
 	_, concurrency := Concurrency(values)
 	_, listen := ListenAddress(values)
 	_, prices := Prices(values)
+	_, ci := CITimeout(values)
 
-	return errors.Join(set.err, concurrency, listen, prices, checkInstancePath(key, value))
+	return errors.Join(set.err, concurrency, listen, prices, ci, checkInstancePath(key, value))
 }
 
 // checkInstancePath refuses a skills_path that is not a directory and an
@@ -299,9 +311,18 @@ func checkInstancePath(key, value string) error {
 // Concurrency reads the concurrency setting: a positive integer, 3 when unset.
 func Concurrency(values map[string]string) (int, error) {
 	set := settingsReader{values: values}
-	n := set.positiveInt("concurrency", 3)
+	n := set.wholeNumber("concurrency", 3, 1)
 
 	return n, set.err
+}
+
+// CITimeout reads how long a pushed commit's checks may stay unfinished: a
+// whole number of minutes, 120 when unset; 0 means no limit and returns 0.
+func CITimeout(values map[string]string) (time.Duration, error) {
+	set := settingsReader{values: values}
+	n := set.wholeNumber("ci_timeout_minutes", 120, 0)
+
+	return time.Duration(n) * time.Minute, set.err
 }
 
 // ListenAddress reads the listen_address setting: a host and a port, 127.0.0.1:7117 when unset.
@@ -316,7 +337,7 @@ func ListenAddress(values map[string]string) (string, error) {
 func switchFields(sw *Switches) map[string]*bool {
 	return map[string]*bool{
 		"continuations": &sw.Continuations, "verify_fix": &sw.VerifyFix, "web_tools": &sw.WebTools, "readiness": &sw.Readiness,
-		"review": &sw.Review,
+		"review": &sw.Review, "publish": &sw.Publish,
 	}
 }
 
@@ -335,7 +356,7 @@ func ProjectSwitches(p store.Project) map[string]bool {
 // resolveSwitches applies a project's switches over the defaults, then a task's
 // overrides. The snapshot and the run config both resolve through it.
 func resolveSwitches(p store.Project, overrides map[string]string) (Switches, error) {
-	sw := Switches{Continuations: true, VerifyFix: true, Readiness: true, Review: true}
+	sw := Switches{Continuations: true, VerifyFix: true, Readiness: true, Review: true, Publish: true}
 	fields := switchFields(&sw)
 
 	for k, on := range p.Switches {
@@ -388,6 +409,7 @@ func (s *settingsReader) read() RunConfig {
 	s.limits()
 	c.Verify.Timeout = s.minutes("verify_timeout_minutes", 10, 0.5, 120)
 	c.Identity.Name, c.Identity.Email = s.values["commit_name"], s.values["commit_email"]
+	c.Repo.Access.AppID = int64(s.wholeNumber("forge_app_id", 0, 1))
 
 	return c
 }
@@ -396,7 +418,7 @@ func (s *settingsReader) read() RunConfig {
 // what is left of the turns and the time.
 func (s *settingsReader) limits() Limits {
 	return Limits{
-		Turns: s.positiveInt(keyTaskTurns, 1000), SessionTime: time.Duration(s.positiveInt(keyTaskTimeout, 300)) * time.Minute,
+		Turns: s.wholeNumber(keyTaskTurns, 1000, 1), SessionTime: time.Duration(s.wholeNumber(keyTaskTimeout, 300, 1)) * time.Minute,
 		TaskMicroUSD: s.dollars(keyTaskBudget), DayMicroUSD: s.dollars(keyDayBudget),
 	}
 }
@@ -416,15 +438,16 @@ func (s *settingsReader) oneOf(key string, allowed ...string) string {
 	return v
 }
 
-func (s *settingsReader) positiveInt(key string, def int) int {
+// wholeNumber reads a whole number of least or more.
+func (s *settingsReader) wholeNumber(key string, def, least int) int {
 	v, ok := s.values[key]
 	if !ok || v == "" {
 		return def
 	}
 
 	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		s.fail(key, fmt.Sprintf("%q is not a positive integer", v))
+	if err != nil || n < least {
+		s.fail(key, fmt.Sprintf("%q is not a whole number of %d or more", v, least))
 	}
 
 	return n

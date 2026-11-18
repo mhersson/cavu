@@ -10,6 +10,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
@@ -61,14 +62,12 @@ func (r *Runner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (res 
 // goes first: every project's check shares task id 0, and a check that died
 // must not hand its home to the next.
 func (r *Runner) prepare(ctx context.Context, c engine.RunConfig, check bool) (engine.PrepareResult, map[string][]byte, error) {
-	mask := masker(c)
-
 	// The run's earlier state goes: its volumes are about to be destroyed.
 	r.setState(c.RunID, nil)
 
 	sb, err := r.sandbox(refOf(c))
 	if err != nil {
-		return engine.PrepareResult{}, nil, maskErr(err, mask)
+		return engine.PrepareResult{}, nil, maskErr(err, masker(c))
 	}
 
 	st := &run{sb: sb}
@@ -80,6 +79,8 @@ func (r *Runner) prepare(ctx context.Context, c engine.RunConfig, check bool) (e
 		res, err = engine.PrepareResult{}, fault
 	}
 
+	// A token the App minted is in no config: it joins this action's mask alone.
+	mask := masker(c, p.token)
 	res.Output = proc.HeadTail(mask(res.Output), proc.CaptureCap)
 
 	return res, p.files, maskErr(err, mask)
@@ -92,6 +93,7 @@ type preparation struct {
 	st    *run
 	check bool
 	files map[string][]byte
+	token string // the token the clone used
 }
 
 func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
@@ -105,10 +107,7 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		return engine.PrepareResult{}, err
 	}
 
-	base, err := sb.Clone(ctx, sidecar.CloneRequest{
-		URL: c.Repo.URL, Token: c.Repo.Token, BaseBranch: c.Repo.BaseBranch, Commit: c.Repo.BaseCommit, Branch: c.Repo.Branch,
-		Name: c.Identity.Name, Email: c.Identity.Email,
-	})
+	base, err := p.clone(ctx)
 	if err != nil {
 		if sandboxFault(ctx, err) {
 			return engine.PrepareResult{}, err
@@ -150,6 +149,29 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 	}
 
 	return p.baseline(ctx, res, base)
+}
+
+// clone clones with a personal access token as it is, without reading the
+// address, so another git host's repository clones too; with an App, with a token it mints.
+func (p *preparation) clone(ctx context.Context) (string, error) {
+	c := p.c
+	p.token = c.Repo.Access.Token
+
+	if c.Repo.Access.AppID != 0 {
+		repo, err := forge.ParseRepo(c.Repo.URL)
+		if err != nil {
+			return "", err
+		}
+
+		if p.token, err = p.r.forge.Token(ctx, repo, forge.Access(c.Repo.Access), false); err != nil {
+			return "", err
+		}
+	}
+
+	return p.st.sb.Clone(ctx, sidecar.CloneRequest{
+		URL: c.Repo.URL, Token: p.token, BaseBranch: c.Repo.BaseBranch, Commit: c.Repo.BaseCommit, Branch: c.Repo.Branch,
+		Name: c.Identity.Name, Email: c.Identity.Email,
+	})
 }
 
 // detect reads the root files under an empty allowlist, the one command that

@@ -2,8 +2,13 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -16,10 +21,12 @@ import (
 	"github.com/mhersson/cavu/internal/driver"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/env"
+	"github.com/mhersson/cavu/internal/forge"
 	"github.com/mhersson/cavu/internal/proc"
 	"github.com/mhersson/cavu/internal/proxy"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/sidecar"
+	"github.com/mhersson/cavu/internal/testkit/forgefake"
 	"github.com/mhersson/cavu/internal/verify"
 )
 
@@ -181,7 +188,7 @@ func TestSetupSecretsOnlyInSetupPhase(t *testing.T) {
 	assert.Contains(t, setup, "NPM_TOKEN="+plantedSetup)
 	assert.Contains(t, setup, "APP_ENV=test")
 
-	planted := []string{plantedSetup, plantedEndpoint, plantedForge}
+	planted := []string{plantedSetup, plantedEndpoint, plantedForge, plantedAppKey}
 
 	for _, name := range []string{"mise install", reshimName} {
 		mise := fmt.Sprint(f.run(t, name).cmd)
@@ -452,7 +459,7 @@ func TestPrepareFaults(t *testing.T) {
 }
 
 func TestPrepareOutputIsRedacted(t *testing.T) {
-	leak := "token " + plantedSetup + " key " + plantedEndpoint + " forge " + plantedForge
+	leak := "token " + plantedSetup + " key " + plantedEndpoint + " forge " + plantedForge + " app " + plantedAppKey
 
 	t.Run("a failed step", func(t *testing.T) {
 		f := newFake()
@@ -497,9 +504,152 @@ func TestPrepareOutputIsRedacted(t *testing.T) {
 func assertMasked(t *testing.T, s string) {
 	t.Helper()
 
-	for _, secret := range []string{plantedSetup, plantedEndpoint, plantedForge} {
+	for _, secret := range []string{plantedSetup, plantedEndpoint, plantedForge, plantedAppKey} {
 		assert.NotContains(t, s, secret)
 	}
+}
+
+// appKey is a GitHub App's private key in PEM, made for the tests.
+var appKey = sync.OnceValue(func() string {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+})
+
+// appRunner returns a runner whose every sandbox is f and whose forge client
+// reaches a fake GitHub, on the real clock since the fake's tokens expire by
+// it, with the fake and a repository's address on it.
+func (f *fakeSandbox) appRunner(t *testing.T) (*Runner, *forgefake.Fake, string) {
+	t.Helper()
+
+	fake := forgefake.New(t, t.TempDir())
+	srv := httptest.NewTLSServer(fake)
+	t.Cleanup(srv.Close)
+
+	client, err := forge.New(forge.Options{Transport: srv.Client().Transport, Version: "test"})
+	require.NoError(t, err)
+
+	r := f.runner()
+	r.forge = client
+
+	return r, fake, srv.URL + "/o/n"
+}
+
+// appConfig is testConfig for a GitHub App's repository at url.
+func appConfig(url string) engine.RunConfig {
+	c := testConfig()
+	c.Repo.URL = url
+	c.Repo.Access = engine.ForgeAccess{AppID: 42, AppKey: appKey()}
+
+	return c
+}
+
+func TestCloneUsesAnAppToken(t *testing.T) {
+	f := newFake()
+	r, fake, url := f.appRunner(t)
+	c := appConfig(url)
+
+	_, err := r.Prepare(t.Context(), c)
+	require.NoError(t, err)
+
+	minted := fake.Tokens()
+	require.Len(t, minted, 1)
+	require.Len(t, f.clones, 1)
+	assert.Equal(t, minted[0].Value, f.clones[0].Token)
+
+	// What every container got: the clone's request, the sidecars' proxy
+	// requests, the commands and the files copied in.
+	var got strings.Builder
+
+	fmt.Fprintf(&got, "%+v\n", f.clones)
+
+	for _, u := range f.ups {
+		fmt.Fprintf(&got, "%+v %+v %+v\n", u.req.AllowHosts, u.req.Model, u.req.Budget)
+	}
+
+	for _, run := range f.runs {
+		fmt.Fprintf(&got, "%+v %s %s\n", run.cmd, run.cmd.Env, run.cmd.Files)
+	}
+
+	for p, data := range f.copied {
+		fmt.Fprintf(&got, "%s %s\n", p, data)
+	}
+
+	assert.NotContains(t, got.String(), c.Repo.Access.AppKey, "the App's key reaches no container")
+	assert.Equal(t, 1, strings.Count(got.String(), minted[0].Value), "the token reaches the clone alone")
+}
+
+func TestRunnerMasksAMintedToken(t *testing.T) {
+	f := newFake()
+	f.onClone = func(r sidecar.CloneRequest) error {
+		return fmt.Errorf("fatal: could not read from https://x-access-token:%s@forge.example/o/n", r.Token)
+	}
+	r, _, url := f.appRunner(t)
+
+	res, err := r.Prepare(t.Context(), appConfig(url))
+	require.NoError(t, err)
+	require.Len(t, f.clones, 1)
+	assert.Equal(t, stepClone, res.FailedStep)
+	assert.NotContains(t, res.Output, f.clones[0].Token)
+	assert.Contains(t, res.Output, "[redacted]")
+}
+
+// A personal access token reaches the clone as it is, on a repository address
+// no forge client takes, and the forge is never asked: its client is nil.
+func TestCloneUsesAPersonalTokenAsItIs(t *testing.T) {
+	for _, url := range []string{"https://gitlab.example/group/subgroup/web.git", "https://git.example/web.git"} {
+		t.Run(url, func(t *testing.T) {
+			f := newFake()
+			c := testConfig()
+			c.Repo.URL = url
+
+			res, err := f.runner().Prepare(t.Context(), c)
+			require.NoError(t, err)
+			assert.Empty(t, res.FailedStep)
+			require.Len(t, f.clones, 1)
+			assert.Equal(t, plantedForge, f.clones[0].Token)
+		})
+	}
+}
+
+// An App's token the forge cannot give fails the clone step with the forge's
+// error, as a clone refused for its token does; a context that ended is an error.
+func TestCloneWithoutAnAppToken(t *testing.T) {
+	t.Run("an address that names no repository on a forge", func(t *testing.T) {
+		f := newFake()
+
+		res, err := f.runner().Prepare(t.Context(), appConfig("https://gitlab.example/group/subgroup/web.git"))
+		require.NoError(t, err)
+		assert.Equal(t, stepClone, res.FailedStep)
+		assert.NotEmpty(t, res.Output)
+		assert.Empty(t, f.clones)
+	})
+
+	t.Run("a mint the forge refuses", func(t *testing.T) {
+		f := newFake()
+		r, fake, url := f.appRunner(t)
+		fake.Fail(1)
+
+		res, err := r.Prepare(t.Context(), appConfig(url))
+		require.NoError(t, err)
+		assert.Equal(t, stepClone, res.FailedStep)
+		assert.NotEmpty(t, res.Output)
+		assert.Empty(t, f.clones)
+	})
+
+	t.Run("a context that ended", func(t *testing.T) {
+		f := newFake()
+		r, _, url := f.appRunner(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		res, err := r.Prepare(ctx, appConfig(url))
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Empty(t, res.FailedStep)
+	})
 }
 
 func TestCheckEnvironmentNeverReusesBaseline(t *testing.T) {
