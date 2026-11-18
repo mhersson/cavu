@@ -475,3 +475,23 @@ func TestOtherCheckRunsRefusalsFailTheLook(t *testing.T) {
 		})
 	}
 }
+
+func TestReadChecksSaysWhichWay(t *testing.T) {
+	f, c, head := actionsChecks(t)
+
+	jobs, err := c.ReadChecks(t.Context(), fakeRepo, fakeAccess, head)
+	require.NoError(t, err)
+	assert.False(t, jobs, "by the Checks API")
+	assert.Equal(t, 1, sent(f, http.MethodGet, "/api/v3/repos/o/n/commits/"+head+"/check-runs"))
+
+	jobs, err = c.ReadChecks(t.Context(), fakeRepo, Access{Token: refusedToken}, head)
+	require.NoError(t, err)
+	assert.True(t, jobs, "as Actions jobs")
+
+	const lacking = "ghp_lacking0123456789"
+
+	f.Deny(lacking, "checks", "actions")
+
+	_, err = c.ReadChecks(t.Context(), fakeRepo, Access{Token: lacking}, head)
+	require.Error(t, err)
+}

@@ -73,6 +73,22 @@ type credential struct {
 	token [sha256.Size]byte
 }
 
+// ReadChecks reads commit sha's checks as Observe does and reports whether it
+// read them as the jobs of its workflow runs, GitHub having refused the
+// credential the Checks API.
+func (c *Client) ReadChecks(ctx context.Context, r Repo, a Access, sha string) (bool, error) {
+	token, err := c.Token(ctx, r, a, ForAPI)
+	if err != nil {
+		return false, err
+	}
+
+	if _, err := c.checks(ctx, r, token, sha, nil); err != nil {
+		return false, err
+	}
+
+	return c.readsJobs(r, token), nil
+}
+
 // checks reads the checks of commit sha, then its statuses, and leaves out
 // those named in ignored. Its checks are its check runs or, once GitHub
 // refused token the Checks API on r, the jobs of its workflow runs.

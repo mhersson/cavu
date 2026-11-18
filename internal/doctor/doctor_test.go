@@ -33,6 +33,8 @@ const (
 	pinned     = "2.1.325"
 	version    = "1.4.0"
 	routeHead  = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+	// baseCommit is the base branch's head a clone answers.
+	baseCommit = "3f1c9a7e5b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a"
 )
 
 var order = []string{"runtime", "no_network", "image", "claude_code", "sandbox", "settings", "endpoint", "forge"}
@@ -82,7 +84,7 @@ func (b fakeBox) Clone(_ context.Context, r sidecar.CloneRequest) (string, error
 		return "", b.h.cloneErr(r)
 	}
 
-	return strings.Repeat("a", 40), nil
+	return baseCommit, nil
 }
 
 func (b fakeBox) Destroy(context.Context, bool) error {
@@ -545,6 +547,55 @@ func TestDoctorForgeReadsTheRepository(t *testing.T) {
 			assert.Empty(t, h.clones, name)
 		}
 	})
+}
+
+// With publish on, the forge check reads the checks of the commit its clone
+// took the way the watch does: a credential GitHub refuses the Checks API
+// reads them as Actions jobs and passes, with a detail on its line.
+func TestForgeCheckReadsTheChecksOfTheBaseHead(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		deny   []string
+		detail bool
+	}{
+		{"by the Checks API", nil, false},
+		{"as Actions jobs", []string{"checks"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _ := green(t, "key")
+			fake, _ := onForge(t, &d)
+			fake.Deny(forgeToken, tc.deny...)
+
+			checks := Run(t.Context(), d)
+			forgeCheck := byName(t, checks)["forge"]
+			assert.True(t, forgeCheck.OK && !forgeCheck.Warning, "%+v", forgeCheck)
+			assert.Equal(t, tc.detail, forgeCheck.Detail != "", "%+v", forgeCheck)
+			assert.True(t, slices.ContainsFunc(paths(fake), func(p string) bool {
+				return strings.HasPrefix(p, "/api/v3/repos/o/n/commits/"+baseCommit+"/check-runs")
+			}), "both ways ask the check runs of the cloned commit first: %v", paths(fake))
+			assert.Equal(t, 0, ExitCode(checks))
+		})
+	}
+}
+
+func TestForgeCheckFailsForACredentialThatCannotReadChecks(t *testing.T) {
+	d, _, _ := green(t, "key")
+	fake, _ := onForge(t, &d)
+	fake.Deny(forgeToken, "checks", "actions")
+
+	checks := Run(t.Context(), d)
+	forgeCheck := byName(t, checks)["forge"]
+	assert.False(t, forgeCheck.OK)
+	assert.Equal(t, 1, ExitCode(checks))
+
+	for _, permission := range []string{"Actions", "Commit statuses"} {
+		assert.Contains(t, forgeCheck.Detail, permission)
+	}
+
+	// An App's permissions, and the switch that turns the read off.
+	for _, datum := range []string{"Checks", "Actions", "Commit statuses", "publish"} {
+		assert.Contains(t, forgeCheck.Fix, datum)
+	}
 }
 
 // The forge check's token, an App's minted one too, and the App's key are

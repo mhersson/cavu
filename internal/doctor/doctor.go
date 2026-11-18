@@ -398,8 +398,8 @@ func (r *doctor) endpointFix() string {
 }
 
 // forge fetches the project into its own mirror, with run and task id 0 and
-// the token a run's clone gets, then reads the repository over the API when
-// the project publishes.
+// the token a run's clone gets, then, when the project publishes, reads the
+// repository and the checks of the base head it fetched as the watch does.
 func (r *doctor) forge(ctx context.Context) Check {
 	a := r.config.Repo.Access
 	a.Token, a.AppKey = r.ForgeToken, r.ForgeAppKey
@@ -415,7 +415,8 @@ func (r *doctor) forge(ctx context.Context) Check {
 		return failed(err, fix)
 	}
 
-	if err := r.clone(ctx); err != nil {
+	head, err := r.clone(ctx)
+	if err != nil {
 		return failed(err, fix)
 	}
 
@@ -432,28 +433,42 @@ func (r *doctor) forge(ctx context.Context) Check {
 		return failed(err, fix+"; or turn the project's switch publish off")
 	}
 
+	jobs, err := r.Forge.ReadChecks(ctx, repo, forge.Access(a), head)
+
+	switch {
+	case err != nil:
+		return failed(err, "grant a fine-grained personal access token read access to Actions and Commit statuses, "+
+			"or a GitHub App read access to Checks, Actions and Commit statuses; or turn the project's switch publish off")
+	case jobs:
+		return Check{OK: true, Detail: "with this credential CAVU reads GitHub Actions jobs and commit statuses: " +
+			"a check another app reports only as a check run is not seen"}
+	}
+
 	return Check{OK: true}
 }
 
-// clone clones the project in a sandbox of its own, which it destroys.
-func (r *doctor) clone(ctx context.Context) error {
+// clone clones the project in a sandbox of its own, which it destroys, and
+// returns the base branch's head.
+func (r *doctor) clone(ctx context.Context) (string, error) {
 	b, err := r.host.open(r.Project.ID)
 	if err == nil {
 		err = b.Destroy(ctx, false)
 	}
 
 	if err != nil {
-		return err
+		return "", err
 	}
 
+	var head string
+
 	if err = b.EnsureVolumes(ctx); err == nil {
-		_, err = b.Clone(ctx, sidecar.CloneRequest{
+		head, err = b.Clone(ctx, sidecar.CloneRequest{
 			URL: r.Project.RepoURL, Token: r.token, BaseBranch: r.Project.BaseBranch, Branch: "cavu/doctor",
 			Name: r.Settings["commit_name"], Email: r.Settings["commit_email"],
 		})
 	}
 
-	return errors.Join(err, b.Destroy(ctx, false))
+	return head, errors.Join(err, b.Destroy(ctx, false))
 }
 
 // runtimeHost drives the runtime through internal/sandbox.
