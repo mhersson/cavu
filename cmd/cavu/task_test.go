@@ -714,8 +714,9 @@ func TestTaskRunDrivesWhenTheLockIsFree(t *testing.T) {
 
 	require.Equal(t, 0, code, stderr)
 	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork, engine.KindVerify, engine.KindReview, engine.KindExport}, fake.runner.actions)
-	require.Len(t, fake.runner.releases, 1)
-	assert.Equal(t, engine.RemoveAll, fake.runner.releases[0].remove, "the exported run ends")
+	require.Len(t, fake.runner.releases, 2)
+	assert.Equal(t, engine.RemoveRun, fake.runner.releases[0].remove, "the exported run ends")
+	assert.Equal(t, engine.RemoveAll, fake.runner.releases[1].remove, "nothing publishes the change, so the task's home goes")
 
 	events := storedEvents(t, dir, id)
 	assert.Equal(t, engine.TaskStarted, events[0].Type, "the draft is started")
@@ -784,8 +785,9 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 		code, stdout, _ := runCavu("task", "run", id, "--data-dir", dir)
 
 		assert.Equal(t, 3, code)
-		require.Len(t, fake.runner.releases, 1)
-		assert.Equal(t, engine.RemoveAll, fake.runner.releases[0].remove, "a cancel ends the run")
+		require.Len(t, fake.runner.releases, 2)
+		assert.Equal(t, engine.RemoveRun, fake.runner.releases[0].remove, "a cancel ends the run")
+		assert.Equal(t, engine.RemoveAll, fake.runner.releases[1].remove, "a cancelled task's home goes")
 		// The lines come from the store, so the other terminal's cancel is printed too.
 		assert.Contains(t, strings.Join(eventLines(t, stdout, storedEvents(t, dir, id)), "\n"), string(engine.StatusCancelled))
 	})

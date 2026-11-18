@@ -12,6 +12,8 @@ type Facts struct {
 	Started, Cancelled, Merged bool
 	OpenStop                   *StopFact // newest stop with no human action and no claim after it
 	RunOpen                    bool
+	LastRun                    int64    // the task's newest run, open or ended
+	Home                       bool     // the newest run ended and kept the task's home, which is still there; never while a run is open
 	Prepared                   bool     // in the open run
 	Ecosystems                 []string // of the open run's prepare, which Work, Verify and Export run with
 	PrepareFailure             *PrepareFailure
@@ -154,9 +156,13 @@ func (f *Facts) apply(e store.Event) {
 
 		f.resetRun()
 		f.RunOpen, f.Exported, f.RunReason, f.RunHead = true, false, p.Reason, p.Head
+		f.LastRun, f.Home = e.RunID, false
 	case RunEnded:
 		f.resetRun()
-		f.RunOpen = false
+		f.RunOpen, f.Home = false, decode[RunEndedPayload](e.Payload).KeptHome
+	case HomeRemoved:
+		// No claim: closing the open stop would have a cancelled task stopped again.
+		f.Home = false
 	case PrepareStarted:
 		f.claimed()
 

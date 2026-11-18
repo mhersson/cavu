@@ -117,6 +117,7 @@ func decideCases() []decideCase {
 	later := now.Add(2 * time.Hour)
 	fallback := now.Add(engine.UsageLimitFallback)
 	none := engine.Action{Kind: engine.KindNone}
+	clean := engine.Action{Kind: engine.KindClean}
 	contOff := engine.Switches{VerifyFix: true}
 	fixOff := engine.Switches{Continuations: true}
 	readiness := engine.Switches{Continuations: true, VerifyFix: true, Readiness: true}
@@ -157,6 +158,23 @@ func decideCases() []decideCase {
 	mergedStop := openStop(engine.StopUsageLimit, resets)
 	mergedStop.Exported, mergedStop.Merged = true, true
 
+	// A run ended and kept the task's home.
+	cancelledHome := engine.Facts{Started: true, Cancelled: true, Home: true}
+
+	cancelledStopHome := cancelledHome
+	cancelledStopHome.OpenStop = &engine.StopFact{Reason: engine.StopCancelled}
+
+	exportedHome := exported
+	exportedHome.Home = true
+
+	publishedHome := exportedHome
+	publishedHome.PR = &engine.PRFact{Number: 7, Head: "head1", Heads: []string{"head1"}}
+
+	mergedHome := publishedHome
+	mergedHome.Merged = true
+
+	environmentHome := engine.Facts{Started: true, Home: true, OpenStop: &engine.StopFact{Reason: engine.StopEnvironment}}
+
 	continueWork := work(engine.ModeContinue, false)
 	wait := func(until time.Time) engine.Action { return engine.Action{Kind: engine.KindWait, Until: until} }
 	prepare := engine.Action{Kind: engine.KindPrepare, NewRun: true}
@@ -170,6 +188,12 @@ func decideCases() []decideCase {
 		{name: "merged", snap: snap(merged), want: none},
 		{name: "merged with the run open", snap: snap(mergedOpen), want: engine.Action{Kind: engine.KindFinish}},
 		{name: "merged with a stale stop and the run open", snap: snap(mergedStop), want: engine.Action{Kind: engine.KindFinish}},
+		{name: "cancelled with the home kept", snap: snap(cancelledHome), want: halt(engine.StopCancelled, engine.ClearNone)},
+		{name: "cancelled with its stop recorded and the home kept", snap: snap(cancelledStopHome), want: clean},
+		{name: "merged through its pull request with the home kept", snap: snap(mergedHome), want: clean},
+		{name: "exported with no pull request and the home kept", snap: snap(exportedHome), want: clean},
+		{name: "exported with a pull request and the home kept", snap: snap(publishedHome), want: none},
+		{name: "stopped with the home kept", snap: snap(environmentHome), want: none},
 		{name: "usage limit before its reset", snap: snap(openStop(engine.StopUsageLimit, resets)), want: engine.Action{Kind: engine.KindWait, Until: resets}, clock: true},
 		{name: "usage limit reset reached", snap: snap(openStop(engine.StopUsageLimit, reset)), want: work(engine.ModeContinue, false), clock: true},
 		{name: "usage limit with no reset time", snap: snap(openStop(engine.StopUsageLimit, time.Time{})), want: work(engine.ModeContinue, false)},

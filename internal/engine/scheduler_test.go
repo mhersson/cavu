@@ -412,7 +412,7 @@ func TestSchedulerDependencyChain(t *testing.T) {
 	require.NoError(t, h.loop.Done(t.Context(), h.task.ID))
 	s.Nudge()
 
-	h.eventually(func() bool { return h.inReview(b.ID) })
+	h.eventually(func() bool { return h.inReview(b.ID) && slices.Contains(h.runner.callsFor(b.ID), "release/remove") }, "B rests with its home removed")
 	assert.Equal(t, happyTrace, h.runner.callsFor(b.ID))
 	assert.Empty(t, s.Waiting(b.ID))
 	assert.Empty(t, s.errs())
@@ -429,15 +429,16 @@ func TestSchedulerCancelInterruptsASession(t *testing.T) {
 	s.Nudge()
 
 	h.eventually(func() bool { return slices.Equal(g.cutOf("work"), []int64{h.task.ID}) }, "the session's context ends")
-	h.eventually(func() bool { return !h.runOpen() })
+	h.eventually(func() bool { return slices.Contains(h.runner.trace(), "release/remove") }, "the cancelled task's home is removed")
+	assert.False(t, h.runOpen())
 
 	evs := h.events()
-	require.GreaterOrEqual(t, len(evs), 2)
-	assert.Equal(t, []string{engine.Stopped, engine.RunEnded}, types(evs[len(evs)-2:]))
+	require.GreaterOrEqual(t, len(evs), 3)
+	assert.Equal(t, []string{engine.Stopped, engine.RunEnded, engine.HomeRemoved}, types(evs[len(evs)-3:]))
 	assert.Equal(t, engine.StopCancelled, h.lastStop().Reason)
 
 	work := h.runner.callsOf("work")[0]
-	assert.Equal(t, []string{"prepare", "work/start", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "work/start", "release/run", "release/remove"}, h.runner.trace())
 	assert.Equal(t, work.runID, h.runner.callsOf("release")[0].runID)
 	assert.Empty(t, s.errs())
 }
@@ -528,9 +529,9 @@ func TestSchedulerWaitsThenActs(t *testing.T) {
 	h.clock.Advance(time.Millisecond)
 	s.Nudge()
 
-	h.eventually(func() bool { return h.inReview(h.task.ID) })
+	h.eventually(func() bool { return h.inReview(h.task.ID) && slices.Contains(h.runner.trace(), "release/remove") }, "the task rests with its home removed")
 	assert.Equal(t, []string{
-		"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/remove",
+		"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/run", "release/remove",
 	}, h.runner.trace())
 	assert.Empty(t, s.errs())
 }
@@ -787,7 +788,7 @@ func TestSchedulerStopTakesNoSlot(t *testing.T) {
 
 	h.eventually(func() bool { return slices.Equal(g.held("work"), []int64{h.task.ID}) }, "the answered task takes the slot")
 	h.eventually(func() bool { return slices.Contains(h.runner.callsFor(second.ID), "release/remove") }, "the cancelled run is released")
-	assert.Equal(t, []string{"prepare", "work/start", "release/remove"}, h.runner.callsFor(second.ID))
+	assert.Equal(t, []string{"prepare", "work/start", "release/run", "release/remove"}, h.runner.callsFor(second.ID))
 	assert.Equal(t, []int64{h.task.ID}, g.held("work"), "the answered task still holds the slot")
 	assert.Equal(t, engine.StatusCancelled, h.statusOf(second.ID))
 

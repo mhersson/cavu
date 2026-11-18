@@ -100,8 +100,8 @@ const maxProgressText = 2 << 10 // bytes kept of agent_text.text and agent_tool.
 // recordTimeout bounds recording a runner call's result after ctx has ended.
 const recordTimeout = 10 * time.Second
 
-// endTimeout bounds ending a run, its Release with volumes removed and its row,
-// on a context that outlives the caller's.
+// endTimeout bounds a Release that removes volumes, and the end of the run's
+// row, on a context that outlives the caller's.
 const endTimeout = time.Minute
 
 // RunTask decides and acts until the task rests (action none) or waits, or ctx
@@ -140,7 +140,7 @@ func (l *Loop) RunTask(ctx context.Context, taskID int64) (Status, error) {
 		case KindWait:
 			// A waiting task holds no container. A stop's halt already released its run.
 			if v.Facts.RunOpen && v.Facts.OpenStop == nil {
-				return done(p.free(ctx, v.Task, v.run, false, ""))
+				return done(p.free(ctx, v.Task, v.run, KeepVolumes, ""))
 			}
 
 			return done(nil)
@@ -324,14 +324,14 @@ func (p *pass) repair(ctx context.Context) error {
 		return fmt.Errorf("task %d: %w", p.taskID, err)
 	}
 
-	started, ended := map[int64]bool{}, map[int64]string{}
+	started, ended := map[int64]bool{}, map[int64]RunEndedPayload{}
 
 	for _, e := range events {
 		switch e.Type {
 		case RunStarted:
 			started[e.RunID] = true
 		case RunEnded:
-			ended[e.RunID] = decode[RunEndedPayload](e.Payload).Outcome
+			ended[e.RunID] = decode[RunEndedPayload](e.Payload)
 		}
 	}
 
@@ -341,14 +341,19 @@ func (p *pass) repair(ctx context.Context) error {
 			return fmt.Errorf("task %d: %w", p.taskID, err)
 		}
 
-		outcome, done := ended[r.ID]
+		end, done := ended[r.ID]
 
 		switch {
 		case !ok || started[r.ID] && !done:
 			return nil
 		case done:
-			// The run ended but was never released.
-			err = p.free(ctx, t, r, true, outcome)
+			// The run ended but was never released; an end that kept no home took it along.
+			remove := RemoveAll
+			if end.KeptHome {
+				remove = RemoveRun
+			}
+
+			err = p.free(ctx, t, r, remove, end.Outcome)
 		default:
 			err = p.endRun(ctx, r, RunAbandoned)
 		}
@@ -362,8 +367,8 @@ func (p *pass) repair(ctx context.Context) error {
 }
 
 func (p *pass) act(ctx context.Context, v view, a Action) error {
-	// A stop or finish is claimed before its config is built, so a broken
-	// setting cannot keep a person's cancel out of the record.
+	// A stop, a finish and a clean build no run config, so a broken setting
+	// cannot keep a person's cancel, or the ends that follow it, out of the record.
 	switch a.Kind {
 	case KindStop:
 		var run *store.Run
@@ -374,11 +379,19 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		return p.halt(ctx, v.LastEventID, v.Task, run, stopPayload(a), nil)
 	case KindFinish:
 		if err := p.write(ctx, v.LastEventID, v.run.ID, nil,
-			draft{RunEnded, actorEngine, RunEndedPayload{Outcome: RunExported, Why: a.Why}}); err != nil {
+			draft{RunEnded, actorEngine, RunEndedPayload{Outcome: RunExported, Why: a.Why, KeptHome: true}}); err != nil {
 			return err
 		}
 
-		return p.free(ctx, v.Task, v.run, true, RunExported)
+		return p.free(ctx, v.Task, v.run, RemoveRun, RunExported)
+	case KindClean:
+		// The home outlives its runs, so the newest run's release removes it.
+		row := store.Run{ID: v.Facts.LastRun}
+		if err := p.write(ctx, v.LastEventID, row.ID, nil, draft{HomeRemoved, actorEngine, HomeRemovedPayload{Why: a.Why}}); err != nil {
+			return err
+		}
+
+		return p.free(ctx, v.Task, row, RemoveAll, "")
 	}
 
 	row := v.run
@@ -832,7 +845,7 @@ func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *st
 		runID = run.ID
 
 		if ends {
-			drafts = append(drafts, draft{RunEnded, actorEngine, RunEndedPayload{Outcome: sp.Reason}})
+			drafts = append(drafts, draft{RunEnded, actorEngine, RunEndedPayload{Outcome: sp.Reason, KeptHome: true}})
 		}
 	}
 
@@ -853,7 +866,11 @@ func (p *pass) halt(ctx context.Context, expectLast int64, t store.Task, run *st
 		return nil
 	}
 
-	return p.free(ctx, t, *run, ends, sp.Reason)
+	if !ends {
+		return p.free(ctx, t, *run, KeepVolumes, "")
+	}
+
+	return p.free(ctx, t, *run, RemoveRun, sp.Reason)
 }
 
 // ref names a run for Release from the task, the row, the loop's image and the
@@ -892,19 +909,16 @@ func (l *Loop) ReleaseOpenRun(ctx context.Context, taskID int64) error {
 	return nil
 }
 
-// free stops a run's containers, removing its volumes and ending its row when
-// the run ends. A Release error is held so the row is still ended. An end is
-// already recorded, so it is carried out past ctx's end, or the row stays open.
-func (p *pass) free(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
-	remove := KeepVolumes
-
-	if end {
+// free stops a run's containers and removes what remove names, then ends the
+// run's row with outcome unless that is "". A Release error is held so the row
+// is still ended. A removal or an end is recorded already, so it is carried
+// out past ctx's end, or the record would hold what never happened.
+func (p *pass) free(ctx context.Context, t store.Task, row store.Run, remove Remove, outcome string) error {
+	if remove != KeepVolumes {
 		var cancel context.CancelFunc
 
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), endTimeout)
 		defer cancel()
-
-		remove = RemoveAll
 	}
 
 	ref, err := p.ref(ctx, t, row)
@@ -917,7 +931,7 @@ func (p *pass) free(ctx context.Context, t store.Task, row store.Run, end bool, 
 		relErr = fmt.Errorf("task %d: release run %d: %w", p.taskID, row.ID, relErr)
 	}
 
-	if end {
+	if outcome != "" {
 		if err := p.endRun(ctx, row, outcome); err != nil {
 			return errors.Join(err, relErr)
 		}

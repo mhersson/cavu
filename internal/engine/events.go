@@ -34,6 +34,7 @@ const (
 	Merged         = "merged"          // user
 	Stopped        = "stopped"         // engine
 	RunEnded       = "run_ended"       // engine
+	HomeRemoved    = "home_removed"    // engine
 )
 
 // ProgressTypes are the event types a session reports while it runs; Reduce reads none of them.
@@ -246,7 +247,12 @@ type (
 	}
 
 	RunEndedPayload struct {
-		Outcome string `json:"outcome"` // "exported", or the stop reason that ended the run
-		Why     string `json:"why,omitempty"`
+		Outcome  string `json:"outcome"` // "exported", or the stop reason that ended the run
+		Why      string `json:"why,omitempty"`
+		KeptHome bool   `json:"kept_home"` // the run's release keeps the task's home, for a later run to resume its session
+	}
+
+	HomeRemovedPayload struct {
+		Why string `json:"why"`
 	}
 )

@@ -41,7 +41,7 @@ func TestPublishRecordsThePullRequest(t *testing.T) {
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"prepare", "work/start", "verify", "export", "publish", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"prepare", "work/start", "verify", "export", "publish", "release/run"}, h.runner.trace())
 
 	evs := h.events()
 	require.GreaterOrEqual(t, len(evs), 4)
@@ -142,7 +142,7 @@ func TestPublishRejectedStops(t *testing.T) {
 	status, err = h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"publish", "release/remove"}, h.runner.trace()[before:])
+	assert.Equal(t, []string{"publish", "release/run"}, h.runner.trace()[before:])
 
 	pubs := h.runner.callsOf("publish")
 	require.Len(t, pubs, 2)
@@ -172,7 +172,7 @@ func TestPublishFaultIsRetried(t *testing.T) {
 	status, err = h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"publish", "release/remove"}, h.runner.trace()[before:])
+	assert.Equal(t, []string{"publish", "release/run"}, h.runner.trace()[before:])
 	assert.Len(t, h.eventsOf(engine.Published), 1)
 	assert.Equal(t, 1, h.spy.created(), "the retry publishes from the same run")
 }
@@ -218,7 +218,7 @@ func TestSecondPublishSendsNoText(t *testing.T) {
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"publish", "release/remove"}, h.runner.trace())
+	assert.Equal(t, []string{"publish", "release/run"}, h.runner.trace())
 
 	pubs := h.runner.callsOf("publish")
 	require.Len(t, pubs, 1)

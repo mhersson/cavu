@@ -547,3 +547,50 @@ func TestRetryOfAForgeStopKeepsTheSession(t *testing.T) {
 		})
 	}
 }
+
+// A run's end that kept the task's home leaves it to the task until a new run
+// starts or the home is removed, which closes no stop.
+func TestReduceHome(t *testing.T) {
+	of := func(runID int64, e store.Event) store.Event {
+		e.RunID = runID
+
+		return e
+	}
+
+	first := []store.Event{ev(engine.TaskStarted, ""), of(4, ev(engine.RunStarted, `{"reason":"initial"}`))}
+	kept := of(4, ev(engine.RunEnded, `{"outcome":"exported","kept_home":true}`))
+	cancelled := []store.Event{
+		ev(engine.HumanCancelled, ""), of(4, ev(engine.Stopped, `{"reason":"cancelled","explanation":"Cancelled.","action":"none"}`)),
+		of(4, ev(engine.RunEnded, `{"outcome":"cancelled","kept_home":true}`)),
+	}
+
+	tests := []struct {
+		name    string
+		events  []store.Event
+		home    bool
+		lastRun int64
+	}{
+		{name: "a run open", events: first, lastRun: 4},
+		{name: "a run ended that kept the home", events: slices.Concat(first, []store.Event{kept}), home: true, lastRun: 4},
+		{name: "a run ended that kept no home", events: slices.Concat(first, []store.Event{of(4, ev(engine.RunEnded, `{"outcome":"exported"}`))}), lastRun: 4},
+		{name: "a new run", events: slices.Concat(first, []store.Event{kept, of(9, ev(engine.RunStarted, `{"reason":"retry"}`))}), lastRun: 9},
+		{name: "the home removed", events: slices.Concat(first, []store.Event{kept, of(4, ev(engine.HomeRemoved, `{}`))}), lastRun: 4},
+		{name: "a cancel's stop ended the run", events: slices.Concat(first, cancelled), home: true, lastRun: 4},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := engine.Reduce(tc.events)
+			assert.Equal(t, tc.home, f.Home)
+			assert.Equal(t, tc.lastRun, f.LastRun)
+		})
+	}
+
+	t.Run("the removal of a cancelled task's home leaves its stop", func(t *testing.T) {
+		f := engine.Reduce(slices.Concat(first, cancelled, []store.Event{of(4, ev(engine.HomeRemoved, `{}`))}))
+
+		require.NotNil(t, f.OpenStop)
+		assert.Equal(t, engine.StopCancelled, f.OpenStop.Reason)
+		assert.Equal(t, engine.KindNone, engine.Decide(snap(f)).Kind)
+	})
+}

@@ -60,6 +60,7 @@ const (
 	KindExport  ActionKind = "export"
 	KindPublish ActionKind = "publish"
 	KindFinish  ActionKind = "finish"
+	KindClean   ActionKind = "clean"
 	KindWait    ActionKind = "wait"
 	KindStop    ActionKind = "stop"
 )
@@ -169,6 +170,12 @@ func decide(s Snapshot) Action {
 
 	if f.Merged && f.Exported && f.RunOpen {
 		return Action{Kind: KindFinish, Why: "The change was merged and its run is still open."}
+	}
+
+	// The home holds the session a fix run on the pull request resumes. With no
+	// pull request after the export, as for a replay's shadow, no such run comes.
+	if f.Home && (f.Merged || f.Cancelled || f.Exported && f.PR == nil) {
+		return Action{Kind: KindClean, Why: "The task can run no more, and its home is still kept."}
 	}
 
 	if f.Merged {

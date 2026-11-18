@@ -496,8 +496,9 @@ func TestReplayEndsTheRunOfAStoppedShadow(t *testing.T) {
 	}
 
 	require.Len(t, runs, 2)
-	assert.Equal(t, []release{{runs[0], engine.KeepVolumes}, {runs[0], engine.RemoveAll}, {runs[1], engine.RemoveAll}}, e.runner.releases,
-		"the stopped shadow's run ends once it is recorded, and its volumes go")
+	assert.Equal(t, []release{
+		{runs[0], engine.KeepVolumes}, {runs[0], engine.RemoveRun}, {runs[0], engine.RemoveAll}, {runs[1], engine.RemoveRun}, {runs[1], engine.RemoveAll},
+	}, e.runner.releases, "the stopped shadow's run ends once it is recorded, and each shadow's home goes once it can run no more")
 }
 
 func TestReplayExcludedFromTaskList(t *testing.T) {
