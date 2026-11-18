@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/big"
 	"net"
 	"net/http"
@@ -443,4 +444,120 @@ func TestCloneThenAgentSeesWorkspace(t *testing.T) {
 	res = run(t, c, "ls", "-A", "/mirror")
 	require.Equal(t, 0, res.ExitCode, res.Output)
 	assert.Empty(t, res.Output, "the agent container sees the mirror")
+}
+
+const pushToken = "ghp_pushtoken0123456789abcdef" //nolint:gosec // a test token
+
+// pushForge serves the bare repository over TLS and requires pushToken as basic
+// auth. During every authenticated request it asks the runtime to inspect the
+// clone and the push container, so the test sees the token in neither while
+// they run. The returned map names the containers an inspect reached.
+func pushForge(t *testing.T, r sandbox.Runtime, bare string, names ...string) (url string, inspected func() map[string]bool) {
+	t.Helper()
+
+	var (
+		mu   sync.Mutex
+		seen = map[string]bool{}
+	)
+
+	backend := gitrepo.Handler(t, bare)
+	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, r), http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if user, pass, ok := req.BasicAuth(); !ok || user != "x-access-token" || pass != pushToken {
+			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+			w.WriteHeader(http.StatusUnauthorized)
+
+			return
+		}
+
+		for _, name := range names {
+			out, err := exec.CommandContext(req.Context(), r.Bin, "inspect", name).CombinedOutput() //nolint:gosec // our runtime
+			if err != nil {
+				continue
+			}
+
+			assert.NotContains(t, string(out), pushToken, name)
+
+			mu.Lock()
+			seen[name] = true
+			mu.Unlock()
+		}
+
+		backend.ServeHTTP(w, req)
+	}))
+
+	return "https://host.docker.internal:" + port + "/" + filepath.Base(bare), func() map[string]bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return maps.Clone(seen)
+	}
+}
+
+// pushFixture is a forge repository with a feature branch ahead of main, and
+// the sandbox whose mirror a clone filled from it.
+func pushFixture(t *testing.T, r sandbox.Runtime, allowPush bool) (s *sandbox.Sandbox, bare, feature string, url string, inspected func() map[string]bool) {
+	t.Helper()
+
+	gitrepo.Isolate(t)
+
+	caPEM, _, _ := sandboxtest.CA(t)
+	repo := gitrepo.New(t, map[string]string{"README.md": "hello\n"})
+	gitrepo.Git(t, repo, "checkout", "-q", "-b", "feature")
+	feature = gitrepo.Commit(t, repo, map[string]string{"README.md": "feature\n"}, "feature")
+	gitrepo.Git(t, repo, "checkout", "-q", "main")
+
+	bare = strings.TrimPrefix(gitrepo.Bare(t, repo), "file://")
+	if allowPush {
+		gitrepo.AllowPush(t, bare)
+	}
+
+	instance, run := randomInstance(t), randomID(t)
+	url, inspected = pushForge(t, r, bare, schemeName(instance, "clone", run), schemeName(instance, "push", run))
+
+	sandboxtest.RemoveInstanceAfter(t, r, instance)
+
+	s = openSandbox(t, r, sandboxImage(t, r, caPEM), instance, run, randomID(t), randomID(t))
+	require.NoError(t, s.EnsureVolumes(t.Context()))
+
+	_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: url, Token: pushToken, BaseBranch: "main", Branch: "cavu/test", Name: "CAVU Test", Email: "cavu@example.com"})
+	require.NoError(t, err)
+
+	return s, bare, feature, url, inspected
+}
+
+// TestSandboxPushReachesTheForge pushes a commit of the mirror through a push
+// container to a TLS forge that wants the token, and inspects both containers
+// while they run.
+func TestSandboxPushReachesTheForge(t *testing.T) {
+	r := sandboxtest.Runtime(t)
+	s, bare, feature, url, inspected := pushFixture(t, r, true)
+
+	branch, rejected, err := s.Push(t.Context(), sidecar.PushRequest{
+		URL: url, Token: pushToken, Ref: "refs/heads/feature", Commit: feature, Branch: "cavu/pushed",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, rejected)
+	assert.Equal(t, "cavu/pushed", branch)
+	assert.Equal(t, feature, gitrepo.Git(t, bare, "rev-parse", "refs/heads/cavu/pushed"))
+
+	seen := inspected()
+	assert.Len(t, seen, 2, "an inspect reached the clone and the push container")
+}
+
+// A token that may read and not write meets a forge that refuses the push: a
+// rejection that carries git's line, not an error.
+func TestSandboxPushRefusedByTheForgeIsARejection(t *testing.T) {
+	r := sandboxtest.Runtime(t)
+	s, bare, feature, url, _ := pushFixture(t, r, false)
+
+	branch, rejected, err := s.Push(t.Context(), sidecar.PushRequest{
+		URL: url, Token: pushToken, Ref: "refs/heads/feature", Commit: feature, Branch: "cavu/pushed",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "cavu/pushed", branch)
+	assert.NotEmpty(t, rejected)
+	t.Log(rejected)
+	assert.NotContains(t, rejected, pushToken)
+	assert.NotContains(t, rejected, "://")
+	assert.Empty(t, gitrepo.Git(t, bare, "for-each-ref", "refs/heads/cavu"))
 }

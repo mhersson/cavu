@@ -86,6 +86,7 @@ func New(rt sandbox.Runtime, d driver.Driver) *Runner {
 type sandboxer interface {
 	EnsureVolumes(ctx context.Context) error
 	Clone(ctx context.Context, r sidecar.CloneRequest) (string, error)
+	Push(ctx context.Context, r sidecar.PushRequest) (branch, rejected string, err error)
 	Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error)
 	Restart(ctx context.Context) (container, error)
 	Down(ctx context.Context) error

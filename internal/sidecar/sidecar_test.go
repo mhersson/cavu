@@ -378,10 +378,10 @@ func TestProxyOpDrainsInFlightResponsesBeforeReturning(t *testing.T) {
 
 // gitServer serves up over HTTPS and points git at a CA file that trusts it,
 // through the environment, so its caller cannot run in parallel.
-func gitServer(t *testing.T, up string) (url, repo string) {
+func gitServer(t *testing.T, up string) (url, repo, bare string) {
 	t.Helper()
 
-	bare := strings.TrimPrefix(gitrepo.Bare(t, up), "file://")
+	bare = strings.TrimPrefix(gitrepo.Bare(t, up), "file://")
 	srv := httptest.NewTLSServer(gitrepo.Handler(t, bare))
 	t.Cleanup(srv.Close)
 
@@ -389,12 +389,12 @@ func gitServer(t *testing.T, up string) (url, repo string) {
 	require.NoError(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600))
 	t.Setenv("GIT_SSL_CAINFO", ca)
 
-	return srv.URL, "/" + filepath.Base(bare)
+	return srv.URL, "/" + filepath.Base(bare), bare
 }
 
 func TestCloneOpWritesClonedLine(t *testing.T) {
 	up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
-	base, repo := gitServer(t, up)
+	base, repo, _ := gitServer(t, up)
 	root := t.TempDir()
 
 	var out syncBuffer
@@ -411,6 +411,79 @@ func TestCloneOpWritesClonedLine(t *testing.T) {
 	assert.Equal(t, "cloned", lines[0].Type)
 	assert.Equal(t, gitrepo.Git(t, up, "rev-parse", "HEAD"), lines[0].Commit)
 	assert.Equal(t, lines[0].Commit, gitrepo.Git(t, filepath.Join(root, "ws"), "rev-parse", "HEAD"))
+}
+
+const pushToken = "s3cr3t-value-0123"
+
+// pushRequest is a push of a new commit that only a mirror holds.
+func pushRequest(t *testing.T, up, url string) (Request, string) {
+	t.Helper()
+
+	mirror := strings.TrimPrefix(gitrepo.Bare(t, up), "file://")
+	commit := gitrepo.Commit(t, up, map[string]string{"a.txt": "two\n"}, "two")
+	gitrepo.Git(t, mirror, "fetch", "-q", up, "+refs/heads/main:refs/cavu/tasks/1")
+
+	return Request{Push: &PushRequest{
+		URL: url, Token: pushToken, MirrorDir: mirror, Ref: "refs/cavu/tasks/1", Commit: commit, Branch: "cavu/x",
+	}}, commit
+}
+
+func TestPushOpWritesPushedLine(t *testing.T) {
+	up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
+	base, repo, bare := gitServer(t, up)
+	gitrepo.AllowPush(t, bare)
+	req, commit := pushRequest(t, up, base+repo)
+
+	var out syncBuffer
+
+	require.NoError(t, Run(context.Background(), encode(t, req), &out))
+
+	lines := out.lines()
+	require.Len(t, lines, 1)
+	assert.Equal(t, "pushed", lines[0].Type)
+	assert.Equal(t, "cavu/x", lines[0].Branch)
+	assert.Equal(t, commit, gitrepo.Git(t, bare, "rev-parse", "refs/heads/cavu/x"))
+}
+
+// A forge that refuses the write is a result, with the token and every URL
+// scrubbed from its reason.
+func TestPushOpWritesRejectedLine(t *testing.T) {
+	up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
+	base, repo, bare := gitServer(t, up)
+	req, _ := pushRequest(t, up, base+repo)
+
+	var out syncBuffer
+
+	require.NoError(t, Run(context.Background(), encode(t, req), &out))
+
+	lines := out.lines()
+	require.Len(t, lines, 1)
+	assert.Equal(t, "rejected", lines[0].Type)
+	assert.NotEmpty(t, lines[0].Error)
+	assert.NotContains(t, lines[0].Error, pushToken)
+	assert.NotContains(t, lines[0].Error, "://")
+	assert.Empty(t, gitrepo.Git(t, bare, "for-each-ref", "refs/heads/cavu"))
+}
+
+func TestPushErrorLineScrubsToken(t *testing.T) {
+	t.Parallel()
+
+	up := gitrepo.New(t, map[string]string{"a.txt": "one\n"})
+	req, _ := pushRequest(t, up, "https://127.0.0.1:1/o/r.git")
+
+	var out syncBuffer
+
+	err := Run(context.Background(), encode(t, req), &out)
+	require.Error(t, err)
+
+	lines := out.lines()
+	require.Len(t, lines, 1)
+	assert.Equal(t, "error", lines[0].Type)
+
+	for _, s := range []string{lines[0].Error, err.Error()} {
+		assert.NotContains(t, s, pushToken)
+		assert.NotContains(t, s, "://")
+	}
 }
 
 func TestErrorLineScrubsToken(t *testing.T) {
