@@ -408,7 +408,8 @@ func (r *doctor) forge(ctx context.Context) Check {
 		return Check{Skipped: true, Detail: "skipped: no forge credential or no project"}
 	}
 
-	const fix = "check the secret forge_token, or the setting forge_app_id and the secret forge_app_key, and the project's repository address"
+	const fix = "check the secret forge_token, or the setting forge_app_id and the secret forge_app_key, and the project's repository address; " +
+		"a GitHub App must be granted Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read"
 
 	var err error
 	if r.token, err = runner.CloneToken(ctx, r.Forge, r.Project.RepoURL, a); err != nil {

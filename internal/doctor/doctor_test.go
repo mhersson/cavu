@@ -598,6 +598,25 @@ func TestForgeCheckFailsForACredentialThatCannotReadChecks(t *testing.T) {
 	}
 }
 
+// A GitHub App granted less than CAVU asks for fails at its token's mint, so
+// that failure names what the App must be granted.
+func TestForgeCheckNamesAnAppsPermissionsWhenItsMintFails(t *testing.T) {
+	d, h, _ := green(t, "key")
+	fake, _ := onForge(t, &d)
+	withApp(&d)
+	fake.Lack("checks")
+
+	checks := Run(t.Context(), d)
+	forgeCheck := byName(t, checks)["forge"]
+	assert.False(t, forgeCheck.OK)
+	assert.Empty(t, h.clones)
+	assert.Equal(t, 1, ExitCode(checks))
+
+	for _, permission := range []string{"Contents", "Pull requests", "Checks", "Commit statuses", "Actions", "Metadata"} {
+		assert.Contains(t, forgeCheck.Fix, permission)
+	}
+}
+
 // The forge check's token, an App's minted one too, and the App's key are
 // masked wherever a check's text holds them.
 func TestDoctorMasksTheForgeCredential(t *testing.T) {
