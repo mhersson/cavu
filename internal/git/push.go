@@ -67,14 +67,12 @@ func Push(ctx context.Context, s PushSpec) (PushResult, error) {
 }
 
 // forgeHeads asks the forge where the branch and its numbered names are. ls-remote
-// matches patterns on the tail of a ref, so only the exact names count.
+// matches patterns on the tail of a ref, so a name is looked up exactly.
 func forgeHeads(ctx context.Context, s PushSpec) (map[string]string, error) {
 	args := []string{"ls-remote", "--heads", "--", s.URL}
-	want := map[string]bool{}
 
 	for _, name := range names(s.Branch) {
 		args = append(args, "refs/heads/"+name)
-		want["refs/heads/"+name] = true
 	}
 
 	out, err := run(ctx, call{dir: s.MirrorDir, args: args, env: netEnv(s.URL, s.Token, allowedProtocols()), net: true, noHooks: true, read: true})
@@ -85,7 +83,7 @@ func forgeHeads(ctx context.Context, s PushSpec) (map[string]string, error) {
 	heads := map[string]string{}
 
 	for line := range strings.SplitSeq(string(out), "\n") {
-		if sha, ref, ok := strings.Cut(line, "\t"); ok && want[ref] {
+		if sha, ref, ok := strings.Cut(line, "\t"); ok {
 			heads[strings.TrimPrefix(ref, "refs/heads/")] = sha
 		}
 	}

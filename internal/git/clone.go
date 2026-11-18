@@ -130,7 +130,7 @@ type inputs struct {
 }
 
 // validate refuses an input that could act as a git option or smuggle a
-// control character, and a relative directory, before any git command that
+// control character before any git command that
 // touches the network runs. It names the field and never echoes the value.
 func validate(ctx context.Context, s CloneSpec) error {
 	return inputs{

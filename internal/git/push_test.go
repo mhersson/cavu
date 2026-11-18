@@ -110,11 +110,8 @@ func TestPushIsRepeatable(t *testing.T) {
 	f := newPushFixture(t)
 	ctx, calls := wrapGit(t, "")
 
-	for _, expect := range []string{"", ""} {
-		s := f.spec()
-		s.Expect = expect
-
-		res, err := Push(ctx, s)
+	for range 2 {
+		res, err := Push(ctx, f.spec())
 		require.NoError(t, err)
 		assert.Equal(t, PushResult{Branch: "cavu/x"}, res)
 	}
@@ -184,7 +181,9 @@ func TestPushRejectsABranchThatMovedOnTheForge(t *testing.T) {
 	_, err := Push(context.Background(), f.spec())
 	require.NoError(t, err)
 
-	moved := foreign(t, f.remote, "cavu/x")
+	// An ancestor of the new commit: only the check refuses a push onto it.
+	moved := gitrepo.Git(t, f.remote, "rev-parse", "refs/heads/main")
+	gitrepo.Git(t, f.remote, "update-ref", "refs/heads/cavu/x", moved)
 
 	f.advance(t, "three")
 
@@ -335,4 +334,21 @@ func TestPushTokenStaysOutOfArgvAndFiles(t *testing.T) {
 
 		return nil
 	}))
+}
+
+// The rejection names the numbered branch the push was for.
+func TestPushRejectionNamesTheNumberedBranch(t *testing.T) {
+	t.Parallel()
+
+	f := newPushFixture(t)
+	foreign(t, f.remote, "cavu/x")
+
+	other := gitrepo.Git(t, f.remote, "commit-tree", emptyTree, "-m", "raced")
+	ctx, _ := wrapGit(t, `case " $* " in *" push "*) "$(cat "${0%/*}/real-git")" -C '`+f.remote+`' update-ref refs/heads/cavu/x-2 `+other+`;; esac`)
+
+	res, err := Push(ctx, f.spec())
+	require.NoError(t, err)
+
+	assert.Equal(t, "cavu/x-2", res.Branch)
+	assert.NotEmpty(t, res.Rejected)
 }
