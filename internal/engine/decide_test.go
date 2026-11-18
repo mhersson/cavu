@@ -151,6 +151,9 @@ func decideCases() []decideCase {
 	merged := exported
 	merged.Merged = true
 
+	mergedOpen := merged
+	mergedOpen.RunOpen = true
+
 	mergedStop := openStop(engine.StopUsageLimit, resets)
 	mergedStop.Exported, mergedStop.Merged = true, true
 
@@ -165,7 +168,8 @@ func decideCases() []decideCase {
 		{name: "cancelled", snap: snap(engine.Facts{Started: true, Cancelled: true, RunOpen: true}), want: halt(engine.StopCancelled, engine.ClearNone)},
 		{name: "cancelled with another stop open", snap: snap(cancelledQuestion), want: halt(engine.StopCancelled, engine.ClearNone)},
 		{name: "merged", snap: snap(merged), want: none},
-		{name: "merged with a stale stop", snap: snap(mergedStop), want: none},
+		{name: "merged with the run open", snap: snap(mergedOpen), want: engine.Action{Kind: engine.KindFinish}},
+		{name: "merged with a stale stop and the run open", snap: snap(mergedStop), want: engine.Action{Kind: engine.KindFinish}},
 		{name: "usage limit before its reset", snap: snap(openStop(engine.StopUsageLimit, resets)), want: engine.Action{Kind: engine.KindWait, Until: resets}, clock: true},
 		{name: "usage limit reset reached", snap: snap(openStop(engine.StopUsageLimit, reset)), want: work(engine.ModeContinue, false), clock: true},
 		{name: "usage limit with no reset time", snap: snap(openStop(engine.StopUsageLimit, time.Time{})), want: work(engine.ModeContinue, false)},
