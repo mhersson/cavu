@@ -31,8 +31,8 @@ func TestOldTranscriptStillResumes(t *testing.T) {
 	aged := b.sh(`touch -d "@$(( $(date +%s) - 40*86400 ))" ` + confConfig + "/projects/*/" + first.SessionID + ".jsonl")
 	require.Equal(t, 0, aged.ExitCode, aged.Output)
 
-	// Shown: a session of one quick model call ends before the sweep, which
-	// starts about 6 s into a session, so this one holds a 20 s shell call.
+	// A session of one quick model call was shown to end before the sweep, which was
+	// shown to run about 6 s into a session, so this one holds a 20 s shell call.
 	b.mock.Script(secondPrompt, []mockapi.Step{{Tool: "Bash", Input: map[string]any{"command": "sleep 20"}}, {Text: "done"}})
 
 	second := b.spec()
