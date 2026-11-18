@@ -59,7 +59,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu secret set forge_app_key < app-key.pem
    ```
 
-4. Check the setup. Each line is a check; `skipped` follows from an earlier failure, or for the forge check from having no forge credential (`forge_token` or `forge_app_id`) or no project yet, and `warning` passes. The forge check clones the first project by name with the credential a run's clone uses, and with the project's switch `publish` on it also reads the repository over GitHub's API. The exit code is 1 when a check failed.
+4. Check the setup. Each line is a check; `skipped` follows from an earlier failure, or for the forge check from having no forge credential (`forge_token` or `forge_app_id`) or no project yet, and `warning` passes. The forge check clones the first project by name with the credential a run's clone uses, and with the project's switch `publish` on it also reads over GitHub's API the repository and the checks of the base branch's head commit, the way CAVU reads the checks of a pull request it watches. The exit code is 1 when a check failed.
 
    ```
    cavu doctor

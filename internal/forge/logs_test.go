@@ -269,3 +269,19 @@ func TestFailedLogsAreBounded(t *testing.T) {
 		assert.Zero(t, sent(f, http.MethodGet, logPath))
 	})
 }
+
+func TestFailedLogsWithoutTheChecksAPI(t *testing.T) {
+	f, c, head := actionsChecks(t)
+	f.SetJobLog(211, "the label log")
+	f.SetJobLog(102, "the first attempt's log")
+
+	want, err := c.FailedLogs(t.Context(), fakeRepo, fakeAccess, head, nil)
+	require.NoError(t, err)
+	assert.Contains(t, want, "the label log")
+	assert.NotContains(t, want, "the first attempt's log")
+
+	got, err := c.FailedLogs(t.Context(), fakeRepo, Access{Token: refusedToken}, head, nil)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, 1, sent(f, http.MethodGet, "/api/v3/repos/o/n/actions/runs"), "the second way")
+}
