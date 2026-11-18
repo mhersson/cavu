@@ -63,6 +63,8 @@ type PRFact struct {
 	Since                     time.Time       // the latest of the head's publish, CAVU's ready-marking and a person's action
 	Export                    ExportedPayload // the export CAVU published last
 	Seen                      *Observation    // the newest observation since the head was published; nil when none
+	Looked                    bool            // Seen was recorded after the event Since is the time of
+	TakeBack                  bool            // a retry of a takeover or a conflict gives CAVU the head the next look shows
 	MarkedReady               bool            // CAVU marked the pull request ready for review
 	FixedHead                 string          // the head a run on failed checks was started from since the last human action
 	Answered                  []string        // the ids of the requests follow-up runs were given; never cleared
@@ -138,11 +140,10 @@ func (f *Facts) apply(e store.Event) {
 		f.humanAction(e)
 		f.Answers = append(f.Answers, text)
 	case HumanRetried:
-		// A retry of a takeover gives the branch back to CAVU at the head seen, and
-		// so does one of a conflict at a person's head: resolving a conflict is a commit.
-		if pr := f.PR; pr != nil && pr.Seen != nil &&
-			(f.stoppedFor(StopTakenOver) || f.stoppedFor(StopConflict) && !slices.Contains(pr.Heads, pr.Seen.Head)) {
-			pr.Head, pr.Heads = pr.Seen.Head, append(pr.Heads, pr.Seen.Head)
+		// A retry of a takeover gives the branch back to CAVU, and so does one of a
+		// conflict, which a person resolves with a commit, maybe after the last look.
+		if f.PR != nil && (f.stoppedFor(StopTakenOver) || f.stoppedFor(StopConflict)) {
+			f.PR.TakeBack = true
 		}
 
 		// A sandbox stop is a fault that cut an action short, a review's halt cut
@@ -250,7 +251,7 @@ func (f *Facts) apply(e store.Event) {
 		f.observed(decode[PRObservedPayload](e.Payload))
 	case PRReady:
 		if f.PR != nil {
-			f.PR.MarkedReady, f.PR.Since = true, e.At
+			f.PR.MarkedReady, f.PR.Since, f.PR.Looked = true, e.At, false
 		}
 	case Merged:
 		f.Merged = true
@@ -273,15 +274,16 @@ func (f *Facts) humanAction(e store.Event) {
 
 // clearStop closes the open stop and the review's halt, and restarts the
 // count of the caps, of the budget and of the watch's clock from the human
-// action e. The requests answered stay answered, and what was seen stays seen:
-// an observation equal to it is never recorded again.
+// action e, after which the watch waits for a new look. The requests answered
+// stay answered, and what was seen stays seen: a fix run whose failed prepare
+// a person retries takes the requests that came since from it.
 func (f *Facts) clearStop(e store.Event) {
 	f.OpenStop, f.Review.Halt = nil, nil
 	f.Continuations, f.VerifyFixes, f.ReviewFixes, f.Faults, f.CIFixes, f.CommentRuns = 0, 0, 0, 0, 0, 0
 	f.Turns, f.SessionTime, f.LastHumanEventID = 0, 0, e.ID
 
 	if f.PR != nil {
-		f.PR.FixedHead, f.PR.Since = "", e.At
+		f.PR.FixedHead, f.PR.Since, f.PR.Looked = "", e.At, false
 	}
 }
 
@@ -357,10 +359,12 @@ func (f *Facts) published(p PublishedPayload, at time.Time) {
 
 	pr.Number, pr.URL, pr.NodeID, pr.Branch, pr.Head = p.Number, p.URL, p.NodeID, p.Branch, p.Head
 	pr.Heads, pr.Since, pr.Export, pr.Seen = append(pr.Heads, p.Head), at, f.Export, nil
+	pr.Looked, pr.TakeBack = false, false
 	f.PR = pr
 }
 
-// observed records what the forge showed of the pull request.
+// observed records what the forge showed of the pull request, and gives CAVU
+// the head it shows when a retry owes that and the head is not one of CAVU's.
 func (f *Facts) observed(o Observation) {
 	switch o.State {
 	case PRMerged:
@@ -369,8 +373,12 @@ func (f *Facts) observed(o Observation) {
 		f.Cancelled = true
 	}
 
-	if f.PR != nil {
-		f.PR.Seen = &o
+	if pr := f.PR; pr != nil {
+		if pr.TakeBack && !slices.Contains(pr.Heads, o.Head) {
+			pr.Head, pr.Heads = o.Head, append(pr.Heads, o.Head)
+		}
+
+		pr.Seen, pr.Looked, pr.TakeBack = &o, true, false
 	}
 }
 

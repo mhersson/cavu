@@ -484,6 +484,28 @@ func TestObserveRecordsOnlyAChange(t *testing.T) {
 		assert.Len(t, h.eventsOf(engine.PRObserved), 1)
 	})
 
+	t.Run("the first look after a person's action is recorded though it is equal, and the next hour's are not", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.observe(checksPending)
+		h.stopped(engine.StopCITimeout)
+		h.observe(checksPending)
+		require.Len(t, h.eventsOf(engine.PRObserved), 1)
+
+		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+		for range 360 {
+			h.observe(checksPending)
+			h.clock.Advance(10 * time.Second)
+		}
+
+		assert.Len(t, h.runner.callsOf("observe"), 362)
+
+		seen := h.eventsOf(engine.PRObserved)
+		require.Len(t, seen, 2)
+		assert.Equal(t, checksPending, payloadOf[engine.Observation](t, seen[1]))
+	})
+
 	// A project's secret can be a plain word that a reviewer writes too. The
 	// requests are still seen while the task is stopped for them.
 	t.Run("a request is compared as the record holds it, masked", func(t *testing.T) {
@@ -591,6 +613,92 @@ func TestAnEarlierHeadIsNotATakeover(t *testing.T) {
 	assert.Empty(t, h.stopsOf())
 	assert.Empty(t, h.runner.callsOf("ready"))
 	assert.Empty(t, h.runner.callsOf("prepare"), "no new fix run")
+}
+
+// A person acts on GitHub or on the project and retries before CAVU's next
+// look, which is what the retry is decided on.
+func TestARetryIsDecidedOnALookAfterIt(t *testing.T) {
+	// retried has a person retry the task's stop, and checks that nothing acts before a look.
+	retried := func(t *testing.T, h *harness) {
+		t.Helper()
+		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+		before := len(h.runner.calls)
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Empty(t, h.runner.trace()[before:], "nothing acts on the look before the retry")
+	}
+
+	t.Run("failed checks the project ignores since", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.runner.works = []step[engine.WorkResult]{unchangedAt("head456")}
+
+		macos := checksFailed
+		macos.Failed = []string{"macos"}
+		assert.Equal(t, engine.StatusBlocked, h.lookAt(macos))
+		require.Equal(t, []string{engine.StopCIFailed}, h.stopsOf())
+
+		p := h.project()
+		p.Forge.IgnoredChecks = []string{"macos"}
+		require.NoError(t, h.store.UpdateProject(t.Context(), p))
+		retried(t, h)
+
+		// GitHub no longer counts the check the project ignores.
+		before := len(h.runner.calls)
+		assert.Equal(t, engine.StatusInReview, h.lookAt(checksPassed))
+		assert.Equal(t, []string{"observe", "ready"}, h.runner.trace()[before:])
+		assert.Equal(t, []engine.RunStartedPayload{initialRun, ciFixFrom("head456")}, h.runStarts(), "no fix run on the old failure")
+		assert.Equal(t, []string{engine.StopCIFailed}, h.stopsOf())
+	})
+
+	t.Run("a conflict resolved since the last look", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+
+		conflicted := checksPassed
+		conflicted.Conflict = true
+		assert.Equal(t, engine.StatusBlocked, h.lookAt(conflicted))
+		retried(t, h)
+
+		resolved := checksPending
+		resolved.Head = "merge789"
+		assert.Equal(t, engine.StatusInReview, h.lookAt(resolved))
+		assert.Equal(t, []string{engine.StopConflict}, h.stopsOf(), "one retry and one look")
+
+		// CAVU goes on from the person's commit.
+		h.fixes("fix1")
+
+		failed := checksFailed
+		failed.Head = "merge789"
+		assert.Equal(t, engine.StatusInReview, h.lookAt(failed))
+		assert.Equal(t, "merge789", h.lastCall("prepare").cfg.Repo.Head)
+		assert.Equal(t, []string{engine.StopConflict}, h.stopsOf())
+	})
+
+	t.Run("a takeover gives CAVU the head the look shows", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+
+		theirs := checksPending
+		theirs.Head = "theirs1"
+		assert.Equal(t, engine.StatusBlocked, h.lookAt(theirs))
+		require.Equal(t, []string{engine.StopTakenOver}, h.stopsOf())
+
+		// The person pushed again after the last look.
+		retried(t, h)
+
+		theirs.Head = "theirs2"
+		assert.Equal(t, engine.StatusInReview, h.lookAt(theirs))
+		assert.Equal(t, []string{engine.StopTakenOver}, h.stopsOf())
+
+		snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
+		require.NoError(t, err)
+		require.NotNil(t, snap.Facts.PR)
+		assert.Equal(t, "theirs2", snap.Facts.PR.Head)
+		assert.Equal(t, []string{publishedOK.Head, "theirs2"}, snap.Facts.PR.Heads)
+	})
 }
 
 func TestStoppedTaskStillSeesTheMerge(t *testing.T) {
@@ -717,6 +825,7 @@ func TestZeroChecks(t *testing.T) {
 		// A retry waits a new grace and marks nothing again.
 		h.clock.Advance(time.Hour)
 		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+		h.observe(ready)
 
 		h.clock.Advance(3*time.Minute - time.Second)
 		status, err = h.run(t.Context())
@@ -1047,6 +1156,7 @@ func TestAFixRunThatChangesNothingEnds(t *testing.T) {
 
 	h.clock.Advance(time.Hour)
 	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+	h.observe(failed)
 
 	before = len(h.runner.calls)
 	_, err := h.run(t.Context())
@@ -1204,6 +1314,7 @@ func TestCIFixIsCapped(t *testing.T) {
 	// A retry allows two more.
 	h.fixes("fix3")
 	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+	h.observe(failed)
 
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
@@ -1233,6 +1344,7 @@ func TestCommentRunsAreCapped(t *testing.T) {
 	// A retry allows three more, and the next run takes the request the cap held.
 	h.fixes("r4")
 	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+	h.observe(askedAt("r3", ids...))
 
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
@@ -1399,6 +1511,7 @@ func TestPublishDoesNotPushToAMergedPullRequest(t *testing.T) {
 		h.runner.publishes = nil
 		h.fixes("mine1")
 		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+		h.observe(theirs)
 
 		status, err = h.run(t.Context())
 		require.NoError(t, err)

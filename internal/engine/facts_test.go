@@ -654,6 +654,7 @@ func TestReduceObservations(t *testing.T) {
 
 		require.NotNil(t, f.PR)
 		assert.Equal(t, &failing, f.PR.Seen)
+		assert.True(t, f.PR.Looked)
 		assert.Equal(t, engine.StatusInReview, engine.StatusOf(f))
 	})
 
@@ -710,16 +711,18 @@ func TestReduceObservations(t *testing.T) {
 		assert.Empty(t, f.PR.FixedHead)
 		assert.True(t, later.Equal(f.PR.Since), "since moves to the action, at %s", f.PR.Since)
 		assert.Equal(t, &asking, f.PR.Seen)
+		assert.False(t, f.PR.Looked, "the watch waits for a look after the action")
 		assert.Equal(t, []string{"c1"}, f.PR.Answered)
 	})
 
 	t.Run("a ready-marking is a claim and moves the clock", func(t *testing.T) {
-		f := engine.Reduce(append(publishedTask(), sandboxStop, ev(engine.ReadyStarted, ""), at(ev(engine.PRReady, ""), later)))
+		f := engine.Reduce(append(publishedTask(), observed(failing), sandboxStop, ev(engine.ReadyStarted, ""), at(ev(engine.PRReady, ""), later)))
 
 		require.NotNil(t, f.PR)
 		assert.Nil(t, f.OpenStop, "the claim closes the fault's stop")
 		assert.True(t, f.PR.MarkedReady)
 		assert.True(t, later.Equal(f.PR.Since), "since moves to the ready-marking, at %s", f.PR.Since)
+		assert.False(t, f.PR.Looked, "the watch waits for a look after the ready-marking")
 	})
 
 	t.Run("a reply is a claim, and the run's end forgets it", func(t *testing.T) {
@@ -746,6 +749,7 @@ func TestReduceObservations(t *testing.T) {
 
 		require.NotNil(t, f.PR)
 		assert.Nil(t, f.PR.Seen)
+		assert.False(t, f.PR.Looked)
 		assert.Equal(t, engine.ExportedPayload{HeadCommit: "fix789", DiffPath: "two.patch"}, f.PR.Export, "the export it published")
 		assert.Equal(t, []string{"def456", "fix789"}, f.PR.Heads)
 		assert.True(t, f.PR.MarkedReady)
@@ -754,21 +758,40 @@ func TestReduceObservations(t *testing.T) {
 		assert.True(t, later.Equal(f.PR.Since))
 	})
 
-	t.Run("a retry of a takeover takes the branch back at the head seen", func(t *testing.T) {
-		theirs := engine.Observation{State: engine.PROpen, Head: "theirs", Checks: engine.ChecksPending}
-		f := engine.Reduce(append(publishedTask(), observed(theirs),
-			ev(engine.Stopped, `{"reason":"taken_over","explanation":"Taken over.","action":"retry"}`), retried))
+	theirs := engine.Observation{State: engine.PROpen, Head: "theirs", Checks: engine.ChecksPending}
+	takenOver := append(publishedTask(), observed(theirs),
+		ev(engine.Stopped, `{"reason":"taken_over","explanation":"Taken over.","action":"retry"}`), retried)
+
+	t.Run("a retry of a takeover takes the branch back at the head the next look shows, and at no later one", func(t *testing.T) {
+		f := engine.Reduce(takenOver)
+
+		require.NotNil(t, f.PR)
+		assert.Equal(t, "def456", f.PR.Head)
+		assert.Equal(t, &theirs, f.PR.Seen, "a retry clears nothing that was seen")
+
+		again := theirs
+		again.Head = "theirs2"
+		f = engine.Reduce(append(slices.Clone(takenOver), observed(theirs), observed(again)))
 
 		require.NotNil(t, f.PR)
 		assert.Equal(t, "theirs", f.PR.Head)
 		assert.Equal(t, []string{"def456", "theirs"}, f.PR.Heads)
-		assert.Equal(t, &theirs, f.PR.Seen, "a retry clears nothing that was seen")
+	})
+
+	t.Run("a publish forgets the head a retry was owed", func(t *testing.T) {
+		f := engine.Reduce(append(slices.Clone(takenOver),
+			ev(engine.Published, `{"branch":"cavu/fix-login","head":"fix789","number":7,"url":"https://github.com/acme/web/pull/7","node_id":"PR_7"}`),
+			observed(theirs)))
+
+		require.NotNil(t, f.PR)
+		assert.Equal(t, "fix789", f.PR.Head)
+		assert.Equal(t, []string{"def456", "fix789"}, f.PR.Heads)
 	})
 }
 
-// A retry decides again from what was seen: an equal observation is never
-// recorded again, so nothing new needs to come.
-func TestARetryDecidesFromWhatWasSeen(t *testing.T) {
+// A retry decides again on the first look after it, which is recorded even
+// when it equals the one before.
+func TestARetryDecidesOnTheNextLook(t *testing.T) {
 	decide := func(events []store.Event) engine.Action {
 		s := watchSnap(engine.Reduce(events))
 		s.Now = now.Add(time.Minute)
@@ -777,12 +800,13 @@ func TestARetryDecidesFromWhatWasSeen(t *testing.T) {
 	}
 
 	t.Run("a takeover then watches the person's head", func(t *testing.T) {
-		events := append(publishedTask(), observed(engine.Observation{State: engine.PROpen, Head: "theirs", Checks: engine.ChecksPending}))
+		theirs := observed(engine.Observation{State: engine.PROpen, Head: "theirs", Checks: engine.ChecksPending})
+		events := append(publishedTask(), theirs)
 
 		stop := decide(events)
 		require.Equal(t, engine.StopTakenOver, stop.Stop)
 
-		events = append(events, ev(engine.Stopped, `{"reason":"taken_over","explanation":"Taken over.","action":"retry"}`), at(retried, now))
+		events = append(events, ev(engine.Stopped, `{"reason":"taken_over","explanation":"Taken over.","action":"retry"}`), at(retried, now), theirs)
 
 		got := decide(events)
 		assert.Equal(t, engine.KindWatch, got.Kind)
@@ -790,8 +814,9 @@ func TestARetryDecidesFromWhatWasSeen(t *testing.T) {
 	})
 
 	t.Run("failed checks then start a new fix run", func(t *testing.T) {
+		failing := observed(engine.Observation{State: engine.PROpen, Head: "def456", Checks: engine.ChecksFailed, Failed: []string{"lint"}})
 		events := slices.Concat(publishedTask(), []store.Event{
-			observed(engine.Observation{State: engine.PROpen, Head: "def456", Checks: engine.ChecksFailed, Failed: []string{"lint"}}),
+			failing,
 			ev(engine.RunStarted, `{"reason":"ci_fix","head":"def456"}`),
 			ev(engine.SessionStarted, `{"mode":"fix_ci","session_id":"s1","resume":true}`),
 			ev(engine.SessionEnded, `{"outcome":"done","head_commit":"def456"}`),
@@ -802,7 +827,7 @@ func TestARetryDecidesFromWhatWasSeen(t *testing.T) {
 		require.Equal(t, engine.StopCIFailed, stop.Stop)
 		assert.Contains(t, stop.Explain, "lint")
 
-		events = append(events, ev(engine.Stopped, `{"reason":"ci_failed","explanation":"Checks failed.","action":"retry"}`), retried)
+		events = append(events, ev(engine.Stopped, `{"reason":"ci_failed","explanation":"Checks failed.","action":"retry"}`), retried, failing)
 
 		got := decide(events)
 		got.Why = ""
@@ -820,7 +845,7 @@ func TestARetryDecidesFromWhatWasSeen(t *testing.T) {
 		events := stopped(conflict, engine.StopConflict)
 		require.Equal(t, engine.StopConflict, decide(events[:len(events)-1]).Stop)
 
-		events = append(events, resolved, at(retried, now))
+		events = append(events, resolved, at(retried, now), resolved)
 
 		f := engine.Reduce(events)
 		require.NotNil(t, f.PR)
@@ -834,7 +859,7 @@ func TestARetryDecidesFromWhatWasSeen(t *testing.T) {
 	})
 
 	t.Run("a retry after a conflict on CAVU's own head takes nothing back", func(t *testing.T) {
-		events := append(stopped(conflict, engine.StopConflict), retried)
+		events := append(stopped(conflict, engine.StopConflict), retried, observed(conflict))
 
 		f := engine.Reduce(events)
 		require.NotNil(t, f.PR)

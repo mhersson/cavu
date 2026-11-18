@@ -473,7 +473,7 @@ const prURL = "https://github.com/acme/web/pull/7"
 func pull(since time.Time, o *engine.Observation) *engine.PRFact {
 	return &engine.PRFact{
 		Number: 7, URL: prURL, NodeID: "PR_7", Branch: "cavu/fix-the-login", Head: "head2", Heads: []string{"head1", "head2"},
-		Since: since, Seen: o,
+		Since: since, Seen: o, Looked: o != nil,
 	}
 }
 
@@ -600,6 +600,13 @@ func watchCases() []decideCase {
 	notDraft := open("head2", engine.ChecksPassed)
 	notDraft.Draft = false
 
+	// before is a look recorded before since, which a person's action or a ready-marking moved.
+	before := pull(now, open("head2", engine.ChecksFailed, "lint"))
+	before.Looked = false
+
+	owed := pull(now, open("theirs", engine.ChecksPassed))
+	owed.Looked, owed.TakeBack = false, true
+
 	noCI := func(o *engine.Observation) engine.Snapshot {
 		s := watchSnap(watched(pull(now, o)))
 		s.Watch.NoCI = true
@@ -653,7 +660,9 @@ func watchCases() []decideCase {
 		{name: "a fix run on failed checks that changed nothing", snap: watchSnap(unchanged(engine.ReasonCIFix)), want: finish},
 		{name: "a follow-up run that changed nothing answers", snap: watchSnap(unchanged(engine.ReasonComments)), want: reply},
 		{name: "a follow-up run that changed nothing and answered ends", snap: watchSnap(answered(unchanged(engine.ReasonComments))), want: finish},
+		{name: "a head CAVU never published, before the look a retry takes it back at", snap: watchSnap(watched(owed)), want: watch(time.Time{})},
 		{name: "nothing seen since the head was published", snap: watchSnap(watched(pull(now, nil))), want: watch(time.Time{})},
+		{name: "nothing seen since a person's action or a ready-marking", snap: watchSnap(watched(before)), want: watch(time.Time{})},
 		{name: "an earlier head of CAVU's own", snap: watchSnap(watched(pull(now, open("head1", engine.ChecksFailed, "lint")))), want: watch(time.Time{})},
 		{name: "a conflict", snap: watchSnap(watched(pull(now, conflict))), want: halt(engine.StopConflict, engine.ClearRetry)},
 		{name: "failed checks on a head a fix run had", snap: watchSnap(fixedHead("head2", 1)), want: halt(engine.StopCIFailed, engine.ClearRetry), explainHas: "lint"},

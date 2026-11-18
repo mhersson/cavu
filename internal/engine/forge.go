@@ -125,10 +125,12 @@ func (p *pass) lookFirst(ctx context.Context, v view, a Action, o openRun) (moot
 }
 
 // Observe reads the task's pull request when Decide says watch, and records
-// what it saw when that differs from the last record. fast reports that the
-// next look should come soon: no stop is open, and the checks run, or none has
-// started on a project with CI and the grace has not passed. A runner error, a
-// rate limit among them, is returned as it is and records nothing.
+// what it saw when that differs from the last record or is the first look
+// since the head's publish, CAVU's ready-marking or a person's action, which
+// the watch waits for. fast reports that the next look should come soon: no
+// stop is open, and the checks run, or none has started on a project with CI
+// and the grace has not passed. A runner error, a rate limit among them, is
+// returned as it is and records nothing.
 func (l *Loop) Observe(ctx context.Context, taskID int64) (fast bool, err error) {
 	s, _, err := l.snapshot(ctx, taskID)
 	if err != nil {
@@ -167,7 +169,7 @@ func (l *Loop) Observe(ctx context.Context, taskID int64) (fast bool, err error)
 	}
 
 	seen := decode[Observation](raw)
-	if pr.Seen == nil || !reflect.DeepEqual(seen, *pr.Seen) {
+	if !pr.Looked || !reflect.DeepEqual(seen, *pr.Seen) {
 		// A person's action recorded since the snapshot wins, and the next look sees the pull request again.
 		err := p.write(ctx, s.LastEventID, runID, nil, draft{PRObserved, actorRunner, seen})
 		if err != nil && !errors.Is(err, store.ErrConflict) {

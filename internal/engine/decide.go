@@ -237,8 +237,9 @@ func decide(s Snapshot) Action {
 		return Action{Kind: KindNone, Why: "The task is stopped until a person acts."}
 	}
 
-	// Before the publish: the open run's export cannot descend from a head a retry takes back.
-	if pr := f.PR; pr != nil && pr.Seen != nil && !slices.Contains(pr.Heads, pr.Seen.Head) {
+	// Before the publish: the open run's export cannot descend from a head a retry
+	// takes back. A retry that gives the branch back takes the next look's head.
+	if pr := f.PR; pr != nil && pr.Seen != nil && !pr.TakeBack && !slices.Contains(pr.Heads, pr.Seen.Head) {
 		return halt(StopTakenOver, ClearRetry, "The task's branch holds a commit CAVU did not push.", takenOver(pr, f.RunOpen))
 	}
 
@@ -430,12 +431,17 @@ func newRun(f Facts) Action {
 
 // watch decides on what was seen of the pull request of a task with no run
 // open. Since is when the newest of its head, CAVU's ready-marking and a
-// person's action came, from which its checks get their time.
+// person's action came: its checks get their time from it, and only a look
+// recorded after it is acted on.
 func watch(s Snapshot, pr *PRFact) Action {
 	f, seen := s.Facts, pr.Seen
 
+	if !pr.Looked {
+		return Action{Kind: KindWatch, Why: "CAVU has not read the pull request on GitHub since its last push, ready-marking or a person's action."}
+	}
+
 	// An earlier head of CAVU's own is what GitHub showed before the newest push.
-	if seen == nil || seen.Head != pr.Head {
+	if seen.Head != pr.Head {
 		return Action{Kind: KindWatch, Why: "GitHub does not show the pull request's newest commit yet."}
 	}
 
