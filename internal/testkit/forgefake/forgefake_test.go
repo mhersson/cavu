@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +29,7 @@ type fixture struct {
 	url        string
 	work, bare string
 	head       string // cavu/x
+	token      string // the bearer token a call sends, none when ""
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -62,6 +64,10 @@ func (fx *fixture) call(method, path string, body any) (int, http.Header, any) {
 	req, err := http.NewRequestWithContext(fx.t.Context(), method, fx.url+path, rd)
 	require.NoError(fx.t, err)
 
+	if fx.token != "" {
+		req.Header.Set("Authorization", "Bearer "+fx.token)
+	}
+
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(fx.t, err)
 
@@ -94,6 +100,110 @@ func field(t *testing.T, v any, path ...string) any {
 	}
 
 	return v
+}
+
+// ids are the ids of the items in the list at key of v.
+func ids(t *testing.T, v any, key string) []float64 {
+	t.Helper()
+
+	items, ok := field(t, v, key).([]any)
+	require.True(t, ok, "%v holds no list at %q", v, key)
+
+	var out []float64
+	for _, it := range items {
+		out = append(out, field(t, it, "id").(float64))
+	}
+
+	return out
+}
+
+// The workflow runs of a commit are those its check runs belong to and those
+// added without a job; a run's jobs are its check runs. Both lists of check
+// runs answer each run's newest attempt only, and every attempt for filter=all.
+func TestActionsRoutes(t *testing.T) {
+	fx := newFixture(t)
+	fx.fake.SetChecks(fx.head,
+		forgefake.CheckRun{ID: 1, Run: 10, Name: "build", Status: "completed", Conclusion: "failure", URL: "https://ghe.example/job/1"},
+		forgefake.CheckRun{ID: 2, Run: 10, Attempt: 2, Name: "build", Status: "completed", Conclusion: "success"},
+		forgefake.CheckRun{ID: 3, Run: 11, Name: "lint", Status: "in_progress"},
+		forgefake.CheckRun{ID: 4, App: "codecov", Name: "coverage", Status: "completed", Conclusion: "success"},
+	)
+	fx.fake.AddRun(fx.head, 12)
+
+	_, _, runs := fx.call(http.MethodGet, "/api/v3/repos/o/n/actions/runs?head_sha="+fx.head, nil)
+	assert.ElementsMatch(t, []float64{10, 11, 12}, ids(t, runs, "workflow_runs"))
+
+	_, _, none := fx.call(http.MethodGet, "/api/v3/repos/o/n/actions/runs?head_sha=0123abc", nil)
+	assert.Empty(t, ids(t, none, "workflow_runs"))
+
+	for _, tc := range []struct {
+		path, key string
+		want      []float64
+	}{
+		{"/actions/runs/10/jobs", "jobs", []float64{2}},
+		{"/actions/runs/10/jobs?filter=all", "jobs", []float64{1, 2}},
+		{"/actions/runs/11/jobs", "jobs", []float64{3}},
+		{"/actions/runs/12/jobs", "jobs", nil},
+		{"/commits/" + fx.head + "/check-runs", "check_runs", []float64{2, 3, 4}},
+		{"/commits/" + fx.head + "/check-runs?filter=all", "check_runs", []float64{1, 2, 3, 4}},
+	} {
+		status, _, out := fx.call(http.MethodGet, "/api/v3/repos/o/n"+tc.path, nil)
+		require.Equal(t, http.StatusOK, status, tc.path)
+		assert.Equal(t, tc.want, ids(t, out, tc.key), tc.path)
+	}
+
+	_, _, out := fx.call(http.MethodGet, "/api/v3/repos/o/n/actions/runs/10/jobs?filter=all", nil)
+	jobs := field(t, out, "jobs").([]any)
+	assert.Equal(t, "build", field(t, jobs[0], "name"))
+	assert.Equal(t, "completed", field(t, jobs[0], "status"))
+	assert.Equal(t, "failure", field(t, jobs[0], "conclusion"))
+	assert.Equal(t, "https://ghe.example/job/1", field(t, jobs[0], "html_url"))
+
+	_, _, out = fx.call(http.MethodGet, "/api/v3/repos/o/n/actions/runs/11/jobs", nil)
+	assert.Nil(t, field(t, field(t, out, "jobs").([]any)[0], "conclusion"), "not completed")
+}
+
+// A token denied a permission is refused, with 403 and a message, on each
+// route that needs it and served on the others; a later Deny replaces the set,
+// and another token is served everywhere.
+func TestDeny(t *testing.T) {
+	fx := newFixture(t)
+	fx.fake.SetChecks(fx.head, forgefake.CheckRun{ID: 1, Run: 10, Name: "build", Status: "completed", Conclusion: "success"})
+	fx.fake.SetJobLog(1, "the log")
+
+	routes := map[string][]string{
+		"checks":   {"/commits/" + fx.head + "/check-runs"},
+		"statuses": {"/commits/" + fx.head + "/status"},
+		"actions":  {"/actions/runs?head_sha=" + fx.head, "/actions/runs/10/jobs", "/actions/jobs/1/logs"},
+	}
+
+	check := func(token string, denied ...string) {
+		t.Helper()
+
+		fx.token = token
+
+		for perm, paths := range routes {
+			for _, p := range paths {
+				status, _, out := fx.call(http.MethodGet, "/api/v3/repos/o/n"+p, nil)
+
+				if slices.Contains(denied, perm) {
+					assert.Equal(t, http.StatusForbidden, status, "%s with token %q", p, token)
+					assert.NotEmpty(t, field(t, out, "message"), p)
+
+					continue
+				}
+
+				assert.Equal(t, http.StatusOK, status, "%s with token %q", p, token)
+			}
+		}
+	}
+
+	fx.fake.Deny("refused", "checks", "statuses")
+	check("refused", "checks", "statuses")
+	check("other")
+
+	fx.fake.Deny("refused", "actions")
+	check("refused", "actions")
 }
 
 // A pull request's head is its branch's newest commit in the bare repository

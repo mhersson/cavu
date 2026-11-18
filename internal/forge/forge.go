@@ -38,8 +38,9 @@ type Client struct {
 	now       func() time.Time
 	userAgent string
 
-	mu     sync.Mutex
-	tokens map[tokenKey]*appToken
+	mu       sync.Mutex
+	tokens   map[tokenKey]*appToken
+	noChecks map[credential]bool // GitHub refused these the Checks API
 }
 
 // New returns a client; it is an error for a CA bundle that holds no
@@ -79,6 +80,7 @@ func New(o Options) (*Client, error) {
 		now:       now,
 		userAgent: "cavu/" + o.Version,
 		tokens:    map[tokenKey]*appToken{},
+		noChecks:  map[credential]bool{},
 	}, nil
 }
 
