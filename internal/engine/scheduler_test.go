@@ -1102,6 +1102,7 @@ func TestSchedulerWaitsOutARateLimit(t *testing.T) {
 	}{
 		{name: "the limit lifts within the hour", resets: 20 * time.Minute, wait: 20 * time.Minute},
 		{name: "the limit lifts later", resets: 3 * time.Hour, wait: time.Hour},
+		{name: "the limit has lifted already", wait: 10 * time.Second}, // a Retry-After of 0, or a clock ahead of GitHub's: the backoff
 	}
 
 	for _, tt := range tests {
@@ -1247,6 +1248,33 @@ func TestSchedulerRestartResumesTheWatch(t *testing.T) {
 	h.eventually(func() bool { return len(stopped) == 1 }, "Run ends after the look")
 	require.NoError(t, <-stopped)
 	assert.Empty(t, again.errs(), "a look cut by Run's end is not reported")
+}
+
+// A drive that fails is tried again only after an event, as on any task: the
+// clock of a task whose pull request was watched does not read it again.
+func TestSchedulerFailedDriveAfterAWatchWaitsForAnEvent(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+
+	merged := checksPassed
+	merged.State = engine.PRMerged
+	h.runner.observes = []step[engine.Observation]{{res: merged}}
+	h.runner.releaseErr = errors.New("the volume is in use")
+	looks := h.logLooks()
+	releases := len(h.runner.callsOf("release"))
+
+	s := h.schedule(nil)
+
+	h.eventually(func() bool { return len(s.errs()) == 1 }, "the clean of the merged task fails")
+	s.passes(t, 2)
+
+	reads := looks.readsOf(h.task.ID)
+	h.clock.Advance(2 * time.Minute) // past the look's next
+	s.passes(t, 2)
+
+	assert.Equal(t, reads, looks.readsOf(h.task.ID), "the task is not read again without an event")
+	assert.Len(t, h.runner.callsOf("release"), releases+1)
+	assert.Equal(t, []int64{h.task.ID}, s.errs())
 }
 
 // A failed check's fix run starts a container, so it waits for a free slot.

@@ -20,7 +20,7 @@ const WaitingForSlot = "Waiting for a free slot."
 // The poller's clock: the next look at a watched task's pull request comes
 // fastLook after a look that answered fast, else slowLook; after a failed look
 // firstBackoff, doubled for each failure in a row up to maxBackoff; under a
-// rate limit when it lifts, at most maxRateWait away.
+// rate limit at the later of that and when it lifts, at most maxRateWait away.
 const (
 	fastLook     = 10 * time.Second
 	slowLook     = time.Minute
@@ -377,14 +377,14 @@ func (s *Scheduler) looked(ctx context.Context, r *round, l look) {
 
 	p.failed = l.err
 	p.backoff = min(max(2*p.backoff, firstBackoff), maxBackoff)
-	p.next = l.at.Add(p.backoff)
+	wait := p.backoff
 
+	// A reset that is not ahead, as after a Retry-After of 0, still waits the backoff.
 	if limited, ok := errors.AsType[*RateLimited](l.err); ok {
-		p.next = limited.Until
-		if latest := l.at.Add(maxRateWait); latest.Before(p.next) {
-			p.next = latest
-		}
+		wait = min(max(wait, limited.Until.Sub(l.at)), maxRateWait)
 	}
+
+	p.next = l.at.Add(wait)
 }
 
 // cancelIfAsked ends the drive's context once a person's cancel of its task
@@ -445,6 +445,7 @@ func (s *Scheduler) ended(ctx context.Context, r *round, e end) {
 	case e.err != nil:
 		s.report(ctx, e.id, e.err)
 		r.seen[e.id] = e.last
+		delete(r.polls, e.id) // read again only after an event, or a failing clean would repeat at every pass
 	default:
 		delete(r.loose, e.id) // a drive that rests or waits has released its run
 	}
