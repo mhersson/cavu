@@ -187,7 +187,7 @@ func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
 
 	c.Verify.Command = "echo CAVU-LATER >> notes.txt && git commit -qam later && git checkout -q -b later && " +
-		"{ setsid sh -c 'while :; do echo CAVU-REWRITTEN > /handoff/diff.patch; sleep 0.01; done' </dev/null >/dev/null 2>&1 & }"
+		"{ setsid sh -c 'while :; do echo CAVU-REWRITTEN > /handoff/task.bundle; sleep 0.01; done' </dev/null >/dev/null 2>&1 & }"
 
 	vr, err := r.Verify(t.Context(), c)
 	require.NoError(t, err)
@@ -197,7 +197,6 @@ func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	ex := export(t, r, c, res)
 	assert.Contains(t, string(ex.Diff), "\n+CAVU-FROZEN\n")
 	assert.NotContains(t, string(ex.Diff), "CAVU-LATER")
-	assert.NotContains(t, string(ex.Diff), "CAVU-REWRITTEN")
 	assertBundle(t, r, c, ex.Bundle, res.HeadCommit)
 }
 
