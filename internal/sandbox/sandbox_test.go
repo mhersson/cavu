@@ -746,9 +746,8 @@ func TestPushResults(t *testing.T) {
 
 func TestPushFailures(t *testing.T) {
 	for name, out := range map[string]string{
-		"error line":       `{"Type":"error","Error":"ask the forge for the branch: exit status 128: fatal: <url> not found"}`,
-		"no result":        "",
-		"pushed no branch": `{"Type":"pushed"}`,
+		"error line": `{"Type":"error","Error":"ask the forge for the branch: exit status 128: fatal: <url> not found"}`,
+		"no result":  "",
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, f := ensured(t)

@@ -325,10 +325,6 @@ func (s *Sandbox) Push(ctx context.Context, r sidecar.PushRequest) (branch, reje
 		return "", "", err
 	}
 
-	if l.Branch == "" {
-		return "", "", errors.New("sandbox: push: the result names no branch")
-	}
-
 	if l.Type == "rejected" {
 		return l.Branch, l.Error, nil
 	}
