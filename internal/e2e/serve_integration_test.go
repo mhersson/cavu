@@ -846,16 +846,8 @@ func TestServeBudgetStopsKeyMode(t *testing.T) {
 	assert.GreaterOrEqual(t, stopped.Budget.USD, stopped.Budget.MaxUSD)
 
 	// No request reached the mock after the call that crossed the cap.
-	var calls []int
-
-	for i, r := range reqs {
-		if r.ModelCall {
-			calls = append(calls, i)
-		}
-	}
-
-	require.Len(t, calls, 2)
-	assert.Equal(t, len(reqs)-1, calls[1], "a request reached the mock after the call that crossed the cap")
+	require.Len(t, modelCalls(mock), 2)
+	assert.True(t, reqs[len(reqs)-1].ModelCall, "a request reached the mock after the call that crossed the cap")
 
 	// A retry gives the task its whole budget again, and the cut work session carries on.
 	s.tool("run_task", map[string]any{"id": task.ID}, &task)
