@@ -474,6 +474,15 @@ func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64, 
 	return nil
 }
 
+// counted returns n with noun, pluralised unless n is 1.
+func counted(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 func printEvents(w io.Writer, events []store.Event) {
 	fmt.Fprintln(w, "events:")
 
@@ -653,7 +662,7 @@ func eventLine(e store.Event) string {
 		tell = decoded[engine.SessionStartedPayload](e.Payload).Mode
 	case engine.SessionEnded:
 		p := decoded[engine.SessionEndedPayload](e.Payload)
-		tell = fmt.Sprintf("%s after %d turns", p.Outcome, p.Turns)
+		tell = fmt.Sprintf("%s after %s", p.Outcome, counted(p.Turns, "turn"))
 	case engine.ReviewStarted:
 		tell = "the whole change"
 		if decoded[engine.ReviewStartedPayload](e.Payload).Scoped {
@@ -661,7 +670,7 @@ func eventLine(e store.Event) string {
 		}
 	case engine.ReviewEnded:
 		p := decoded[engine.ReviewEndedPayload](e.Payload)
-		tell = fmt.Sprintf("%s after %d turns with %d findings", p.Outcome, p.Turns, len(p.Findings))
+		tell = fmt.Sprintf("%s after %s with %s", p.Outcome, counted(p.Turns, "turn"), counted(len(p.Findings), "finding"))
 
 		if p.Scoped && p.Outcome == engine.ReviewReviewed {
 			addressed := 0
