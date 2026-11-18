@@ -103,6 +103,13 @@ func TestObserveComments(t *testing.T) {
 
 			return []Comment{{ID: th.ID, Author: "alice", Path: "main.go", Line: 12, Body: "Rename this."}}
 		}},
+		{"a thread's long body is cut at 4 KiB on a character", func(f *forgefake.Fake) []Comment {
+			// "€" takes the bytes 4095 to 4097, so a cut at 4096 bytes would split it.
+			th := f.Thread(1, "alice", "main.go", 12, strings.Repeat("a", 4095)+"€ and more")
+			reply := th.Reply("alice", "Short.")
+
+			return []Comment{{ID: reply, Author: "alice", Path: "main.go", Line: 12, Body: strings.Repeat("a", 4095) + "\n\nShort."}}
+		}},
 		{"a resolved thread", func(f *forgefake.Fake) []Comment {
 			f.Thread(1, "alice", "main.go", 12, "Rename this.").Resolve()
 
