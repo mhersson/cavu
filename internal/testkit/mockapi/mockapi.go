@@ -1,5 +1,5 @@
 // Package mockapi serves a scripted Anthropic Messages API for tests: each
-// model call answers with the next scripted step as an event stream, and
+// model call answers with the next step of its script as an event stream, and
 // every request is logged.
 package mockapi
 
@@ -68,6 +68,7 @@ type Request struct {
 	// ModelCall is a streaming call the script answered; a side request or a
 	// token count is not one.
 	ModelCall bool
+	Script    string // the marker of the script a model call took, "" for the steps Start was given
 	Body      []byte
 }
 
@@ -80,6 +81,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	steps    []Step
+	scripts  []script // taken before steps by a model call that holds a marker
 	requests []Request
 	holds    []chan struct{} // pending holds, taken by model calls in order
 	done     chan struct{}
@@ -107,6 +109,12 @@ func StartTLSWith(t *testing.T, steps []Step, cert tls.Certificate) *Server {
 	s.srv.StartTLS()
 
 	return s
+}
+
+// script is the steps the model calls holding marker take.
+type script struct {
+	marker string
+	steps  []Step
 }
 
 func newServer(t *testing.T, steps []Step) *Server {
@@ -172,6 +180,17 @@ func (s *Server) Hold() (release func()) {
 	var once sync.Once
 
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+// Script makes each later model call whose system text or first message holds
+// marker take the next of steps, in place of the steps Start was given, so
+// sessions that overlap each follow their own script. A call takes the first
+// script added whose marker it holds.
+func (s *Server) Script(marker string, steps []Step) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.scripts = append(s.scripts, script{marker: marker, steps: slices.Clone(steps)})
 }
 
 type requestBody struct {
@@ -260,12 +279,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 // record logs r and returns its 1-based number. For a model call it also takes
-// the next step, or done after the last, and the oldest pending hold, under the
-// same lock, so log order, message ids, steps and holds always pair.
+// the next step of its script, or done after the last, and the oldest pending
+// hold, under the same lock, so log order, message ids, steps and holds always pair.
 func (s *Server) record(r *http.Request, raw []byte, body requestBody, modelCall bool) (int, Step, chan struct{}) {
 	req := Request{
 		Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(),
-		Model: body.Model, System: systemText(body.System), Messages: body.Messages,
+		Model: body.Model, System: joinText(body.System), Messages: body.Messages,
 		ModelCall: modelCall, Body: raw,
 	}
 
@@ -273,8 +292,15 @@ func (s *Server) record(r *http.Request, raw []byte, body requestBody, modelCall
 		req.Tools = append(req.Tools, t.Name)
 	}
 
+	marked := req.System + "\n" + firstText(body.Messages)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	steps := &s.steps
+	if i := slices.IndexFunc(s.scripts, func(sc script) bool { return strings.Contains(marked, sc.marker) }); modelCall && i >= 0 {
+		steps, req.Script = &s.scripts[i].steps, s.scripts[i].marker
+	}
 
 	s.requests = append(s.requests, req)
 	n := len(s.requests)
@@ -284,8 +310,8 @@ func (s *Server) record(r *http.Request, raw []byte, body requestBody, modelCall
 	}
 
 	step := Step{Text: "done"}
-	if len(s.steps) > 0 {
-		step, s.steps = s.steps[0], s.steps[1:]
+	if len(*steps) > 0 {
+		step, *steps = (*steps)[0], (*steps)[1:]
 	}
 
 	var hold chan struct{}
@@ -397,8 +423,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(b)
 }
 
-// systemText joins a system prompt given as a string or as text blocks.
-func systemText(raw json.RawMessage) string {
+// firstText is the text of the first message.
+func firstText(messages []json.RawMessage) string {
+	if len(messages) == 0 {
+		return ""
+	}
+
+	var m struct {
+		Content json.RawMessage `json:"content"`
+	}
+
+	_ = json.Unmarshal(messages[0], &m)
+
+	return joinText(m.Content)
+}
+
+// joinText joins the text of a system prompt or a message's content, given as
+// a string or as blocks.
+func joinText(raw json.RawMessage) string {
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
 		return text

@@ -278,6 +278,44 @@ func TestMockHoldsQueue(t *testing.T) {
 	assert.Equal(t, "done", call(t, testClient, s.URL()).text)
 }
 
+func TestMockScriptsByMarker(t *testing.T) {
+	s := Start(t, []Step{{Text: "unmarked"}})
+	s.Script("MARK-A", []Step{{Text: "a1"}, {Text: "a2"}})
+	s.Script("MARK-B", []Step{{Text: "b1"}})
+
+	user := func(content any) map[string]any { return map[string]any{"role": "user", "content": content} }
+	text := func(s string) []any { return []any{map[string]any{"type": "text", "text": s}} }
+	later := []any{user("hi"), map[string]any{"role": "assistant", "content": "ok"}, user("MARK-B")}
+
+	for i, c := range []struct {
+		system   any
+		messages []any
+		answer   string
+	}{
+		{nil, []any{user("do MARK-B")}, "b1"},
+		{nil, []any{user(append(text("context"), text("do MARK-A")...))}, "a1"},
+		{text("you serve MARK-A"), []any{user("hi")}, "a2"},
+		{nil, later, "unmarked"},
+		{"MARK-A", []any{user("hi")}, "done"},
+	} {
+		body := map[string]any{"model": "claude-haiku-5-5", "stream": true, "messages": c.messages}
+		if c.system != nil {
+			body["system"] = c.system
+		}
+
+		resp := post(t, testClient, s.URL()+"/v1/messages", body, nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, c.answer, summarise(parseStream(t, resp.Body)).text, "call %d", i+1)
+	}
+
+	var scripts []string
+	for _, r := range s.Requests() {
+		scripts = append(scripts, r.Script)
+	}
+
+	assert.Equal(t, []string{"MARK-B", "MARK-A", "MARK-A", "", "MARK-A"}, scripts)
+}
+
 func TestMockErrorStatus(t *testing.T) {
 	s := Start(t, []Step{{Status: http.StatusTooManyRequests}, {Status: 529}, {Status: 418}, {Text: "after"}})
 
