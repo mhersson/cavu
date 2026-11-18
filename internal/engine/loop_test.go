@@ -117,8 +117,8 @@ var (
 	verifyOK   = engine.VerifyResult{Result: engine.ResultPassed, Command: "make test", Output: "ok"}
 	reviewedOK = engine.ReviewResult{Outcome: engine.ReviewReviewed, Asked: engine.Verdict{Pass: true}, Built: engine.Verdict{Pass: true}}
 	exportOK   = engine.ExportResult{
-		HeadCommit: "head456", Diff: []byte("diff --git a/x b/x\n"), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 1,
-		DiffStat: []string{"x | 1 +", "1 file changed, 1 insertion(+)"},
+		HeadCommit: "head456", Diff: []byte("diff --git a/AGENTS.md b/AGENTS.md\n"), Bundle: []byte("# v2 git bundle\n"), FilesChanged: 1,
+		DiffStat: []string{"AGENTS.md | 1 +", "1 file changed, 1 insertion(+)"}, Files: []engine.ChangedFile{{Path: "AGENTS.md", Size: 12}},
 	}
 )
 
@@ -991,7 +991,7 @@ func TestLoopWritesArtifacts(t *testing.T) {
 		dir := artifactDir(h, exported[0].RunID)
 		assert.Equal(t, engine.ExportedPayload{
 			HeadCommit: "head456", DiffPath: filepath.Join(dir, "diff.patch"), BundlePath: filepath.Join(dir, "task.bundle"),
-			FilesChanged: 1, DiffStat: exportOK.DiffStat,
+			FilesChanged: 1, DiffStat: exportOK.DiffStat, Flagged: engine.Flagged{Instructions: []string{"AGENTS.md"}},
 		}, payloadOf[engine.ExportedPayload](t, exported[0]))
 		assertArtifacts(t, dir, exportOK)
 	})

@@ -421,6 +421,7 @@ func TestTaskViews(t *testing.T) {
 		f.clock.add(226 * time.Second)
 		f.add(t, id, engine.Exported, engine.ExportedPayload{
 			HeadCommit: "4b825dc", FilesChanged: 3, DiffStat: []string{"footer.html | 12 ++++++"},
+			Flagged: engine.Flagged{Workflows: []string{".github/workflows/ci.yml"}},
 		})
 		f.add(t, id, engine.RunEnded, engine.RunEndedPayload{Outcome: engine.RunExported})
 
@@ -428,6 +429,7 @@ func TestTaskViews(t *testing.T) {
 		assert.Equal(t, "in_review", got["status"])
 		assert.Equal(t, map[string]any{
 			"head_commit": "4b825dc", "files_changed": 3.0, "diff_stat": []any{"footer.html | 12 ++++++"},
+			"flagged": map[string]any{"workflows": []any{".github/workflows/ci.yml"}, "instructions": []any{}, "large": []any{}},
 		}, got["change"])
 		assert.Nil(t, got["stop"])
 		assert.EqualValues(t, 33, got["turns"])

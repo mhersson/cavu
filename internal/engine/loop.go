@@ -772,6 +772,7 @@ func (p *pass) export(ctx context.Context, v view, a Action, o openRun) error {
 
 	return p.result(ctx, o, nil, draft{Exported, actorRunner, ExportedPayload{
 		HeadCommit: res.HeadCommit, DiffPath: diff, BundlePath: bundle, FilesChanged: res.FilesChanged, DiffStat: res.DiffStat,
+		Flagged: Flag(res.Files),
 	}})
 }
 
