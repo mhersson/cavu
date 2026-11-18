@@ -22,6 +22,7 @@ const (
 	RateLimit      = "rate_limit"      // agent
 	EgressDenied   = "egress_denied"   // runner
 	SessionEnded   = "session_ended"   // runner
+	SessionCut     = "session_cut"     // runner
 	VerifyStarted  = "verify_started"  // engine
 	VerifyEnded    = "verify_ended"    // runner
 	ReviewStarted  = "review_started"  // engine
@@ -137,6 +138,11 @@ type (
 
 	EgressDeniedPayload struct {
 		Host string `json:"host"`
+	}
+
+	// SessionCutPayload is the event that carries the usage of a session or review its caller cut. Reduce does not read it.
+	SessionCutPayload struct {
+		Turns int `json:"turns"`
 	}
 
 	SessionEndedPayload struct {
