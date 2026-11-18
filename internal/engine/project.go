@@ -22,6 +22,7 @@ var (
 // AddProject stores a new project that holds only what a project may hold.
 // A duplicate name returns an error wrapping store.ErrConflict.
 func AddProject(ctx context.Context, s Store, p store.Project) (store.Project, error) {
+	p.Caps = withoutEmptyCaps(p.Caps)
 	if err := checkProject(p); err != nil {
 		return store.Project{}, err
 	}
@@ -33,6 +34,7 @@ func AddProject(ctx context.Context, s Store, p store.Project) (store.Project, e
 // project may hold. It keeps the stored baseline only when the edit leaves
 // alone everything the baseline rests on, and never writes one of its own.
 func EditProject(ctx context.Context, s Store, p store.Project) error {
+	p.Caps = withoutEmptyCaps(p.Caps)
 	if err := checkProject(p); err != nil {
 		return err
 	}
@@ -48,6 +50,15 @@ func EditProject(ctx context.Context, s Store, p store.Project) error {
 	}
 
 	return s.UpdateProject(ctx, p)
+}
+
+// withoutEmptyCaps copies caps without the empty ones: a stored empty cap
+// would lift the instance's setting to its default.
+func withoutEmptyCaps(caps map[string]string) map[string]string {
+	kept := maps.Clone(caps)
+	maps.DeleteFunc(kept, func(_, v string) bool { return v == "" })
+
+	return kept
 }
 
 // checkProject refuses what a project may not hold, naming the field: a

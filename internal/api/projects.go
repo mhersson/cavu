@@ -26,6 +26,7 @@ type projectJSON struct {
 	Env           map[string]string `json:"env"`
 	SecretVars    []string          `json:"secret_vars"`
 	Switches      map[string]bool   `json:"switches"`
+	Caps          map[string]string `json:"caps"`
 	Runnable      bool              `json:"runnable"`
 	Baseline      *baselineJSON     `json:"baseline"`
 	Check         checkJSON         `json:"check"`
@@ -56,7 +57,7 @@ func projectView(p store.Project) projectJSON {
 		SetupCommand: p.SetupCommand, VerifyCommand: p.VerifyCommand, VerifyWaived: p.VerifyWaived,
 		ToolOverrides: maps.Collect(maps.All(p.ToolOverrides)), EgressHosts: append([]string{}, p.EgressHosts...),
 		Env: maps.Collect(maps.All(p.Env)), SecretVars: append([]string{}, p.SecretVars...),
-		Switches: engine.ProjectSwitches(p), Runnable: engine.Runnable(p),
+		Switches: engine.ProjectSwitches(p), Caps: maps.Collect(maps.All(p.Caps)), Runnable: engine.Runnable(p),
 		Check: checkJSON{
 			Tools: append([]string{}, c.Tools...), IgnoredTools: append([]string{}, c.IgnoredTools...),
 			FailedStep: c.FailedStep, VerifySuggestion: c.VerifySuggestion, Fault: c.Fault, Commit: c.BaseCommit, Output: c.Output,
@@ -86,6 +87,7 @@ type projectFields struct {
 	EgressHosts   *[]string          `json:"egress_hosts"`
 	Env           *map[string]string `json:"env"`
 	Switches      map[string]bool    `json:"switches"` // merged per key
+	Caps          map[string]string  `json:"caps"`     // merged per key; an empty value removes the cap
 	Secrets       map[string]string  `json:"secrets"`  // variable to value; an empty value removes the variable
 }
 
@@ -105,6 +107,11 @@ func (f projectFields) apply(p *store.Project) {
 	maps.Copy(sw, f.Switches)
 	p.Switches = sw
 
+	caps := map[string]string{}
+	maps.Copy(caps, p.Caps)
+	maps.Copy(caps, f.Caps)
+	p.Caps = caps
+
 	// A variable keeps its place, since the baseline rests on the list as it is.
 	for _, name := range slices.Sorted(maps.Keys(f.Secrets)) {
 		switch i := slices.Index(p.SecretVars, name); {
@@ -120,11 +127,6 @@ func set[T any](dst, v *T) {
 	if v != nil {
 		*dst = *v
 	}
-}
-
-// secretPrefix starts the name of each of a project's secrets, where a run reads them.
-func secretPrefix(p store.Project) string {
-	return "project." + p.Name + "."
 }
 
 func (s *server) projects(w http.ResponseWriter, r *http.Request) error {
@@ -162,7 +164,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	if err := s.seal(r.Context(), secretPrefix(p), in.Secrets); err != nil {
+	if err := s.seal(r.Context(), in.Secrets, func(v string) string { return engine.ProjectSecretName(p.Name, v) }); err != nil {
 		return err
 	}
 
@@ -193,7 +195,7 @@ func (s *server) editProject(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	if err := s.seal(r.Context(), secretPrefix(p), in.Secrets); err != nil {
+	if err := s.seal(r.Context(), in.Secrets, func(v string) string { return engine.ProjectSecretName(p.Name, v) }); err != nil {
 		return err
 	}
 

@@ -66,6 +66,19 @@ func (f *fixture) ask(t *testing.T, taskID int64, questions ...string) {
 	})
 }
 
+// reviewed makes the task one whose change passed verify and whose review
+// ended as end, with usage rows on the review's end when given.
+func (f *fixture) reviewed(t *testing.T, taskID int64, end engine.ReviewEndedPayload, usage ...store.Usage) {
+	t.Helper()
+
+	f.add(t, taskID, engine.TaskStarted, struct{}{})
+	f.add(t, taskID, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+	f.add(t, taskID, engine.SessionEnded, engine.SessionEndedPayload{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: end.Head})
+	f.add(t, taskID, engine.VerifyEnded, engine.VerifyEndedPayload{Result: engine.ResultPassed})
+	f.add(t, taskID, engine.ReviewStarted, engine.ReviewStartedPayload{Head: end.Head})
+	f.add(t, taskID, engine.ReviewEnded, end, usage...)
+}
+
 // count counts the task's events of typ.
 func (f *fixture) count(t *testing.T, taskID int64, typ string) int {
 	t.Helper()
@@ -139,7 +152,8 @@ func TestTasksRoundTrip(t *testing.T) {
 	at := rfc3339(stored.CreatedAt)
 	assert.JSONEq(t, `{"id": 1, "project": "site", "title": "Add a footer", "body": "Below the fold.", "requester": "api",
 		"created_at": "`+at+`", "status": "draft", "waiting": "", "depends_on": [], "stop": null, "questions": [],
-		"change": null, "turns": 0, "duration_ms": 0, "cost_estimate_usd": 0}`, created)
+		"review": null, "change": null, "turns": 0, "duration_ms": 0, "cost_estimate_usd": 0, "cost_missing_sessions": 0,
+		"budget": {"turns": 0, "max_turns": 1000, "minutes": 0, "max_minutes": 300}}`, created)
 
 	status, body := f.call(t, "GET /api/tasks/1", "")
 	require.Equal(t, http.StatusOK, status, body)
@@ -350,7 +364,10 @@ func TestTaskViews(t *testing.T) {
 		assert.Equal(t, map[string]any{
 			"reason": "question", "explanation": "Which colour?", "action": "answer", "resets_at": nil,
 		}, got["stop"])
-		assert.Equal(t, []any{map[string]any{"question": "Which colour?"}, map[string]any{"question": "Which shade?"}}, got["questions"])
+		assert.Equal(t, []any{
+			map[string]any{"question": "Which colour?", "suggested_answer": ""},
+			map[string]any{"question": "Which shade?", "suggested_answer": ""},
+		}, got["questions"])
 		assert.Empty(t, got["waiting"])
 	})
 
@@ -416,6 +433,125 @@ func TestTaskViews(t *testing.T) {
 		assert.EqualValues(t, 33, got["turns"])
 		assert.EqualValues(t, 226000, got["duration_ms"])
 		assert.InDelta(t, 0.325, got["cost_estimate_usd"], 1e-9)
+	})
+}
+
+func TestTaskViewsInFull(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	t.Run("a readiness question shows the answer the agent suggests", func(t *testing.T) {
+		id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+		questions := []string{"Which pages should the footer link to?", "Should it show the year?", "Which colour?"}
+
+		f.add(t, id, engine.TaskStarted, struct{}{})
+		f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+		f.add(t, id, engine.SessionStarted, engine.SessionStartedPayload{Mode: engine.ModeReadiness, SessionID: "s1"})
+		f.add(t, id, engine.SessionEnded, engine.SessionEndedPayload{
+			Outcome: engine.OutcomeBlocked, Questions: questions, SuggestedAnswers: []string{"The privacy page.", ""},
+		})
+		f.add(t, id, engine.Stopped, engine.StoppedPayload{
+			Reason: engine.StopQuestion, Explanation: questions[0], Action: engine.ClearAnswer,
+		})
+
+		got := f.view(t, id)
+		assert.Equal(t, []any{
+			map[string]any{"question": questions[0], "suggested_answer": "The privacy page."},
+			map[string]any{"question": questions[1], "suggested_answer": ""},
+			map[string]any{"question": questions[2], "suggested_answer": ""},
+		}, got["questions"])
+		assert.Nil(t, got["review"], "no review has ended")
+	})
+
+	important := engine.Finding{
+		Severity: engine.SeverityImportant, Where: "a.go:10", What: "The footer hides the cookie banner.", Why: "Visitors cannot dismiss it.",
+	}
+	minor := engine.Finding{Severity: engine.SeverityMinor, Where: "a.go:12", What: "A colour is written out.", Why: "The theme has a token."}
+	shown := func(x engine.Finding) map[string]any {
+		return map[string]any{"severity": x.Severity, "where": x.Where, "what": x.What, "why": x.Why}
+	}
+
+	for _, tc := range []struct {
+		name string
+		end  engine.ReviewEndedPayload
+		fix  bool // an automatic fix round started after the review
+		want any
+	}{
+		{
+			name: "open and minor findings, and the fix rounds",
+			end: engine.ReviewEndedPayload{
+				Outcome: engine.ReviewReviewed, Head: "c1", Asked: engine.Verdict{Pass: true},
+				Findings: []engine.Finding{important, minor},
+			},
+			fix:  true,
+			want: map[string]any{"rounds": 1.0, "failed": "", "open": []any{shown(important)}, "minor": []any{shown(minor)}},
+		},
+		{
+			name: "a review without a verdict shows why",
+			end:  engine.ReviewEndedPayload{Outcome: engine.ReviewFailed, Head: "c1", Detail: "The reviewer's answer was not JSON."},
+			want: map[string]any{"rounds": 0.0, "failed": "The reviewer's answer was not JSON.", "open": []any{}, "minor": []any{}},
+		},
+		{
+			name: "a review a usage limit cut short is no review",
+			end:  engine.ReviewEndedPayload{Outcome: engine.OutcomeUsageLimit, Head: "c1"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+			f.reviewed(t, id, tc.end)
+
+			if tc.fix {
+				f.add(t, id, engine.SessionStarted, engine.SessionStartedPayload{Mode: engine.ModeFixReview, Automatic: true})
+			}
+
+			assert.Equal(t, tc.want, f.view(t, id)["review"])
+		})
+	}
+
+	t.Run("sessions and reviews without a cost are counted", func(t *testing.T) {
+		id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+		f.reviewed(t, id, engine.ReviewEndedPayload{Outcome: engine.ReviewFailed, Head: "c1", CostMissing: true})
+		f.add(t, id, engine.SessionEnded, engine.SessionEndedPayload{Outcome: engine.OutcomeDone, CostMissing: true})
+
+		assert.EqualValues(t, 2, f.view(t, id)["cost_missing_sessions"])
+	})
+
+	t.Run("the budget shows money only under a cap in force", func(t *testing.T) {
+		id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+
+		f.add(t, id, engine.TaskStarted, struct{}{})
+		f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+		f.add(t, id, engine.SessionStarted, engine.SessionStartedPayload{Mode: engine.ModeStart, SessionID: "s1"})
+		f.clock.add(4*time.Minute + 10*time.Second)
+		f.add(t, id, engine.SessionEnded, engine.SessionEndedPayload{Outcome: engine.OutcomeDone, Changed: true, Turns: 33},
+			store.Usage{Source: "proxy", Model: "sonnet", Input: 10000, Output: 40000})
+
+		for k, v := range map[string]string{
+			"task_max_turns": "200", "task_timeout_minutes": "60",
+			"model_prices": `{"sonnet": {"input": 1, "output": 10, "cache_read": 0.1, "cache_write": 1.25}}`,
+		} {
+			require.NoError(t, f.store.SetSetting(t.Context(), k, v))
+		}
+
+		used := map[string]any{"turns": 33.0, "max_turns": 200.0, "minutes": 4.0, "max_minutes": 60.0}
+
+		for _, tc := range []struct {
+			name, mode, budget string
+			want               map[string]any
+		}{
+			{"a task cap in key mode", "key", "5", map[string]any{
+				"turns": 33.0, "max_turns": 200.0, "minutes": 4.0, "max_minutes": 60.0, "usd": 0.41, "max_usd": 5.0,
+			}},
+			{"the same cap under a subscription", "subscription", "5", used},
+			{"no task cap", "key", "", used},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				require.NoError(t, f.store.SetSetting(t.Context(), "endpoint_mode", tc.mode))
+				require.NoError(t, f.store.SetSetting(t.Context(), "task_budget_usd", tc.budget))
+
+				assert.Equal(t, tc.want, f.view(t, id)["budget"], "a key that is left out is absent, not zero")
+			})
+		}
 	})
 }
 

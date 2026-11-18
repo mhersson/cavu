@@ -74,7 +74,7 @@ Answers 200 with the project.
 
 ### `PATCH /api/projects/{id}`
 
-Changes the fields the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `switches` and `secrets` merge per key; every other field replaces its whole value, so `""`, `[]` or `{}` empties one that may be empty. The name cannot change, since the project's secrets are stored under it. An edit of anything a baseline rests on clears the baseline: the repository, the base branch, the setup or verify command, the waiver, the tool versions, the environment or the secret variables. Answers 200 with the project.
+Changes the fields the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `switches`, `caps` and `secrets` merge per key; every other field replaces its whole value, so `""`, `[]` or `{}` empties one that may be empty. The name cannot change, since the project's secrets are stored under it. An edit of anything a baseline rests on clears the baseline: the repository, the base branch, the setup or verify command, the waiver, the tool versions, the environment or the secret variables. Answers 200 with the project.
 
 ### `POST /api/projects/{id}/check`
 
@@ -89,6 +89,7 @@ Asks for an environment check, the one `cavu project check` runs, which the serv
  "secret_vars": ["NPM_TOKEN"],
  "switches": {"continuations": true, "readiness": true, "review": true, "verify_fix": true,
               "web_tools": false},
+ "caps": {"task_timeout_minutes": "60"},
  "runnable": true,
  "baseline": {"commit": "4b825dc", "passed": true, "at": "2030-01-02T03:04:05Z", "output": ""},
  "check": {"requested_at": null, "tools": ["node"], "ignored_tools": [], "failed_step": "",
@@ -109,6 +110,7 @@ A list is `[]` and a map `{}` when empty, never null. These fields are set by a 
 | `egress_hosts` | The hosts the setup command, the agent and verify may reach. |
 | `env` | Variables for the setup command, the agent's sessions and verify. |
 | `switches` | Switch name to `true` or `false`. |
+| `caps` | `task_timeout_minutes`, `task_max_turns` or `task_budget_usd` to a value that setting takes, for the project's own tasks over the instance's setting. An empty value removes the cap. |
 | `secrets` | Variable to value, for the setup command. Each value is sealed as the secret `project.<name>.<VAR>` and the variable added to `secret_vars`; an empty value removes both. It is never given back. |
 
 The others are the server's:
@@ -196,8 +198,14 @@ Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action
 {"id": 7, "project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "requester": "api",
  "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "waiting": "", "depends_on": [3],
  "stop": {"reason": "question", "explanation": "Which pages should the footer link to?", "action": "answer", "resets_at": null},
- "questions": [{"question": "Which pages should the footer link to?"}, {"question": "Should it show the year?"}],
- "change": null, "turns": 33, "duration_ms": 226000, "cost_estimate_usd": 0.325}
+ "questions": [{"question": "Which pages should the footer link to?", "suggested_answer": ""},
+               {"question": "Should it show the year?", "suggested_answer": ""}],
+ "review": {"rounds": 1, "failed": "",
+            "open": [{"severity": "important", "where": "footer.html:10", "what": "The footer covers the cookie banner.",
+                      "why": "A visitor cannot dismiss the banner."}],
+            "minor": []},
+ "change": null, "turns": 33, "duration_ms": 226000, "cost_estimate_usd": 0.325, "cost_missing_sessions": 0,
+ "budget": {"turns": 33, "max_turns": 1000, "minutes": 4, "max_minutes": 300, "usd": 0.29, "max_usd": 5}}
 ```
 
 A list is `[]` when empty, never null.
@@ -213,11 +221,14 @@ A list is `[]` when empty, never null.
 | `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; else `""`. |
 | `depends_on` | The ids of the tasks that must be done before this one runs. |
 | `stop` | The open stop, or null: its `reason` (`question`, `environment`, `verify_failed`, `budget`, `timeout`, `no_change`, `agent_error`, `usage_limit`, `endpoint`, `sandbox`, `cancelled` or `dependency`), a one-line `explanation`, the one `action` that clears it (`answer`, `retry`, or `none` for a stop that a clock ends or that stays), and `resets_at`, the time a usage limit resets, else null. |
-| `questions` | While the open stop is `question`, every question the agent asked, of which the explanation holds the first; else `[]`. |
+| `questions` | While the open stop is `question`, every question the agent asked, of which the explanation holds the first, each with the `suggested_answer` the agent would assume, `""` where it gave none; else `[]`. |
+| `review` | The newest run's review, or null until a review gives a verdict or fails to give one: `rounds`, the fix rounds after its findings since a person last acted; `failed`, why the newest review gave no verdict, else `""`; `open`, the critical and important findings left open; and `minor`, the minor ones, which never start a fix round. A finding has a `severity` (`critical`, `important` or `minor`), `where`, `what` and `why`. A review that a usage limit, a timeout or the like cut short shows as the stop instead. |
 | `change` | The newest exported change, or null: its `head_commit`, the number of `files_changed`, and `diff_stat`, git's summary of the diff: a line per file, a long list cut short, then the totals. |
 | `turns` | The turns of all the task's agent sessions. |
 | `duration_ms` | The milliseconds from the task's start to its newest event other than the agent's progress, 0 before it starts. |
 | `cost_estimate_usd` | The sum of the costs recorded for the task, an estimate from list prices, not a bill. |
+| `cost_missing_sessions` | How many of the task's sessions and reviews ended without a cost, which `cost_estimate_usd` leaves out. |
+| `budget` | What the task used since a person last started, answered, retried or cancelled it, of what it may: `turns` of `max_turns`, and `minutes` of `max_minutes`, the time its sessions and reviews ran, in whole minutes. While a money cap on the task is in force, which is only in key mode, `usd` of `max_usd`, its spend at `model_prices`; else both are left out. A task the daily cap holds says so in `waiting`. |
 
 ### `GET /api/tasks/{id}/events`
 

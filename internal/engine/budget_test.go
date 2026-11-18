@@ -233,6 +233,28 @@ func TestProjectCaps(t *testing.T) {
 		assert.Equal(t, engine.Limits{Turns: 50, SessionTime: 120 * time.Minute}, s.Limits)
 	})
 
+	t.Run("an empty cap is not stored and leaves the setting", func(t *testing.T) {
+		h := newHarness(t)
+		h.set("task_max_turns", "400")
+
+		add := validProject()
+		add.Caps = map[string]string{"task_max_turns": ""}
+
+		added, err := engine.AddProject(t.Context(), h.store, add)
+		require.NoError(t, err)
+		assert.NotContains(t, added.Caps, "task_max_turns")
+
+		edit := h.project()
+		edit.Caps = map[string]string{"task_max_turns": ""}
+		require.NoError(t, engine.EditProject(t.Context(), h.store, edit))
+		assert.NotContains(t, h.project().Caps, "task_max_turns")
+		assert.Equal(t, map[string]string{"task_max_turns": ""}, edit.Caps, "the caller's map is left alone")
+
+		s, err := h.loop.Snapshot(t.Context(), h.task.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 400, s.Limits.Turns)
+	})
+
 	t.Run("a cap the project may not hold is refused", func(t *testing.T) {
 		for _, caps := range []map[string]string{{"concurrency": "2"}, {"task_max_turns": "-1"}, {"daily_budget_usd": "5"}, {"task_budget_usd": "-1"}} {
 			h := newHarness(t)

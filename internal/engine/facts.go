@@ -19,15 +19,16 @@ type Facts struct {
 	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action other than a retry that is no resume came after it, or while a newer session is pending
 	Verify                     string       // result for the newest ended session; "" while a session or a verify is pending
 	Exported                   bool
-	Resumed                    *Resume       // a human retry or answer after a stop, other than a retry that is no resume, not yet followed by a finished session or prepare, or by a new run when it came from environment
-	LastVerifyOutput           string        // of the newest verify_ended, for the next fix prompt
-	Continuations, VerifyFixes int           // session starts marked automatic, per mode, since the last human action
-	ReviewFixes                int           // automatic fix_review session starts since the last human action
-	Faults                     int           // sandbox stops since the last human action
-	Turns                      int           // of sessions and reviews since the last human action
-	SessionTime                time.Duration // from each session's or review's start to its end, since the last human action
-	CostMissing                int           // sessions and reviews of the whole task that ended without a cost
-	LastHumanEventID           int64         // the newest human action's event; the task's spend counts the usage after it
+	Export                     ExportedPayload // of the newest export, meaningful when Exported
+	Resumed                    *Resume         // a human retry or answer after a stop, other than a retry that is no resume, not yet followed by a finished session or prepare, or by a new run when it came from environment
+	LastVerifyOutput           string          // of the newest verify_ended, for the next fix prompt
+	Continuations, VerifyFixes int             // session starts marked automatic, per mode, since the last human action
+	ReviewFixes                int             // automatic fix_review session starts since the last human action
+	Faults                     int             // sandbox stops since the last human action
+	Turns                      int             // of sessions and reviews since the last human action
+	SessionTime                time.Duration   // from each session's or review's start to its end, since the last human action
+	CostMissing                int             // sessions and reviews of the whole task that ended without a cost
+	LastHumanEventID           int64           // the newest human action's event; the task's spend counts the usage after it
 	Review                     ReviewFact
 	Role                       string   // of the run's session, strong after a fresh fix session; "" means work
 	Answers                    []string // every answer a person gave on the task
@@ -39,6 +40,7 @@ type Facts struct {
 // StopFact is the open stop.
 type StopFact struct {
 	Reason, Explanation string
+	Action              string // the one action that clears the stop
 	ResetsAt            time.Time
 	At                  time.Time // when the stop was recorded
 }
@@ -193,12 +195,12 @@ func (f *Facts) apply(e store.Event) {
 	case ExportStarted:
 		f.claimed()
 	case Exported:
-		f.Exported = true
+		f.Exported, f.Export = true, decode[ExportedPayload](e.Payload)
 	case Merged:
 		f.Merged = true
 	case Stopped:
 		p := decode[StoppedPayload](e.Payload)
-		f.OpenStop = &StopFact{Reason: p.Reason, Explanation: p.Explanation, ResetsAt: p.ResetsAt, At: e.At}
+		f.OpenStop = &StopFact{Reason: p.Reason, Explanation: p.Explanation, Action: p.Action, ResetsAt: p.ResetsAt, At: e.At}
 
 		if p.Reason == StopSandbox {
 			f.Faults++

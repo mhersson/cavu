@@ -12,7 +12,7 @@ import (
 )
 
 // instanceSecrets are the secrets the settings tell are set or not, never what they are.
-var instanceSecrets = []string{"endpoint_credential", "forge_token"}
+var instanceSecrets = []string{engine.SecretEndpointCredential, engine.SecretForgeToken}
 
 // settings answers with every settable key whose value is not empty, a value
 // that is a JSON object as one, and whether each instance secret is set.
@@ -77,7 +77,7 @@ func (s *server) setSettings(w http.ResponseWriter, r *http.Request) error {
 
 	for name := range in.Secrets {
 		if !slices.Contains(instanceSecrets, name) {
-			return &apiError{http.StatusBadRequest, "secrets " + strconv.Quote(name) + ": want endpoint_credential or forge_token"}
+			return &apiError{http.StatusBadRequest, "secrets " + strconv.Quote(name) + ": want " + strings.Join(instanceSecrets, " or ")}
 		}
 	}
 
@@ -87,7 +87,7 @@ func (s *server) setSettings(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	if err := s.seal(r.Context(), "", in.Secrets); err != nil {
+	if err := s.seal(r.Context(), in.Secrets, func(name string) string { return name }); err != nil {
 		return err
 	}
 

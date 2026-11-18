@@ -1320,3 +1320,16 @@ func TestEventLine(t *testing.T) {
 		}
 	})
 }
+
+// newest decodes the newest event of the type, if any, independently of the facts.
+func newest[T any](events []store.Event, typ string) (T, bool) {
+	var v T
+
+	for _, e := range slices.Backward(events) {
+		if e.Type == typ {
+			return v, json.Unmarshal(e.Payload, &v) == nil
+		}
+	}
+
+	return v, false
+}
