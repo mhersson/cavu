@@ -1524,6 +1524,12 @@ func TestTaskShowPrintsDependenciesAndTheWait(t *testing.T) {
 func TestEventLine(t *testing.T) {
 	at := time.Date(2026, 11, 17, 9, 30, 15, 0, time.Local)
 
+	// A fix run's head as git gives it, and its first twelve characters; four
+	// requests, a count that neither the time nor the short head holds.
+	head := "fed789abcdef0123456789abcdef0123456789ab"
+	short := head[:12]
+	requests := []string{"PRRT_kwDOAbc1", "PRRT_kwDOAbc2", "PRR_kwDOAbc3", "PRRT_kwDOAbc4"}
+
 	tests := []struct {
 		typ     string
 		payload any
@@ -1568,8 +1574,8 @@ func TestEventLine(t *testing.T) {
 		{engine.HomeRemoved, engine.HomeRemovedPayload{Why: "The task can run no more."}, nil},
 		{engine.RunStarted, engine.RunStartedPayload{Reason: "initial"}, nil},
 		{engine.RunStarted, engine.RunStartedPayload{Reason: "retry"}, nil},
-		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: "fed789"}, []string{"fed789"}},
-		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonComments, Head: "fed789", Requests: []string{"c1", "c2"}}, []string{"fed789", "c1", "c2"}},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: head}, []string{short}},
+		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonComments, Head: head, Requests: requests}, []string{short, strconv.Itoa(len(requests))}},
 	}
 
 	for _, tc := range tests {
@@ -1606,6 +1612,21 @@ func TestEventLine(t *testing.T) {
 		}
 
 		assert.Len(t, lines, 4, "each reason its own line")
+	})
+
+	t.Run("a fix run's start names no request id and no whole head", func(t *testing.T) {
+		for _, p := range []engine.RunStartedPayload{{Reason: engine.ReasonCIFix, Head: head}, {Reason: engine.ReasonComments, Head: head, Requests: requests}} {
+			raw, err := json.Marshal(p)
+			require.NoError(t, err)
+
+			l := eventLine(store.Event{At: at, Type: engine.RunStarted, Payload: raw})
+
+			assert.NotContains(t, l, head, p.Reason)
+
+			for _, r := range requests {
+				assert.NotContains(t, l, r, p.Reason)
+			}
+		}
 	})
 
 	t.Run("a reviewer's request is counted, never quoted", func(t *testing.T) {

@@ -795,12 +795,17 @@ func runText(p engine.RunStartedPayload) string {
 	case "retry":
 		return "a fresh run of the task, which ran before"
 	case engine.ReasonCIFix:
-		return "a fix run on the pull request's failed checks, from " + p.Head
+		return "a fix run on the pull request's failed checks, from " + shortCommit(p.Head)
 	case engine.ReasonComments:
-		return fmt.Sprintf("a follow-up run on the reviewers' requests %s, from %s", strings.Join(p.Requests, ", "), p.Head)
+		return fmt.Sprintf("a follow-up run on %s of reviewers, from %s", counted(len(p.Requests), "request"), shortCommit(p.Head))
 	}
 
 	return p.Reason
+}
+
+// shortCommit is a commit id's first twelve characters, enough to tell it in a line.
+func shortCommit(id string) string {
+	return id[:min(12, len(id))]
 }
 
 // observedText is what a look showed of the pull request. A reviewer's
