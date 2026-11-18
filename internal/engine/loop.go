@@ -397,13 +397,18 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 
 		return p.free(ctx, v.Task, v.run, RemoveRun, outcome)
 	case KindClean:
-		// The home outlives its runs, so the newest run's release removes it.
-		row := store.Run{ID: v.Facts.LastRun}
-		if err := p.write(ctx, v.LastEventID, row.ID, nil, draft{HomeRemoved, actorEngine, HomeRemovedPayload{Why: a.Why}}); err != nil {
+		// The newest run's release removes the home before it is recorded: one that
+		// fails records nothing, so the clean is done again, and a release of nothing succeeds.
+		ref, err := p.ref(ctx, v.Task, store.Run{ID: v.Facts.LastRun})
+		if err != nil {
 			return err
 		}
 
-		return p.free(ctx, v.Task, row, RemoveAll, "")
+		if err := p.Runner.Release(ctx, ref, RemoveAll); err != nil {
+			return fmt.Errorf("task %d: release run %d: %w", p.taskID, ref.RunID, err)
+		}
+
+		return p.write(ctx, v.LastEventID, ref.RunID, nil, draft{HomeRemoved, actorEngine, HomeRemovedPayload{Why: a.Why}})
 	}
 
 	row := v.run
@@ -924,8 +929,8 @@ func (l *Loop) ReleaseOpenRun(ctx context.Context, taskID int64) error {
 
 // free stops a run's containers and removes what remove names, then ends the
 // run's row with outcome unless that is "". A Release error is held so the row
-// is still ended. A removal or an end is recorded already, so it is carried
-// out past ctx's end, or the record would hold what never happened.
+// is still ended. A run's end is recorded already, so what it removes is
+// carried out past ctx's end, or the record would hold what never happened.
 func (p *pass) free(ctx context.Context, t store.Task, row store.Run, remove Remove, outcome string) error {
 	if remove != KeepVolumes {
 		var cancel context.CancelFunc

@@ -175,7 +175,8 @@ func (f *Facts) apply(e store.Event) {
 		f.resetRun()
 		f.RunOpen, f.Home = false, decode[RunEndedPayload](e.Payload).KeptHome
 	case HomeRemoved:
-		// No claim: closing the open stop would have a cancelled task stopped again.
+		// A result, recorded after the release: it closes no stop, or a cancelled
+		// task would be stopped again.
 		f.Home = false
 	case PrepareStarted:
 		f.claimed()

@@ -2374,6 +2374,31 @@ func TestHomeIsRemovedWhenTheTaskIsOver(t *testing.T) {
 		})
 	}
 
+	t.Run("a release that fails records nothing, and the next pass removes the home", func(t *testing.T) {
+		h := newHarness(t)
+
+		injected := errors.New("volume busy")
+		h.runner.gate = func(_ context.Context, c call) error {
+			if c.method == "release" && c.remove == engine.RemoveAll {
+				return injected
+			}
+
+			return nil
+		}
+
+		_, err := h.run(t.Context())
+		require.ErrorIs(t, err, injected)
+		assert.Empty(t, h.eventsOf(engine.HomeRemoved))
+
+		h.runner.gate = nil
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, append(slices.Clone(happyTrace), "release/remove"), h.runner.trace())
+		assert.Len(t, h.eventsOf(engine.HomeRemoved), 1)
+	})
+
 	t.Run("kept while a pull request is open", func(t *testing.T) {
 		h := newHarness(t)
 		h.withPublish()
