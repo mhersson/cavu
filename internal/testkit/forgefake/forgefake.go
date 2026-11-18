@@ -203,9 +203,9 @@ func (f *Fake) SetPermission(login, permission string) {
 	f.perms[login] = permission
 }
 
-// Review adds a review of state (APPROVED, CHANGES_REQUESTED, COMMENTED) to
-// pull request number and returns its id. An empty author is a deleted
-// account.
+// Review adds a review of state (APPROVED, CHANGES_REQUESTED, DISMISSED,
+// COMMENTED) to pull request number and returns its id. An empty author is a
+// deleted account.
 func (f *Fake) Review(number int, author, state, body string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -568,14 +568,18 @@ func (f *Fake) graphQL(w http.ResponseWriter, g graphQLRequest) {
 	}
 }
 
-// reviewsJSON is a pull request's latest review per author and its review
-// threads.
+// reviewsJSON is a pull request's latest opinion per author, a review that
+// approves, requests changes or was dismissed, and its review threads.
 func (f *Fake) reviewsJSON(p *pull) map[string]any {
 	var reviews []map[string]any
 
 	latest := map[string]int{}
 
 	for _, rv := range p.reviews {
+		if rv.state != "APPROVED" && rv.state != "CHANGES_REQUESTED" && rv.state != "DISMISSED" {
+			continue
+		}
+
 		node := map[string]any{"id": rv.id, "state": rv.state, "body": rv.body, "author": actor(rv.author)}
 
 		if i, ok := latest[rv.author]; ok {

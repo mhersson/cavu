@@ -217,3 +217,31 @@ func TestTokens(t *testing.T) {
 		{Value: minted[1], Permissions: perms[1]},
 	}, fx.fake.Tokens())
 }
+
+// Each author's latest opinion leaves out reviews that only comment, as
+// GitHub's list of reviewers does.
+func TestLatestOpinionPerAuthor(t *testing.T) {
+	fx := newFixture(t)
+	status, _ := fx.open(false)
+	require.Equal(t, http.StatusCreated, status)
+
+	asks := fx.fake.Review(1, "alice", "CHANGES_REQUESTED", "Fix it.")
+	fx.fake.Review(1, "alice", "COMMENTED", "One more thing.")
+	fx.fake.Review(1, "bob", "CHANGES_REQUESTED", "Fix it.")
+	approves := fx.fake.Review(1, "bob", "APPROVED", "Fine now.")
+	fx.fake.Review(1, "carol", "COMMENTED", "Nice.")
+
+	_, _, out := fx.call(http.MethodPost, "/api/graphql", map[string]any{
+		"query": "query Observe($number: Int!) { x }", "variables": map[string]any{"number": 1},
+	})
+
+	nodes, ok := field(t, out, "data", "repository", "pullRequest", "latestOpinionatedReviews", "nodes").([]any)
+	require.True(t, ok)
+
+	var got []string
+	for _, n := range nodes {
+		got = append(got, field(t, n, "id").(string)+" "+field(t, n, "state").(string))
+	}
+
+	assert.Equal(t, []string{asks + " CHANGES_REQUESTED", approves + " APPROVED"}, got)
+}
