@@ -256,7 +256,7 @@ func TestSecondPublishSendsNoText(t *testing.T) {
 	status, err := h.run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)
-	assert.Equal(t, []string{"publish", "release/run"}, h.runner.trace())
+	assert.Equal(t, []string{"observe", "publish", "release/run"}, h.runner.trace(), "a look at the pull request comes first")
 
 	pubs := h.runner.callsOf("publish")
 	require.Len(t, pubs, 1)
@@ -423,6 +423,9 @@ var (
 	checksPending = engine.Observation{State: engine.PROpen, Draft: true, Head: "head456", Checks: engine.ChecksPending}
 	checksNone    = engine.Observation{State: engine.PROpen, Draft: true, Head: "head456", Checks: engine.ChecksNone}
 	checksPassed  = engine.Observation{State: engine.PROpen, Draft: true, Head: "head456", Checks: engine.ChecksPassed}
+	checksFailed  = engine.Observation{
+		State: engine.PROpen, Draft: true, Head: "head456", Checks: engine.ChecksFailed, Failed: []string{"lint"},
+	}
 )
 
 // stopsOf returns the reasons of the task's stops, oldest first.
@@ -938,4 +941,609 @@ func TestTheWatchReadsNoInstanceFiles(t *testing.T) {
 		assert.Equal(t, h.task.ID, c.cfg.TaskID, "%s", c)
 		assert.Equal(t, "https://example.com/web.git", c.cfg.Repo.URL, "%s", c)
 	}
+}
+
+// fixes scripts the runner's next sessions, exports and publishes: each
+// session moves the task's branch to the next of heads, which its export and
+// its publish take.
+func (h *harness) fixes(heads ...string) {
+	for _, head := range heads {
+		w, e, p := workDone, exportOK, publishedOK
+		w.HeadCommit, e.HeadCommit, p.Head = head, head, head
+		h.runner.works = append(h.runner.works, step[engine.WorkResult]{res: w})
+		h.runner.exports = append(h.runner.exports, step[engine.ExportResult]{res: e})
+		h.runner.publishes = append(h.runner.publishes, step[engine.PublishResult]{res: p})
+	}
+}
+
+// unchangedAt is a session that ended done and left the task's branch at head.
+func unchangedAt(head string) step[engine.WorkResult] {
+	return step[engine.WorkResult]{res: engine.WorkResult{Outcome: engine.OutcomeDone, Summary: "Nothing to change.", HeadCommit: head}}
+}
+
+// askedAt is publishedOK's pull request at head, its checks running, with a
+// reviewer's request for each of ids.
+func askedAt(head string, ids ...string) engine.Observation {
+	o := checksPending
+	o.Head = head
+
+	for _, id := range ids {
+		o.Comments = append(o.Comments, engine.Comment{ID: id, Author: "ana", Path: "login.go", Line: 12, Body: "Request " + id + "."})
+	}
+
+	return o
+}
+
+// lookAt has the loop look at the task's pull request, which shows o, then
+// runs the task until it rests, and returns its status.
+func (h *harness) lookAt(o engine.Observation) engine.Status {
+	h.t.Helper()
+	h.observe(o)
+
+	status, err := h.run(h.t.Context())
+	require.NoError(h.t, err)
+
+	return status
+}
+
+// runStarts returns the payloads of the task's run starts, oldest first.
+func (h *harness) runStarts() []engine.RunStartedPayload {
+	h.t.Helper()
+
+	var out []engine.RunStartedPayload
+	for _, e := range h.eventsOf(engine.RunStarted) {
+		out = append(out, payloadOf[engine.RunStartedPayload](h.t, e))
+	}
+
+	return out
+}
+
+// lastCall returns the newest call of method.
+func (h *harness) lastCall(method string) call {
+	h.t.Helper()
+
+	calls := h.runner.callsOf(method)
+	require.NotEmpty(h.t, calls, "a %s call", method)
+
+	return calls[len(calls)-1]
+}
+
+func ciFixFrom(head string) engine.RunStartedPayload {
+	return engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: head}
+}
+
+func commentsFrom(head string, requests ...string) engine.RunStartedPayload {
+	return engine.RunStartedPayload{Reason: engine.ReasonComments, Head: head, Requests: requests}
+}
+
+var initialRun = engine.RunStartedPayload{Reason: "initial"}
+
+// A fix run that changed nothing ends without a stop of its own; the watch
+// then stops the task, since the checks still fail on a head a fix run had.
+func TestAFixRunThatChangesNothingEnds(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+	h.runner.works = []step[engine.WorkResult]{unchangedAt("head456"), unchangedAt("head456")}
+
+	failed := checksFailed
+	failed.Failed = []string{"lint", "test"}
+
+	before := len(h.runner.calls)
+	assert.Equal(t, engine.StatusBlocked, h.lookAt(failed))
+	assert.Equal(t, []string{"observe", "prepare", "work/fix_ci", "release/run"}, h.runner.trace()[before:])
+
+	ends := h.eventsOf(engine.RunEnded)
+	end := payloadOf[engine.RunEndedPayload](t, ends[len(ends)-1])
+	assert.Equal(t, engine.RunFinished, end.Outcome)
+	assert.True(t, end.KeptHome)
+
+	assert.Equal(t, []string{engine.StopCIFailed}, h.stopsOf(), "no no_change")
+
+	for _, datum := range []string{"lint", "test", publishedOK.URL} {
+		assert.Contains(t, h.lastStop().Explanation, datum)
+	}
+
+	h.clock.Advance(time.Hour)
+	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+	before = len(h.runner.calls)
+	_, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"prepare", "work/fix_ci", "release/run"}, h.runner.trace()[before:], "a retry starts a new fix run")
+	assert.Equal(t, []engine.RunStartedPayload{initialRun, ciFixFrom("head456"), ciFixFrom("head456")}, h.runStarts())
+}
+
+// A failure is acted on once, by the head it failed on.
+func TestAFailureIsActedOnOnce(t *testing.T) {
+	t.Run("a fix run that left the head as it was gets no second one on it", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.runner.works = []step[engine.WorkResult]{unchangedAt("head456")}
+
+		assert.Equal(t, engine.StatusBlocked, h.lookAt(checksFailed))
+		assert.Equal(t, []engine.RunStartedPayload{initialRun, ciFixFrom("head456")}, h.runStarts(), "one of the two fix runs the cap allows")
+		assert.Equal(t, []string{engine.StopCIFailed}, h.stopsOf())
+	})
+
+	t.Run("the head a fix run pushed gets a fix run of its own", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.fixes("fix1")
+
+		assert.Equal(t, engine.StatusInReview, h.lookAt(checksFailed))
+
+		// GitHub still shows the head before the push, with the failure the fix run answered.
+		assert.Equal(t, engine.StatusInReview, h.lookAt(checksFailed))
+		assert.Len(t, h.runStarts(), 2)
+
+		failed := checksFailed
+		failed.Head = "fix1"
+		h.runner.works = []step[engine.WorkResult]{unchangedAt("fix1")}
+		h.lookAt(failed)
+
+		assert.Equal(t, []engine.RunStartedPayload{initialRun, ciFixFrom("head456"), ciFixFrom("fix1")}, h.runStarts())
+		assert.Equal(t, "fix1", h.lastCall("prepare").cfg.Repo.Head)
+	})
+}
+
+func TestCIFixIsCapped(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+	h.fixes("fix1", "fix2")
+
+	failed := checksFailed
+	for _, head := range []string{"head456", "fix1"} {
+		failed.Head = head
+		assert.Equal(t, engine.StatusInReview, h.lookAt(failed), "a fix run from %s", head)
+	}
+
+	failed.Head = "fix2"
+	assert.Equal(t, engine.StatusBlocked, h.lookAt(failed))
+	assert.Equal(t, []string{engine.StopCIFailed}, h.stopsOf())
+	assert.Contains(t, h.lastStop().Explanation, "lint")
+	assert.Equal(t, []engine.RunStartedPayload{initialRun, ciFixFrom("head456"), ciFixFrom("fix1")}, h.runStarts())
+
+	// A retry allows two more.
+	h.fixes("fix3")
+	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, ciFixFrom("fix2"), h.runStarts()[3])
+}
+
+func TestCommentRunsAreCapped(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+	h.fixes("r1", "r2", "r3")
+
+	ids := []string{"c1", "c2", "c3", "c4"}
+	heads := []string{"head456", "r1", "r2", "r3"}
+
+	for i := range 3 {
+		assert.Equal(t, engine.StatusInReview, h.lookAt(askedAt(heads[i], ids[:i+1]...)), "a follow-up run from %s", heads[i])
+	}
+
+	assert.Equal(t, engine.StatusBlocked, h.lookAt(askedAt("r3", ids...)))
+	assert.Equal(t, []string{engine.StopChangesRequested}, h.stopsOf())
+	assert.Contains(t, h.lastStop().Explanation, publishedOK.URL)
+	assert.Equal(t, []engine.RunStartedPayload{
+		initialRun, commentsFrom("head456", "c1"), commentsFrom("r1", "c2"), commentsFrom("r2", "c3"),
+	}, h.runStarts())
+
+	// A retry allows three more, and the next run takes the request the cap held.
+	h.fixes("r4")
+	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, commentsFrom("r3", "c4"), h.runStarts()[4])
+}
+
+// A reviewer's request is acted on once, by its id.
+func TestARequestIsActedOnOnce(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+
+	seen := func(head string, requests ...engine.Comment) engine.Observation {
+		o := checksPending
+		o.Head, o.Comments = head, requests
+
+		return o
+	}
+	given := func() []engine.Comment { return h.lastCall("work").work.Comments }
+
+	thread := engine.Comment{ID: "c1", Author: "ana", Path: "db.go", Line: 3, Body: "Use a connection pool."}
+
+	h.fixes("r1")
+	assert.Equal(t, engine.StatusInReview, h.lookAt(seen("head456", thread)))
+	assert.Equal(t, []engine.Comment{thread}, given())
+
+	// The answered thread stays unresolved after CAVU's push.
+	assert.Equal(t, engine.StatusInReview, h.lookAt(seen("r1", thread)))
+	assert.Len(t, h.runStarts(), 2, "an answered request starts nothing")
+
+	// The reviewer replies in the thread, whose newest comment is a new request;
+	// another comes while the run works, and the look before its push shows it.
+	reply := engine.Comment{ID: "c1b", Author: "ana", Path: "db.go", Line: 3, Body: "The pool is still opened per request."}
+	late := engine.Comment{ID: "c2", Author: "ben", Path: "api.go", Line: 9, Body: "Answer 404 here."}
+
+	h.fixes("r2")
+	h.observe(seen("r1", reply))
+	h.runner.observes = []step[engine.Observation]{{res: seen("r1", reply, late)}}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, []engine.Comment{reply}, given(), "the run is given the thread again")
+
+	// The next run takes the request that came while the run before worked; its
+	// session fails, and a person's retry resumes it with no request given again.
+	h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeFailed, Summary: "The test database is down."}}}
+	h.fixes("r3")
+	assert.Equal(t, engine.StatusBlocked, h.lookAt(seen("r2", reply, late)))
+	assert.Equal(t, []engine.Comment{late}, given())
+	assert.Equal(t, engine.StopAgentError, h.lastStop().Reason)
+
+	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+	status, err = h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+
+	resumed := h.lastCall("work").work
+	assert.Equal(t, engine.ModeContinue, resumed.Mode)
+	assert.Empty(t, resumed.Comments)
+
+	assert.Equal(t, engine.StatusInReview, h.lookAt(seen("r3", reply, late)))
+	assert.Equal(t, []engine.RunStartedPayload{
+		initialRun, commentsFrom("head456", "c1"), commentsFrom("r1", "c1b"), commentsFrom("r2", "c2"),
+	}, h.runStarts())
+}
+
+func TestMergedWhileAFixRunIsOpenEndsTheRun(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+	h.fixes("fix1")
+	h.observe(checksFailed)
+
+	// A person merges while the fix run works, and the look before its push sees it.
+	merged := checksFailed
+	merged.State = engine.PRMerged
+	h.runner.observes = []step[engine.Observation]{{res: merged}}
+
+	before := len(h.runner.calls)
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusDone, status)
+	assert.Equal(t, []string{"prepare", "work/fix_ci", "verify", "export", "observe", "release/run", "release/remove"}, h.runner.trace()[before:])
+	assert.Len(t, h.runner.callsOf("publish"), 1, "only the first run's")
+
+	run := h.lastCall("prepare").runID
+	seen := h.eventsOf(engine.PRObserved)
+	assert.Equal(t, merged, payloadOf[engine.Observation](t, seen[len(seen)-1]))
+	assert.Equal(t, run, seen[len(seen)-1].RunID, "recorded under the fix run")
+	assert.Contains(t, h.spy.ended(), run)
+	assert.Len(t, h.eventsOf(engine.HomeRemoved), 1)
+	assert.Empty(t, h.stopsOf())
+}
+
+// The publish of a fix run looks at the pull request before it pushes.
+func TestPublishDoesNotPushToAMergedPullRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		state  string
+		status engine.Status
+		stop   string
+	}{
+		{name: "merged", state: engine.PRMerged, status: engine.StatusDone},
+		{name: "closed", state: engine.PRClosed, status: engine.StatusCancelled, stop: engine.StopCancelled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.withPublish()
+			h.publishedRun()
+			h.exportedFix()
+
+			look := checksPassed
+			look.State = tt.state
+			h.runner.observes = []step[engine.Observation]{{res: look}}
+
+			status, err := h.run(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tt.status, status)
+			assert.Equal(t, []string{"observe", "release/run", "release/remove"}, h.runner.trace(), "nothing is pushed")
+
+			run := h.lastCall("observe").runID
+			seen := h.eventsOf(engine.PRObserved)
+			require.Len(t, seen, 1)
+			assert.Equal(t, run, seen[0].RunID)
+			assert.Equal(t, look, payloadOf[engine.Observation](t, seen[0]))
+			assert.Contains(t, h.spy.ended(), run)
+
+			if tt.stop == "" {
+				assert.Empty(t, h.stopsOf())
+
+				return
+			}
+
+			assert.Equal(t, []string{tt.stop}, h.stopsOf())
+			assert.Contains(t, h.lastStop().Explanation, "https://example.com/web/pull/7")
+		})
+	}
+
+	t.Run("a head CAVU never published", func(t *testing.T) {
+		h := newHarness(t)
+		h.withPublish()
+		h.publishedRun()
+		h.exportedFix()
+
+		theirs := checksFailed
+		theirs.Head = "theirs"
+		h.runner.observes = []step[engine.Observation]{{res: theirs}}
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status)
+		assert.Equal(t, []string{"observe", "release/run"}, h.runner.trace(), "nothing is pushed over the person's commit")
+		assert.Equal(t, []string{engine.StopTakenOver}, h.stopsOf())
+		assert.Contains(t, h.lastStop().Explanation, "https://example.com/web/pull/7")
+
+		run := h.lastCall("observe").runID
+		assert.Equal(t, map[int64]string{run: engine.StopTakenOver}, h.spy.ended())
+
+		// A retry gives the branch back to CAVU at the person's head, where the
+		// watch sees the checks fail and a fix run starts.
+		h.runner.publishes = nil
+		h.fixes("mine1")
+		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+		status, err = h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+
+		starts := h.runStarts()
+		assert.Equal(t, ciFixFrom("theirs"), starts[len(starts)-1])
+		assert.Equal(t, "theirs", h.lastCall("prepare").cfg.Repo.Head)
+		assert.Equal(t, "theirs", h.lastCall("publish").pub.Prev, "the push goes on from the person's commit")
+	})
+
+	// The push of a publish whose answer was lost may have landed: the export's
+	// head on the branch is CAVU's own, and the publish is repeated.
+	t.Run("the open run's export, pushed by a publish that failed", func(t *testing.T) {
+		h := newHarness(t)
+		h.withPublish()
+		h.publishedRun()
+		h.exportedFix()
+		h.runner.publishes = append([]step[engine.PublishResult]{{err: errors.New("connection reset by peer")}}, h.runner.publishes...)
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status)
+
+		pushed := checksPending
+		pushed.Head = "fix789"
+		h.runner.observes = []step[engine.Observation]{{res: pushed}}
+		h.clock.Advance(30 * time.Second)
+
+		status, err = h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, []string{"observe", "publish", "release/keep", "observe", "publish", "release/run"}, h.runner.trace())
+		assert.Equal(t, []string{engine.StopSandbox}, h.stopsOf())
+		assert.Len(t, h.eventsOf(engine.Published), 2)
+	})
+}
+
+func TestFixRunIsNotReviewed(t *testing.T) {
+	tests := []struct {
+		name string
+		seen engine.Observation
+		mode string
+	}{
+		{name: "after failed checks", seen: checksFailed, mode: "work/fix_ci"},
+		{name: "after a reviewer's request", seen: askedAt("head456", "c1"), mode: "work/comments"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.withReview()
+			h.watching()
+			require.Len(t, h.runner.callsOf("review"), 1, "the first run is reviewed")
+			h.fixes("fix1")
+
+			before := len(h.runner.calls)
+			assert.Equal(t, engine.StatusInReview, h.lookAt(tt.seen))
+			assert.Equal(t, []string{"observe", "prepare", tt.mode, "verify", "export", "observe", "publish", "release/run"},
+				h.runner.trace()[before:])
+		})
+	}
+}
+
+// A fix run whose prepare failed ends with its environment stop; a person's
+// retry starts it again with its reason, and a follow-up run with its requests.
+func TestAFixRunWhosePrepareFailedIsStartedAgainAsItWas(t *testing.T) {
+	setupFailed := []step[engine.PrepareResult]{{res: engine.PrepareResult{BaseCommit: "base123", FailedStep: "setup", Output: "exit 1"}}}
+
+	t.Run("after failed checks", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.runner.prepares = setupFailed
+
+		assert.Equal(t, engine.StatusBlocked, h.lookAt(checksFailed))
+		assert.Equal(t, engine.StopEnvironment, h.lastStop().Reason)
+
+		h.fixes("fix1")
+		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+		before := len(h.runner.calls)
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, []string{"prepare", "work/fix_ci", "verify", "export", "observe", "publish", "release/run"}, h.runner.trace()[before:])
+		assert.Equal(t, []engine.RunStartedPayload{initialRun, ciFixFrom("head456"), ciFixFrom("head456")}, h.runStarts())
+	})
+
+	t.Run("after a reviewer's request, with one that came since", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.runner.prepares = setupFailed
+
+		assert.Equal(t, engine.StatusBlocked, h.lookAt(askedAt("head456", "c1")))
+		assert.Equal(t, engine.StopEnvironment, h.lastStop().Reason)
+
+		h.observe(askedAt("head456", "c1", "c2"))
+		h.fixes("r1")
+		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, []engine.RunStartedPayload{
+			initialRun, commentsFrom("head456", "c1"), commentsFrom("head456", "c1", "c2"),
+		}, h.runStarts())
+
+		w := h.lastCall("work").work
+		assert.Equal(t, engine.ModeComments, w.Mode)
+		assert.Equal(t, askedAt("head456", "c1", "c2").Comments, w.Comments)
+	})
+}
+
+// Every action of a fix run works on the pull request's branch from the run's
+// head, and a follow-up run's session gets the requests it was given as the
+// record holds them.
+func TestAFixRunWorksOnThePullRequest(t *testing.T) {
+	const branch = "cavu/fix-the-login-2" // not the title's
+
+	start := func(t *testing.T) *harness {
+		t.Helper()
+
+		h := newHarness(t)
+
+		p := h.project()
+		p.SecretVars = []string{"DB_USER"}
+		require.NoError(t, h.store.UpdateProject(t.Context(), p))
+		require.NoError(t, h.vault.Set(t.Context(), engine.ProjectSecretName("web", "DB_USER"), "postgres"))
+
+		instructions := filepath.Join(t.TempDir(), "AGENTS.md")
+		writeFile(t, instructions, "Work in small commits.\n", 0o644)
+		h.set("instructions_path", instructions)
+
+		pub := publishedOK
+		pub.Branch = branch
+		h.runner.publishes = []step[engine.PublishResult]{{res: pub}}
+		h.watching()
+
+		return h
+	}
+
+	fixes := func(h *harness, heads ...string) {
+		h.fixes(heads...)
+
+		for i := range h.runner.publishes {
+			h.runner.publishes[i].res.Branch = branch
+		}
+	}
+
+	// onThePullRequest checks every call of the newest run but its releases.
+	// The look before the push is built as the watch's is.
+	onThePullRequest := func(t *testing.T, h *harness, head string) {
+		t.Helper()
+
+		run := h.lastCall("prepare").runID
+		methods := map[string]bool{}
+
+		for _, c := range h.runner.calls {
+			if c.runID != run || c.method == "release" {
+				continue
+			}
+
+			methods[c.method] = true
+			assert.Equal(t, branch, c.cfg.Repo.Branch, "%s", c)
+
+			if c.method == "observe" {
+				assert.Zero(t, c.cfg.Agent.Instance, "the look reads no instance files")
+			} else {
+				assert.Equal(t, head, c.cfg.Repo.Head, "%s", c)
+			}
+		}
+
+		assert.Len(t, methods, 6, "prepare, work, verify, export, the look and the publish")
+	}
+
+	t.Run("after failed checks", func(t *testing.T) {
+		h := start(t)
+		baseline := h.project().Baseline
+		h.clock.Advance(time.Hour)
+
+		h.runner.prepares = []step[engine.PrepareResult]{{res: engine.PrepareResult{BaseCommit: "base123", Tools: []string{"go"}, Baseline: "skipped"}}}
+		fixes(h, "fix1")
+
+		assert.Equal(t, engine.StatusInReview, h.lookAt(checksFailed))
+		onThePullRequest(t, h, "head456")
+
+		w := h.lastCall("work").work
+		assert.Equal(t, engine.ModeFixCI, w.Mode)
+		assert.True(t, w.Resume)
+		assert.Equal(t, h.runner.callsOf("work")[0].work.SessionID, w.SessionID, "the task's session")
+
+		// A prepare at a head runs no baseline: that is no failure, and nothing is stored.
+		assert.Empty(t, h.stopsOf())
+		assert.Equal(t, baseline, h.project().Baseline)
+
+		prepared := h.eventsOf(engine.Prepared)
+		assert.Equal(t, "skipped", payloadOf[engine.PreparedPayload](t, prepared[len(prepared)-1]).Baseline)
+	})
+
+	t.Run("after a reviewer's requests", func(t *testing.T) {
+		h := start(t)
+		fixes(h, "r1", "r2")
+
+		answered := askedAt("head456", "c0")
+		h.lookAt(answered)
+
+		asked := askedAt("r1", "c0", "c1", "c2")
+		asked.Comments[1].Body = "Connect as postgres here."
+		assert.Equal(t, engine.StatusInReview, h.lookAt(asked))
+		onThePullRequest(t, h, "r1")
+
+		seen := h.eventsOf(engine.PRObserved)
+		recorded := payloadOf[engine.Observation](t, seen[len(seen)-1]).Comments
+
+		w := h.lastCall("work").work
+		assert.Equal(t, engine.ModeComments, w.Mode)
+		assert.Equal(t, recorded[1:], w.Comments, "exactly the requests the run was given, as the record holds them")
+		assert.NotContains(t, w.Comments[0].Body, "postgres")
+	})
+}
+
+// A look before a publish that fails is a fault like the publish's own: the
+// run is kept, nothing is pushed, and the look and the publish are retried.
+func TestAFailedLookBeforeAPublishIsRetried(t *testing.T) {
+	h := newHarness(t)
+	h.withPublish()
+	h.publishedRun()
+	h.exportedFix()
+	h.runner.observes = []step[engine.Observation]{{err: errors.New("GitHub answered 502 Bad Gateway")}}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusBlocked, status)
+	assert.Equal(t, []string{"observe", "release/keep"}, h.runner.trace())
+	assert.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+	assert.Contains(t, h.lastStop().Explanation, "502")
+	assert.Empty(t, h.spy.ended(), "the run stays open")
+
+	h.clock.Advance(30 * time.Second)
+
+	status, err = h.run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Equal(t, []string{"observe", "release/keep", "observe", "publish", "release/run"}, h.runner.trace())
+	assert.Len(t, h.eventsOf(engine.Published), 2)
 }

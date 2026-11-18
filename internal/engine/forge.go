@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -54,6 +55,12 @@ func (e *RateLimited) Error() string { return "rate limited until " + e.Until.Fo
 func (p *pass) publish(ctx context.Context, v view, a Action, o openRun) error {
 	f := v.Facts
 
+	if f.PR != nil {
+		if moot, err := p.lookFirst(ctx, v, a, o); moot || err != nil {
+			return err
+		}
+	}
+
 	if err := p.claim(ctx, v, o, draft{PublishStarted, actorEngine, PublishStartedPayload{Why: a.Why}}); err != nil {
 		return err
 	}
@@ -89,6 +96,31 @@ func (p *pass) publish(ctx context.Context, v view, a Action, o openRun) error {
 	}
 
 	return p.result(ctx, o, nil, draft{Published, actorRunner, pub})
+}
+
+// lookFirst reads the task's pull request before a push onto its branch. When
+// a person merged or closed it, or the branch holds a head CAVU did not push,
+// the push is moot: the look is recorded and Decide chooses what follows.
+func (p *pass) lookFirst(ctx context.Context, v view, a Action, o openRun) (moot bool, err error) {
+	pr := v.Facts.PR
+
+	cfg, err := p.forgeConfig(ctx, v.Task, o.row.ID, pr)
+	if err != nil {
+		return true, p.unconfigured(ctx, v, a, &o.row, err)
+	}
+
+	seen, err := p.Runner.Observe(ctx, cfg, pr.Number)
+	if err != nil {
+		return true, p.fault(ctx, o, 0, nil, err)
+	}
+
+	// The open run's export is CAVU's own: a publish cut after its push is repeated.
+	ours := seen.Head == v.Facts.Export.HeadCommit || slices.Contains(pr.Heads, seen.Head)
+	if seen.State == PROpen && ours {
+		return false, nil
+	}
+
+	return true, p.write(ctx, v.LastEventID, o.row.ID, nil, draft{PRObserved, actorRunner, seen})
 }
 
 // Observe reads the task's pull request when Decide says watch, and records

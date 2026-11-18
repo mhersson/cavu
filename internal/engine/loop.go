@@ -417,9 +417,12 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 	row := v.run
 
 	if a.NewRun {
-		reason := "initial"
-		if hadRun(v.events) {
-			reason = "retry"
+		reason := a.Reason
+		if reason == "" {
+			reason = "initial"
+			if hadRun(v.events) {
+				reason = "retry"
+			}
 		}
 
 		var err error
@@ -431,6 +434,17 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 	o, err := p.open(ctx, v.Task, row)
 	if err != nil {
 		return p.unconfigured(ctx, v, a, &row, err)
+	}
+
+	// A fix run works on the pull request's branch from its head: the open
+	// run's, or for a new run the head it is about to record.
+	head := v.Facts.RunHead
+	if a.NewRun && v.Facts.PR != nil {
+		head = v.Facts.PR.Head
+	}
+
+	if head != "" {
+		o.cfg.Repo.Head, o.cfg.Repo.Branch = head, v.Facts.PR.Branch
 	}
 
 	if v.Limits.capped() {
@@ -505,7 +519,9 @@ func (p *pass) abandon(ctx context.Context, a Action, row store.Run, cause error
 func (p *pass) prepare(ctx context.Context, v view, a Action, o openRun) error {
 	claim := []draft{{PrepareStarted, actorEngine, PrepareStartedPayload{Why: a.Why}}}
 	if a.NewRun {
-		claim = slices.Insert(claim, 0, draft{RunStarted, actorEngine, RunStartedPayload{Reason: o.row.Reason}})
+		claim = slices.Insert(claim, 0, draft{RunStarted, actorEngine, RunStartedPayload{
+			Reason: o.row.Reason, Head: o.cfg.Repo.Head, Requests: a.Requests,
+		}})
 	}
 
 	if err := p.claim(ctx, v, o, claim...); err != nil {
@@ -610,6 +626,8 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 		w.Detail = a.Detail
 	case ModeFixReview:
 		w.Findings = v.Facts.Review.Open
+	case ModeComments:
+		w.Comments = requested(v.Facts.PR.Seen, a.Requests)
 	}
 
 	if err := p.claim(ctx, v, o, draft{SessionStarted, actorEngine, SessionStartedPayload{
@@ -639,6 +657,20 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 		Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD, CostMissing: res.CostMissing, ResetsAt: res.ResetsAt,
 		Detail: res.Detail, HeadCommit: res.HeadCommit,
 	}})
+}
+
+// requested is the requests seen holds that ids name, in seen's order, from
+// the record and never from a fresh look: masked already, and not masked again.
+func requested(seen *Observation, ids []string) []Comment {
+	var out []Comment
+
+	for _, c := range seen.Comments {
+		if slices.Contains(ids, c.ID) {
+			out = append(out, c)
+		}
+	}
+
+	return out
 }
 
 // runUsage is a session's usage rows, each carrying the run's id.
