@@ -173,6 +173,23 @@ func TestImportRefusesACorruptObject(t *testing.T) {
 	requireRefused(t, st, c, branchBundle(t, st, c), head)
 }
 
+// dotGitCommit points the task branch $1 at a commit on HEAD whose tree also
+// holds a directory named .git, which git's object checks refuse, and prints it.
+const dotGitCommit = `blob=$(echo CAVU-HOOK | git hash-object -w --stdin) &&
+inner=$(printf '100644 blob %s\tconfig\n' "$blob" | git mktree) &&
+tree=$({ git ls-tree HEAD && printf '040000 tree %s\t.git\n' "$inner"; } | git mktree) &&
+c=$(git commit-tree -p HEAD -m dotgit "$tree") && git update-ref "refs/heads/$1" "$c" && echo "$c"`
+
+func TestImportRefusesAMalformedTree(t *testing.T) {
+	st, c := importRun(t)
+	taken(t, st, c)
+
+	out := runIn(t, st, "sh", "-c", dotGitCommit, "sh", c.Repo.Branch)
+	require.Equal(t, 0, out.ExitCode, out.Output)
+
+	requireRefused(t, st, c, branchBundle(t, st, c), strings.TrimSpace(out.Output))
+}
+
 func TestImportTwiceChangesNothing(t *testing.T) {
 	st, c := importRun(t)
 
