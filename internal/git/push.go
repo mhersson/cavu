@@ -77,7 +77,7 @@ func forgeHeads(ctx context.Context, s PushSpec) (map[string]string, error) {
 
 	out, err := run(ctx, call{dir: s.MirrorDir, args: args, env: netEnv(s.URL, s.Token, allowedProtocols()), net: true, noHooks: true, read: true})
 	if err != nil {
-		return nil, fmt.Errorf("ask the forge for the branch: %w", err)
+		return nil, fmt.Errorf("ask for the branch's head: %w", err)
 	}
 
 	heads := map[string]string{}
