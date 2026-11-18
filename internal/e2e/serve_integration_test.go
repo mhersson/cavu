@@ -320,21 +320,23 @@ type apiTask struct {
 	Stop      struct{ Reason, Explanation string }
 }
 
-// await polls the task over REST until its status is one of statuses, and
-// returns it.
-func (s *server) await(id int64, statuses ...string) apiTask {
-	s.in.t.Helper()
+// rest polls each task over REST until it rests, in_review or blocked, and
+// requires it in_review.
+func (s *server) rest(ids ...int64) {
+	t := s.in.t
+	t.Helper()
 
-	var got apiTask
+	for _, id := range ids {
+		var got apiTask
 
-	within(s.in.t, patience, func() (bool, string) {
-		got = apiTask{}
-		b := s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, &got)
+		within(t, patience, func() (bool, string) {
+			got = apiTask{}
+			b := s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, &got)
 
-		return slices.Contains(statuses, got.Status), b
-	})
-
-	return got
+			return got.Status == "in_review" || got.Status == "blocked", b
+		})
+		require.Equal(t, "in_review", got.Status, "%+v", got)
+	}
 }
 
 // events pages through the task's events over REST, oldest first.
@@ -527,8 +529,7 @@ func TestSandboxCannotReachTheServer(t *testing.T) {
 	var task apiTask
 
 	s.tool("create_task", map[string]any{"project": "notes", "title": title, "start": true}, &task)
-	task = s.await(task.ID, "in_review", "blocked")
-	require.Equal(t, "in_review", task.Status, "%+v", task)
+	s.rest(task.ID)
 
 	var hosts []string
 	for _, d := range payloads[struct{ Host string }](t, s.events(task.ID), "egress_denied") {
@@ -611,8 +612,7 @@ func TestServeTaskEndToEnd(t *testing.T) {
 	var first apiTask
 
 	s.tool("create_task", map[string]any{"project": "notes", "title": title, "start": true}, &first)
-	first = s.await(first.ID, "in_review", "blocked")
-	require.Equal(t, "in_review", first.Status, "%+v", first)
+	s.rest(first.ID)
 
 	// The run ends once the change is exported.
 	var events []apiEvent
@@ -696,8 +696,7 @@ func TestServeTaskEndToEnd(t *testing.T) {
 	s.send(s.byPage, http.MethodPost, fmt.Sprintf("/api/tasks/%d/actions", first.ID), map[string]string{"action": "done"}, http.StatusOK, &first)
 	assert.Equal(t, "done", first.Status)
 
-	second = s.await(second.ID, "in_review", "blocked")
-	require.Equal(t, "in_review", second.Status, "%+v", second)
+	s.rest(second.ID)
 	assert.Greater(t, idOf(t, s.events(second.ID), "run_started"), idOf(t, s.events(first.ID), "merged"))
 }
 
@@ -725,12 +724,6 @@ func TestServeRunsTwoTasksAtOnce(t *testing.T) {
 	concurrency := func(n string) {
 		s.call(http.MethodPatch, "/api/settings", map[string]any{"settings": map[string]string{"concurrency": n}}, http.StatusOK, nil)
 	}
-	rest := func(ids ...int64) {
-		for _, id := range ids {
-			task := s.await(id, "in_review", "blocked")
-			require.Equal(t, "in_review", task.Status, "%+v", task)
-		}
-	}
 
 	// With two slots, each task's first answer waits until both tasks asked.
 	concurrency("2")
@@ -746,13 +739,13 @@ func TestServeRunsTwoTasksAtOnce(t *testing.T) {
 	})
 	releaseOne()
 	releaseOther()
-	rest(a, b)
+	s.rest(a, b)
 
 	// With one slot, two tasks started together run one after the other.
 	concurrency("1")
 
 	c, d := add(markers[2]), add(markers[3])
-	rest(c, d)
+	s.rest(c, d)
 
 	// Every call took its task's script, a resumed session's too.
 	calls := modelCalls(mock)
@@ -794,8 +787,7 @@ func TestServeRestartContinues(t *testing.T) {
 
 	s.start()
 
-	task = s.await(task.ID, "in_review", "blocked")
-	require.Equal(t, "in_review", task.Status, "%+v", task)
+	s.rest(task.ID)
 	assert.Equal(t, 1, in.runs(strconv.FormatInt(task.ID, 10)))
 
 	// The cut readiness turn is continued in its own session.
