@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -81,6 +82,27 @@ func TestPublishRecordsThePullRequest(t *testing.T) {
 		Number: publishedOK.Number, URL: publishedOK.URL, NodeID: publishedOK.NodeID, Branch: publishedOK.Branch,
 		Head: publishedOK.Head, Heads: []string{publishedOK.Head},
 	}, pr)
+}
+
+func TestPublishBodyHoldsNoCostOfTheTask(t *testing.T) {
+	h := newHarness(t)
+	h.withPublish()
+
+	res := workDone
+	res.CostEstimateUSD = 987.65
+	res.Usage = []store.Usage{{Source: "proxy", Model: "model-a", Input: 1, Output: 1, CostEstimateUSD: 987.65}}
+	h.runner.works = []step[engine.WorkResult]{{res: res}}
+
+	_, err := h.run(t.Context())
+	require.NoError(t, err)
+
+	totals, err := h.store.UsageTotals(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 987.65, totals[0].CostEstimateUSD, 1e-9, "the task's usage is on record")
+
+	pubs := h.runner.callsOf("publish")
+	require.Len(t, pubs, 1)
+	assert.NotContains(t, pubs[0].pub.Body, "987")
 }
 
 func TestPublishRejectedStops(t *testing.T) {

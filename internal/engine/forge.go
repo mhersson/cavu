@@ -28,7 +28,7 @@ func (p *pass) publish(ctx context.Context, v view, a Action, o openRun) error {
 	req := PublishRequest{Bundle: bundle, Head: f.Export.HeadCommit, Branch: o.cfg.Repo.Branch}
 	if pr := f.PR; pr != nil {
 		req.Branch, req.Prev, req.Number = pr.Branch, pr.Head, pr.Number
-	} else if req.Title, req.Body, err = p.pullRequestText(ctx, v, o); err != nil {
+	} else if req.Title, req.Body, err = p.pullRequestText(v, o); err != nil {
 		return fmt.Errorf("task %d: publish: %w", p.taskID, err)
 	}
 
@@ -54,17 +54,7 @@ func (p *pass) publish(ctx context.Context, v view, a Action, o openRun) error {
 
 // pullRequestText writes the title and the text of the task's pull request
 // from the record alone, so a retried publish writes the same.
-func (p *pass) pullRequestText(ctx context.Context, v view, o openRun) (title, body string, err error) {
-	usage, err := p.Store.UsageSince(ctx, p.taskID, 0)
-	if err != nil {
-		return "", "", err
-	}
-
-	var cost float64
-	for _, u := range usage {
-		cost += u.CostEstimateUSD
-	}
-
+func (p *pass) pullRequestText(v view, o openRun) (title, body string, err error) {
 	// Decide publishes only an export, which follows an ended session.
 	f, s := v.Facts, v.Facts.Session
 
@@ -74,7 +64,7 @@ func (p *pass) pullRequestText(ctx context.Context, v view, o openRun) (title, b
 		VerifyCommand: f.VerifyCommand, VerifyWaived: f.Verify == ResultWaived,
 		ReadinessOff: !v.Switches.Readiness, ReviewOff: !v.Switches.Review,
 		ReviewFailed: f.Review.Failed, Open: f.Review.Open, Minor: f.Review.Minor,
-		Model: o.cfg.Agent.Model, Effort: o.cfg.Agent.Effort, CostEstimateUSD: cost, CostMissing: f.CostMissing,
+		Model: o.cfg.Agent.Model, Effort: o.cfg.Agent.Effort,
 		Duration: untilExport(v.events),
 	})
 }

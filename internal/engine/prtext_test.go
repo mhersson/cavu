@@ -32,7 +32,7 @@ func TestPullRequestText(t *testing.T) {
 		Flagged:       engine.Flagged{Workflows: []string{".github/workflows/flagged-6.yml"}},
 		VerifyCommand: "verify-7",
 		Open:          []engine.Finding{{Severity: engine.SeverityImportant, Where: "login.go:12", What: "what-8", Why: "why-9"}},
-		Model:         "model-10", CostEstimateUSD: 1.25, Duration: 3 * time.Minute,
+		Model:         "model-10", Duration: 3 * time.Minute,
 	}
 
 	title, body, err := engine.PullRequestText(passed)

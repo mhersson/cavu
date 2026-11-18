@@ -29,7 +29,7 @@ func TestEveryPromptRenders(t *testing.T) {
 	pr := engine.PullRequestData{
 		TaskID: 4242, TaskTitle: "title-33", TaskBody: "body-34", Summary: "summary-35", WhereToLook: []string{"where-36"},
 		Assumptions: []string{"assumption-37"}, VerifyCommand: "verify-38", ReviewFailed: "failed-39", Model: "model-40",
-		Effort: "effort-41", CostEstimateUSD: 12.34, CostMissing: 2, Duration: time.Hour,
+		Effort: "effort-41", Duration: time.Hour,
 		Flagged: engine.Flagged{Workflows: []string{"workflow-42"}, Instructions: []string{"instruction-43"}, Large: []string{"large-44"}},
 		Open:    []engine.Finding{{Severity: "important", Where: "where-45", What: "what-46", Why: "why-47"}},
 		Minor:   []engine.Finding{{Severity: "minor", Where: "where-48", What: "what-49", Why: "why-50"}},
@@ -86,7 +86,7 @@ func TestEveryPromptRenders(t *testing.T) {
 			name: prompts.PullRequest, data: pr,
 			values: []string{
 				"4242", "title-33", "body-34", "summary-35", "where-36", "assumption-37", "verify-38", "failed-39", "model-40",
-				"effort-41", "12.34", "workflow-42", "instruction-43", "large-44", "where-45", "what-46", "why-47", "where-48",
+				"effort-41", "workflow-42", "instruction-43", "large-44", "where-45", "what-46", "why-47", "where-48",
 				"what-49", "why-50",
 			},
 		},
