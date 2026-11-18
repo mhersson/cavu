@@ -14,7 +14,7 @@ Pre-release. The verbs today:
 - `cavu user set` sets the one user and their password, read from standard input.
 - `cavu token` adds, lists and removes API tokens.
 - `cavu image build` builds the sandbox image on Docker or Podman.
-- `cavu doctor` checks the runtime, the image, the settings, the endpoint and the forge.
+- `cavu doctor` checks the runtime, the image, the settings, the endpoint and the access to GitHub.
 - `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
 - `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts, lists and shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
@@ -45,38 +45,56 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    `ci_timeout_minutes` is how long a pull request's checks may stay unfinished before the task stops ([The pull request](#the-pull-request)): a whole number of minutes, 120 when unset and `0` for no limit.
 
-3. Store the secrets from standard input, never as arguments. `forge_token` is a personal access token. CAVU clones a private repository with it and, with the switch `publish` on, pushes the task's branch and opens its pull request with it, on a public repository too, so it must be allowed to push to the repository and to open pull requests on it. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
+3. Store the secrets from standard input, never as arguments. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
 
    ```
    cavu secret set endpoint_credential < credential.txt
-   cavu secret set forge_token < token.txt
    ```
 
-   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token from the App's installation on the repository for the clone, and a new one for each push. The App must grant these repository permissions: Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read-only; an App granted less fails the clone or the push. Whoever wants CAVU to change a workflow grants Workflows read and write too. With `forge_app_id` empty, `forge_token` is used.
+   CAVU reaches GitHub with a GitHub App or a personal access token. It clones a private repository with it. With a project's switch `publish` on, the default, it also pushes the task's branch, opens its pull request, reads the pull request with its checks and reviews, marks it ready for review and comments on it, on a public repository too ([The pull request](#the-pull-request)).
+
+   A GitHub App is recommended: CAVU asks the App's installation on the repository for tokens for that repository alone, each with only what its use needs, and GitHub's installation tokens expire after an hour. Each push gets a new token with Contents write, and Workflows write only when the task's change touches a file under `.github/workflows/`; the clone and the API calls share one, which CAVU keeps until five minutes before it expires. With Checks read an App also reads the check runs, which a personal access token may not (below). Grant the App these repository permissions: Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read-only. CAVU's tokens ask for all of them, and GitHub's documentation says an installation token cannot be granted a permission the App was not granted, nor access to a repository its installation was not. Install the App on the repository, then set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`:
 
    ```
    cavu settings set forge_app_id 123456
    cavu secret set forge_app_key < app-key.pem
    ```
 
-4. Check the setup. Each line is a check; `skipped` follows from an earlier failure, or for the forge check from having no forge credential (`forge_token` or `forge_app_id`) or no project yet, and `warning` passes. The forge check clones the first project by name with the credential a run's clone uses, and with the project's switch `publish` on it also reads over GitHub's API the repository and the checks of the base branch's head commit, the way CAVU reads the checks of a pull request it watches. The exit code is 1 when a check failed.
+   With `forge_app_id` empty, CAVU uses the personal access token `forge_token`, as it is, for every clone, push and call:
 
    ```
-   cavu doctor
+   cavu secret set forge_token < token.txt
    ```
 
-5. Add a project, then check its environment. The check builds the workspace, runs the setup and verify commands once and stores the result as the project's baseline. A task runs only against a project with a passed baseline, or with verify waived.
+   A fine-grained personal access token limited to the repository needs these repository permissions, each of which GitHub's documentation names for one of CAVU's calls: Contents and Pull requests read and write, and Actions, Commit statuses and Metadata read-only. For the GraphQL calls with which CAVU reads the reviews and marks the pull request ready for review, GitHub's documentation lists no permission: it says that the data a call asks for decides the permissions it needs, and that the answer to a call without them names those the token needs. The documentation also lists calling the Checks API among what fine-grained tokens do not support. When GitHub refuses a personal access token the Checks API, CAVU reads the jobs of the head commit's GitHub Actions workflow runs and the commit statuses instead, and a check reported only as a check run, by another app or by a workflow step, is not seen: CAVU neither waits for it nor acts on its result.
+
+   A classic personal access token works with the `repo` scope, which GitHub's documentation describes as full access to public and private repositories: it reaches every repository the account can, not this one alone, and reads the check runs.
+
+   A change to a file under `.github/workflows/` needs the Workflows permission, which GitHub's documentation names for editing workflow files: Workflows read and write on a GitHub App or a fine-grained token, and the `workflow` scope on a classic one. Without it, when GitHub refuses the push, or answers the request for an App's push token with status 422, the task stops as `push_rejected`: the explanation quotes the reason, and for an App names the permissions it must be granted.
+
+4. Add a project.
 
    ```
    cavu project add web --repo https://github.com/OWNER/REPO.git --verify "make test"
-   cavu project check web
    ```
 
    `--repo` takes the repository's `https://` address on github.com or on GitHub Enterprise. CAVU finds GitHub's API from the address's host, with no setting: `https://api.github.com` for `github.com`, `https://api.HOST` for a host under `.ghe.com`, and `https://HOST/api/v3` for any other host. Its calls to the API trust the CA bundle that `ca_bundle_path` names too, beside the system's certificates.
 
    `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches, caps, pull request policy and baseline, and the tools the newest check found and the verify command it suggested. The pull request policy is whether the repository's pull requests may start no check (`--no-ci on` or `off`, [below](#the-pull-request)), the checks the project ignores (`--ignore-check NAME`, the name as GitHub shows it) and its review bots (`--review-bot LOGIN`, the login as GitHub shows it: a GitHub App's bot is written `name[bot]`, and a name without `[bot]` is a user's account). Each of the two lists takes the flag repeated, and one empty value empties it.
 
-6. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. With the switch `publish` on it ends once the task's pull request opens, with the pull request's address and a line saying that `cavu serve` watches it from there, so start `cavu serve` ([Running the server](#running-the-server)); on a task whose pull request is watched already it prints the same and returns at once. `task show` also prints the task's dependencies and why it waits, the turns, the duration, the budget it used since you last acted, and the files of the task's change, a binary file with its size, at most 50 of them and then the total, with the paths in it that a person should see before a merge, each kind on a line of its own: workflows under `.github/workflows/`, agent instructions (`AGENTS.md`, `CLAUDE.md` and files under a `.claude/` directory, in any directory), deleted ones too, and files over 1 MiB that the change adds. Once the task has a pull request, `task show` prints its address, its state, its checks with the failed ones named and, while CAVU watches it, what the watch waits for; the change is then the one CAVU published to the pull request last.
+5. Check the setup, now that the forge check has a project to read. Each line is a check; `skipped` follows from an earlier failure, or for the forge check from having no credential for GitHub (`forge_token` or `forge_app_id`) or no project, and `warning` passes. The forge check clones the first project by name with the credential a run's clone uses, and with the project's switch `publish` on it also reads over GitHub's API the repository and the checks of the base branch's head commit, the way CAVU reads the checks of a pull request it watches; when it reads them as GitHub Actions jobs, its line says so and names what is not seen. It pushes nothing and opens no pull request, so it does not show whether the credential may. The exit code is 1 when a check failed.
+
+   ```
+   cavu doctor
+   ```
+
+6. Check the project's environment. The check builds the workspace, runs the setup and verify commands once and stores the result as the project's baseline. A task runs only against a project with a passed baseline, or with verify waived.
+
+   ```
+   cavu project check web
+   ```
+
+7. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. With the switch `publish` on it ends once the task's pull request opens, with the pull request's address and a line saying that `cavu serve` watches it from there, so start `cavu serve` ([Running the server](#running-the-server)); on a task whose pull request is watched already it prints the same and returns at once. `task show` also prints the task's dependencies and why it waits, the turns, the duration, the budget it used since you last acted, and the files of the task's change, a binary file with its size, at most 50 of them and then the total, with the paths in it that a person should see before a merge, each kind on a line of its own: workflows under `.github/workflows/`, agent instructions (`AGENTS.md`, `CLAUDE.md` and files under a `.claude/` directory, in any directory), deleted ones too, and files over 1 MiB that the change adds. Once the task has a pull request, `task show` prints its address, its state, its checks with the failed ones named and, while CAVU watches it, what the watch waits for; the change is then the one CAVU published to the pull request last.
 
    With the project's switch `publish` on, the default, CAVU acts on GitHub under the account of the token it holds (for a GitHub App, the App's bot). Once the task's change is exported it pushes the task's branch, `cavu/` and a slug of the title (`cavu/fix-the-login-redirect` for the task below; when GitHub already has a branch of that name that CAVU did not push for the task, the first free name with `-2` to `-9` added), and opens a draft pull request with a text it writes, whose contents [Security](#security) lists. `cavu serve` then watches the pull request, and may mark it ready for review, push the commits of fix runs to the branch, and comment on it after a follow-up run ([The pull request](#the-pull-request)). CAVU never forces a push, never merges, never closes a pull request and never deletes a branch.
 
@@ -125,9 +143,9 @@ Then `cavu task run ID` again for an answer or a retry. A retry of one of the pu
 
 `task run` ends where the pull request opens. From there `cavu serve` watches it ([Running the server](#running-the-server)), so keep one running; when it starts, it looks at once at every pull request CAVU watches.
 
-The pull request opens as a draft. GitHub does not offer draft pull requests on every plan: when GitHub answers the draft with status 422, CAVU asks once more without the draft, so the pull request opens ready for review and CAVU's ready-marking below then changes nothing.
+The pull request opens as a draft. GitHub does not offer draft pull requests in every repository: when GitHub answers the draft with status 422, CAVU asks once more without the draft, so the pull request opens ready for review and CAVU's ready-marking below then changes nothing.
 
-While no fix run works on it, `cavu serve` looks at the pull request every 10 seconds while its checks run, or while none has started within the 3 minutes below, and every minute otherwise, under a stop too; a fix run looks once before it pushes. A look reads the pull request, the check runs and commit statuses of its newest commit but those the project ignores, and the reviewers' requests. After a look that fails, the next comes 10 seconds later, twice as long after each further failure in a row up to 5 minutes, and while GitHub limits CAVU's requests, not before the limit lifts and at most an hour later; the API's `waiting` holds the newest look's error and the time of the next look.
+While no fix run works on it, `cavu serve` looks at the pull request every 10 seconds while its checks run, or while none has started within the 3 minutes below, and every minute otherwise, under a stop too; a fix run looks once before it pushes. A look reads the pull request, the check runs and commit statuses of its newest commit but those the project ignores, and the reviewers' requests; once GitHub has refused a personal access token the Checks API, it reads the jobs of the commit's GitHub Actions workflow runs in place of the check runs (step 3). After a look that fails, the next comes 10 seconds later, twice as long after each further failure in a row up to 5 minutes, and while GitHub limits CAVU's requests, not before the limit lifts and at most an hour later; the API's `waiting` holds the newest look's error and the time of the next look.
 
 A merge seen at any look makes the task `done`, and a close without a merge cancels it. A commit on the branch that CAVU did not push, once a look has shown it, stops the task as `taken_over` as soon as no stop is open, unless a retry of `conflict` or `taken_over` gave the branch back to CAVU. Otherwise CAVU acts only on a look taken after its own newest push or ready-marking and after a person's newest action on the task, so a retry of a stop below takes effect at the next look, at most a minute later while GitHub answers. Then, in this order:
 
