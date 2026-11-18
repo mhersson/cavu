@@ -28,7 +28,7 @@ It also lists what the Claude Code adapter assumes of the pinned Claude Code ver
 ## readiness
 
 - Switch: `readiness`, set per project and overridden by a task's overrides, which is how the `internal/replay` package sets it (`cavu replay --no-readiness`). On by default.
-- What it turns on: a readiness turn opens each run's session. The agent reads the task and what it needs of the repository in the read-only phase, whose workspace is mounted read-only, and ends `ready`, or `blocked` with a question for each fact it needs that neither the task nor the repository holds and the answer it would assume. `ready` resumes the same session in the agent phase to do the task. `blocked` stops the task as `question`, which a person answers as any other, and the answer resumes the session with every tool. A replay answers a shadow's readiness questions with the agent's own suggested answers when it gave one for every question, and counts the questions. With the switch off, the session opens with the task.
+- What it turns on: a readiness turn opens each run's session. The agent reads the task and what it needs of the repository in the read-only phase, whose workspace is mounted read-only, and ends `ready`, or `blocked` with a question for each fact it needs that neither the task nor the repository holds, a contact or any other commitment made in the owner's name counting as one, and the answer it would assume. `ready` resumes the same session in the agent phase to do the task. `blocked` stops the task as `question`, which a person answers as any other, and the answer resumes the session with every tool. A replay answers a shadow's readiness questions with the agent's own suggested answers when it gave one for every question, and counts the questions. With the switch off, the session opens with the task.
 - Assumption: models start unattended work without asking for missing facts.
 - Comparison to retire it: replay the same reference set with `cavu replay --no-readiness`. Retire the part when the questions it asked did not change what a person had to correct, and the verify pass rate is no worse than with it on.
 
@@ -70,11 +70,12 @@ It also lists what the Claude Code adapter assumes of the pinned Claude Code ver
 
 ## Unknown on 2.1.325
 
-What a mock cannot settle. Each live check (`live_test.go`, tags `integration` and `live`) skips unless its variables are set, and never runs in CI:
+What a mock cannot settle. Each live check (`live_test.go` in `internal/driver/claudecode`, and `live_integration_test.go` in `internal/runner`, tags `integration` and `live`) skips unless its variables are set, and never runs in CI:
 
 ```bash
 CAVU_LIVE_SUBSCRIPTION_TOKEN=... go test -tags integration,live -count=1 -run 'TestLive' ./internal/driver/claudecode/
 CAVU_LIVE_ENDPOINT_URL=... CAVU_LIVE_ENDPOINT_KEY=... go test -tags integration,live -count=1 -run 'TestLiveGateway' ./internal/driver/claudecode/
+CAVU_LIVE_SUBSCRIPTION_TOKEN=... go test -tags integration,live -count=1 -run 'TestLiveReadinessAsks' ./internal/runner/
 ```
 
 `CAVU_LIVE_ENDPOINT_AUTH_HEADER` (`bearer` or `x-api-key`, default `x-api-key`) and `CAVU_LIVE_MODEL` (default `claude-haiku-5-5`) adjust them.
