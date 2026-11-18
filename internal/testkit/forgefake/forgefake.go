@@ -617,14 +617,19 @@ func (f *Fake) reviewsJSON(p *pull) map[string]any {
 	}
 }
 
-// actor is an author as GraphQL gives it: null for a deleted account, and a
-// bot's login without the [bot] the REST API shows.
+// actor is an author as GraphQL gives it: null for a deleted account, and for
+// a login that ends in [bot] a Bot whose login lacks the [bot] the REST API
+// shows.
 func actor(login string) any {
+	if bot, ok := strings.CutSuffix(login, "[bot]"); ok {
+		return map[string]any{"__typename": "Bot", "login": bot}
+	}
+
 	if login == "" {
 		return nil
 	}
 
-	return map[string]any{"login": strings.TrimSuffix(login, "[bot]")}
+	return map[string]any{"__typename": "User", "login": login}
 }
 
 func graphQLError(w http.ResponseWriter, typ, msg string) {

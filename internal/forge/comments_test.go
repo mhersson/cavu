@@ -1,7 +1,6 @@
 package forge
 
 import (
-	"net/http"
 	"strings"
 	"testing"
 
@@ -13,9 +12,9 @@ import (
 
 const changes = "CHANGES_REQUESTED"
 
-// reviewBots names the bot the way a project would, with the suffix and case
-// the REST API and GitHub's page show.
-var reviewBots = []string{"Review-Bot[bot]"}
+// reviewBots names a bot the way GitHub's REST API and page show it, in
+// another case, and lint-bot without its [bot], which names a user.
+var reviewBots = []string{"Review-Bot[bot]", "lint-bot"}
 
 // newCommentsFake returns a fake with pull request 1 open, where alice may
 // write, ada administers, rita may read and nobody else is a collaborator.
@@ -67,7 +66,22 @@ func TestObserveComments(t *testing.T) {
 		{"a review by a configured bot", func(f *forgefake.Fake) []Comment {
 			id := f.Review(1, "review-bot[bot]", changes, "Handle the error.")
 
-			return []Comment{{ID: id, Author: "review-bot", Body: "Handle the error."}}
+			return []Comment{{ID: id, Author: "review-bot[bot]", Body: "Handle the error."}}
+		}},
+		{"a review by a user who carries a configured bot's name", func(f *forgefake.Fake) []Comment {
+			f.Review(1, "review-bot", changes, "Handle the error.")
+
+			return nil
+		}},
+		{"a review by a bot configured without its suffix", func(f *forgefake.Fake) []Comment {
+			f.Review(1, "lint-bot[bot]", changes, "Handle the error.")
+
+			return nil
+		}},
+		{"a review by a configured user", func(f *forgefake.Fake) []Comment {
+			id := f.Review(1, "Lint-Bot", changes, "Handle the error.")
+
+			return []Comment{{ID: id, Author: "Lint-Bot", Body: "Handle the error."}}
 		}},
 		{"a review without a body", func(f *forgefake.Fake) []Comment {
 			f.Review(1, "alice", changes, "")
@@ -160,6 +174,7 @@ func TestObserveAsksEachAuthorOnce(t *testing.T) {
 	f.Thread(1, "alice", "a.go", 1, "One.").Reply("rita", "Why?")
 	f.Thread(1, "alice", "b.go", 2, "Two.")
 	f.Review(1, "review-bot[bot]", changes, "Lint.")
+	f.Review(1, "ci-bot[bot]", changes, "Build.")
 	f.Thread(1, "", "c.go", 3, "From a deleted account.")
 
 	for range 2 {
@@ -167,12 +182,28 @@ func TestObserveAsksEachAuthorOnce(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	perm := func(login string) int {
-		return sent(f, http.MethodGet, "/api/v3/repos/o/n/collaborators/"+login+"/permission")
+	var asked []string
+
+	for _, r := range f.Requests() {
+		if rest, ok := strings.CutPrefix(r.Path, "/api/v3/repos/o/n/collaborators/"); ok {
+			asked = append(asked, strings.TrimSuffix(rest, "/permission"))
+		}
 	}
 
-	assert.Equal(t, 2, perm("alice"), "once per Observe")
-	assert.Equal(t, 2, perm("rita"))
-	assert.Equal(t, 0, perm("review-bot"), "a configured bot")
-	assert.Equal(t, 0, perm(""), "a deleted account")
+	// Once per Observe each; never a bot, configured or not, nor a deleted account.
+	assert.Equal(t, []string{"alice", "rita", "alice", "rita"}, asked)
+}
+
+func TestAuthorName(t *testing.T) {
+	for _, tc := range []struct {
+		a    author
+		want string
+	}{
+		{author{Typename: "Bot", Login: "review-bot"}, "review-bot[bot]"},
+		{author{Typename: "Bot", Login: "review-bot[bot]"}, "review-bot[bot]"},
+		{author{Typename: "User", Login: "review-bot"}, "review-bot"},
+		{author{}, ""},
+	} {
+		assert.Equal(t, tc.want, tc.a.name(), "%+v", tc.a)
+	}
 }

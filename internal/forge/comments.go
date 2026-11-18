@@ -15,11 +15,11 @@ const bodyCap = 4 << 10
 const observeQuery = `query Observe($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      latestOpinionatedReviews(last: 100) { nodes { id state body author { login } } }
+      latestOpinionatedReviews(last: 100) { nodes { id state body author { __typename login } } }
       reviewThreads(last: 100) {
         nodes {
           isResolved path line originalLine
-          comments(last: 100) { nodes { id body author { login } } }
+          comments(last: 100) { nodes { id body author { __typename login } } }
         }
       }
     }
@@ -37,7 +37,18 @@ type Comment struct {
 // author is a review's or a comment's; a deleted account's is null, so its
 // login is "".
 type author struct {
-	Login string `json:"login"`
+	Typename string `json:"__typename"`
+	Login    string `json:"login"`
+}
+
+// name is the author as GitHub's REST API and page write it, a bot as
+// name[bot]; GraphQL's documentation does not say which form a Bot's login has.
+func (a author) name() string {
+	if a.Typename == "Bot" && !strings.HasSuffix(a.Login, "[bot]") {
+		return a.Login + "[bot]"
+	}
+
+	return a.Login
 }
 
 type pullRequestNode struct {
@@ -67,8 +78,8 @@ type pullRequestNode struct {
 }
 
 // comments reads the reviewer requests on pull request q.Number. An author is
-// allowed when q.ReviewBots names the login, else when the forge says the
-// account may write; each other login is asked once.
+// allowed when q.ReviewBots names it, a bot as name[bot] and a user by login,
+// else when the forge says the user may write; each user is asked once.
 func (c *Client) comments(ctx context.Context, r Repo, token string, q Query) ([]Comment, error) {
 	var d struct {
 		Repository struct {
@@ -83,18 +94,22 @@ func (c *Client) comments(ctx context.Context, r Repo, token string, q Query) ([
 
 	known := map[string]bool{}
 	for _, b := range q.ReviewBots {
-		known[loginKey(b)] = true
+		known[strings.ToLower(b)] = true
 	}
 
-	known[""] = false // a deleted account
+	allowed := func(a author) (bool, error) {
+		k := strings.ToLower(a.name())
 
-	allowed := func(login string) (bool, error) {
-		k := loginKey(login)
-		if ok, seen := known[k]; seen {
+		switch ok, seen := known[k]; {
+		case a.Login == "": // a deleted account
+			return false, nil
+		case seen:
 			return ok, nil
+		case a.Typename == "Bot": // no collaborator, so allowed by name alone
+			return false, nil
 		}
 
-		ok, err := c.writer(ctx, r, token, login)
+		ok, err := c.writer(ctx, r, token, a.Login)
 		known[k] = ok
 
 		return ok, err
@@ -102,10 +117,6 @@ func (c *Client) comments(ctx context.Context, r Repo, token string, q Query) ([
 
 	return requests(d.Repository.PullRequest, allowed)
 }
-
-// loginKey compares logins: GitHub's are case-insensitive, and GraphQL gives a
-// bot's without the [bot] the REST API and GitHub's page show.
-func loginKey(login string) string { return strings.TrimSuffix(strings.ToLower(login), "[bot]") }
 
 // writer reports whether login's permission on r is admin or write; maintain
 // reads as write. An account that is no collaborator answers 404.
@@ -136,7 +147,7 @@ func (c *Client) writer(ctx context.Context, r Repo, token, login string) (bool,
 // allowed author: it is one request with the id and author of its newest such
 // comment, its line on the head else its original line, and the allowed
 // comments' bodies. Neither is held to a commit, so an outdated thread counts.
-func requests(pr pullRequestNode, allowed func(login string) (bool, error)) ([]Comment, error) {
+func requests(pr pullRequestNode, allowed func(author) (bool, error)) ([]Comment, error) {
 	var out []Comment
 
 	for _, rv := range pr.LatestOpinionatedReviews.Nodes {
@@ -144,13 +155,13 @@ func requests(pr pullRequestNode, allowed func(login string) (bool, error)) ([]C
 			continue
 		}
 
-		ok, err := allowed(rv.Author.Login)
+		ok, err := allowed(rv.Author)
 		if err != nil {
 			return nil, err
 		}
 
 		if ok {
-			out = append(out, Comment{ID: rv.ID, Author: rv.Author.Login, Body: cut(rv.Body, bodyCap)})
+			out = append(out, Comment{ID: rv.ID, Author: rv.Author.name(), Body: cut(rv.Body, bodyCap)})
 		}
 	}
 
@@ -164,13 +175,13 @@ func requests(pr pullRequestNode, allowed func(login string) (bool, error)) ([]C
 		var bodies []string
 
 		for _, cm := range th.Comments.Nodes {
-			ok, err := allowed(cm.Author.Login)
+			ok, err := allowed(cm.Author)
 			if err != nil {
 				return nil, err
 			}
 
 			if ok {
-				req.ID, req.Author = cm.ID, cm.Author.Login
+				req.ID, req.Author = cm.ID, cm.Author.name()
 				bodies = append(bodies, cut(cm.Body, bodyCap))
 			}
 		}
