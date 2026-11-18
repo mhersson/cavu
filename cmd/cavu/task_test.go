@@ -500,6 +500,33 @@ func TestTaskShowPrintsTheBudgetAndAMissingCost(t *testing.T) {
 	assert.Equal(t, []string{"0", "5000", "2"}, numbers.FindAllString(cost[0], -1), "the cost line ends with how many sessions it leaves out")
 }
 
+func TestTaskShowCostLineCountsMissingSessionsInTheRightNumber(t *testing.T) {
+	dir := webData(t)
+	id := addTask(t, dir, "Fix")
+
+	noun := regexp.MustCompile(`leaving out [0-9]+ (sessions?)\b`)
+	nounFor := func() string {
+		cost := labelled(cavuIn(t, dir, "task", "show", id), "cost (estimate):")
+		require.Len(t, cost, 1)
+
+		if m := noun.FindStringSubmatch(cost[0]); m != nil {
+			return m[1]
+		}
+
+		return ""
+	}
+
+	assert.Empty(t, nounFor(), "nothing is left out")
+
+	seedEvents(t, dir, id, nil,
+		event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeCrashed, CostMissing: true}))
+	assert.Equal(t, "session", nounFor())
+
+	seedEvents(t, dir, id, nil,
+		event(engine.SessionEnded, "runner", engine.SessionEndedPayload{Outcome: engine.OutcomeCrashed, CostMissing: true}))
+	assert.Equal(t, "sessions", nounFor())
+}
+
 // amounts is every dollar amount in text, in order.
 var amounts = regexp.MustCompile(`\$[0-9]+\.[0-9]{2}`)
 
