@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,15 +44,17 @@ var probe = mockapi.Step{Tool: "Bash", Input: map[string]any{
 }}
 
 // server is a cavu serve child of an instance as a client reaches it: its
-// address, the API token, the session cookie, every answer it gave, and the
-// running child's ended, as instance.start gives it.
+// address, the API token, the session cookie, and every answer it gave. cmd,
+// ended and wait are the running child's, as instance.start gives them.
 type server struct {
 	in      *instance
 	url     string
 	token   string
 	cookie  *http.Cookie
 	answers answers
+	cmd     *exec.Cmd
 	ended   <-chan struct{}
+	wait    func() result
 }
 
 // answers keeps the bodies of the server's answers as they are read.
@@ -150,18 +154,21 @@ func (in *instance) serve() *server {
 }
 
 // start starts cavu serve and waits for the address it prints. The test's end
-// interrupts it, and a cleanup waits for it to stop before the instance's
+// interrupts it, and a cleanup requires it to exit 0 before the instance's
 // containers are removed.
 func (s *server) start() {
 	t := s.in.t
 	t.Helper()
 
 	l := &listening{addr: make(chan string, 1)}
-	_, ended, wait := s.in.start("", l, "serve")
-	s.ended = ended
+	cmd, ended, wait := s.in.start("", l, "serve")
+	s.cmd, s.ended, s.wait = cmd, ended, wait
 
 	t.Cleanup(func() {
-		if r := wait(); t.Failed() {
+		r := wait()
+		assert.Zero(t, r.code, "cavu serve exits 0 once interrupted")
+
+		if t.Failed() {
 			t.Logf("cavu serve:\n%s", r)
 		}
 	})
@@ -173,6 +180,17 @@ func (s *server) start() {
 	case <-time.After(time.Minute):
 		t.Fatal("cavu serve printed no address within a minute")
 	}
+}
+
+// stop interrupts the server, as Ctrl-C does, and requires it to exit 0.
+func (s *server) stop() {
+	t := s.in.t
+	t.Helper()
+
+	require.NoError(t, s.cmd.Process.Signal(os.Interrupt))
+
+	r := s.wait()
+	require.Zero(t, r.code, r)
 }
 
 // byToken authorizes a request with the API token.
@@ -451,4 +469,46 @@ func TestServeCancelInterruptsSession(t *testing.T) {
 
 	s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", task.ID), nil, http.StatusOK, &got)
 	assert.Equal(t, "cancelled", got.Stop.Reason, "%+v", got)
+}
+
+func TestServeRestartContinues(t *testing.T) {
+	// The held readiness call takes the first step, which the cut session never receives.
+	mock := mockapi.Start(t, []mockapi.Step{ready, change, done, readDiff, passed})
+	in := setup(t, mock.HostURL())
+	s := in.serve()
+	s.project("notes", nil)
+
+	mock.Hold()
+
+	var task apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+	require.True(t, modelCalled(mock, s.ended), "cavu serve made no model call")
+
+	// The second server's containers carry the first's names, so the first's are told apart by id.
+	ids := func(filter string) []string {
+		return strings.Fields(in.client("ps", "--all", "--quiet", "--no-trunc", "--filter="+filter))
+	}
+	first := ids("label=cavu.instance=" + in.id)
+	require.NotEmpty(t, first)
+
+	s.stop()
+	s.start()
+
+	task = s.await(task.ID, "in_review", "blocked")
+	require.Equal(t, "in_review", task.Status, "%+v", task)
+	assert.Equal(t, 1, in.runs(strconv.FormatInt(task.ID, 10)))
+
+	// The cut readiness turn is continued in its own session.
+	assert.Equal(t, []sessionStart{{Mode: "readiness"}, {Mode: "continue", Resume: true}}, sessionStarts(t, s.events(task.ID)))
+
+	within(t, time.Minute, func() (bool, string) {
+		left := in.containers()
+
+		return len(left) == 0, fmt.Sprintf("containers %v", left)
+	})
+
+	for _, id := range first {
+		assert.Empty(t, ids("id="+id), "a container of the first server is left")
+	}
 }

@@ -148,8 +148,8 @@ func (r result) String() string { return r.stdout + r.stderr }
 // start starts the child on the instance's data directory with stdin as its
 // input; out, unless nil, also gets its standard output as it is written.
 // ended is closed when it exits, and wait waits for that and returns its
-// result. The test's end interrupts a child still running, as Ctrl-C does,
-// and kills it a minute later.
+// result, which it keeps the first time. The test's end interrupts a child
+// still running, as Ctrl-C does, and kills it a minute later.
 func (in *instance) start(stdin string, out io.Writer, args ...string) (cmd *exec.Cmd, ended <-chan struct{}, wait func() result) {
 	in.t.Helper()
 
@@ -171,7 +171,10 @@ func (in *instance) start(stdin string, out io.Writer, args ...string) (cmd *exe
 
 	require.NoError(in.t, cmd.Start())
 
-	var err error
+	var (
+		err  error
+		kept sync.Once
+	)
 
 	done := make(chan struct{})
 
@@ -189,7 +192,8 @@ func (in *instance) start(stdin string, out io.Writer, args ...string) (cmd *exe
 		}
 
 		r := result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
-		in.out.WriteString(r.String())
+
+		kept.Do(func() { in.out.WriteString(r.String()) })
 
 		return r
 	}
