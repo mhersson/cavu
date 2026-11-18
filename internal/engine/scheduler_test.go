@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
@@ -1153,8 +1154,11 @@ func TestSchedulerWaitsOutARateLimit(t *testing.T) {
 		h.clock.Advance(time.Millisecond)
 		s.Nudge()
 
-		h.eventually(func() bool { return slices.Equal(h.stopsOf(), []string{engine.StopCITimeout}) }, "the task stops when its checks' time is up")
-		h.eventually(func() bool { return strings.Contains(s.Waiting(h.task.ID), next) }, "the stopped task is watched on the same clock")
+		h.eventually(func() bool {
+			return slices.Equal(h.stopsOf(), []string{engine.StopCITimeout}) && !s.Driving()
+		}, "the task stops when its checks' time is up")
+		s.passes(t, 2) // the pass after the stop's drive reads the task again
+		assert.Contains(t, s.Waiting(h.task.ID), next, "the stopped task is watched on the same clock")
 
 		looks.after(t, s, time.Hour)
 		assert.Equal(t, seconds(0, 10, 3610), looks.offsets())
@@ -1204,23 +1208,12 @@ func TestSchedulerWatchNeedsNoSlot(t *testing.T) {
 }
 
 // A new scheduler keeps no clock of the old one's: it looks at a watched task
-// in its first pass. Run's end waits for a look in flight.
+// in its first pass.
 func TestSchedulerRestartResumesTheWatch(t *testing.T) {
 	h := newHarness(t)
 	h.watching()
 	h.runner.observes = []step[engine.Observation]{{res: checksPending}, {res: checksPending}}
 	g := h.gate("observe")
-
-	// A look cut by Run's end returns only once the test lets it.
-	release := make(chan struct{})
-	h.runner.gate = func(ctx context.Context, c call) error {
-		err := g.wait(ctx, c)
-		if err != nil {
-			<-release
-		}
-
-		return err
-	}
 
 	first := h.schedule(nil)
 
@@ -1237,17 +1230,51 @@ func TestSchedulerRestartResumesTheWatch(t *testing.T) {
 	assert.Equal(t, int64(1), again.ended.Load(), "the look starts in the first pass")
 	assert.Len(t, h.runner.callsOf("observe"), 2)
 
-	stopped := make(chan error, 1)
-
-	go func() { stopped <- again.stop() }()
-
-	h.eventually(func() bool { return slices.Equal(g.cutOf("observe"), []int64{h.task.ID}) }, "the look's context ends with Run's")
-	assert.Empty(t, stopped, "Run does not end while a look is in flight")
-
-	close(release)
-	h.eventually(func() bool { return len(stopped) == 1 }, "Run ends after the look")
-	require.NoError(t, <-stopped)
+	require.NoError(t, again.stop())
+	assert.Equal(t, []int64{h.task.ID}, g.cutOf("observe"))
 	assert.Empty(t, again.errs(), "a look cut by Run's end is not reported")
+}
+
+// Run's end waits for a look in flight, as for a drive. In a bubble, Wait
+// returns once every other goroutine is durably blocked, so a Run that has not
+// returned is seen, not raced; a look left behind fails the bubble.
+func TestSchedulerEndWaitsForALook(t *testing.T) {
+	h := newHarness(t)
+	h.watching()
+
+	synctest.Test(t, func(t *testing.T) {
+		g := h.gate("observe")
+
+		// A look cut by Run's end returns only once the test lets it.
+		release := make(chan struct{})
+		h.runner.gate = func(ctx context.Context, c call) error {
+			err := g.wait(ctx, c)
+			if err != nil {
+				<-release
+			}
+
+			return err
+		}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		s := &engine.Scheduler{Loop: h.loop, Tick: time.Hour}
+		ended := make(chan error, 1)
+
+		go func() { ended <- s.Run(ctx) }()
+
+		synctest.Wait()
+		require.Equal(t, []int64{h.task.ID}, g.held("observe"), "the first pass looks")
+
+		cancel()
+		synctest.Wait()
+		require.Equal(t, []int64{h.task.ID}, g.cutOf("observe"))
+		assert.Empty(t, ended, "Run has not returned while the look is in flight")
+
+		close(release)
+		synctest.Wait()
+		require.Len(t, ended, 1, "Run returns once the look has")
+		assert.NoError(t, <-ended)
+	})
 }
 
 // A drive that fails is tried again only after an event, as on any task: the
