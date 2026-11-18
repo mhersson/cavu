@@ -43,20 +43,10 @@ func (r *Runner) Publish(ctx context.Context, c engine.RunConfig, p engine.Publi
 func (r *Runner) publish(ctx context.Context, st *run, c engine.RunConfig, p engine.PublishRequest) (engine.PublishResult, string, error) {
 	var files []engine.ChangedFile
 
-	problem, err := st.imported(ctx, c, p.Bundle, p.Head, cmp.Or(p.Prev, c.Repo.BaseCommit), func(imp container) (string, error) {
-		_, problem, err := gitStep(ctx, imp, importCommand(changeScript, c.Repo.BaseCommit, p.Head, changeDiff, changeFiles))
-		if err != nil || problem != "" {
-			return problem, err
-		}
+	problem, err := st.imported(ctx, c, p.Bundle, p.Head, cmp.Or(p.Prev, c.Repo.BaseCommit), func(imp container) (problem string, err error) {
+		files, _, problem, err = changeList(ctx, imp, c, p.Head)
 
-		list, problem, err := copyOut(ctx, imp, changeFiles)
-		if err != nil || problem != "" {
-			return problem, err
-		}
-
-		files, err = changedPaths(list)
-
-		return "", err
+		return problem, err
 	})
 	if err != nil || problem != "" {
 		return engine.PublishResult{Rejected: problem}, "", err

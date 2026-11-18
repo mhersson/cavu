@@ -86,7 +86,7 @@ func (st *run) change(ctx context.Context, c engine.RunConfig, bundle []byte, he
 	res := engine.ExportResult{HeadCommit: head, Bundle: bundle}
 
 	problem, err := st.imported(ctx, c, bundle, head, c.Repo.BaseCommit, func(imp container) (string, error) {
-		out, problem, err := gitStep(ctx, imp, importCommand(changeScript, c.Repo.BaseCommit, head, changeDiff, changeFiles))
+		files, stat, problem, err := changeList(ctx, imp, c, head)
 		if err != nil || problem != "" {
 			return problem, err
 		}
@@ -95,21 +95,33 @@ func (st *run) change(ctx context.Context, c engine.RunConfig, bundle []byte, he
 			return problem, err
 		}
 
-		list, problem, err := copyOut(ctx, imp, changeFiles)
-		if err != nil || problem != "" {
-			return problem, err
-		}
+		res.Files, res.FilesChanged, res.DiffStat = files, changedFiles(res.Diff), stat
 
-		res.FilesChanged, res.DiffStat = changedFiles(res.Diff), diffStat(out)
-		res.Files, err = changedPaths(list)
-
-		return "", err
+		return "", nil
 	})
 	if err != nil || problem != "" {
 		return engine.ExportResult{}, problem, err
 	}
 
 	return res, "", nil
+}
+
+// changeList runs changeScript in the import container on the change from the
+// base commit to head, and returns the paths it touches and git's summary of it.
+func changeList(ctx context.Context, imp container, c engine.RunConfig, head string) (files []engine.ChangedFile, stat []string, problem string, err error) {
+	out, problem, err := gitStep(ctx, imp, importCommand(changeScript, c.Repo.BaseCommit, head, changeDiff, changeFiles))
+	if err != nil || problem != "" {
+		return nil, nil, problem, err
+	}
+
+	list, problem, err := copyOut(ctx, imp, changeFiles)
+	if err != nil || problem != "" {
+		return nil, nil, problem, err
+	}
+
+	files, err = changedPaths(list)
+
+	return files, diffStat(out), "", err
 }
 
 // changedPaths reads changeScript's list of the paths a change touches.
