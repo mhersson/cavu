@@ -184,6 +184,29 @@ func TestMCPCancelAndRead(t *testing.T) {
 	}}, tool(t, cs, "list_projects", nil))
 }
 
+func TestMCPGetTaskShowsTheSame(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	for k, v := range map[string]string{
+		"endpoint_mode": "key", "task_budget_usd": "5",
+		"model_prices": `{"*": {"input": 1, "output": 10, "cache_read": 0.1, "cache_write": 1.25}}`,
+	} {
+		require.NoError(t, f.store.SetSetting(t.Context(), k, v))
+	}
+
+	id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+	f.reviewed(t, id, engine.ReviewEndedPayload{
+		Outcome: engine.ReviewReviewed, Head: "c1", Asked: engine.Verdict{Pass: true},
+		Findings: []engine.Finding{{Severity: engine.SeverityImportant, Where: "a.go:10", What: "The footer hides the banner."}},
+	}, store.Usage{Source: "proxy", Model: "sonnet", Input: 10000, Output: 40000})
+
+	got := tool(t, f.client(t), "get_task", map[string]any{"id": id})
+	assert.NotNil(t, got["review"])
+	assert.Contains(t, got["budget"], "usd")
+	assert.Equal(t, f.view(t, id), got, "the task as REST shows it")
+}
+
 func TestMCPNeedsABearerToken(t *testing.T) {
 	f := newServer(t)
 	session := f.login(t).Value

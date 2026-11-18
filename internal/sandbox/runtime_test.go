@@ -31,15 +31,17 @@ import (
 // when a test narrows PATH to fakes only. Its records and canned answers are
 // in logs beside it, found through the absolute path it was run by, so its
 // text holds no path.
+// A call claims its number by an exclusive create under the shell's
+// noclobber: uutils' mkdir can report success to a second caller in a race,
+// so a mkdir lock admits two calls.
 const fakeScript = `#!/bin/sh
 PATH=/usr/bin:/bin:$PATH
 case $0 in /*) ;; *) exit 99;; esac
 d=${0%/*}/logs
-w=0
-while ! mkdir "$d/lock" 2>/dev/null && [ "$w" -lt 500 ]; do sleep 0.01; w=$((w + 1)); done
-i=$(( $(cat "$d/seq" 2>/dev/null || echo 0) + 1 ))
-echo "$i" > "$d/seq"
-rmdir "$d/lock" 2>/dev/null
+set -C
+i=1
+while ! { true > "$d/seq.$i"; } 2>/dev/null; do [ -e "$d/seq.$i" ] || exit 99; i=$((i + 1)); done
+set +C
 n=$(mktemp -d "$d/call.$(printf %06d "$i").XXXXXX") || exit 99
 for a in "$@"; do printf '%s\000' "$a"; done > "$n/argv"
 awk 'BEGIN { for (k in ENVIRON) print k }' > "$n/env"

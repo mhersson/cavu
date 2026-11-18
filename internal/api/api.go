@@ -197,14 +197,14 @@ func pathID(r *http.Request) (int64, error) {
 	return id, nil
 }
 
-// seal stores each secret under prefix and its name; an empty value removes the secret.
-func (s *server) seal(ctx context.Context, prefix string, secrets map[string]string) error {
-	for name, value := range secrets {
+// seal stores each secret under the vault name of its key; an empty value removes the secret.
+func (s *server) seal(ctx context.Context, secrets map[string]string, vaultName func(key string) string) error {
+	for key, value := range secrets {
 		var err error
 		if value == "" {
-			err = s.Vault.Delete(ctx, prefix+name)
+			err = s.Vault.Delete(ctx, vaultName(key))
 		} else {
-			err = s.Vault.Set(ctx, prefix+name, value)
+			err = s.Vault.Set(ctx, vaultName(key), value)
 		}
 
 		if err != nil {

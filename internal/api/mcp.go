@@ -49,7 +49,7 @@ func (s *server) tools() http.Handler {
 
 			return s.taskView(ctx, id)
 		})
-	addTool(srv, "get_task", "Show a task: its status, its open stop and the action that clears it, its questions and its change.",
+	addTool(srv, "get_task", "Show a task: its status, its open stop and the action that clears it, its questions, its change, its review and its budget.",
 		func(ctx context.Context, in taskRef) (taskJSON, error) { return s.taskView(ctx, in.ID) })
 	addTool(srv, "list_tasks", "List the tasks, oldest first; a project and a status, when given, narrow the list.",
 		func(ctx context.Context, in taskQuery) (taskList, error) {

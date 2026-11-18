@@ -393,7 +393,7 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 	fmt.Fprintf(w, "status:  %s\n", status)
 
 	if facts.OpenStop != nil {
-		s, _ := newest[engine.StoppedPayload](events, engine.Stopped)
+		s := facts.OpenStop
 		fmt.Fprintf(w, "stop:    %s\nwhy:     %s\naction:  %s\n", s.Reason, s.Explanation, s.Action)
 
 		// The stop's explanation holds only the first question.
@@ -422,7 +422,7 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 		fmt.Fprintf(w, "review:  no verdict: %s\n", facts.Review.Failed)
 	}
 
-	if x, ok := newest[engine.ExportedPayload](events, engine.Exported); ok {
+	if x := facts.Export; facts.Exported {
 		fmt.Fprintf(w, "diff:    %s\n", x.DiffPath)
 
 		for _, l := range x.DiffStat {
@@ -438,19 +438,6 @@ func printState(w io.Writer, events []store.Event) engine.Status {
 // findingLine is a finding's severity, where, what and why, each that is set.
 func findingLine(f engine.Finding) string {
 	return strings.Join(slices.DeleteFunc([]string{f.Severity, f.Where, f.What, f.Why}, func(s string) bool { return s == "" }), " | ")
-}
-
-// newest decodes the newest event of the type, if any.
-func newest[T any](events []store.Event, typ string) (T, bool) {
-	var v T
-
-	for _, e := range slices.Backward(events) {
-		if e.Type == typ {
-			return v, json.Unmarshal(e.Payload, &v) == nil
-		}
-	}
-
-	return v, false
 }
 
 // printUsage prints a row per source and model and the one cost row, an
@@ -492,17 +479,17 @@ func printEvents(w io.Writer, events []store.Event) {
 
 func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return onTask(ctx, newVerbFlags(taskDiffUsage, stderr), args, func(a *app, id int64) error {
-		events, err := a.store.Events(ctx, id, 0, 0)
+		events, err := a.store.EventsOmitting(ctx, id, engine.ProgressTypes...)
 		if err != nil {
 			return err
 		}
 
-		x, ok := newest[engine.ExportedPayload](events, engine.Exported)
-		if !ok {
+		facts := engine.Reduce(events)
+		if !facts.Exported {
 			return fmt.Errorf("task %d has no exported change yet", id)
 		}
 
-		diff, err := os.ReadFile(x.DiffPath)
+		diff, err := os.ReadFile(facts.Export.DiffPath)
 		if err != nil {
 			return err
 		}
