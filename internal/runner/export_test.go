@@ -73,7 +73,7 @@ func TestExportImportsTheBundle(t *testing.T) {
 	assert.Equal(t, []string{
 		"volumes", "up/agent", "run/" + exportName(c, headCommit), "copyout " + bundleFile,
 		"importer", "import/copy", "import/run/" + importName(c, headCommit), "import/run/" + changeName(c, headCommit),
-		"import/copyout " + changeDiff, "import/copyout " + changeFiles, "importer removed",
+		"import/copyout " + changeFiles, "import/copyout " + changeDiff, "importer removed",
 	}, f.calls())
 
 	agent := f.runsIn(sandbox.PhaseAgent)

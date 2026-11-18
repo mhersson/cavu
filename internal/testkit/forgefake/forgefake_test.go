@@ -234,6 +234,28 @@ func TestTokens(t *testing.T) {
 	}, fx.fake.Tokens())
 }
 
+// An App that lacks a permission is refused a token that asks for it, with
+// 422 and a message, and the fake mints nothing; a token without it is minted.
+func TestAppLacksAPermission(t *testing.T) {
+	fx := newFixture(t)
+	fx.fake.Lack("workflows")
+
+	_, _, inst := fx.call(http.MethodGet, "/api/v3/repos/o/n/installation", nil)
+	id, ok := field(t, inst, "id").(float64)
+	require.True(t, ok)
+
+	path := "/api/v3/app/installations/" + strconv.Itoa(int(id)) + "/access_tokens"
+
+	status, _, out := fx.call(http.MethodPost, path, map[string]any{"permissions": map[string]string{"contents": "write", "workflows": "write"}})
+	assert.Equal(t, http.StatusUnprocessableEntity, status)
+	assert.NotEmpty(t, field(t, out, "message"))
+	assert.Empty(t, fx.fake.Tokens())
+
+	status, _, _ = fx.call(http.MethodPost, path, map[string]any{"permissions": map[string]string{"contents": "write"}})
+	assert.Equal(t, http.StatusCreated, status)
+	assert.Len(t, fx.fake.Tokens(), 1)
+}
+
 // Each author's latest opinion leaves out reviews that only comment, as
 // GitHub's list of reviewers does.
 func TestLatestOpinionPerAuthor(t *testing.T) {

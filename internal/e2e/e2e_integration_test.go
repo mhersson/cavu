@@ -335,13 +335,14 @@ func setup(t *testing.T, endpoint string) *instance {
 
 // project adds a project on the fixture repository and checks it. The
 // readiness turn and the review are off, since no test but the pipeline's is
-// about them, unless switches, each NAME=on or NAME=off, turn them on.
+// about them, unless switches, each NAME=on or NAME=off, turn them on. The
+// publish is off: no forge is behind the fixture repository.
 func (in *instance) project(name string, switches ...string) {
 	in.t.Helper()
 
 	in.ok("project", "add", name, "--repo", in.repo, "--verify", verify)
 
-	set := []string{"project", "set", name, "--switch", "readiness=off", "--switch", "review=off"}
+	set := []string{"project", "set", name, "--switch", "readiness=off", "--switch", "review=off", "--switch", "publish=off"}
 	for _, s := range switches {
 		set = append(set, "--switch", s)
 	}
@@ -621,8 +622,9 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	require.Equal(t, 1, r.code, r)
 	assert.Equal(t, []string{"setup"}, values(r.stdout, "failed step:"))
 
-	// The readiness turn and the review are off: the held call must be the agent phase's.
-	in.ok("project", "set", "notes", "--env", "E2E_PLANTED="+planted, "--switch", "readiness=off", "--switch", "review=off")
+	// The readiness turn and the review are off: the held call must be the agent phase's. No forge is behind the repository.
+	in.ok("project", "set", "notes", "--env", "E2E_PLANTED="+planted, "--switch", "readiness=off", "--switch", "review=off",
+		"--switch", "publish=off")
 	in.ok("project", "check", "notes")
 
 	// The run's prepare runs the setup command again, so its exit 0 covers that setup container too.

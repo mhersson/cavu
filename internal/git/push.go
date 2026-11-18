@@ -77,7 +77,7 @@ func forgeHeads(ctx context.Context, s PushSpec) (map[string]string, error) {
 
 	out, err := run(ctx, call{dir: s.MirrorDir, args: args, env: netEnv(s.URL, s.Token, allowedProtocols()), net: true, noHooks: true, read: true})
 	if err != nil {
-		return nil, fmt.Errorf("ask the forge for the branch: %w", err)
+		return nil, fmt.Errorf("ask for the branch's head: %w", err)
 	}
 
 	heads := map[string]string{}
@@ -104,7 +104,7 @@ func names(branch string) []string {
 func choose(s PushSpec, heads map[string]string) (target, rejected string) {
 	if s.Expect != "" {
 		if h, ok := heads[s.Branch]; !ok || (h != s.Expect && h != s.Commit) {
-			return "", "the branch moved on the forge since it was pushed"
+			return "", "the branch moved since it was pushed"
 		}
 
 		return s.Branch, ""
@@ -116,7 +116,7 @@ func choose(s PushSpec, heads map[string]string) (target, rejected string) {
 		}
 	}
 
-	return "", fmt.Sprintf("%s and %s-2 to %s-%d are all taken on the forge", s.Branch, s.Branch, s.Branch, freeNames)
+	return "", fmt.Sprintf("%s and %s-2 to %s-%d are all taken", s.Branch, s.Branch, s.Branch, freeNames)
 }
 
 // push never forces: no --force, no lease, no leading "+" in the refspec.

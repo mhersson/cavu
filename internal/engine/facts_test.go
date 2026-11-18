@@ -78,7 +78,7 @@ func TestReduce(t *testing.T) {
 			name:   "a failed verify",
 			events: preparedRun(firstSession, doneChanged, verifying, verifyFailed),
 			want: engine.Facts{
-				Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact,
+				Started: true, RunOpen: true, RunReason: "initial", VerifyCommand: "make test", Prepared: true, SessionID: "s1", Session: doneFact,
 				Verify: engine.ResultFailed, LastVerifyOutput: "FAIL TestLogin",
 			},
 		},
@@ -86,7 +86,7 @@ func TestReduce(t *testing.T) {
 			name:   "an automatic fix after a failed verify",
 			events: preparedRun(firstSession, doneChanged, verifying, verifyFailed, autoFix, doneChanged),
 			want: engine.Facts{
-				Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact,
+				Started: true, RunOpen: true, RunReason: "initial", VerifyCommand: "make test", Prepared: true, SessionID: "s1", Session: doneFact,
 				LastVerifyOutput: "FAIL TestLogin", VerifyFixes: 1,
 			},
 		},
@@ -94,7 +94,7 @@ func TestReduce(t *testing.T) {
 			name:   "a verify_failed stop",
 			events: verifyStop(),
 			want: engine.Facts{
-				Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact,
+				Started: true, RunOpen: true, RunReason: "initial", VerifyCommand: "make test", Prepared: true, SessionID: "s1", Session: doneFact,
 				Verify: engine.ResultFailed, LastVerifyOutput: "FAIL TestLogin",
 				OpenStop:      &engine.StopFact{Reason: engine.StopVerifyFailed, Explanation: "Verify failed.", Action: "retry"},
 				Continuations: 1, VerifyFixes: 1,
@@ -104,7 +104,7 @@ func TestReduce(t *testing.T) {
 			name:   "a retry after a verify_failed stop",
 			events: append(verifyStop(), retried),
 			want: engine.Facts{
-				Started: true, RunOpen: true, Prepared: true, SessionID: "s1",
+				Started: true, RunOpen: true, RunReason: "initial", VerifyCommand: "make test", Prepared: true, SessionID: "s1",
 				Verify: engine.ResultFailed, LastVerifyOutput: "FAIL TestLogin",
 				Resumed: &engine.Resume{From: engine.StopVerifyFailed},
 			},
@@ -112,20 +112,20 @@ func TestReduce(t *testing.T) {
 		{
 			name:   "a retry after a sandbox stop",
 			events: preparedRun(firstSession, unfinished, autoContinue, doneChanged, verifying, sandboxStop, retried),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact},
+			want:   engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1", Session: doneFact},
 		},
 		{
 			name:   "two sandbox stops",
 			events: preparedRun(firstSession, sandboxStop, resumeSession, sandboxStop),
 			want: engine.Facts{
-				Started: true, RunOpen: true, Prepared: true, SessionID: "s1",
+				Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1",
 				OpenStop: &engine.StopFact{Reason: engine.StopSandbox, Explanation: "The runner failed.", Action: "retry", At: stopAt}, Faults: 2,
 			},
 		},
 		{
 			name:   "a retry after two sandbox stops",
 			events: preparedRun(firstSession, sandboxStop, resumeSession, sandboxStop, retried),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1"},
+			want:   engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1"},
 		},
 		{
 			name: "a prepare claimed after a sandbox stop",
@@ -133,54 +133,58 @@ func TestReduce(t *testing.T) {
 				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""), sandboxStop,
 				ev(engine.PrepareStarted, ""),
 			},
-			want: engine.Facts{Started: true, RunOpen: true, Faults: 1},
+			want: engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Faults: 1},
 		},
 		{
 			name:   "a verify claimed after a sandbox stop",
 			events: preparedRun(firstSession, doneChanged, verifying, sandboxStop, verifying),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact, Faults: 1},
+			want:   engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1", Session: doneFact, Faults: 1},
 		},
 		{
 			name: "an export claimed after a sandbox stop",
 			events: preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""), sandboxStop,
 				ev(engine.ExportStarted, "")),
 			want: engine.Facts{
-				Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact, Verify: engine.ResultPassed, Faults: 1,
+				Started: true, RunOpen: true, RunReason: "initial", VerifyCommand: "make test", Prepared: true, SessionID: "s1",
+				Session: doneFact, Verify: engine.ResultPassed, Faults: 1,
 			},
 		},
 		{
 			name: "a merge after the export",
 			events: preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""),
 				ev(engine.Exported, `{"head_commit":"def456"}`), ev(engine.RunEnded, `{"outcome":"exported"}`), ev(engine.Merged, "")),
-			want: engine.Facts{Started: true, Exported: true, Export: engine.ExportedPayload{HeadCommit: "def456"}, Merged: true},
+			want: engine.Facts{Started: true, SessionID: "s1", Exported: true, Export: engine.ExportedPayload{HeadCommit: "def456"}, Merged: true},
 		},
 		{
 			name:   "a retry with no open stop",
 			events: preparedRun(firstSession, doneChanged, retried),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1"},
+			want:   engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1"},
 		},
 		{
 			name:   "a session started and not ended",
 			events: preparedRun(firstSession),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1"},
+			want:   engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1"},
 		},
 		{
 			name:   "a session start with no session id",
 			events: preparedRun(firstSession, unfinished, ev(engine.SessionStarted, `{"mode":"continue","automatic":true}`)),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Continuations: 1},
+			want:   engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1", Continuations: 1},
 		},
 		{
 			name:   "an answer after a question",
 			events: questionAnswered(),
 			want: engine.Facts{
-				Started: true, RunOpen: true, Prepared: true, SessionID: "s1",
+				Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1",
 				Resumed: &engine.Resume{From: engine.StopQuestion, Answer: "Use 8080."}, Answers: []string{"Use 8080."},
 			},
 		},
 		{
 			name:   "a finished session after an answer",
 			events: append(questionAnswered(), ev(engine.SessionStarted, `{"mode":"answer","session_id":"s1","resume":true}`), doneChanged),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: doneFact, Answers: []string{"Use 8080."}},
+			want: engine.Facts{
+				Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1", Session: doneFact,
+				Answers: []string{"Use 8080."},
+			},
 		},
 		{
 			name: "a failed prepare",
@@ -189,14 +193,14 @@ func TestReduce(t *testing.T) {
 				ev(engine.PrepareFailed, `{"step":"setup","output":"npm ERR! missing script"}`),
 			},
 			want: engine.Facts{
-				Started: true, RunOpen: true,
+				Started: true, RunOpen: true, RunReason: "initial",
 				PrepareFailure: &engine.PrepareFailure{Step: "setup", Output: "npm ERR! missing script"},
 			},
 		},
 		{
 			name:   "a closed run",
 			events: preparedRun(firstSession, doneChanged, ev(engine.RunEnded, `{"outcome":"agent_error"}`)),
-			want:   engine.Facts{Started: true},
+			want:   engine.Facts{Started: true, SessionID: "s1"},
 		},
 		{
 			name: "a prepare after its run ended",
@@ -212,7 +216,7 @@ func TestReduce(t *testing.T) {
 				ev(engine.Exported, `{"head_commit":"def456","diff_path":"diff.patch","bundle_path":"task.bundle","files_changed":2}`),
 				ev(engine.RunEnded, `{"outcome":"exported"}`)),
 			want: engine.Facts{
-				Started: true, Exported: true,
+				Started: true, SessionID: "s1", Exported: true,
 				Export: engine.ExportedPayload{HeadCommit: "def456", DiffPath: "diff.patch", BundlePath: "task.bundle", FilesChanged: 2},
 			},
 		},
@@ -234,7 +238,7 @@ func TestReduce(t *testing.T) {
 				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
 				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go","node"]}`),
 			},
-			want: engine.Facts{Started: true, RunOpen: true, Prepared: true, Ecosystems: []string{"go", "node"}},
+			want: engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, Ecosystems: []string{"go", "node"}},
 		},
 		{
 			name: "a redone prepare forgets them",
@@ -242,7 +246,7 @@ func TestReduce(t *testing.T) {
 				ev(engine.TaskStarted, ""), ev(engine.RunStarted, `{"reason":"initial"}`), ev(engine.PrepareStarted, ""),
 				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["go"]}`), ev(engine.PrepareStarted, ""),
 			},
-			want: engine.Facts{Started: true, RunOpen: true},
+			want: engine.Facts{Started: true, RunOpen: true, RunReason: "initial"},
 		},
 		{
 			name: "a later run's prepare replaces them",
@@ -252,7 +256,7 @@ func TestReduce(t *testing.T) {
 				ev(engine.RunStarted, `{"reason":"retry"}`), ev(engine.PrepareStarted, ""),
 				ev(engine.Prepared, `{"base_commit":"abc123","ecosystems":["rust"]}`),
 			},
-			want: engine.Facts{Started: true, RunOpen: true, Prepared: true, Ecosystems: []string{"rust"}},
+			want: engine.Facts{Started: true, RunOpen: true, RunReason: "retry", Prepared: true, Ecosystems: []string{"rust"}},
 		},
 		{
 			name: "a closed run forgets them",
@@ -265,12 +269,12 @@ func TestReduce(t *testing.T) {
 		{
 			name:   "a session end that does not decode",
 			events: preparedRun(firstSession, ev(engine.SessionEnded, `{"outcome":7,"changed":true}`)),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", Session: &engine.SessionFact{}},
+			want:   engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1", Session: &engine.SessionFact{}},
 		},
 		{
 			name:   "a stop that does not decode",
 			events: preparedRun(firstSession, ev(engine.Stopped, `{"reason":["question"]}`)),
-			want:   engine.Facts{Started: true, RunOpen: true, Prepared: true, SessionID: "s1", OpenStop: &engine.StopFact{}},
+			want:   engine.Facts{Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1", OpenStop: &engine.StopFact{}},
 		},
 	}
 
@@ -475,6 +479,71 @@ func TestTurnsAndDuration(t *testing.T) {
 			turns, d := engine.TurnsAndDuration(tc.events)
 			assert.Equal(t, tc.turns, turns)
 			assert.Equal(t, tc.duration, d)
+		})
+	}
+}
+
+// A run started from the pull request's head keeps the task's session, its
+// role and the review; any other run forgets them, and both forget the export.
+func TestFixRunKeepsTheSessionAndTheReview(t *testing.T) {
+	published := preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ReviewStarted, ""),
+		ev(engine.ReviewEnded, `{"outcome":"reviewed","head":"def456","asked":{"pass":true},"built":{"pass":false},
+			"findings":[{"severity":"important","where":"login.go:3","what":"The redirect loops.","why":"No one can log in."}]}`),
+		ev(engine.SessionStarted, `{"mode":"fix_review","session_id":"s2","automatic":true,"role":"strong"}`),
+		ev(engine.SessionEnded, `{"outcome":"done","changed":true,"title":"Fix login","head_commit":"fed789"}`),
+		verifying, verifyPassed, ev(engine.ExportStarted, ""), ev(engine.Exported, `{"head_commit":"fed789"}`),
+		ev(engine.PublishStarted, ""),
+		ev(engine.Published, `{"branch":"cavu/fix-login","head":"fed789","number":7,"url":"https://example.com/pull/7","node_id":"PR_7"}`),
+		ev(engine.RunEnded, `{"outcome":"exported"}`))
+
+	ended := engine.Reduce(published)
+	require.False(t, ended.RunOpen)
+	assert.Equal(t, "s2", ended.SessionID, "the run's end keeps the session")
+	assert.Equal(t, engine.RoleStrong, ended.Role)
+	require.NotEmpty(t, ended.Review.Open)
+	require.NotNil(t, ended.PR)
+
+	t.Run("a fix run", func(t *testing.T) {
+		f := engine.Reduce(append(slices.Clone(published), ev(engine.RunStarted, `{"reason":"ci_fix","head":"fed789"}`)))
+
+		assert.True(t, f.RunOpen)
+		assert.False(t, f.Exported)
+		assert.Equal(t, ended.SessionID, f.SessionID)
+		assert.Equal(t, ended.Role, f.Role)
+		assert.Equal(t, ended.Review, f.Review)
+		assert.Equal(t, ended.PR, f.PR)
+		assert.Equal(t, engine.ReasonCIFix, f.RunReason)
+		assert.Equal(t, "fed789", f.RunHead)
+	})
+
+	t.Run("a run from the base", func(t *testing.T) {
+		f := engine.Reduce(append(slices.Clone(published), ev(engine.RunStarted, `{"reason":"retry"}`)))
+
+		assert.True(t, f.RunOpen)
+		assert.False(t, f.Exported)
+		assert.Empty(t, f.SessionID)
+		assert.Empty(t, f.Role)
+		assert.Equal(t, engine.ReviewFact{}, f.Review)
+		assert.Equal(t, "retry", f.RunReason)
+		assert.Empty(t, f.RunHead)
+	})
+}
+
+// A retry of a stop that came after the change was exported is no resume: the
+// session's result stands, so a retried publish has the same title and text.
+func TestRetryOfAForgeStopKeepsTheSession(t *testing.T) {
+	for _, reason := range []string{
+		engine.StopPushRejected, engine.StopCIFailed, engine.StopCITimeout, engine.StopNoChecks, engine.StopConflict,
+		engine.StopTakenOver, engine.StopChangesRequested,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			f := engine.Reduce(preparedRun(firstSession, doneChanged, verifying, verifyPassed, ev(engine.ExportStarted, ""),
+				ev(engine.Exported, `{"head_commit":"def456"}`), ev(engine.PublishStarted, ""),
+				ev(engine.Stopped, `{"reason":"`+reason+`","explanation":"Stopped.","action":"retry"}`), retried))
+
+			assert.Nil(t, f.OpenStop)
+			assert.Nil(t, f.Resumed)
+			assert.Equal(t, doneFact, f.Session)
 		})
 	}
 }

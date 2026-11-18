@@ -29,6 +29,8 @@ const (
 	ReviewEnded    = "review_ended"    // runner
 	ExportStarted  = "export_started"  // engine
 	Exported       = "exported"        // runner
+	PublishStarted = "publish_started" // engine
+	Published      = "published"       // runner
 	Merged         = "merged"          // user
 	Stopped        = "stopped"         // engine
 	RunEnded       = "run_ended"       // engine
@@ -102,6 +104,7 @@ type (
 
 	RunStartedPayload struct {
 		Reason string `json:"reason"`
+		Head   string `json:"head,omitempty"` // the pull request's head a fix run starts from
 	}
 
 	PrepareStartedPayload struct {
@@ -162,6 +165,7 @@ type (
 		Assumptions      []string  `json:"assumptions"`
 		Questions        []string  `json:"questions"`
 		SuggestedAnswers []string  `json:"suggested_answers,omitempty"` // one per question, "" where the agent gave none
+		WhereToLook      []string  `json:"where_to_look,omitempty"`
 		Changed          bool      `json:"changed"`
 		HeadCommit       string    `json:"head_commit,omitempty"`
 		Turns            int       `json:"turns"`
@@ -218,13 +222,27 @@ type (
 		Flagged      Flagged  `json:"flagged"`
 	}
 
+	PublishStartedPayload struct {
+		Why string `json:"why"`
+	}
+
+	// PublishedPayload is the branch the push took, the head on it, and the
+	// task's pull request.
+	PublishedPayload struct {
+		Branch string `json:"branch"`
+		Head   string `json:"head"`
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+		NodeID string `json:"node_id"`
+	}
+
 	StoppedPayload struct {
 		Reason      string    `json:"reason"`
 		Explanation string    `json:"explanation"`
 		Action      string    `json:"action"` // the one action that clears the stop
 		ResetsAt    time.Time `json:"resets_at,omitzero"`
-		Why         string    `json:"why,omitempty"`    // empty for a runner fault, a run config that cannot be built or an export problem
-		Detail      string    `json:"detail,omitempty"` // the whole text of a runner fault, a run config that cannot be built or an export problem
+		Why         string    `json:"why,omitempty"`    // empty for a runner fault, a run config that cannot be built, an export problem or a rejected push
+		Detail      string    `json:"detail,omitempty"` // the whole text of a runner fault, a run config that cannot be built, an export problem or a rejected push
 	}
 
 	RunEndedPayload struct {

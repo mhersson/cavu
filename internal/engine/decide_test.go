@@ -394,3 +394,47 @@ func TestUsageLimitCycleWaits(t *testing.T) {
 		events = append(events, ev(engine.SessionStarted, `{"mode":"continue","session_id":"s1","resume":true}`), limited)
 	}
 }
+
+func TestDecidePublish(t *testing.T) {
+	on := engine.Switches{Continuations: true, VerifyFix: true, Publish: true}
+	off := engine.Switches{Continuations: true, VerifyFix: true}
+	pr := &engine.PRFact{Number: 7, Branch: "cavu/fix-the-login", Head: "head1", Heads: []string{"head1"}}
+
+	// exported is head exported in the open run of a task with pull request pr, or none.
+	exported := func(head string, pr *engine.PRFact) engine.Facts {
+		f := verified(engine.ResultPassed, 0)
+		f.Session.HeadCommit = head
+		f.Exported, f.Export, f.PR = true, engine.ExportedPayload{HeadCommit: head}, pr
+
+		return f
+	}
+
+	// fixRun is head exported in a run started from the pull request's head.
+	fixRun := func(head string) engine.Facts {
+		f := exported(head, pr)
+		f.RunReason, f.RunHead = engine.ReasonCIFix, pr.Head
+
+		return f
+	}
+
+	shadow := snapWith(exported("head1", nil), on)
+	shadow.Task.ReplayID = 3
+
+	rejected := exported("head1", nil)
+	rejected.OpenStop = &engine.StopFact{Reason: engine.StopPushRejected, Action: engine.ClearRetry}
+
+	publish := engine.Action{Kind: engine.KindPublish}
+	finish := engine.Action{Kind: engine.KindFinish}
+
+	for _, tc := range []decideCase{
+		{name: "exported with the run open", snap: snapWith(exported("head1", nil), on), want: publish},
+		{name: "publish off", snap: snapWith(exported("head1", nil), off), want: finish},
+		{name: "a replay's shadow", snap: shadow, want: finish},
+		{name: "after the head was published", snap: snapWith(exported("head1", pr), on), want: finish},
+		{name: "a fix run's new head", snap: snapWith(fixRun("head2"), on), want: publish},
+		{name: "a fix run whose exported head is the pull request's head", snap: snapWith(fixRun("head1"), on), want: finish},
+		{name: "a rejected push waits for a person", snap: snapWith(rejected, on), want: engine.Action{Kind: engine.KindNone}},
+	} {
+		t.Run(tc.name, func(t *testing.T) { assertDecides(t, tc) })
+	}
+}

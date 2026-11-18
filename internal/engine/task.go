@@ -194,9 +194,14 @@ func (l *Loop) Cancel(ctx context.Context, taskID int64) error {
 	})
 }
 
-// Done records that the change of a task in review was merged.
+// Done records that the change of a task in review, which has no pull
+// request, was merged.
 func (l *Loop) Done(ctx context.Context, taskID int64) error {
 	return l.human(ctx, taskID, Merged, struct{}{}, func(f Facts, _ store.Project) (bool, error) {
+		if f.PR != nil {
+			return false, refuse("the task has a pull request, %s", f.PR.URL)
+		}
+
 		if s := StatusOf(f); s != StatusInReview {
 			return false, refuse("the task is %s, not %s", s, StatusInReview)
 		}

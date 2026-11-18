@@ -45,14 +45,14 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    `ci_timeout_minutes` takes a whole number of minutes, 120 when unset and `0` for no limit.
 
-3. Store the secrets from standard input, never as arguments. `forge_token` is a personal access token, for a private repository. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
+3. Store the secrets from standard input, never as arguments. `forge_token` is a personal access token. CAVU clones a private repository with it and, with the switch `publish` on, pushes the task's branch and opens its pull request with it, on a public repository too, so it must be allowed to push to the repository and to open pull requests on it. In `subscription` mode the credential is the long-lived token that `claude setup-token` prints when you run it on your own machine.
 
    ```
    cavu secret set endpoint_credential < credential.txt
    cavu secret set forge_token < token.txt
    ```
 
-   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token for the clone from the App's installation on the repository. The App must grant these repository permissions: Pull requests read and write, and Contents, Checks, Commit statuses, Actions and Metadata read-only; an App granted less fails the clone. With `forge_app_id` empty, `forge_token` is used.
+   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token from the App's installation on the repository for the clone, and a new one for each push. The App must grant these repository permissions: Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read-only; an App granted less fails the clone or the push. Whoever wants CAVU to change a workflow grants Workflows read and write too. With `forge_app_id` empty, `forge_token` is used.
 
    ```
    cavu settings set forge_app_id 123456
@@ -101,7 +101,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    `task run` drives only the task it names, so run a dependency first: on a task that waits for one, `task run` prints why and waits until that task is done or you interrupt it.
 
-   A task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
+   With the project's switch `publish` on, the default, CAVU pushes the task's branch to GitHub once its change is exported and opens a draft pull request for it. The task stays `in_review`, and `cavu task done` is refused for it. With `cavu project set web --switch publish=off`, a task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
 
    ```
    cavu task done ID

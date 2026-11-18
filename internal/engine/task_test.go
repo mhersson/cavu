@@ -425,3 +425,15 @@ func TestHumanActionLosesToANewerEvent(t *testing.T) {
 		assert.NotEqual(t, engine.HumanCancelled, e.Type)
 	}
 }
+
+// A task with a pull request is not marked done by hand.
+func TestDoneIsRefusedWithAPullRequest(t *testing.T) {
+	h := newHarness(t)
+	h.add(0, engine.Exported, "runner", `{"head_commit":"head456"}`)
+	h.add(0, engine.Published, "runner", `{"branch":"cavu/fix-the-login","head":"head456","number":7,"url":"https://example.com/web/pull/7"}`)
+	before := h.recorded(h.task.ID)
+	require.Equal(t, engine.StatusInReview, engine.StatusOf(engine.Reduce(before)))
+
+	require.ErrorIs(t, h.loop.Done(t.Context(), h.task.ID), engine.ErrRefused)
+	assert.Equal(t, before, h.recorded(h.task.ID))
+}

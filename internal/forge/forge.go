@@ -99,7 +99,7 @@ func tokenOnItsHost(req *http.Request, via []*http.Request) error {
 // Check reads r over the API: it proves the address, the certificates and the
 // credential.
 func (c *Client) Check(ctx context.Context, r Repo, a Access) error {
-	token, err := c.Token(ctx, r, a, false)
+	token, err := c.Token(ctx, r, a, ForAPI)
 	if err != nil {
 		return err
 	}

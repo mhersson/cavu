@@ -156,6 +156,11 @@ func (r *fakeRunner) Export(_ context.Context, _ engine.RunConfig, commit string
 	}, nil
 }
 
+// Publish is not scripted: the fake does not publish.
+func (r *fakeRunner) Publish(context.Context, engine.RunConfig, engine.PublishRequest) (engine.PublishResult, error) {
+	return engine.PublishResult{}, errors.New("fake: the runner does not publish")
+}
+
 func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
 	r.releases = append(r.releases, release{ref, removeVolumes, ctx.Err()})
 

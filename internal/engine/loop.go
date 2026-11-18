@@ -68,7 +68,9 @@ const (
 	maxRepairs   = 100 // stale run rows ended
 )
 
-// defaultCaps bounds the automatic continuations, fix rounds and fault retries Decide allows.
+// defaultCaps bounds what Decide starts by itself: the continuations, the fix
+// rounds after verify and after the review, the retries of a fault, the fix
+// runs on a pull request's failed checks, and the runs on its reviewers' requests.
 var defaultCaps = Caps{Continuations: 2, VerifyFixes: 2, ReviewFixes: 5, FaultRetries: 2, CIFixes: 2, CommentRuns: 3}
 
 var (
@@ -186,8 +188,8 @@ func (l *Loop) newPass(ctx context.Context, taskID int64) (*pass, error) {
 type view struct {
 	Snapshot
 
-	run    store.Run // the open run's row, while Facts.RunOpen
-	hadRun bool      // a run was started before
+	run    store.Run     // the open run's row, while Facts.RunOpen
+	events []store.Event // the task's events but the agent's progress
 }
 
 // openRun is a run row with the task and the config its runner calls use.
@@ -287,7 +289,7 @@ func (p *pass) view(ctx context.Context) (view, error) {
 		return view{}, err
 	}
 
-	v := view{Snapshot: s, hadRun: hadRun(events)}
+	v := view{Snapshot: s, events: events}
 
 	if v.Facts.RunOpen {
 		r, ok, err := p.Store.OpenRun(ctx, p.taskID)
@@ -383,7 +385,7 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 
 	if a.NewRun {
 		reason := "initial"
-		if v.hadRun {
+		if hadRun(v.events) {
 			reason = "retry"
 		}
 
@@ -420,6 +422,8 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		return p.review(ctx, v, a, o)
 	case KindExport:
 		return p.export(ctx, v, a, o)
+	case KindPublish:
+		return p.publish(ctx, v, a, o)
 	}
 
 	return fmt.Errorf("task %d: no handler for action %q", p.taskID, a.Kind)
@@ -599,9 +603,9 @@ func (p *pass) work(ctx context.Context, v view, a Action, o openRun) error {
 
 	return p.result(ctx, o, runUsage(o.row.ID, res.Usage), draft{SessionEnded, actorRunner, SessionEndedPayload{
 		Outcome: res.Outcome, Title: res.Title, Summary: res.Summary, Assumptions: res.Assumptions,
-		Questions: res.Questions, SuggestedAnswers: res.SuggestedAnswers, Changed: res.Changed, Turns: res.Turns,
-		CostEstimateUSD: res.CostEstimateUSD, CostMissing: res.CostMissing, ResetsAt: res.ResetsAt, Detail: res.Detail,
-		HeadCommit: res.HeadCommit,
+		Questions: res.Questions, SuggestedAnswers: res.SuggestedAnswers, WhereToLook: res.WhereToLook, Changed: res.Changed,
+		Turns: res.Turns, CostEstimateUSD: res.CostEstimateUSD, CostMissing: res.CostMissing, ResetsAt: res.ResetsAt,
+		Detail: res.Detail, HeadCommit: res.HeadCommit,
 	}})
 }
 

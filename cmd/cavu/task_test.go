@@ -663,8 +663,9 @@ func runSetup(t *testing.T) (dir, id string, fake *fakeRuntime) {
 
 	dir, fake = checkSetup(t, "--verify", "make test")
 	storeBaseline(t, dir, "web")
-	// The fake answers every session alike, so the readiness turn is off: no test here is about it.
-	cavuIn(t, dir, "project", "set", "web", "--switch", "readiness=off")
+	// The fake answers every session alike, so the readiness turn is off, and no
+	// forge is behind the repository, so the publish is off: no test here is about either.
+	cavuIn(t, dir, "project", "set", "web", "--switch", "readiness=off", "--switch", "publish=off")
 
 	fake.runner.work = engine.WorkResult{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head456", Title: "Fix the login"}
 

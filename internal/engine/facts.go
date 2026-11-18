@@ -15,7 +15,7 @@ type Facts struct {
 	Prepared                   bool     // in the open run
 	Ecosystems                 []string // of the open run's prepare, which Work, Verify and Export run with
 	PrepareFailure             *PrepareFailure
-	SessionID                  string       // of the open run, "" before the first session
+	SessionID                  string       // the task's session, which a fix run goes on with; "" until a run that is no fix run starts one
 	Session                    *SessionFact // newest ended session in the open run; nil if none, if a human action other than a retry that is no resume came after it, or while a newer session is pending
 	Verify                     string       // result for the newest ended session; "" while a session or a verify is pending
 	Exported                   bool
@@ -30,9 +30,12 @@ type Facts struct {
 	CostMissing                int             // sessions and reviews of the whole task that ended without a cost
 	LastHumanEventID           int64           // the newest human action's event; the task's spend counts the usage after it
 	Review                     ReviewFact
-	Role                       string   // of the run's session, strong after a fresh fix session; "" means work
+	Role                       string   // of the task's session, strong after a fresh fix session; "" means work
 	Answers                    []string // every answer a person gave on the task
 	Assumptions                []string // of the open run's sessions
+	PR                         *PRFact  // the task's pull request, nil before its first publish
+	RunReason, RunHead         string   // of the open run; RunHead is the pull request's head a fix run starts from
+	VerifyCommand              string   // of the newest verify_ended in the open run
 
 	started time.Time // of the newest session or review that has not ended, zero when none
 }
@@ -43,6 +46,14 @@ type StopFact struct {
 	Action              string // the one action that clears the stop
 	ResetsAt            time.Time
 	At                  time.Time // when the stop was recorded
+}
+
+// PRFact is the task's pull request.
+type PRFact struct {
+	Number                    int
+	URL, NodeID, Branch, Head string
+	Heads                     []string  // every head CAVU published
+	Since                     time.Time // when the newest head was published
 }
 
 // PrepareFailure is the newest failed prepare in the open run.
@@ -58,6 +69,7 @@ type SessionFact struct {
 	HeadCommit             string // the commit the session froze, which an export takes
 	Questions              []string
 	SuggestedAnswers       []string // one per question, the answer the agent would assume
+	WhereToLook            []string // the parts of the change the session says need a person's eyes first
 	ResetsAt               time.Time
 }
 
@@ -114,10 +126,11 @@ func (f *Facts) apply(e store.Event) {
 		f.humanAction(e.ID)
 		f.Answers = append(f.Answers, text)
 	case HumanRetried:
-		// A sandbox stop is a fault that cut an action short, and a review's halt
-		// cut a review: neither is the work session's result, so the retry is no
-		// resume and keeps the session, and Decide redoes the cut action.
-		if f.stoppedFor(StopSandbox) || f.Review.Halt != nil {
+		// A sandbox stop is a fault that cut an action short, a review's halt cut
+		// a review, and a pull request's stop came after the export: none is the
+		// work session's result, so the retry is no resume and keeps the session,
+		// and Decide redoes what came after it.
+		if f.OpenStop != nil && keepsSession[f.OpenStop.Reason] || f.Review.Halt != nil {
 			f.clearStop(e.ID)
 		} else {
 			f.resume("")
@@ -132,8 +145,15 @@ func (f *Facts) apply(e store.Event) {
 			f.Resumed = nil
 		}
 
+		// A fix run, started from the pull request's head, goes on with the
+		// task's session; any other run starts afresh.
+		p := decode[RunStartedPayload](e.Payload)
+		if p.Head == "" {
+			f.SessionID, f.Role, f.Review = "", "", ReviewFact{}
+		}
+
 		f.resetRun()
-		f.RunOpen, f.Review = true, ReviewFact{}
+		f.RunOpen, f.Exported, f.RunReason, f.RunHead = true, false, p.Reason, p.Head
 	case RunEnded:
 		f.resetRun()
 		f.RunOpen = false
@@ -167,7 +187,8 @@ func (f *Facts) apply(e store.Event) {
 			f.Verify = ""
 			f.Session = &SessionFact{
 				Outcome: p.Outcome, Changed: p.Changed, Title: p.Title, Summary: p.Summary, Detail: p.Detail,
-				HeadCommit: p.HeadCommit, Questions: p.Questions, SuggestedAnswers: p.SuggestedAnswers, ResetsAt: p.ResetsAt,
+				HeadCommit: p.HeadCommit, Questions: p.Questions, SuggestedAnswers: p.SuggestedAnswers, WhereToLook: p.WhereToLook,
+				ResetsAt: p.ResetsAt,
 			}
 			f.Assumptions = append(f.Assumptions, p.Assumptions...)
 		}
@@ -180,7 +201,7 @@ func (f *Facts) apply(e store.Event) {
 	case VerifyEnded:
 		if f.RunOpen {
 			p := decode[VerifyEndedPayload](e.Payload)
-			f.Verify, f.LastVerifyOutput = p.Result, p.Output
+			f.Verify, f.LastVerifyOutput, f.VerifyCommand = p.Result, p.Output, p.Command
 		}
 	case ReviewStarted:
 		f.claimed()
@@ -192,10 +213,12 @@ func (f *Facts) apply(e store.Event) {
 		if f.RunOpen {
 			f.reviewEnded(p)
 		}
-	case ExportStarted:
+	case ExportStarted, PublishStarted:
 		f.claimed()
 	case Exported:
 		f.Exported, f.Export = true, decode[ExportedPayload](e.Payload)
+	case Published:
+		f.published(decode[PublishedPayload](e.Payload), e.At)
 	case Merged:
 		f.Merged = true
 	case Stopped:
@@ -279,12 +302,32 @@ func (f *Facts) sessionStarted(p SessionStartedPayload) {
 	}
 }
 
-// resetRun forgets the run; the review is kept past the run's end, for the
-// export that ends it, and forgotten when a new run starts.
+// keepsSession are the stops whose retry is no resume.
+var keepsSession = map[string]bool{
+	StopSandbox: true, StopPushRejected: true, StopCIFailed: true, StopCITimeout: true, StopNoChecks: true, StopConflict: true,
+	StopTakenOver: true, StopChangesRequested: true,
+}
+
+// published records the head a publish put on the task's branch, and its
+// pull request.
+func (f *Facts) published(p PublishedPayload, at time.Time) {
+	var heads []string
+	if f.PR != nil {
+		heads = f.PR.Heads
+	}
+
+	f.PR = &PRFact{
+		Number: p.Number, URL: p.URL, NodeID: p.NodeID, Branch: p.Branch, Head: p.Head, Heads: append(heads, p.Head), Since: at,
+	}
+}
+
+// resetRun forgets the run but the task's session, its role and the review,
+// which outlive it: the export that ends a run reads the review, and a fix run
+// goes on with all three. A run that is no fix run forgets them as it starts.
 func (f *Facts) resetRun() {
 	f.Prepared, f.PrepareFailure, f.Ecosystems = false, nil, nil
-	f.SessionID, f.Session, f.Verify, f.LastVerifyOutput = "", nil, "", ""
-	f.Role, f.Assumptions = "", nil
+	f.Session, f.Verify, f.LastVerifyOutput, f.VerifyCommand = nil, "", "", ""
+	f.Assumptions, f.RunReason, f.RunHead = nil, "", ""
 }
 
 // decode reads a payload. One that does not decode reads as empty, so the event

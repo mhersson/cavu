@@ -22,7 +22,7 @@ const (
 // holds no log of its output and address. Whole entries are added in name order until the cap, and
 // a last line names those that did not fit.
 func (c *Client) FailedLogs(ctx context.Context, r Repo, a Access, head string, ignored []string) (string, error) {
-	token, err := c.Token(ctx, r, a, false)
+	token, err := c.Token(ctx, r, a, ForAPI)
 	if err != nil {
 		return "", err
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -117,11 +118,12 @@ func TestAppTokenIsScopedToTheRepository(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		push  bool
+		use   Use
 		perms map[string]any
 	}{
-		{"push", true, map[string]any{"contents": "write"}},
-		{"api", false, apiPerms},
+		{"push", ForPush, map[string]any{"contents": "write"}},
+		{"workflow push", ForWorkflowPush, map[string]any{"contents": "write", "workflows": "write"}},
+		{"api", ForAPI, apiPerms},
 	}
 
 	for _, tc := range tests {
@@ -129,7 +131,7 @@ func TestAppTokenIsScopedToTheRepository(t *testing.T) {
 			s := newAppServer(t)
 			c := newTestClient(t, func() time.Time { return testClock }, "api.github.com", s, nil)
 
-			token, err := c.Token(t.Context(), testRepo, appAccess(), tc.push)
+			token, err := c.Token(t.Context(), testRepo, appAccess(), tc.use)
 			require.NoError(t, err)
 			assert.Equal(t, "ghs_1", token)
 
@@ -154,7 +156,7 @@ func TestAppTokenIsCachedUntilItNearsExpiry(t *testing.T) {
 	token := func(r Repo) string {
 		t.Helper()
 
-		tok, err := c.Token(t.Context(), r, appAccess(), false)
+		tok, err := c.Token(t.Context(), r, appAccess(), ForAPI)
 		require.NoError(t, err)
 
 		return tok
@@ -167,7 +169,7 @@ func TestAppTokenIsCachedUntilItNearsExpiry(t *testing.T) {
 	errs := make([]error, len(got))
 
 	for i := range got {
-		wg.Go(func() { got[i], errs[i] = c.Token(t.Context(), testRepo, appAccess(), false) })
+		wg.Go(func() { got[i], errs[i] = c.Token(t.Context(), testRepo, appAccess(), ForAPI) })
 	}
 
 	wg.Wait()
@@ -196,8 +198,8 @@ func TestPushTokenIsNeverCached(t *testing.T) {
 
 	var got []string
 
-	for _, push := range []bool{false, true, true, false} {
-		tok, err := c.Token(t.Context(), testRepo, appAccess(), push)
+	for _, use := range []Use{ForAPI, ForPush, ForWorkflowPush, ForAPI} {
+		tok, err := c.Token(t.Context(), testRepo, appAccess(), use)
 		require.NoError(t, err)
 
 		got = append(got, tok)
@@ -218,8 +220,8 @@ func TestAccessWithoutAKeyIsRefused(t *testing.T) {
 		"no credential":           {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, push := range []bool{false, true} {
-				_, err := c.Token(t.Context(), testRepo, a, push)
+			for _, use := range []Use{ForAPI, ForPush, ForWorkflowPush} {
+				_, err := c.Token(t.Context(), testRepo, a, use)
 				require.Error(t, err)
 			}
 
@@ -240,8 +242,8 @@ func TestPersonalTokenIsItsOwnToken(t *testing.T) {
 	c := newTestClient(t, nil, "api.github.com", mux, nil)
 	a := Access{Token: testToken}
 
-	for _, push := range []bool{false, true} {
-		tok, err := c.Token(t.Context(), testRepo, a, push)
+	for _, use := range []Use{ForAPI, ForPush, ForWorkflowPush} {
+		tok, err := c.Token(t.Context(), testRepo, a, use)
 		require.NoError(t, err)
 		assert.Equal(t, testToken, tok)
 	}
@@ -252,4 +254,63 @@ func TestPersonalTokenIsItsOwnToken(t *testing.T) {
 	assert.Equal(t, "application/vnd.github+json", got[0].Get("Accept"))
 	assert.Equal(t, "2022-11-28", got[0].Get("X-GitHub-Api-Version"))
 	assert.Equal(t, "cavu/"+testVersion, got[0].Get("User-Agent"))
+}
+
+// A 422 on the mint of a push token is the forge's refusal, carrying its
+// message, and its text names every permission the token asked for. Any other
+// failure of a push token's mint, and a 422 on an API token's, is an error.
+func TestPushTokenRefusal(t *testing.T) {
+	const msg = "The permissions requested are not granted to this installation."
+
+	withMessage := `{"message":"` + msg + `"}`
+
+	tests := []struct {
+		name    string
+		use     Use
+		status  int
+		body    string
+		refused bool
+		message string
+	}{
+		{"422 on a push token", ForPush, http.StatusUnprocessableEntity, withMessage, true, msg},
+		{"422 on a workflow push token", ForWorkflowPush, http.StatusUnprocessableEntity, withMessage, true, msg},
+		{"422 with no message", ForWorkflowPush, http.StatusUnprocessableEntity, `{}`, true, ""},
+		{"422 on an API token", ForAPI, http.StatusUnprocessableEntity, withMessage, false, ""},
+		{"404 on a push token", ForPush, http.StatusNotFound, `{"message":"Not Found"}`, false, ""},
+		{"502 on a push token", ForWorkflowPush, http.StatusBadGateway, "Bad Gateway", false, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newAppServer(t)
+			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/access_tokens") {
+					s.ServeHTTP(w, r)
+
+					return
+				}
+
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			c := newTestClient(t, func() time.Time { return testClock }, "api.github.com", h, nil)
+
+			_, err := c.Token(t.Context(), testRepo, appAccess(), tc.use)
+			require.Error(t, err)
+
+			refused, ok := errors.AsType[*TokenRefusedError](err)
+			require.Equal(t, tc.refused, ok, "%v", err)
+
+			if !ok {
+				return
+			}
+
+			assert.Equal(t, &TokenRefusedError{Use: tc.use, Message: tc.message}, refused)
+
+			text := refused.Error()
+			assert.Contains(t, text, "Contents")
+			assert.Equal(t, tc.use == ForWorkflowPush, strings.Contains(text, "Workflows"), text)
+			assert.Contains(t, text, tc.message)
+		})
+	}
 }

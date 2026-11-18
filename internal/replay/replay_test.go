@@ -95,6 +95,11 @@ func (r *fakeRunner) Export(_ context.Context, c engine.RunConfig, _ string) (en
 	return engine.ExportResult{HeadCommit: "head", Diff: fmt.Appendf(nil, "diff of task %d", c.TaskID), FilesChanged: 1}, nil
 }
 
+// Publish is not scripted: the fake does not publish.
+func (r *fakeRunner) Publish(context.Context, engine.RunConfig, engine.PublishRequest) (engine.PublishResult, error) {
+	return engine.PublishResult{}, errors.New("fake: the runner does not publish")
+}
+
 func (r *fakeRunner) Release(_ context.Context, ref engine.RunRef, removeVolumes bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
