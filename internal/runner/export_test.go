@@ -143,6 +143,18 @@ func TestExportProblems(t *testing.T) {
 		})
 	}
 
+	// git refuses a quiet fetch without a word, and a killed command says nothing either.
+	t.Run("a step that fails with no output", func(t *testing.T) {
+		f := exported()
+		c := workConfig()
+		f.results[changeName(c, headCommit)] = sandbox.Result{ExitCode: 137}
+
+		res, err := f.runner().Export(t.Context(), c, headCommit)
+		require.NoError(t, err)
+		assert.NotEmpty(t, res.Problem)
+		assert.Nil(t, res.Diff)
+	})
+
 	for _, file := range []string{bundleFile, changeDiff, changeFiles} {
 		t.Run(file+" over the bound", func(t *testing.T) {
 			f := exported()

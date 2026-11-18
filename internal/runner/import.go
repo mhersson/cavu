@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -70,7 +72,8 @@ func (st *run) imported(ctx context.Context, c engine.RunConfig, bundle []byte, 
 }
 
 // gitStep runs cmd in a and returns its output. A command that fails or runs
-// past gitTimeout gives its output as a problem, not an error.
+// past gitTimeout gives its output as a problem, not an error; one that fails
+// silently, as a quiet fetch git refuses or a killed command does, gives its status.
 func gitStep(ctx context.Context, a container, cmd proc.Command) (out, problem string, err error) {
 	res, err := a.Run(ctx, cmd, gitTimeout)
 	if err != nil {
@@ -78,7 +81,7 @@ func gitStep(ctx context.Context, a container, cmd proc.Command) (out, problem s
 	}
 
 	if res.ExitCode != 0 || res.TimedOut {
-		return "", strings.TrimSpace(output(res, gitTimeout)), nil
+		return "", cmp.Or(strings.TrimSpace(output(res, gitTimeout)), fmt.Sprintf("git exited %d with no output.", res.ExitCode)), nil
 	}
 
 	return res.Output, "", nil
