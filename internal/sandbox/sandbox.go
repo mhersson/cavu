@@ -314,13 +314,13 @@ func (s *Sandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (baseCommit
 }
 
 // Push runs the sidecar's push operation in a short-lived container that
-// mounts the project's mirror and nothing else. It returns the branch the
+// mounts the project's mirror, read-only, and nothing else. It returns the branch the
 // commit is on, or why the forge did not take it; an error means the forge
 // could not be asked. It sets r's mirror directory to that mount.
 func (s *Sandbox) Push(ctx context.Context, r sidecar.PushRequest) (branch, rejected string, err error) {
 	r.MirrorDir = "/mirror"
 
-	l, err := s.runOp(ctx, "push", sidecar.Request{Push: &r}, "pushed", s.mount("mirror", "/mirror", false))
+	l, err := s.runOp(ctx, "push", sidecar.Request{Push: &r}, "pushed", s.mount("mirror", "/mirror", true))
 	if err != nil {
 		return "", "", err
 	}

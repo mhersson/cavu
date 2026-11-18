@@ -668,7 +668,7 @@ func TestMirrorOnlyInCloneAndPushContainers(t *testing.T) {
 	push := calls[idx[0]]
 	assert.Subset(t, push.argv, []string{"--network=bridge", "--add-host=host.docker.internal:host-gateway", "--interactive", "--label=cavu.run=7"})
 	assert.NotContains(t, push.argv, "--detach")
-	assert.Equal(t, []string{mirror}, mountFlags(push.argv))
+	assert.Equal(t, []string{mirror + ",readonly"}, mountFlags(push.argv))
 	assert.Equal(t, []string{"cavu-sandbox:test", "cavu", "sidecar"}, push.argv[len(push.argv)-3:])
 	assert.Contains(t, removedAfter(calls, idx[0]), s.name("push"))
 
