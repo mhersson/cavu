@@ -43,7 +43,7 @@ const (
 	probeInterval    = 200 * time.Millisecond
 	probeCallTimeout = 15 * time.Second
 	inspectTimeout   = 15 * time.Second
-	// cloneTimeout keeps a hung fetch from hanging the run.
+	// cloneTimeout keeps a hung fetch or push from hanging the run.
 	cloneTimeout = 10 * time.Minute
 	// sidecarStopGrace outlasts the sidecar's own drain of in-flight responses.
 	sidecarStopGrace = 10 * time.Second
@@ -240,8 +240,9 @@ func (s *Sandbox) readMemory(ctx context.Context) error {
 	return nil
 }
 
-// The sidecar and the clone container are hardened too: one holds the real
-// credential and parses the agent's HTTP, the other runs git on forge content.
+// The sidecar and the clone and push containers are hardened too: the sidecar
+// holds the real credential and parses the agent's HTTP, the others run git on
+// forge content.
 func (s *Sandbox) sidecarSpec(kind string, memoryMB int, mounts ...Mount) ContainerSpec {
 	return ContainerSpec{
 		Name:        s.name(kind),
@@ -295,62 +296,94 @@ func (s *Sandbox) phaseNames() []string {
 
 // Clone runs the sidecar's clone operation in a short-lived container that
 // mounts the mirror and the workspace and nothing else, and returns the base
-// commit. It sets r's directories to those mounts. The token travels only on
-// the container's stdin, and the whole call is bounded. A container the
-// kernel killed at its memory limit is ErrOutOfMemory.
+// commit. It sets r's directories to those mounts.
 func (s *Sandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (baseCommit string, err error) {
-	if !s.volumes {
-		return "", errNoVolumes
+	r.MirrorDir, r.WorkspaceDir = "/mirror", "/workspace"
+
+	l, err := s.runOp(ctx, "clone", sidecar.Request{Clone: &r}, "cloned",
+		s.mount("mirror", "/mirror", false), s.mount("workspace", "/workspace", false))
+	if err != nil {
+		return "", err
 	}
 
-	r.MirrorDir, r.WorkspaceDir = "/mirror", "/workspace"
+	if !commitID.MatchString(l.Commit) {
+		return "", errors.New("sandbox: clone: the result is not a full commit id")
+	}
+
+	return l.Commit, nil
+}
+
+// Push runs the sidecar's push operation in a short-lived container that
+// mounts the project's mirror, read-only, and nothing else. It returns the branch the
+// commit is on, or why the forge did not take it; an error means the forge
+// could not be asked. It sets r's mirror directory to that mount.
+func (s *Sandbox) Push(ctx context.Context, r sidecar.PushRequest) (branch, rejected string, err error) {
+	r.MirrorDir = "/mirror"
+
+	l, err := s.runOp(ctx, "push", sidecar.Request{Push: &r}, "pushed", s.mount("mirror", "/mirror", true))
+	if err != nil {
+		return "", "", err
+	}
+
+	if l.Type == "rejected" {
+		return l.Branch, l.Error, nil
+	}
+
+	return l.Branch, "", nil
+}
+
+// runOp runs a sidecar op in a container named for kind that mounts mounts and
+// nothing else, and returns the line that ends it: done or "rejected", or an
+// error for an error line. The credentials travel only on the container's
+// stdin, and the whole call is bounded. A container the kernel killed at its
+// memory limit is ErrOutOfMemory.
+func (s *Sandbox) runOp(ctx context.Context, kind string, req sidecar.Request, done string, mounts ...Mount) (sidecar.Line, error) {
+	if !s.volumes {
+		return sidecar.Line{}, errNoVolumes
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, s.timeouts.clone)
 	defer cancel()
 
 	if err := s.readMemory(ctx); err != nil {
-		return "", err
+		return sidecar.Line{}, err
 	}
 
-	spec := s.sidecarSpec("clone", cloneMemoryMB, s.mount("mirror", "/mirror", false), s.mount("workspace", "/workspace", false))
+	spec := s.sidecarSpec(kind, cloneMemoryMB, mounts...)
 	rt := s.o.Runtime
 
 	if err := rt.Remove(ctx, spec.Name); err != nil {
-		return "", fmt.Errorf("sandbox: clone: %w", err)
+		return sidecar.Line{}, fmt.Errorf("sandbox: %s: %w", kind, err)
 	}
 
 	p, err := rt.StartAttached(ctx, spec)
 	if err != nil {
-		return "", fmt.Errorf("sandbox: clone: %w", err)
+		return sidecar.Line{}, fmt.Errorf("sandbox: %s: %w", kind, err)
 	}
 
-	baseCommit, err = readClone(ctx, p, r)
+	l, err := readOp(ctx, kind, p, req, done)
 
-	cleanup, done := cleanupContext(ctx)
-	defer done()
+	cleanup, finish := cleanupContext(ctx)
+	defer finish()
 
 	// git killed by the kernel reports only a signal, so the runtime is asked.
 	if err != nil && ctx.Err() == nil {
 		if info, ierr := rt.Inspect(cleanup, spec.Name); ierr == nil && info.OOMKilled {
-			err = fmt.Errorf("%w: the clone container hit its %d MB limit", ErrOutOfMemory, spec.MemoryMB)
+			err = fmt.Errorf("%w: the %s container hit its %d MB limit", ErrOutOfMemory, kind, spec.MemoryMB)
 		}
 	}
 
 	if rerr := rt.Remove(cleanup, spec.Name); rerr != nil {
-		err = errors.Join(err, fmt.Errorf("sandbox: clone: %w", rerr))
+		err = errors.Join(err, fmt.Errorf("sandbox: %s: %w", kind, rerr))
 	}
 
-	if err != nil {
-		return "", err
-	}
-
-	return baseCommit, nil
+	return l, err
 }
 
-func readClone(ctx context.Context, p proc.Process, r sidecar.CloneRequest) (string, error) {
+func readOp(ctx context.Context, kind string, p proc.Process, req sidecar.Request, done string) (sidecar.Line, error) {
 	// A client that never reads its stdin must not block the call.
 	go func() {
-		_ = json.NewEncoder(p.Stdin()).Encode(sidecar.Request{Clone: &r})
+		_ = json.NewEncoder(p.Stdin()).Encode(req)
 		_ = p.Stdin().Close()
 	}()
 
@@ -367,7 +400,7 @@ read:
 			}
 
 			var l sidecar.Line
-			if json.Unmarshal(raw, &l) == nil && (l.Type == "cloned" || l.Type == "error") {
+			if json.Unmarshal(raw, &l) == nil && (l.Type == done || l.Type == "rejected" || l.Type == "error") {
 				result = l
 
 				break read
@@ -375,38 +408,67 @@ read:
 		case <-ctx.Done():
 			_ = p.Stop(killGrace)
 
-			return "", fmt.Errorf("sandbox: clone: %w", ctx.Err())
+			return sidecar.Line{}, fmt.Errorf("sandbox: %s: %w", kind, ctx.Err())
 		}
 	}
 
 	code, err := proc.Wait(ctx, p)
 	if err != nil {
-		return "", fmt.Errorf("sandbox: clone: %w", err)
+		return sidecar.Line{}, fmt.Errorf("sandbox: %s: %w", kind, err)
 	}
 
 	switch {
 	case result.Type == "error":
-		return "", fmt.Errorf("sandbox: clone: %s", result.Error)
-	case result.Type != "cloned" || code != 0:
-		return "", fmt.Errorf("sandbox: clone: the container exited %d without a result: %s", code, lastLine(p.StderrTail()))
-	case !commitID.MatchString(result.Commit):
-		return "", errors.New("sandbox: clone: the result is not a full commit id")
+		return sidecar.Line{}, fmt.Errorf("sandbox: %s: %s", kind, result.Error)
+	case result.Type == "" || code != 0:
+		return sidecar.Line{}, fmt.Errorf("sandbox: %s: the container exited %d without a result: %s", kind, code, lastLine(p.StderrTail()))
 	}
 
-	return result.Commit, nil
+	return result, nil
 }
 
 // Scratch starts a throwaway container of the image beside the sandbox, for a
 // command that needs the image and nothing else: network none, hardened, no
 // volume, and the tmpfs a command runs with. Down removes it.
 func (s *Sandbox) Scratch(ctx context.Context) (Container, error) {
+	return s.idle(ctx, "scratch", sidecarMemoryMB)
+}
+
+// Importer starts the import container beside the sandbox, for CAVU's own git
+// on a change: Scratch's container with the project's mirror at /mirror,
+// writable, and none of the run's volumes. RemoveImporter removes it, and so
+// does Down.
+func (s *Sandbox) Importer(ctx context.Context) (Container, error) {
+	if !s.volumes {
+		return Container{}, errNoVolumes
+	}
+
+	// The clone's limit: the import's fetch indexes the bundle's pack as the clone's indexes the forge's.
+	return s.idle(ctx, "import", cloneMemoryMB, s.mount("mirror", "/mirror", false))
+}
+
+// RemoveImporter removes the import container, on a cancelled ctx too.
+func (s *Sandbox) RemoveImporter(ctx context.Context) error {
+	cleanup, cancel := cleanupContext(ctx)
+	defer cancel()
+
+	if err := s.o.Runtime.Remove(cleanup, s.name("import")); err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+
+	return nil
+}
+
+// idle starts a container named for kind that runs nothing of its own, with
+// mounts, network none, hardened, and the tmpfs a command runs with.
+func (s *Sandbox) idle(ctx context.Context, kind string, memoryMB int, mounts ...Mount) (Container, error) {
 	if err := s.readMemory(ctx); err != nil {
 		return Container{}, err
 	}
 
 	spec := ContainerSpec{
-		Name: s.name("scratch"), Image: s.o.Image, Argv: []string{"sleep", "infinity"}, Labels: s.labels("scratch"),
-		Tmpfs: []string{pidDir}, Network: "none", Hardened: true, MemoryMB: min(sidecarMemoryMB, s.totalMB),
+		Name: s.name(kind), Image: s.o.Image, Argv: []string{"sleep", "infinity"}, Labels: s.labels(kind), Mounts: mounts,
+		Tmpfs: []string{pidDir}, Network: "none", Hardened: true, MemoryMB: min(memoryMB, s.totalMB),
 	}
 
 	if err := s.o.Runtime.Remove(ctx, spec.Name); err != nil {
@@ -496,9 +558,9 @@ func (s *Sandbox) restart(ctx context.Context, phase Phase) (Container, error) {
 	return s.check(ctx)
 }
 
-// Down removes the containers, the scratch one too, and keeps the volumes. It
-// does so on a cancelled ctx too, so a cancelled run leaves no container
-// running.
+// Down removes the containers, the scratch and import ones too, and keeps the
+// volumes. It does so on a cancelled ctx too, so a cancelled run leaves no
+// container running.
 func (s *Sandbox) Down(ctx context.Context) error {
 	s.stopSidecar()
 	s.phase = ""
@@ -506,7 +568,7 @@ func (s *Sandbox) Down(ctx context.Context) error {
 	cleanup, cancel := cleanupContext(ctx)
 	defer cancel()
 
-	if err := s.o.Runtime.Remove(cleanup, append(s.phaseNames(), s.name("sidecar"), s.name("clone"), s.name("scratch"))...); err != nil {
+	if err := s.o.Runtime.Remove(cleanup, append(s.phaseNames(), s.name("sidecar"), s.name("clone"), s.name("push"), s.name("scratch"), s.name("import"))...); err != nil {
 		return fmt.Errorf("sandbox: %w", err)
 	}
 

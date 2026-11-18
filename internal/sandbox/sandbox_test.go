@@ -23,6 +23,7 @@ const (
 	instanceA  = "0123456789abcdef"
 	instanceB  = "fedcba9876543210"
 	baseCommit = "0123456789abcdef0123456789abcdef01234567"
+	pushedLine = `{"Type":"pushed","Branch":"cavu/x"}` + "\n"
 	// secret stands for every value that must not show in an error.
 	secret = "hunter2hunter2"
 )
@@ -236,6 +237,7 @@ func TestNamesFollowTheScheme(t *testing.T) {
 		"sidecar":   "cavu-01234567-sidecar-7",
 		"setup":     "cavu-01234567-setup-7",
 		"clone":     "cavu-01234567-clone-7",
+		"import":    "cavu-01234567-import-7",
 	} {
 		assert.Equal(t, want, s.name(kind), kind)
 	}
@@ -532,6 +534,47 @@ func TestScratch(t *testing.T) {
 	assert.Contains(t, removedAfter(f.calls(t), n-1), s.name("scratch"))
 }
 
+// The import container is the scratch container with the project's mirror,
+// writable, and no other volume. It is removed alone, or with the rest by Down.
+func TestImporter(t *testing.T) {
+	t.Run("before EnsureVolumes", func(t *testing.T) {
+		s, f := fakeSandbox(t)
+
+		_, err := s.Importer(t.Context())
+		require.ErrorIs(t, err, errNoVolumes)
+		assert.Empty(t, runsOf(f.calls(t), s.name("import")))
+	})
+
+	s, f := ensured(t)
+
+	c, err := s.Importer(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, s.name("import"), c.name)
+
+	run := onlyRun(t, f, s.name("import"))
+	assert.Subset(t, run.argv, []string{
+		"--detach", "--network=none", "--cap-drop=ALL", "--user=1000:1000", "--memory=2048m",
+		"--label=cavu.instance=" + instanceA, "--label=cavu.run=7",
+	})
+	assert.Equal(t, []string{volumeMount(s.name("mirror"), "/mirror")}, mountFlags(run.argv))
+	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(run.argv))
+	assert.Equal(t, []string{"cavu-sandbox:test", "sleep", "infinity"}, run.argv[len(run.argv)-3:])
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	n := len(f.calls(t))
+	require.NoError(t, s.RemoveImporter(ctx), "a cancelled context still removes it")
+	assert.Equal(t, []string{s.name("import")}, removedAfter(f.calls(t), n-1))
+
+	_, err = s.Importer(t.Context())
+	require.NoError(t, err)
+
+	n = len(f.calls(t))
+	require.NoError(t, s.Down(t.Context()))
+	assert.Contains(t, removedAfter(f.calls(t), n-1), s.name("import"))
+}
+
 func TestSetupPhaseHasNoHomeMount(t *testing.T) {
 	s, f := ensured(t)
 
@@ -574,15 +617,23 @@ func TestEveryContainerIsHardened(t *testing.T) {
 		totalMB int
 		want    map[string]string // container kind: its memory flag
 	}{
-		{"a large runtime", 32 << 10, map[string]string{"clone": "--memory=2048m", "sidecar": "--memory=1024m", "setup": "--memory=8192m", "agent": "--memory=8192m", "readonly": "--memory=8192m"}},
-		{"a runtime below the phase limit", 1536, map[string]string{"clone": "--memory=1536m", "sidecar": "--memory=1024m", "setup": "--memory=1536m", "agent": "--memory=1536m", "readonly": "--memory=1536m"}},
-		{"a runtime below every limit", 768, map[string]string{"clone": "--memory=768m", "sidecar": "--memory=768m", "setup": "--memory=768m", "agent": "--memory=768m", "readonly": "--memory=768m"}},
+		{"a large runtime", 32 << 10, map[string]string{"clone": "--memory=2048m", "push": "--memory=2048m", "import": "--memory=2048m", "sidecar": "--memory=1024m", "setup": "--memory=8192m", "agent": "--memory=8192m", "readonly": "--memory=8192m"}},
+		{"a runtime below the phase limit", 1536, map[string]string{"clone": "--memory=1536m", "push": "--memory=1536m", "import": "--memory=1536m", "sidecar": "--memory=1024m", "setup": "--memory=1536m", "agent": "--memory=1536m", "readonly": "--memory=1536m"}},
+		{"a runtime below every limit", 768, map[string]string{"clone": "--memory=768m", "push": "--memory=768m", "import": "--memory=768m", "sidecar": "--memory=768m", "setup": "--memory=768m", "agent": "--memory=768m", "readonly": "--memory=768m"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, f := ensured(t)
 			f.set(t, memoryFile, []byte(strconv.Itoa(tc.totalMB<<20)+"\n"))
 
 			_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: "https://git.example/repo.git"})
+			require.NoError(t, err)
+
+			f.set(t, "out.sidecar", []byte(pushedLine))
+
+			_, _, err = s.Push(t.Context(), sidecar.PushRequest{URL: "https://git.example/repo.git", Branch: "cavu/x"})
+			require.NoError(t, err)
+
+			_, err = s.Importer(t.Context())
 			require.NoError(t, err)
 
 			for _, phase := range phases {
@@ -604,7 +655,7 @@ func TestEveryContainerIsHardened(t *testing.T) {
 	}
 }
 
-func TestMirrorOnlyInCloneContainer(t *testing.T) {
+func TestMirrorOnlyInCloneImportAndPushContainers(t *testing.T) {
 	s, f := ensured(t)
 
 	base, err := s.Clone(t.Context(), sidecar.CloneRequest{
@@ -613,6 +664,18 @@ func TestMirrorOnlyInCloneContainer(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, baseCommit, base)
+
+	f.set(t, "out.sidecar", []byte(pushedLine))
+
+	branch, rejected, err := s.Push(t.Context(), sidecar.PushRequest{
+		URL: "https://git.example/repo.git", Ref: "refs/cavu/tasks/1", Commit: baseCommit, Branch: "cavu/x", MirrorDir: "/elsewhere",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "cavu/x", branch)
+	assert.Empty(t, rejected)
+
+	_, err = s.Importer(t.Context())
+	require.NoError(t, err)
 
 	_, err = s.Up(t.Context(), PhaseSetup, sidecar.ProxyRequest{}, nil)
 	require.NoError(t, err)
@@ -625,7 +688,8 @@ func TestMirrorOnlyInCloneContainer(t *testing.T) {
 
 	for _, c := range calls {
 		if c.argv[0] == "run" {
-			assert.Equal(t, slices.Contains(c.argv, "--name="+s.name("clone")), slices.Contains(c.argv, mirror), strings.Join(c.argv, " "))
+			holds := slices.ContainsFunc([]string{"clone", "import", "push"}, func(k string) bool { return slices.Contains(c.argv, "--name="+s.name(k)) })
+			assert.Equal(t, holds, slices.ContainsFunc(c.argv, func(a string) bool { return strings.HasPrefix(a, mirror) }), strings.Join(c.argv, " "))
 		}
 	}
 
@@ -645,6 +709,92 @@ func TestMirrorOnlyInCloneContainer(t *testing.T) {
 	assert.Equal(t, "/mirror", req.Clone.MirrorDir)
 	assert.Equal(t, "/workspace", req.Clone.WorkspaceDir)
 	assert.Equal(t, "https://git.example/repo.git", req.Clone.URL)
+
+	idx = runsOf(calls, s.name("push"))
+	require.Len(t, idx, 1)
+
+	push := calls[idx[0]]
+	assert.Subset(t, push.argv, []string{"--network=bridge", "--add-host=host.docker.internal:host-gateway", "--interactive", "--label=cavu.run=7"})
+	assert.NotContains(t, push.argv, "--detach")
+	assert.Equal(t, []string{mirror + ",readonly"}, mountFlags(push.argv))
+	assert.Equal(t, []string{"cavu-sandbox:test", "cavu", "sidecar"}, push.argv[len(push.argv)-3:])
+	assert.Contains(t, removedAfter(calls, idx[0]), s.name("push"))
+
+	req = sidecar.Request{}
+	require.NoError(t, json.Unmarshal(push.stdin, &req))
+	require.NotNil(t, req.Push)
+	assert.Equal(t, "/mirror", req.Push.MirrorDir)
+	assert.Equal(t, "refs/cavu/tasks/1", req.Push.Ref)
+
+	assert.Equal(t, []string{mirror}, mountFlags(onlyRun(t, f, s.name("import")).argv), "the import writes the mirror")
+}
+
+func TestPushResults(t *testing.T) {
+	s, f := ensured(t)
+	f.set(t, "out.sidecar", []byte(`{"Type":"rejected","Branch":"cavu/x-2","Error":"[rejected] (fetch first)"}`+"\n"))
+
+	branch, rejected, err := s.Push(t.Context(), sidecar.PushRequest{URL: "https://git.example/repo.git", Branch: "cavu/x"})
+	require.NoError(t, err)
+	assert.Equal(t, "cavu/x-2", branch)
+	assert.Equal(t, "[rejected] (fetch first)", rejected)
+
+	calls := f.calls(t)
+	idx := runsOf(calls, s.name("push"))
+	require.Len(t, idx, 1)
+	assert.Contains(t, removedAfter(calls, idx[0]), s.name("push"))
+}
+
+func TestPushFailures(t *testing.T) {
+	for name, out := range map[string]string{
+		"error line": `{"Type":"error","Error":"ask the forge for the branch: exit status 128: fatal: <url> not found"}`,
+		"no result":  "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, f := ensured(t)
+			f.set(t, "out.sidecar", []byte(out+"\n"))
+
+			if name == "no result" {
+				f.set(t, "out."+s.name("push"), []byte(`[{"State":{"OOMKilled":false,"ExitCode":1}}]`))
+			}
+
+			_, _, err := s.Push(t.Context(), sidecar.PushRequest{URL: "https://git.example/repo.git"})
+			require.Error(t, err)
+			require.NotErrorIs(t, err, ErrOutOfMemory)
+
+			calls := f.calls(t)
+			idx := runsOf(calls, s.name("push"))
+			require.Len(t, idx, 1)
+			assert.Contains(t, removedAfter(calls, idx[0]), s.name("push"))
+		})
+	}
+
+	t.Run("killed for memory", func(t *testing.T) {
+		s, f := ensured(t)
+		f.set(t, "out.sidecar", []byte(`{"Type":"error","Error":"push: signal: killed"}`+"\n"))
+		f.set(t, "out."+s.name("push"), []byte(`[{"State":{"OOMKilled":true,"ExitCode":137}}]`))
+
+		_, _, err := s.Push(t.Context(), sidecar.PushRequest{URL: "https://git.example/repo.git"})
+		require.ErrorIs(t, err, ErrOutOfMemory)
+	})
+
+	t.Run("a hung push is bounded", func(t *testing.T) {
+		s, f := ensured(t)
+		f.set(t, "sleep", []byte("sidecar"))
+
+		s.timeouts.clone = 300 * time.Millisecond
+
+		begun := time.Now()
+		_, _, err := s.Push(t.Context(), sidecar.PushRequest{URL: "https://git.example/repo.git"})
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Less(t, time.Since(begun), 10*time.Second)
+	})
+
+	t.Run("before the volumes exist", func(t *testing.T) {
+		s, _ := fakeSandbox(t)
+
+		_, _, err := s.Push(t.Context(), sidecar.PushRequest{URL: "https://git.example/repo.git"})
+		require.ErrorIs(t, err, errNoVolumes)
+	})
 }
 
 func TestCloneFailures(t *testing.T) {
@@ -716,6 +866,11 @@ func TestCredentialOnlyOnSidecarStdin(t *testing.T) {
 	_, err := s.Clone(t.Context(), sidecar.CloneRequest{URL: "https://git.example/repo.git", Token: forgeKey, BaseBranch: "main", Branch: "cavu/x"})
 	require.NoError(t, err)
 
+	f.set(t, "out.sidecar", []byte(pushedLine))
+
+	_, _, err = s.Push(t.Context(), sidecar.PushRequest{URL: "https://git.example/repo.git", Token: forgeKey, Branch: "cavu/x"})
+	require.NoError(t, err)
+
 	model := &proxy.ModelRoute{BaseURL: "https://gateway.example", Credential: modelKey, AuthHeader: "bearer", StandIn: "stand-in"}
 	_, err = s.Up(t.Context(), PhaseAgent, sidecar.ProxyRequest{Model: model}, nil)
 	require.NoError(t, err)
@@ -742,6 +897,11 @@ func TestCredentialOnlyOnSidecarStdin(t *testing.T) {
 	require.NoError(t, json.Unmarshal(onlyRun(t, f, s.name("clone")).stdin, &req))
 	require.NotNil(t, req.Clone)
 	assert.Equal(t, forgeKey, req.Clone.Token)
+
+	req = sidecar.Request{}
+	require.NoError(t, json.Unmarshal(onlyRun(t, f, s.name("push")).stdin, &req))
+	require.NotNil(t, req.Push)
+	assert.Equal(t, forgeKey, req.Push.Token)
 }
 
 func TestUpChecksNetworkNone(t *testing.T) {
@@ -1167,7 +1327,7 @@ func TestDownAndDestroyOutliveACancelledContext(t *testing.T) {
 		require.NoError(t, s.Down(cancelled(t)))
 
 		removed := removedAfter(f.calls(t), n-1)
-		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone"} {
+		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone", "push", "import"} {
 			assert.Contains(t, removed, s.name(k))
 		}
 	})
@@ -1200,7 +1360,7 @@ func TestDownAndDestroy(t *testing.T) {
 		calls := f.calls(t)
 		removed := removedAfter(calls, n-1)
 
-		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone"} {
+		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone", "push", "import"} {
 			assert.Contains(t, removed, s.name(k))
 		}
 

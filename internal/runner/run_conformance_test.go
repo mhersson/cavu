@@ -5,6 +5,7 @@ package runner
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -119,6 +120,7 @@ func TestRunProducesDiff(t *testing.T) {
 	assert.Contains(t, string(ex.Diff), "\n+CAVU-ADDED-LINE\n")
 	assert.Equal(t, 1, ex.FilesChanged)
 	assert.Equal(t, []string{"notes.txt | 1 +", "1 file changed, 1 insertion(+)"}, ex.DiffStat)
+	assert.Equal(t, []engine.ChangedFile{{Path: "notes.txt", Size: int64(len("first line\nCAVU-ADDED-LINE\n"))}}, ex.Files)
 	assertBundle(t, r, c, ex.Bundle, res.HeadCommit)
 }
 
@@ -185,7 +187,7 @@ func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
 
 	c.Verify.Command = "echo CAVU-LATER >> notes.txt && git commit -qam later && git checkout -q -b later && " +
-		"{ setsid sh -c 'while :; do echo CAVU-REWRITTEN > /handoff/diff.patch; sleep 0.01; done' </dev/null >/dev/null 2>&1 & }"
+		"{ setsid sh -c 'while :; do echo CAVU-REWRITTEN > /handoff/task.bundle; sleep 0.01; done' </dev/null >/dev/null 2>&1 & }"
 
 	vr, err := r.Verify(t.Context(), c)
 	require.NoError(t, err)
@@ -195,7 +197,6 @@ func TestExportIgnoresChangesAfterFreeze(t *testing.T) {
 	ex := export(t, r, c, res)
 	assert.Contains(t, string(ex.Diff), "\n+CAVU-FROZEN\n")
 	assert.NotContains(t, string(ex.Diff), "CAVU-LATER")
-	assert.NotContains(t, string(ex.Diff), "CAVU-REWRITTEN")
 	assertBundle(t, r, c, ex.Bundle, res.HeadCommit)
 }
 
@@ -226,6 +227,44 @@ func TestExportShowsCommittedChange(t *testing.T) {
 	assert.Contains(t, string(ex.Diff), "\n+CAVU-ADDED-LINE\n")
 	assert.Contains(t, string(ex.Diff), "\n+Subproject commit ")
 	assert.Equal(t, []string{"notes.txt | 1 +", "sub       | 1 +", "2 files changed, 2 insertions(+)"}, ex.DiffStat)
+}
+
+// The diff and the summary come from the bundle, read where the agent wrote
+// nothing: neither the workspace's attributes and configuration nor the
+// attributes the change commits render its text as binary or in colour.
+func TestExportReadsTheChangeFromTheBundle(t *testing.T) {
+	for _, tt := range []struct {
+		name, command string
+		lines, stat   []string
+	}{
+		{
+			name:    "the workspace's attributes and configuration",
+			command: "echo 'notes.txt binary' >> .git/info/attributes && git config color.diff always && echo CAVU-ADDED-LINE >> notes.txt",
+			lines:   []string{"+CAVU-ADDED-LINE"},
+			stat:    []string{"notes.txt | 1 +", "1 file changed, 1 insertion(+)"},
+		},
+		{
+			name:    "attributes the change commits",
+			command: `printf 'notes.txt binary\nother.txt -diff\n' > .gitattributes && echo CAVU-ADDED-LINE >> notes.txt && echo CAVU-OTHER-LINE > other.txt`,
+			lines:   []string{"+CAVU-ADDED-LINE", "+CAVU-OTHER-LINE"},
+			stat:    []string{".gitattributes | 2 ++", "notes.txt      | 1 +", "other.txt      | 1 +", "3 files changed, 4 insertions(+)"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, c, _ := agentRun(t, bash(tt.command+" && git add -A && git commit -qm 'docs(notes): add a line'"), done)
+
+			res := work(t, r, c, newSession(t))
+			require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+
+			ex := export(t, r, c, res)
+			for _, l := range tt.lines {
+				assert.Contains(t, string(ex.Diff), "\n"+l+"\n")
+			}
+
+			assert.NotContains(t, string(ex.Diff), "\x1b")
+			assert.Equal(t, tt.stat, ex.DiffStat)
+		})
+	}
 }
 
 func TestVerifyRunsInFreshContainer(t *testing.T) {
@@ -281,6 +320,83 @@ func carries(r mockapi.Request, marker string) bool {
 	}
 
 	return false
+}
+
+// approved ends a review session with a verdict that passes.
+var approved = mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{
+	"asked": map[string]any{"pass": true, "reason": "It adds the line."}, "built": map[string]any{"pass": true, "reason": "Small."}, "findings": []any{},
+}}
+
+// toolResults is the text of the tool results r's messages carry, a line each.
+func toolResults(t *testing.T, r mockapi.Request) string {
+	t.Helper()
+
+	var b strings.Builder
+
+	for _, m := range r.Messages {
+		var msg struct {
+			Content []struct {
+				Type    string
+				Content json.RawMessage
+			}
+		}
+
+		// A message whose content is a plain string carries no tool result.
+		if json.Unmarshal(m, &msg) != nil {
+			continue
+		}
+
+		for _, c := range msg.Content {
+			if c.Type != "tool_result" {
+				continue
+			}
+
+			var text string
+			if json.Unmarshal(c.Content, &text) != nil {
+				var parts []struct{ Text string }
+				require.NoError(t, json.Unmarshal(c.Content, &parts))
+
+				for _, p := range parts {
+					text += p.Text
+				}
+			}
+
+			b.WriteString(text + "\n")
+		}
+	}
+
+	return b.String()
+}
+
+// The reviewer reads the change from the import of the branch's bundle: what
+// the workspace's attributes and configuration render as binary or in colour
+// reaches it as the text the export's diff holds.
+func TestReviewReadsTheImportedDiff(t *testing.T) {
+	r, c, mock := agentRun(t,
+		bash("echo 'notes.txt binary' >> .git/info/attributes && git config color.diff always && "+
+			"echo CAVU-ADDED-LINE >> notes.txt && git commit -qam 'docs(notes): add a line'"), done,
+		bash("cat /run/cavu/review.patch"), approved)
+
+	res := work(t, r, c, newSession(t))
+	require.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+
+	before := len(mock.Requests())
+	// As the settings fill an unset model_review with the work model.
+	c.Agent.Review.Model = c.Agent.Model
+
+	rv, err := r.Review(t.Context(), c, engine.ReviewRequest{SessionID: newSession(t).SessionID, Head: res.HeadCommit}, func(engine.Progress) {})
+	require.NoError(t, err)
+	require.Equal(t, engine.ReviewReviewed, rv.Outcome, rv.Detail)
+
+	reqs := mock.Requests()[before:]
+	require.Len(t, reqs, 2, "the reviewer read the patch and then gave its verdict")
+
+	read := toolResults(t, reqs[1])
+	ex := export(t, r, c, res)
+
+	assert.Contains(t, read, "\n+CAVU-ADDED-LINE\n")
+	assert.NotContains(t, read, "\x1b")
+	assert.Contains(t, read, strings.TrimSuffix(string(ex.Diff), "\n"), "the reviewer read the export's diff")
 }
 
 // A fresh fix of a review gets the whole change as a file in the agent

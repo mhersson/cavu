@@ -70,48 +70,90 @@ func diffName(args ...string) string {
 	return stepName(scriptArgv(diffScript, args...))
 }
 
+// reviewBundleName is how the fake names the making of the review's bundle.
+func reviewBundleName(c engine.RunConfig) string {
+	return stepName(scriptArgv(bundleScript, c.Repo.BaseCommit, c.Repo.Branch, tmpfsBundle))
+}
+
+// reviewCalls are the calls of a review, with the diffs args name, up to its session.
+func reviewCalls(c engine.RunConfig, args ...string) []string {
+	calls := []string{
+		"volumes", "up/readonly", "run/" + reviewBundleName(c), "copyout " + tmpfsBundle,
+		"importer", "import/copy", "import/run/" + importName(c, headCommit), "import/run/" + diffName(args...),
+	}
+
+	for i := 2; i < len(args); i += 3 {
+		calls = append(calls, "import/copyout "+args[i])
+	}
+
+	return append(calls, "copy", "importer removed")
+}
+
+// reviewed is a fake whose review gets its diffs.
+func reviewed() *fakeSandbox {
+	f := newFake()
+	f.out = map[string][]byte{tmpfsBundle: []byte(exportedBundle), wantReviewPatch: []byte("review " + twoFiles), wantFixPatch: []byte("fix " + twoFiles)}
+
+	return f
+}
+
 func asMap(f engine.Finding) map[string]any {
 	return map[string]any{"severity": f.Severity, "where": f.Where, "what": f.What, "why": f.Why}
 }
 
-// The diffs are written by one script in the read-only container, wrapped
-// so it runs only in a sandbox, with git's diff options of the export and no
-// binary patch, and every commit and path as an argument.
-func TestReviewWritesTheDiffFiles(t *testing.T) {
+// The read-only container makes the task branch's bundle and nothing else.
+// The diffs come from the import of that bundle into the project's mirror,
+// with no binary patch, and are copied into the read-only container. Every
+// script runs only in a sandbox, with every commit and path as an argument.
+func TestReviewReadsTheImportedDiffs(t *testing.T) {
 	for _, tt := range []struct {
-		name string
-		r    engine.ReviewRequest
-		args []string
+		name  string
+		r     engine.ReviewRequest
+		args  []string
+		files []string
 	}{
-		{name: "full", r: fullReview(), args: []string{baseCommit, headCommit, wantReviewPatch}},
+		{name: "full", r: fullReview(), args: []string{baseCommit, headCommit, wantReviewPatch}, files: []string{wantReviewPatch}},
 		{
 			name: "scoped", r: scopedReview(),
-			args: []string{baseCommit, headCommit, wantReviewPatch, fixBase, headCommit, wantFixPatch},
+			args:  []string{baseCommit, headCommit, wantReviewPatch, fixBase, headCommit, wantFixPatch},
+			files: []string{wantReviewPatch, wantFixPatch},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newFake()
+			f := reviewed()
+			c := workConfig()
 
-			_, err := f.workRunner(&fakeAgent{results: []driver.Result{passing()}}).Review(t.Context(), workConfig(), tt.r, noProgress)
+			var before []string
+
+			d := &fakeAgent{results: []driver.Result{passing()}, during: func(context.Context, func(driver.Event)) { before = f.calls() }}
+
+			_, err := f.workRunner(d).Review(t.Context(), c, tt.r, noProgress)
 			require.NoError(t, err)
+			assert.Equal(t, reviewCalls(c, tt.args...), before, "the diffs are in place before the session")
 
-			runs := f.runsIn(sandbox.PhaseReadOnly)
-			require.Len(t, runs, 1)
+			readOnly := f.runsIn(sandbox.PhaseReadOnly)
+			require.Len(t, readOnly, 1, "the read-only container computes no diff")
+			assert.Equal(t, workspace, readOnly[0].cmd.Dir)
+			assert.Equal(t, agentEnv([]string{"go"}, baseCommit), readOnly[0].cmd.Env)
+			assert.Equal(t, map[string][]byte{tmpfsBundle: []byte(exportedBundle)}, f.imported, "the import takes the bundle the read-only container made")
 
-			cmd := runs[0].cmd
-			script := cmd.Argv[2]
-			assert.True(t, strings.HasPrefix(script, proc.SandboxOnly("")), "the script runs only in a sandbox")
+			read := f.run(t, diffName(tt.args...))
+			assert.Equal(t, phaseImport, read.phase)
+			assert.NotContains(t, read.cmd.Argv[2], "--binary")
+			assert.NotContains(t, read.cmd.Argv[2], "/run/cavu", "the paths go as arguments")
 
-			for _, opt := range []string{"--no-ext-diff", "--no-textconv", "--ignore-submodules=none"} {
-				assert.Contains(t, script, opt)
-				assert.Contains(t, exportScript, opt, "the export's own option")
+			for _, r := range append(readOnly, f.runsIn(phaseImport)...) {
+				assert.True(t, strings.HasPrefix(r.cmd.Argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox: %s", r.name)
 			}
 
-			assert.NotContains(t, script, "--binary")
-			assert.NotContains(t, script, "/run/cavu", "the paths go as arguments")
-			assert.Equal(t, tt.args, cmd.Argv[4:])
-			assert.Equal(t, workspace, cmd.Dir)
-			assert.Equal(t, agentEnv([]string{"go"}, baseCommit), cmd.Env, "the export's environment")
+			assertImportCommands(t, f)
+
+			want := map[string][]byte{}
+			for _, file := range tt.files {
+				want[file] = f.out[file]
+			}
+
+			assert.Equal(t, want, f.copied, "the read-only container gets the import's diffs")
 		})
 	}
 }
@@ -172,14 +214,14 @@ func TestReviewSpec(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newFake()
+			f := reviewed()
 			d := &fakeAgent{results: []driver.Result{passing()}}
 
 			_, err := f.workRunner(d).Review(t.Context(), c, tt.r, noProgress)
 			require.NoError(t, err)
 			require.Len(t, d.specs, 1)
 
-			assert.Equal(t, []string{"volumes", "up/readonly", "run/" + diffName(tt.diff...)}, f.calls(), "the read-only phase, and the diffs written in it")
+			assert.Equal(t, reviewCalls(c, tt.diff...), f.calls(), "the read-only phase, and the diffs copied into it")
 
 			// No instructions: a read-only session's prompt says all it needs.
 			assert.Equal(t, driver.Spec{
@@ -321,38 +363,45 @@ func TestReviewResultMapping(t *testing.T) {
 	}
 }
 
-// A diff the script cannot write leaves the review without a verdict, which
-// never blocks the task.
+// A bundle the review cannot make or the import refuses, or a diff git cannot
+// write, leaves the review without a verdict, which never blocks the task.
 func TestReviewWithoutItsDiff(t *testing.T) {
-	f := newFake()
 	c := workConfig()
-	f.results[diffName(c.Repo.BaseCommit, headCommit, wantReviewPatch)] = sandbox.Result{ExitCode: 128, Output: "fatal: bad object" + plantedSetup + "\n"}
-	d := &fakeAgent{results: []driver.Result{passing()}}
 
-	res, err := f.workRunner(d).Review(t.Context(), c, fullReview(), noProgress)
-	require.NoError(t, err)
-	assert.Equal(t, engine.ReviewResult{Outcome: engine.ReviewFailed, Detail: masker(c)("fatal: bad object" + plantedSetup)}, res)
-	assert.Empty(t, d.specs, "no session runs without the diff")
+	for name, step := range map[string]string{
+		"the bundle": reviewBundleName(c),
+		"the import": importName(c, headCommit),
+		"the diff":   diffName(c.Repo.BaseCommit, headCommit, wantReviewPatch),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := reviewed()
+			f.results[step] = sandbox.Result{ExitCode: 128, Output: "fatal: bad object" + plantedSetup + "\n"}
+			d := &fakeAgent{results: []driver.Result{passing()}}
+
+			res, err := f.workRunner(d).Review(t.Context(), c, fullReview(), noProgress)
+			require.NoError(t, err)
+			assert.Equal(t, engine.ReviewResult{Outcome: engine.ReviewFailed, Detail: masker(c)("fatal: bad object" + plantedSetup)}, res)
+			assert.Empty(t, d.specs, "no session runs without the diff")
+			assert.Empty(t, f.copied, "no diff reaches the read-only container")
+		})
+	}
 }
 
 func TestReviewChangesNothing(t *testing.T) {
 	for _, r := range []engine.ReviewRequest{fullReview(), scopedReview()} {
-		f := newFake()
+		f := reviewed()
 		d := &fakeAgent{results: []driver.Result{passing()}}
 
 		_, err := f.workRunner(d).Review(t.Context(), workConfig(), r, noProgress)
 		require.NoError(t, err)
 
 		runs := f.runsIn(sandbox.PhaseReadOnly)
-		require.Len(t, runs, 1, "the diffs are the one command")
+		require.Len(t, runs, 1, "the bundle is the one command")
 		assert.Empty(t, f.runsIn(sandbox.PhaseAgent), "no freeze, and nothing in the agent phase")
 		assert.NotContains(t, f.calls(), "restart")
 
-		// Every third argument is a file the script writes.
-		args := runs[0].cmd.Argv[4:]
-		for i := 2; i < len(args); i += 3 {
-			assert.True(t, strings.HasPrefix(args[i], "/run/cavu/"), args[i])
-		}
+		// The bundle goes to the tmpfs, never to a volume.
+		assert.True(t, strings.HasPrefix(runs[0].cmd.Argv[len(runs[0].cmd.Argv)-1], "/run/cavu/"))
 	}
 }
 

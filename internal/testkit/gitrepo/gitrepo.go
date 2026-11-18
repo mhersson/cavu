@@ -260,3 +260,11 @@ func Handler(t *testing.T, bareDir string) http.Handler {
 		},
 	}
 }
+
+// AllowPush lets the smart HTTP backend take pushes into the bare repository at
+// bareDir. Without it, a client sees a token that may read and not write.
+func AllowPush(t *testing.T, bareDir string) {
+	t.Helper()
+
+	Git(t, bareDir, "config", "http.receivepack", "true")
+}

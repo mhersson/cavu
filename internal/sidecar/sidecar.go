@@ -1,6 +1,6 @@
 // Package sidecar is the program the sidecar container runs: it reads one JSON
 // request, then either serves the egress proxy on a Unix socket or runs the git
-// clone that needs the network, and reports what happens as JSON lines. Real
+// clone or push that needs the network, and reports what happens as JSON lines. Real
 // credentials reach it only in that request.
 package sidecar
 
@@ -60,8 +60,10 @@ func Run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 		err = runProxy(ctx, out, rest, req.Proxy)
 	case req.Clone != nil:
 		err = runClone(ctx, out, req.Clone)
+	case req.Push != nil:
+		err = runPush(ctx, out, &req)
 	default:
-		err = errors.New("request: no proxy or clone body")
+		err = errors.New("request: no proxy, clone or push body")
 	}
 
 	if err != nil {
@@ -163,6 +165,28 @@ func runClone(ctx context.Context, out *writer, c *CloneRequest) error {
 	return nil
 }
 
+func runPush(ctx context.Context, out *writer, req *Request) error {
+	p := req.Push
+
+	res, err := git.Push(ctx, git.PushSpec{
+		URL: p.URL, Token: p.Token, MirrorDir: p.MirrorDir,
+		Ref: p.Ref, Commit: p.Commit, Branch: p.Branch, Expect: p.Expect,
+	})
+	if err != nil {
+		return err
+	}
+
+	if res.Rejected != "" {
+		out.write(Line{Type: "rejected", Branch: res.Branch, Error: scrub(res.Rejected, req)})
+
+		return nil
+	}
+
+	out.write(Line{Type: "pushed", Branch: res.Branch})
+
+	return nil
+}
+
 var urlRE = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://\S*`)
 
 // scrub removes every secret and URL the request carried, and any other URL,
@@ -173,6 +197,10 @@ func scrub(msg string, req *Request) string {
 	if req != nil {
 		if c := req.Clone; c != nil {
 			secrets = append(secrets, c.Token, c.URL)
+		}
+
+		if p := req.Push; p != nil {
+			secrets = append(secrets, p.Token, p.URL)
 		}
 
 		if p := req.Proxy; p != nil && p.Model != nil {
