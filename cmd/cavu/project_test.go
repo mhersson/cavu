@@ -583,7 +583,8 @@ func TestProjectShowPrintsEveryField(t *testing.T) {
 	out := cavuIn(t, dir, "project", "show", "web")
 
 	for _, want := range []string{
-		repo, "waived", "example.org", "A=b", "TOKEN", "go=1.22", "web_tools=on", "continuations=on", "readiness=on", "review=on", "node@22",
+		repo, "waived", "example.org", "A=b", "TOKEN", "go=1.22", "web_tools=on", "continuations=on", "readiness=on", "review=on", "publish=on",
+		"node@22",
 		"npm test",
 	} {
 		assert.Contains(t, out, want)
@@ -591,4 +592,49 @@ func TestProjectShowPrintsEveryField(t *testing.T) {
 
 	code, _, _ := runCavu("project", "show", "nope", "--data-dir", dir)
 	assert.NotEqual(t, 0, code)
+}
+
+func TestProjectSetForgePolicy(t *testing.T) {
+	dir := t.TempDir()
+	cavuIn(t, dir, "project", "add", "web", "--repo", repo, "--verify", "make test")
+	storeBaseline(t, dir, "web")
+
+	shown := func(t *testing.T) [3][]string {
+		t.Helper()
+
+		out := cavuIn(t, dir, "project", "show", "web")
+
+		return [3][]string{labelled(out, "no ci:"), labelled(out, "ignored:"), labelled(out, "bots:")}
+	}
+
+	assert.Equal(t, [3][]string{{"off"}, {"none"}, {"none"}}, shown(t))
+
+	cavuIn(t, dir, "project", "set", "web", "--no-ci", "on", "--ignore-check", "lint", "--ignore-check", "docs / deploy",
+		"--review-bot", "copilot[bot]")
+
+	p := storedProject(t, dir, "web")
+	assert.Equal(t, store.ForgePolicy{NoCI: true, IgnoredChecks: []string{"lint", "docs / deploy"}, ReviewBots: []string{"copilot[bot]"}}, p.Forge)
+	assert.NotNil(t, p.Baseline, "the policy is no ground of the baseline")
+	assert.Equal(t, [3][]string{{"on"}, {"lint, docs / deploy"}, {"copilot[bot]"}}, shown(t))
+
+	cavuIn(t, dir, "project", "set", "web", "--ignore-check", "build")
+	assert.Equal(t, store.ForgePolicy{NoCI: true, IgnoredChecks: []string{"build"}, ReviewBots: []string{"copilot[bot]"}},
+		storedProject(t, dir, "web").Forge, "a list flag replaces its list, and a flag not given keeps its field")
+
+	cavuIn(t, dir, "project", "set", "web", "--no-ci", "off", "--review-bot", "")
+
+	p = storedProject(t, dir, "web")
+	assert.False(t, p.Forge.NoCI)
+	assert.Equal(t, []string{"build"}, p.Forge.IgnoredChecks)
+	assert.Empty(t, p.Forge.ReviewBots, "one empty value empties the list")
+
+	before := storedProject(t, dir, "web")
+
+	for _, v := range []string{"yes", "true", ""} {
+		code, _, stderr := runCavu("project", "set", "web", "--no-ci", v, "--data-dir", dir)
+		assert.Equal(t, 1, code, v)
+		assert.Contains(t, stderr, "--no-ci", v)
+	}
+
+	assert.Equal(t, before, storedProject(t, dir, "web"), "nothing is changed")
 }

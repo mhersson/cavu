@@ -12,7 +12,7 @@ import (
 )
 
 // instanceSecrets are the secrets the settings tell are set or not, never what they are.
-var instanceSecrets = []string{engine.SecretEndpointCredential, engine.SecretForgeToken}
+var instanceSecrets = []string{engine.SecretEndpointCredential, engine.SecretForgeToken, engine.SecretForgeAppKey}
 
 // settings answers with every settable key whose value is not empty, a value
 // that is a JSON object as one, and whether each instance secret is set.

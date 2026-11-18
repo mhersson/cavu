@@ -27,6 +27,9 @@ type projectJSON struct {
 	SecretVars    []string          `json:"secret_vars"`
 	Switches      map[string]bool   `json:"switches"`
 	Caps          map[string]string `json:"caps"`
+	NoCI          bool              `json:"no_ci"`
+	IgnoredChecks []string          `json:"ignored_checks"`
+	ReviewBots    []string          `json:"review_bots"`
 	Runnable      bool              `json:"runnable"`
 	Baseline      *baselineJSON     `json:"baseline"`
 	Check         checkJSON         `json:"check"`
@@ -57,7 +60,9 @@ func projectView(p store.Project) projectJSON {
 		SetupCommand: p.SetupCommand, VerifyCommand: p.VerifyCommand, VerifyWaived: p.VerifyWaived,
 		ToolOverrides: maps.Collect(maps.All(p.ToolOverrides)), EgressHosts: append([]string{}, p.EgressHosts...),
 		Env: maps.Collect(maps.All(p.Env)), SecretVars: append([]string{}, p.SecretVars...),
-		Switches: engine.ProjectSwitches(p), Caps: maps.Collect(maps.All(p.Caps)), Runnable: engine.Runnable(p),
+		Switches: engine.ProjectSwitches(p), Caps: maps.Collect(maps.All(p.Caps)),
+		NoCI: p.Forge.NoCI, IgnoredChecks: append([]string{}, p.Forge.IgnoredChecks...), ReviewBots: append([]string{}, p.Forge.ReviewBots...),
+		Runnable: engine.Runnable(p),
 		Check: checkJSON{
 			Tools: append([]string{}, c.Tools...), IgnoredTools: append([]string{}, c.IgnoredTools...),
 			FailedStep: c.FailedStep, VerifySuggestion: c.VerifySuggestion, Fault: c.Fault, Commit: c.BaseCommit, Output: c.Output,
@@ -86,6 +91,9 @@ type projectFields struct {
 	ToolOverrides *map[string]string `json:"tool_overrides"`
 	EgressHosts   *[]string          `json:"egress_hosts"`
 	Env           *map[string]string `json:"env"`
+	NoCI          *bool              `json:"no_ci"`
+	IgnoredChecks *[]string          `json:"ignored_checks"`
+	ReviewBots    *[]string          `json:"review_bots"`
 	Switches      map[string]bool    `json:"switches"` // merged per key
 	Caps          map[string]string  `json:"caps"`     // merged per key; an empty value removes the cap
 	Secrets       map[string]string  `json:"secrets"`  // variable to value; an empty value removes the variable
@@ -101,6 +109,9 @@ func (f projectFields) apply(p *store.Project) {
 	set(&p.ToolOverrides, f.ToolOverrides)
 	set(&p.EgressHosts, f.EgressHosts)
 	set(&p.Env, f.Env)
+	set(&p.Forge.NoCI, f.NoCI)
+	set(&p.Forge.IgnoredChecks, f.IgnoredChecks)
+	set(&p.Forge.ReviewBots, f.ReviewBots)
 
 	sw := map[string]bool{}
 	maps.Copy(sw, p.Switches)

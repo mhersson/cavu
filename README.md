@@ -50,12 +50,14 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu secret set forge_token < token.txt
    ```
 
-   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token for the clone from the App's installation on the repository.
+   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token for the clone from the App's installation on the repository. With `forge_app_id` empty, `forge_token` is used.
 
    ```
    cavu settings set forge_app_id 123456
    cavu secret set forge_app_key < app-key.pem
    ```
+
+   `ci_timeout_minutes` takes a whole number of minutes, 120 when unset and `0` for no limit.
 
 4. Check the setup. Each line is a check; `skipped` follows from an earlier failure, or for the forge check from having no forge token or no project yet, and `warning` passes. The exit code is 1 when a check failed.
 
@@ -70,7 +72,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu project check web
    ```
 
-   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches, caps and baseline, and the tools the newest check found and the verify command it suggested.
+   `--setup CMD` prepares the workspace and `--no-verify` waives the verify command, so a person checks every change. The setup and verify commands, and the agent, get `CAVU_BASE_COMMIT`, the commit the task starts from (in a check, the base branch's tip), which the workspace does not otherwise name: it keeps no remote and no branch but the task's. They also get the project's variables; its secrets reach only the setup command. `cavu project set web` changes a project and `cavu project show web` prints everything it stores: the hosts, variables, secret names, tools, switches, caps, forge policy and baseline, and the tools the newest check found and the verify command it suggested. The forge policy is whether the repository has no CI (`--no-ci on` or `off`), the checks the project ignores (`--ignore-check NAME`, the name as GitHub shows it) and its review bots (`--review-bot LOGIN`, the login as GitHub shows it: a GitHub App's bot is written `name[bot]`, and a name without `[bot]` is a user's account). Each of the two lists takes the flag repeated, and one empty value empties it.
 
 6. Add a task and run it. `task run` prints each event on a line of its own as it is recorded, beginning at your newest action on the task, such as its start or an answer, says why the task waits when it does, and ends with the task's status. `task show` also prints the task's dependencies and why it waits, the turns, the duration, the budget it used since you last acted, and the files the newest export changed, a binary file with its size, at most 50 of them and then the total.
 
