@@ -1276,6 +1276,80 @@ func TestTaskRunEndsAtTheWatch(t *testing.T) {
 	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
 }
 
+// The verb ends at the pull request it opened, though its own scheduler's look
+// at the pull request fails, as with GitHub down: the watch is cavu serve's.
+func TestTaskRunEndsAtThePullRequest(t *testing.T) {
+	dir, id, fake := runSetup(t)
+	cavuIn(t, dir, "project", "set", "web", "--switch", "publish=on")
+
+	url := "https://github.com/acme/web/pull/7"
+	fake.runner.published = engine.PublishResult{Branch: "cavu/fix-the-login", Head: "head456", Number: 7, URL: url, NodeID: "PR_7"}
+
+	// The follow prints the publish only once the failed look has ended the
+	// scheduler, so the failure comes before the follow sees the watch.
+	var (
+		cut  = make(chan struct{})
+		once sync.Once
+		out  strings.Builder
+		errs strings.Builder
+	)
+
+	fake.runner.duringLook = func(ctx context.Context) { once.Do(func() { context.AfterFunc(ctx, func() { close(cut) }) }) }
+	stdout := writerFunc(func(p []byte) (int, error) {
+		if f := strings.Fields(string(p)); len(f) > 1 && f[1] == engine.Published {
+			select {
+			case <-cut:
+			case <-time.After(within):
+			}
+		}
+
+		return out.Write(p)
+	})
+
+	err := runTask(t.Context(), []string{"run", id, "--data-dir", dir}, nil, stdout, &errs)
+
+	require.NoError(t, err, errs.String())
+	assert.Contains(t, out.String(), url)
+	assert.Contains(t, errs.String(), errNoPullRequest.Error(), "the failed look is told")
+	assert.Contains(t, fake.runner.actions, engine.KindPublish)
+	assert.Equal(t, engine.KindWatch, decided(t, dir, id).Kind, "the task rests at its pull request")
+}
+
+// writerFunc is a function as an io.Writer.
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// On a task whose pull request is open already the verb returns at once: it
+// takes no lock, asks for no runtime and records nothing.
+func TestTaskRunReturnsAtAWatchedPullRequest(t *testing.T) {
+	for _, stopped := range []bool{false, true} {
+		t.Run(map[bool]string{false: "watched", true: "stopped"}[stopped], func(t *testing.T) {
+			dir := webData(t)
+			id, url, _ := publishedTask(t, dir)
+			want := 0
+
+			if stopped {
+				seedEvents(t, dir, id, nil, event(engine.Stopped, "engine", engine.StoppedPayload{
+					Reason: engine.StopCIFailed, Explanation: "Checks failed on " + url + ": lint.", Action: engine.ClearRetry,
+				}))
+
+				want = 3
+			}
+
+			refuseRuntime(t)
+			before := storedEvents(t, dir, id)
+
+			code, stdout, stderr := runCavu("task", "run", id, "--data-dir", dir)
+
+			assert.Equal(t, want, code, stderr)
+			assert.Contains(t, stdout, url)
+			assert.Equal(t, before, storedEvents(t, dir, id), "no event is recorded")
+			assert.NoFileExists(t, filepath.Join(dir, "lock"), "no lock is taken")
+		})
+	}
+}
+
 func TestTaskRunPrintsAWaitOnce(t *testing.T) {
 	dir, _, fake := runSetup(t)
 	dep := addTask(t, dir, "First")

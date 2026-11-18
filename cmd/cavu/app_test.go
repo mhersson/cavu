@@ -94,9 +94,11 @@ type fakeRunner struct {
 	suggestion string
 	checkErr   error
 
-	actions    []engine.ActionKind // prepare, work, verify, review and export, in the order asked
+	actions    []engine.ActionKind // prepare, work, verify, review, export and publish, in the order asked
 	work       engine.WorkResult
 	duringWork func(ctx context.Context) // runs inside Work with its context, as a person might act while a session runs
+	published  engine.PublishResult      // the pull request Publish opens; with no number it fails
+	duringLook func(ctx context.Context) // runs inside Observe with its context, before the look fails
 	releases   []release
 }
 
@@ -156,15 +158,24 @@ func (r *fakeRunner) Export(_ context.Context, _ engine.RunConfig, commit string
 	}, nil
 }
 
-// Publish is not scripted: the fake does not publish.
 func (r *fakeRunner) Publish(context.Context, engine.RunConfig, engine.PublishRequest) (engine.PublishResult, error) {
-	return engine.PublishResult{}, errors.New("fake: the runner does not publish")
+	r.actions = append(r.actions, engine.KindPublish)
+
+	if r.published.Number == 0 {
+		return engine.PublishResult{}, errors.New("fake: the runner does not publish")
+	}
+
+	return r.published, nil
 }
 
 var errNoPullRequest = errors.New("fake: no pull request")
 
-// Observe, Ready and Reply are not scripted: the fake publishes no pull request.
-func (r *fakeRunner) Observe(context.Context, engine.RunConfig, int) (engine.Observation, error) {
+// Observe, Ready and Reply are not scripted: each fails, as with GitHub down.
+func (r *fakeRunner) Observe(ctx context.Context, _ engine.RunConfig, _ int) (engine.Observation, error) {
+	if r.duringLook != nil {
+		r.duringLook(ctx)
+	}
+
 	return engine.Observation{}, errNoPullRequest
 }
 

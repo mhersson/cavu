@@ -542,7 +542,8 @@ func taskDiff(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 }
 
 // taskRun starts the task once something drives it, and prints its events
-// until it rests, then its state.
+// until it rests, then its state. The watch of a pull request is cavu
+// serve's: the verb ends at it, and returns at once on a task already there.
 func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return onTask(ctx, newVerbFlags(taskRunUsage, stderr), args, func(a *app, id int64) error {
 		t, err := a.store.Task(ctx, id)
@@ -556,6 +557,15 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 
 		l := a.actions()
+
+		snap, err := l.Snapshot(ctx, id)
+		if err != nil {
+			return err
+		}
+
+		if engine.Decide(snap).Kind == engine.KindWatch {
+			return ended(stdout, snap, true)
+		}
 
 		err = a.driven(ctx, func(t store.Task) bool { return t.ID == id }, func(ctx context.Context) error {
 			if err := startTask(ctx, l, id, p.Name); err != nil {
@@ -579,21 +589,40 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return exitError{code: 130}
 		}
 
-		if err != nil {
+		snap, serr := l.Snapshot(ctx, id)
+		if serr != nil {
+			return errors.Join(err, serr)
+		}
+
+		// The scheduler's look at a pull request that just opened can fail, with
+		// GitHub down or rate limited: told, it ends the verb as the watch does.
+		watched := engine.Decide(snap).Kind == engine.KindWatch
+		if err != nil && !watched {
 			return err
 		}
 
-		snap, err := l.Snapshot(ctx, id)
 		if err != nil {
-			return err
+			fmt.Fprintf(stderr, "cavu: %v\n", err)
 		}
 
-		if s := printState(stdout, snap); s == engine.StatusBlocked || s == engine.StatusCancelled {
-			return exitError{code: 3}
-		}
-
-		return nil
+		return ended(stdout, snap, watched)
 	})
+}
+
+// ended prints the task's state where task run ends, and when Decide watches
+// its pull request, that cavu serve does. A stopped task exits 3.
+func ended(w io.Writer, s engine.Snapshot, watched bool) error {
+	status := printState(w, s)
+
+	if watched {
+		fmt.Fprintln(w, "cavu serve watches the pull request from here; task run does not.")
+	}
+
+	if status == engine.StatusBlocked || status == engine.StatusCancelled {
+		return exitError{code: 3}
+	}
+
+	return nil
 }
 
 // follow prints each new event of the task as one line on events, and each
