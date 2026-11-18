@@ -244,6 +244,20 @@ func TestFailedLogsAreBounded(t *testing.T) {
 		assert.Zero(t, sent(f, http.MethodGet, "/api/v3/repos/o/n/actions/jobs/8/logs"))
 	})
 
+	t.Run("a summary over the cap is cut to its start", func(t *testing.T) {
+		f, c := newFake(t, bare, nil)
+		summary := numbered(70 << 10)
+		f.SetChecks(head, forgefake.CheckRun{
+			ID: 8, App: "reporter", Name: "tests", Status: "completed", Conclusion: "failure", Summary: summary,
+		})
+
+		out, err := c.FailedLogs(t.Context(), fakeRepo, fakeAccess, head, nil)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, len(out), logsCap)
+		assert.Contains(t, out, summary[:logTail])
+		assert.NotContains(t, out, summary[:logTail+1])
+	})
+
 	t.Run("an ignored check is left out", func(t *testing.T) {
 		f, c := newFake(t, bare, nil)
 		f.SetChecks(head, failedJob(7, "flaky"))

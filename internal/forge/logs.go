@@ -74,7 +74,8 @@ func (c *Client) entry(ctx context.Context, r Repo, token string, ch check) (str
 		parts = append(parts, "GitHub holds no log for this job.")
 	}
 
-	for _, s := range []string{ch.title, ch.summary, ch.url} {
+	// A reporter's summary leads with its totals, so its start is kept.
+	for _, s := range []string{ch.title, cut(ch.summary, logTail), ch.url} {
 		if s != "" {
 			parts = append(parts, s)
 		}
