@@ -300,6 +300,7 @@ func TestFreshFixReadsReviewPatch(t *testing.T) {
 
 	fix := newSession(t)
 	fix.Mode, fix.Role = engine.ModeFixReview, engine.RoleStrong
+	// As the settings fill an unset model_strong with the work model.
 	c.Agent.Strong.Model = c.Agent.Model
 	fix.Findings = []engine.Finding{{Severity: "important", Where: "notes.txt", What: "The new line is unexplained.", Why: "A reader cannot tell why it is there."}}
 
