@@ -441,8 +441,8 @@ func (r *doctor) forge(ctx context.Context) Check {
 		return failed(err, "grant a fine-grained personal access token read access to Actions and Commit statuses, "+
 			"or a GitHub App read access to Checks, Actions and Commit statuses; or turn the project's switch publish off")
 	case jobs:
-		return Check{OK: true, Detail: "with this credential CAVU reads GitHub Actions jobs and commit statuses: " +
-			"a check another app reports only as a check run is not seen"}
+		return Check{OK: true, Detail: "with this credential CAVU reads the jobs of GitHub Actions workflow runs and the commit " +
+			"statuses: a check reported only as a check run, by another app or by a workflow step, is not seen"}
 	}
 
 	return Check{OK: true}
