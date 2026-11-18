@@ -111,7 +111,7 @@ func (c *Client) Check(ctx context.Context, r Repo, a Access) error {
 
 // response is a 2xx answer, its body read to 8 MiB.
 type response struct {
-	op     string // the method and API path, for errors
+	op     string // the method and API address, for errors
 	header http.Header
 	body   []byte
 }
@@ -171,8 +171,8 @@ func (c *Client) newRequest(ctx context.Context, method, addr, token string, bod
 // do sends req and reads its answer. One outside 2xx is an error: a
 // *RateLimitError, or an *httpError with the status and the forge's message.
 func (c *Client) do(req *http.Request) (*response, error) {
-	// The scheme and host name the API address tried, for a person fixing a
-	// setting. Never the query, and never a redirect's address.
+	// The scheme and host name the API address tried, which no setting shows.
+	// Never the query, and never a redirect's address.
 	op := "forge: " + req.Method + " " + req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
 
 	resp, err := c.http.Do(req)
