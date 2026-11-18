@@ -90,6 +90,8 @@ func TestEveryPromptRenders(t *testing.T) {
 				"what-49", "why-50",
 			},
 		},
+		{name: prompts.Reply, data: prompts.ReplyData{TaskID: 5151, Summary: "summary-52", Changed: true}, values: []string{"5151", "summary-52"}},
+		{name: prompts.Reply, data: prompts.ReplyData{TaskID: 5353, Summary: "summary-54"}, values: []string{"5353", "summary-54"}},
 	}
 
 	for _, tt := range tests {
@@ -115,6 +117,19 @@ func TestEveryPromptRenders(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the reply tells a run that changed the code from one that did not", func(t *testing.T) {
+		d := prompts.ReplyData{TaskID: 5555, Summary: "summary-56"}
+
+		unchanged, err := prompts.Render(prompts.Reply, d)
+		require.NoError(t, err)
+
+		d.Changed = true
+
+		changed, err := prompts.Render(prompts.Reply, d)
+		require.NoError(t, err)
+		assert.NotEqual(t, unchanged, changed)
+	})
 
 	t.Run("an unknown name", func(t *testing.T) {
 		_, err := prompts.Render("result.schema", nil)

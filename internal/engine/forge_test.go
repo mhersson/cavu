@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/mhersson/cavu/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1053,6 +1055,102 @@ func TestAFixRunThatChangesNothingEnds(t *testing.T) {
 	assert.Equal(t, []engine.RunStartedPayload{initialRun, ciFixFrom("head456"), ciFixFrom("head456")}, h.runStarts())
 }
 
+// A follow-up run answers the reviewers with one comment on the pull request
+// once its work is over; then the run ends and the watch goes on.
+func TestAFollowUpRunAnswersOnThePullRequest(t *testing.T) {
+	// comment is what CAVU writes for the task after a session that ended with
+	// summary, having moved the head or not.
+	comment := func(t *testing.T, h *harness, summary string, changed bool) string {
+		t.Helper()
+
+		body, err := prompts.Render(prompts.Reply, prompts.ReplyData{TaskID: h.task.ID, Summary: summary, Changed: changed})
+		require.NoError(t, err)
+
+		return body
+	}
+
+	// tail is the types of the task's newest n events.
+	tail := func(h *harness, n int) []string {
+		evs := h.events()
+
+		return types(evs[len(evs)-n:])
+	}
+
+	t.Run("a run that moved the head, then one that did not", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.fixes("r1")
+
+		const moved = "Renamed the handler as asked, token-r1."
+
+		h.runner.works[0].res.Summary = moved
+
+		assert.Equal(t, engine.StatusInReview, h.lookAt(askedAt("head456", "c1")))
+		assert.Equal(t, []string{engine.Published, engine.ReplyStarted, engine.Replied, engine.RunEnded}, tail(h, 4))
+
+		reply := h.lastCall("reply")
+		assert.Equal(t, publishedOK.Number, reply.number)
+		assert.Equal(t, h.lastCall("prepare").runID, reply.runID, "under the follow-up run")
+		assert.Contains(t, reply.body, "token-r1")
+		assert.Equal(t, comment(t, h, moved, true), reply.body, "the task's id, the summary, and a head that moved")
+
+		const kept = "Kept the timeout at 30 seconds, token-kept: the client retries."
+
+		h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeDone, Summary: kept, HeadCommit: "r1"}}}
+
+		before := len(h.runner.calls)
+		assert.Equal(t, engine.StatusInReview, h.lookAt(askedAt("r1", "c1", "c2")))
+		assert.Equal(t, []string{"observe", "prepare", "work/comments", "reply", "release/run"}, h.runner.trace()[before:])
+		assert.Equal(t, []string{engine.SessionEnded, engine.ReplyStarted, engine.Replied, engine.RunEnded}, tail(h, 4))
+		assert.Contains(t, h.lastCall("reply").body, "token-kept")
+		assert.Equal(t, comment(t, h, kept, false), h.lastCall("reply").body, "a head that did not move")
+
+		assert.Empty(t, h.stopsOf())
+
+		snap, err := h.loop.Snapshot(t.Context(), h.task.ID)
+		require.NoError(t, err)
+		assert.Equal(t, engine.KindWatch, engine.Decide(snap).Kind)
+		assert.Len(t, h.eventsOf(engine.Replied), 2, "one answer for each run")
+	})
+
+	t.Run("a reply that failed is retried, and answers once", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.fixes("r1")
+		h.runner.replies = []step[struct{}]{{err: errors.New("GitHub answered 502 Bad Gateway")}}
+
+		assert.Equal(t, engine.StatusBlocked, h.lookAt(askedAt("head456", "c1")))
+		assert.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+		assert.Contains(t, h.lastStop().Explanation, "502")
+		assert.Empty(t, h.eventsOf(engine.Replied))
+		assert.NotContains(t, h.spy.ended(), h.lastCall("reply").runID, "the run stays open")
+
+		h.clock.Advance(30 * time.Second)
+
+		before := len(h.runner.calls)
+		status, err := h.run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+		assert.Equal(t, []string{"reply", "release/run"}, h.runner.trace()[before:])
+		assert.Len(t, h.eventsOf(engine.Replied), 1)
+
+		replies := h.runner.callsOf("reply")
+		require.Len(t, replies, 2)
+		assert.Equal(t, replies[0].body, replies[1].body)
+	})
+
+	t.Run("a fix run on failed checks gets none", func(t *testing.T) {
+		h := newHarness(t)
+		h.watching()
+		h.fixes("fix1")
+
+		assert.Equal(t, engine.StatusInReview, h.lookAt(checksFailed))
+		assert.Len(t, h.eventsOf(engine.Published), 2, "the fix run published")
+		assert.Empty(t, h.runner.callsOf("reply"))
+		assert.Empty(t, h.eventsOf(engine.ReplyStarted))
+	})
+}
+
 // A failure is acted on once, by the head it failed on.
 func TestAFailureIsActedOnOnce(t *testing.T) {
 	t.Run("a fix run that left the head as it was gets no second one on it", func(t *testing.T) {
@@ -1341,12 +1439,13 @@ func TestPublishDoesNotPushToAMergedPullRequest(t *testing.T) {
 
 func TestFixRunIsNotReviewed(t *testing.T) {
 	tests := []struct {
-		name string
-		seen engine.Observation
-		mode string
+		name  string
+		seen  engine.Observation
+		mode  string
+		reply []string // the calls between the publish and the run's end
 	}{
 		{name: "after failed checks", seen: checksFailed, mode: "work/fix_ci"},
-		{name: "after a reviewer's request", seen: askedAt("head456", "c1"), mode: "work/comments"},
+		{name: "after a reviewer's request", seen: askedAt("head456", "c1"), mode: "work/comments", reply: []string{"reply"}},
 	}
 
 	for _, tt := range tests {
@@ -1359,7 +1458,7 @@ func TestFixRunIsNotReviewed(t *testing.T) {
 
 			before := len(h.runner.calls)
 			assert.Equal(t, engine.StatusInReview, h.lookAt(tt.seen))
-			assert.Equal(t, []string{"observe", "prepare", tt.mode, "verify", "export", "observe", "publish", "release/run"},
+			assert.Equal(t, slices.Concat([]string{"observe", "prepare", tt.mode, "verify", "export", "observe", "publish"}, tt.reply, []string{"release/run"}),
 				h.runner.trace()[before:])
 		})
 	}
@@ -1450,31 +1549,38 @@ func TestAFixRunWorksOnThePullRequest(t *testing.T) {
 		}
 	}
 
-	// onThePullRequest checks every call of the newest run but its releases.
-	// The look before the push is built as the watch's is.
-	onThePullRequest := func(t *testing.T, h *harness, head string) {
+	// onThePullRequest checks every call of the newest run but its releases, the
+	// methods of which are want. The look before the push and the reply are built
+	// as the watch's look is.
+	onThePullRequest := func(t *testing.T, h *harness, head string, want ...string) {
 		t.Helper()
 
 		run := h.lastCall("prepare").runID
-		methods := map[string]bool{}
+
+		var methods []string
 
 		for _, c := range h.runner.calls {
 			if c.runID != run || c.method == "release" {
 				continue
 			}
 
-			methods[c.method] = true
+			if !slices.Contains(methods, c.method) {
+				methods = append(methods, c.method)
+			}
+
 			assert.Equal(t, branch, c.cfg.Repo.Branch, "%s", c)
 
-			if c.method == "observe" {
-				assert.Zero(t, c.cfg.Agent.Instance, "the look reads no instance files")
+			if c.method == "observe" || c.method == "reply" {
+				assert.Zero(t, c.cfg.Agent.Instance, "%s reads no instance files", c)
 			} else {
 				assert.Equal(t, head, c.cfg.Repo.Head, "%s", c)
 			}
 		}
 
-		assert.Len(t, methods, 6, "prepare, work, verify, export, the look and the publish")
+		assert.Equal(t, want, methods)
 	}
+
+	fixCalls := []string{"prepare", "work", "verify", "export", "observe", "publish"}
 
 	t.Run("after failed checks", func(t *testing.T) {
 		h := start(t)
@@ -1485,7 +1591,7 @@ func TestAFixRunWorksOnThePullRequest(t *testing.T) {
 		fixes(h, "fix1")
 
 		assert.Equal(t, engine.StatusInReview, h.lookAt(checksFailed))
-		onThePullRequest(t, h, "head456")
+		onThePullRequest(t, h, "head456", fixCalls...)
 
 		w := h.lastCall("work").work
 		assert.Equal(t, engine.ModeFixCI, w.Mode)
@@ -1510,7 +1616,7 @@ func TestAFixRunWorksOnThePullRequest(t *testing.T) {
 		asked := askedAt("r1", "c0", "c1", "c2")
 		asked.Comments[1].Body = "Connect as postgres here."
 		assert.Equal(t, engine.StatusInReview, h.lookAt(asked))
-		onThePullRequest(t, h, "r1")
+		onThePullRequest(t, h, "r1", append(fixCalls, "reply")...)
 
 		seen := h.eventsOf(engine.PRObserved)
 		recorded := payloadOf[engine.Observation](t, seen[len(seen)-1]).Comments

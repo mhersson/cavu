@@ -23,6 +23,7 @@ type Facts struct {
 	Verify                     string       // result for the newest ended session; "" while a session or a verify is pending
 	Exported                   bool
 	Export                     ExportedPayload // of the newest export, meaningful when Exported
+	Replied                    bool            // the open run answered on the pull request
 	Resumed                    *Resume         // a human retry or answer after a stop, other than a retry that is no resume, not yet followed by a finished session or prepare, or by a new run when it came from environment
 	LastVerifyOutput           string          // of the newest verify_ended, for the next fix prompt
 	Continuations, VerifyFixes int             // session starts marked automatic, per mode, since the last human action
@@ -237,8 +238,10 @@ func (f *Facts) apply(e store.Event) {
 		if f.RunOpen {
 			f.reviewEnded(p)
 		}
-	case ExportStarted, PublishStarted, ReadyStarted:
+	case ExportStarted, PublishStarted, ReadyStarted, ReplyStarted:
 		f.claimed()
+	case Replied:
+		f.Replied = true
 	case Exported:
 		f.Exported, f.Export = true, decode[ExportedPayload](e.Payload)
 	case Published:
@@ -395,7 +398,7 @@ func (f *Facts) fixRunStarted(p RunStartedPayload) {
 func (f *Facts) resetRun() {
 	f.Prepared, f.PrepareFailure, f.Ecosystems = false, nil, nil
 	f.Session, f.Verify, f.LastVerifyOutput, f.VerifyCommand = nil, "", "", ""
-	f.Assumptions, f.RunHead = nil, ""
+	f.Assumptions, f.RunHead, f.Replied = nil, "", false
 }
 
 // decode reads a payload. One that does not decode reads as empty, so the event

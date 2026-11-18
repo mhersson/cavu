@@ -508,6 +508,8 @@ func watchCases() []decideCase {
 	watch := func(until time.Time) engine.Action { return engine.Action{Kind: engine.KindWatch, Until: until} }
 	ready := engine.Action{Kind: engine.KindReady}
 	finish := engine.Action{Kind: engine.KindFinish}
+	publish := engine.Action{Kind: engine.KindPublish}
+	reply := engine.Action{Kind: engine.KindReply}
 	grace := 3 * time.Minute
 
 	byPerson := watched(pull(now, open("head2", engine.ChecksPassed)))
@@ -538,6 +540,29 @@ func watchCases() []decideCase {
 	unchanged := func(reason string) engine.Facts {
 		f := fixRun(reason, pull(now, open("head2", engine.ChecksFailed, "lint")))
 		f.Session = &engine.SessionFact{Outcome: engine.OutcomeDone, HeadCommit: "head2"}
+
+		return f
+	}
+
+	// changedTo is a fix run of reason whose session moved the head to head3,
+	// which is verified and exported when exported is set, and published when published is.
+	changedTo := func(reason string, exported, published bool) engine.Facts {
+		f := fixRun(reason, pull(now, nil))
+		f.Session = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head3"}
+
+		if exported {
+			f.Verify, f.Exported, f.Export = engine.ResultPassed, true, engine.ExportedPayload{HeadCommit: "head3"}
+		}
+
+		if published {
+			f.PR.Head, f.PR.Heads = "head3", append(f.PR.Heads, "head3")
+		}
+
+		return f
+	}
+
+	answered := func(f engine.Facts) engine.Facts {
+		f.Replied = true
 
 		return f
 	}
@@ -620,8 +645,14 @@ func watchCases() []decideCase {
 		{name: "a cancelled task's pull request is not watched", snap: watchSnap(cancelledStop), want: engine.Action{Kind: engine.KindNone}},
 		{name: "a head CAVU never published, no run open", snap: watchSnap(watched(pull(now, open("theirs", engine.ChecksPassed)))), want: halt(engine.StopTakenOver, engine.ClearRetry)},
 		{name: "a head CAVU never published, before the open run's publish", snap: watchSnap(exportedInRun), want: halt(engine.StopTakenOver, engine.ClearRetry)},
+		{name: "a follow-up run's change is verified before it answers", snap: watchSnap(changedTo(engine.ReasonComments, false, false)), want: engine.Action{Kind: engine.KindVerify}},
+		{name: "a follow-up run's change is published before it answers", snap: watchSnap(changedTo(engine.ReasonComments, true, false)), want: publish},
+		{name: "a follow-up run whose change is published answers", snap: watchSnap(changedTo(engine.ReasonComments, true, true)), want: reply},
+		{name: "a follow-up run that answered after its publish ends", snap: watchSnap(answered(changedTo(engine.ReasonComments, true, true))), want: finish},
+		{name: "a fix run on failed checks ends after its publish without an answer", snap: watchSnap(changedTo(engine.ReasonCIFix, true, true)), want: finish},
 		{name: "a fix run on failed checks that changed nothing", snap: watchSnap(unchanged(engine.ReasonCIFix)), want: finish},
-		{name: "a follow-up run that changed nothing", snap: watchSnap(unchanged(engine.ReasonComments)), want: finish},
+		{name: "a follow-up run that changed nothing answers", snap: watchSnap(unchanged(engine.ReasonComments)), want: reply},
+		{name: "a follow-up run that changed nothing and answered ends", snap: watchSnap(answered(unchanged(engine.ReasonComments))), want: finish},
 		{name: "nothing seen since the head was published", snap: watchSnap(watched(pull(now, nil))), want: watch(time.Time{})},
 		{name: "an earlier head of CAVU's own", snap: watchSnap(watched(pull(now, open("head1", engine.ChecksFailed, "lint")))), want: watch(time.Time{})},
 		{name: "a conflict", snap: watchSnap(watched(pull(now, conflict))), want: halt(engine.StopConflict, engine.ClearRetry)},

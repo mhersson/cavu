@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/mhersson/cavu/internal/prompts"
 	"github.com/mhersson/cavu/internal/store"
 )
 
@@ -201,6 +202,35 @@ func (p *pass) ready(ctx context.Context, v view, a Action) error {
 	}
 
 	return p.result(ctx, o, nil, draft{PRReady, actorRunner, struct{}{}})
+}
+
+// reply answers the reviewers with one comment on the task's pull request:
+// what the follow-up run's newest session said, and whether it moved the head.
+func (p *pass) reply(ctx context.Context, v view, a Action) error {
+	f := v.Facts
+
+	cfg, err := p.forgeConfig(ctx, v.Task, v.run.ID, f.PR)
+	if err != nil {
+		return p.unconfigured(ctx, v, a, &v.run, err)
+	}
+
+	o := openRun{task: v.Task, row: v.run, cfg: cfg}
+
+	// Decide replies only after an ended session; in a fix run its Changed says the head moved.
+	body, err := prompts.Render(prompts.Reply, prompts.ReplyData{TaskID: v.Task.ID, Summary: f.Session.Summary, Changed: f.Session.Changed})
+	if err != nil {
+		return fmt.Errorf("task %d: reply: %w", p.taskID, err)
+	}
+
+	if err := p.claim(ctx, v, o, draft{ReplyStarted, actorEngine, ReplyStartedPayload{Why: a.Why}}); err != nil {
+		return err
+	}
+
+	if err := p.Runner.Reply(ctx, o.cfg, f.PR.Number, body); err != nil {
+		return p.fault(ctx, o, 0, nil, err)
+	}
+
+	return p.result(ctx, o, nil, draft{Replied, actorRunner, struct{}{}})
 }
 
 // pullRequestText writes the title and the text of the task's pull request

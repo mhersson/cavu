@@ -722,6 +722,20 @@ func TestReduceObservations(t *testing.T) {
 		assert.True(t, later.Equal(f.PR.Since), "since moves to the ready-marking, at %s", f.PR.Since)
 	})
 
+	t.Run("a reply is a claim, and the run's end forgets it", func(t *testing.T) {
+		replied := slices.Concat(publishedTask(), []store.Event{
+			ev(engine.RunStarted, `{"reason":"comments","head":"def456","requests":["c1"]}`), sandboxStop,
+			ev(engine.ReplyStarted, ""), ev(engine.Replied, ""),
+		})
+
+		f := engine.Reduce(replied)
+		assert.Nil(t, f.OpenStop, "the claim closes the fault's stop")
+		assert.True(t, f.Replied)
+
+		f = engine.Reduce(append(replied, ev(engine.RunEnded, `{"outcome":"finished","kept_home":true}`)))
+		assert.False(t, f.Replied)
+	})
+
 	t.Run("a publish clears what was seen and keeps the rest", func(t *testing.T) {
 		f := engine.Reduce(slices.Concat(publishedTask(), []store.Event{
 			ev(engine.PRReady, ""), observed(asking), ev(engine.RunStarted, `{"reason":"comments","head":"def456","requests":["c1"]}`),

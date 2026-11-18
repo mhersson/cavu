@@ -34,6 +34,8 @@ const (
 	PRObserved     = "pr_observed"     // runner
 	ReadyStarted   = "ready_started"   // engine
 	PRReady        = "pr_ready"        // runner
+	ReplyStarted   = "reply_started"   // engine
+	Replied        = "replied"         // runner
 	Merged         = "merged"          // user
 	Stopped        = "stopped"         // engine
 	RunEnded       = "run_ended"       // engine
@@ -244,6 +246,10 @@ type (
 	PRObservedPayload = Observation
 
 	ReadyStartedPayload struct {
+		Why string `json:"why"`
+	}
+
+	ReplyStartedPayload struct {
 		Why string `json:"why"`
 	}
 

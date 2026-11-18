@@ -376,7 +376,7 @@ func (p *pass) repair(ctx context.Context) error {
 func (p *pass) act(ctx context.Context, v view, a Action) error {
 	// A stop, a finish and a clean build no run config, so a broken setting
 	// cannot keep a person's cancel, or the ends that follow it, out of the
-	// record. A ready-marking runs with no run open, on a forge call's config.
+	// record. A ready-marking and a reply run on a forge call's config.
 	switch a.Kind {
 	case KindStop:
 		var run *store.Run
@@ -412,6 +412,8 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		return p.write(ctx, v.LastEventID, ref.RunID, nil, draft{HomeRemoved, actorEngine, HomeRemovedPayload{Why: a.Why}})
 	case KindReady:
 		return p.ready(ctx, v, a)
+	case KindReply:
+		return p.reply(ctx, v, a)
 	}
 
 	row := v.run

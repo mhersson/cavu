@@ -71,6 +71,7 @@ const (
 	KindWatch   ActionKind = "watch"
 	KindReady   ActionKind = "ready"
 	KindClean   ActionKind = "clean"
+	KindReply   ActionKind = "reply"
 	KindWait    ActionKind = "wait"
 	KindStop    ActionKind = "stop"
 )
@@ -246,12 +247,19 @@ func decide(s Snapshot) Action {
 		return Action{Kind: KindPublish, Why: "The exported change is not yet on the task's branch on GitHub."}
 	}
 
+	// A follow-up run answers once its work is over: its change published, or
+	// its session done without moving the head. Then it finishes.
+	unchanged := f.Session != nil && f.Session.Outcome == OutcomeDone && !f.Session.Changed
+	if f.RunOpen && f.RunReason == ReasonComments && !f.Replied && (f.Exported || unchanged) {
+		return Action{Kind: KindReply, Why: "The follow-up run's work is over, and the reviewers have not had its answer on the pull request."}
+	}
+
 	if f.Exported && f.RunOpen {
 		return Action{Kind: KindFinish, Why: "The change is exported and its run is still open."}
 	}
 
 	// A fix run that changed nothing is no stop: the watch decides what follows.
-	if f.RunOpen && f.RunHead != "" && f.Session != nil && f.Session.Outcome == OutcomeDone && !f.Session.Changed {
+	if f.RunOpen && f.RunHead != "" && unchanged {
 		return Action{Kind: KindFinish, Why: "The fix run's session changed nothing, so the run ends."}
 	}
 
