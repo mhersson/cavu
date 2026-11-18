@@ -19,7 +19,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 - Claude Code is driven as the unmodified `claude` binary and never redistributed; the sandbox image is built locally and never published.
 - No telemetry. `cavu` makes one kind of network request of its own outside the containers, to the API of the forge a project's repository is on, for that project's tasks, its environment checks and the doctor's forge check. It follows that API's redirects, since GitHub answers a request for a failed job's log with an address to download it from, and sends the token to no other host. It dials nothing else.
 - Everything specific to Claude Code lives in one package. No other Go package names a `claude` flag, environment variable or stream field.
-- Everything specific to GitHub lives in `internal/forge`. No other package of the binary names a GitHub route, header or field; `internal/testkit/forgefake`, the tests' fake GitHub, is not part of it.
+- Everything specific to GitHub's API lives in `internal/forge`. No other package of the binary names a GitHub route, header or field; `internal/testkit/forgefake`, the tests' fake GitHub, is not part of it.
 - The server half never imports the container runtime half or `internal/forge`. What the runner needs crosses the boundary as serialisable values.
 
 ## Never
