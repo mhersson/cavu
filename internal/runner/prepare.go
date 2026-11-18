@@ -56,7 +56,7 @@ func (r *Runner) CheckEnvironment(ctx context.Context, c engine.RunConfig) (res 
 	res, files, err := r.prepare(ctx, c, true)
 	verifySuggestion, _ = verify.Suggest(files)
 
-	relErr := r.Release(ctx, refOf(c), true)
+	relErr := r.Release(ctx, refOf(c), engine.RemoveAll)
 
 	return res, verifySuggestion, errors.Join(err, maskErr(relErr, masker(c)))
 }

@@ -115,7 +115,7 @@ func TestServeStartsDrivesAndStops(t *testing.T) {
 			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
 			TaskID: task.ID, RunID: run.ID, ProjectID: task.ProjectID,
 		},
-		removeVolumes: false,
+		remove: engine.KeepVolumes,
 	}}, fake.runner.releases, "the run in flight is released with its volumes kept")
 
 	require.NoError(t, a.lock(roleVerb), "the lock is free")

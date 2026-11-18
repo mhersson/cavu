@@ -102,9 +102,9 @@ type fakeRunner struct {
 
 // release is one Release call, with its context's error at the call.
 type release struct {
-	ref           engine.RunRef
-	removeVolumes bool
-	ctxErr        error
+	ref    engine.RunRef
+	remove engine.Remove
+	ctxErr error
 }
 
 func (r *fakeRunner) CheckEnvironment(_ context.Context, c engine.RunConfig) (engine.PrepareResult, string, error) {
@@ -161,8 +161,8 @@ func (r *fakeRunner) Publish(context.Context, engine.RunConfig, engine.PublishRe
 	return engine.PublishResult{}, errors.New("fake: the runner does not publish")
 }
 
-func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
-	r.releases = append(r.releases, release{ref, removeVolumes, ctx.Err()})
+func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, remove engine.Remove) error {
+	r.releases = append(r.releases, release{ref, remove, ctx.Err()})
 
 	return nil
 }

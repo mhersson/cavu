@@ -92,6 +92,15 @@ type RunRef struct {
 	TaskID, RunID, ProjectID int64
 }
 
+// Remove is what a release removes besides the run's containers.
+type Remove int
+
+const (
+	KeepVolumes Remove = iota // stop the containers
+	RemoveRun                 // and remove the run's volumes
+	RemoveAll                 // and the task's home
+)
+
 // Runner carries out a run's actions where a container runtime exists.
 type Runner interface {
 	// Prepare starts from empty run volumes: clone, toolchains, setup, baseline
@@ -121,7 +130,7 @@ type Runner interface {
 	// so a retry finishes a publish that failed half way.
 	Publish(ctx context.Context, c RunConfig, p PublishRequest) (PublishResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
-	Release(ctx context.Context, ref RunRef, removeVolumes bool) error
+	Release(ctx context.Context, ref RunRef, remove Remove) error
 	// CheckEnvironment prepares a project as a run does, under run and task id
 	// 0 and never reusing a baseline, then releases it with its volumes. It
 	// also returns the verify command the repository suggests, or "".

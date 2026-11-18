@@ -474,7 +474,7 @@ func TestSchedulerRestartContinuesEveryTask(t *testing.T) {
 
 	for _, id := range ids {
 		require.Contains(t, releases, id)
-		assert.False(t, releases[id].remove, "task %d keeps its volumes", id)
+		assert.Equal(t, engine.KeepVolumes, releases[id].remove, "task %d keeps its volumes", id)
 		assert.Equal(t, first[id].runID, releases[id].runID)
 	}
 

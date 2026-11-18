@@ -36,8 +36,8 @@ type fakeRunner struct {
 
 // release is one Release call.
 type release struct {
-	runID         int64
-	removeVolumes bool
+	runID  int64
+	remove engine.Remove
 }
 
 func (r *fakeRunner) Prepare(_ context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
@@ -100,11 +100,11 @@ func (r *fakeRunner) Publish(context.Context, engine.RunConfig, engine.PublishRe
 	return engine.PublishResult{}, errors.New("fake: the runner does not publish")
 }
 
-func (r *fakeRunner) Release(_ context.Context, ref engine.RunRef, removeVolumes bool) error {
+func (r *fakeRunner) Release(_ context.Context, ref engine.RunRef, remove engine.Remove) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.releases = append(r.releases, release{ref.RunID, removeVolumes})
+	r.releases = append(r.releases, release{ref.RunID, remove})
 
 	return nil
 }
@@ -483,7 +483,7 @@ func TestReplayEndsTheRunOfAStoppedShadow(t *testing.T) {
 	}
 
 	require.Len(t, runs, 2)
-	assert.Equal(t, []release{{runs[0], false}, {runs[0], true}, {runs[1], true}}, e.runner.releases,
+	assert.Equal(t, []release{{runs[0], engine.KeepVolumes}, {runs[0], engine.RemoveAll}, {runs[1], engine.RemoveAll}}, e.runner.releases,
 		"the stopped shadow's run ends once it is recorded, and its volumes go")
 }
 

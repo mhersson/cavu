@@ -212,7 +212,7 @@ func TestRelease(t *testing.T) {
 	t.Run("keeping the volumes", func(t *testing.T) {
 		f := newFake()
 
-		require.NoError(t, f.runner().Release(t.Context(), ref, false))
+		require.NoError(t, f.runner().Release(t.Context(), ref, engine.KeepVolumes))
 		assert.Equal(t, []string{"down"}, f.calls())
 		assert.Equal(t, []sandbox.Options{{
 			Runtime: sandbox.Runtime{Bin: "docker", Kind: "docker"}, Image: ref.Image, InstanceID: ref.InstanceID,
@@ -220,10 +220,21 @@ func TestRelease(t *testing.T) {
 		}}, f.opened)
 	})
 
-	t.Run("removing the volumes", func(t *testing.T) {
+	t.Run("removing the run's volumes", func(t *testing.T) {
+		f := newFake()
+		r := f.runner()
+
+		_, err := r.Prepare(t.Context(), testConfig())
+		require.NoError(t, err)
+		require.NoError(t, r.Release(t.Context(), ref, engine.RemoveRun))
+		assert.Equal(t, append(fullOrder, "destroy/keep-home"), f.calls(), "the task's home stays")
+		assert.Nil(t, r.state(ref.RunID), "the run is forgotten")
+	})
+
+	t.Run("removing the home too", func(t *testing.T) {
 		f := newFake()
 
-		require.NoError(t, f.runner().Release(t.Context(), ref, true))
+		require.NoError(t, f.runner().Release(t.Context(), ref, engine.RemoveAll))
 		assert.Equal(t, []string{"destroy"}, f.calls(), "the task's home goes too")
 	})
 
@@ -233,7 +244,7 @@ func TestRelease(t *testing.T) {
 
 		_, err := r.Prepare(t.Context(), testConfig())
 		require.NoError(t, err)
-		require.NoError(t, r.Release(t.Context(), ref, false))
+		require.NoError(t, r.Release(t.Context(), ref, engine.KeepVolumes))
 
 		require.NoError(t, r.ensureUp(t.Context(), testConfig(), sandbox.PhaseAgent))
 		assert.Equal(t, append(fullOrder, "down", "up/agent"), f.calls())
@@ -241,8 +252,8 @@ func TestRelease(t *testing.T) {
 		assert.Equal(t, f.requests(sandbox.PhaseAgent)[0].AllowHosts, f.requests(sandbox.PhaseAgent)[1].AllowHosts,
 			"a release that keeps the volumes keeps what detection found")
 
-		require.NoError(t, r.Release(t.Context(), ref, true))
-		require.NoError(t, r.Release(t.Context(), ref, true))
+		require.NoError(t, r.Release(t.Context(), ref, engine.RemoveAll))
+		require.NoError(t, r.Release(t.Context(), ref, engine.RemoveAll))
 		assert.Len(t, f.opened, 2, "a release that removes the volumes forgets the run")
 	})
 
@@ -253,7 +264,7 @@ func TestRelease(t *testing.T) {
 		f := newFake()
 		r := f.runner()
 
-		require.NoError(t, r.Release(t.Context(), ref, false))
+		require.NoError(t, r.Release(t.Context(), ref, engine.KeepVolumes))
 
 		c := testConfig()
 		c.Ecosystems = []string{"node"}
@@ -270,7 +281,7 @@ func TestRelease(t *testing.T) {
 		f := newFake()
 		f.downErr = errors.New("remove containers: daemon unreachable")
 
-		require.ErrorIs(t, f.runner().Release(t.Context(), ref, false), f.downErr)
+		require.ErrorIs(t, f.runner().Release(t.Context(), ref, engine.KeepVolumes), f.downErr)
 	})
 }
 

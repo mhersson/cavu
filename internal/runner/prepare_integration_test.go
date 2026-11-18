@@ -72,7 +72,7 @@ func TestPrepareGoRepository(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 
-		assert.NoError(t, restarted.Release(ctx, refOf(c), true))
+		assert.NoError(t, restarted.Release(ctx, refOf(c), engine.RemoveAll))
 	})
 
 	require.NoError(t, restarted.ensureUp(t.Context(), c, sandbox.PhaseAgent))

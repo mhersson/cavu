@@ -66,7 +66,7 @@ type call struct {
 	runID  int64
 	work   engine.WorkRequest
 	review engine.ReviewRequest
-	remove bool
+	remove engine.Remove
 	commit string // the commit an export was given
 	pub    engine.PublishRequest
 	ref    engine.RunRef
@@ -83,11 +83,7 @@ func (c call) String() string {
 			return "review/scoped"
 		}
 	case "release":
-		if c.remove {
-			return "release/remove"
-		}
-
-		return "release/keep"
+		return "release/" + [...]string{engine.KeepVolumes: "keep", engine.RemoveRun: "run", engine.RemoveAll: "remove"}[c.remove]
 	}
 
 	return c.method
@@ -231,8 +227,8 @@ func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.R
 	return pop(&r.reviews, reviewedOK)
 }
 
-func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, removeVolumes bool) error {
-	if err := r.begin(ctx, call{method: "release", task: ref.TaskID, runID: ref.RunID, remove: removeVolumes, ref: ref}); err != nil {
+func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, remove engine.Remove) error {
+	if err := r.begin(ctx, call{method: "release", task: ref.TaskID, runID: ref.RunID, remove: remove, ref: ref}); err != nil {
 		return err
 	}
 

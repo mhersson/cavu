@@ -76,7 +76,7 @@ func fixtureRunOn(t *testing.T, files map[string]string, serve func(bare string)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 
-		assert.NoError(t, r.Release(ctx, refOf(c), true))
+		assert.NoError(t, r.Release(ctx, refOf(c), engine.RemoveAll))
 	})
 
 	return r, c, head

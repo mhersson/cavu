@@ -715,7 +715,7 @@ func TestTaskRunDrivesWhenTheLockIsFree(t *testing.T) {
 	require.Equal(t, 0, code, stderr)
 	assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork, engine.KindVerify, engine.KindReview, engine.KindExport}, fake.runner.actions)
 	require.Len(t, fake.runner.releases, 1)
-	assert.True(t, fake.runner.releases[0].removeVolumes, "the exported run ends")
+	assert.Equal(t, engine.RemoveAll, fake.runner.releases[0].remove, "the exported run ends")
 
 	events := storedEvents(t, dir, id)
 	assert.Equal(t, engine.TaskStarted, events[0].Type, "the draft is started")
@@ -748,7 +748,7 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 		assert.Equal(t, 3, code)
 		assert.Equal(t, []engine.ActionKind{engine.KindPrepare, engine.KindWork}, fake.runner.actions)
 		require.Len(t, fake.runner.releases, 1)
-		assert.False(t, fake.runner.releases[0].removeVolumes, "a question keeps the run")
+		assert.Equal(t, engine.KeepVolumes, fake.runner.releases[0].remove, "a question keeps the run")
 
 		events := storedEvents(t, dir, id)
 		tail := eventLines(t, stdout, events)
@@ -785,7 +785,7 @@ func TestTaskRunBlockedExitCode(t *testing.T) {
 
 		assert.Equal(t, 3, code)
 		require.Len(t, fake.runner.releases, 1)
-		assert.True(t, fake.runner.releases[0].removeVolumes, "a cancel ends the run")
+		assert.Equal(t, engine.RemoveAll, fake.runner.releases[0].remove, "a cancel ends the run")
 		// The lines come from the store, so the other terminal's cancel is printed too.
 		assert.Contains(t, strings.Join(eventLines(t, stdout, storedEvents(t, dir, id)), "\n"), string(engine.StatusCancelled))
 	})
@@ -891,7 +891,7 @@ func TestTaskRunEndsTheRunOfACancelledTask(t *testing.T) {
 			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
 			TaskID: task.ID, RunID: run.ID, ProjectID: task.ProjectID,
 		},
-		removeVolumes: true,
+		remove: engine.RemoveAll,
 	}, "the cancelled task's run ends and its volumes go")
 	assert.NotContains(t, fake.removals[len(fake.removals)-1].keepRuns, run.ID)
 	assert.Equal(t, engine.StatusCancelled, engine.StatusOf(engine.Reduce(storedEvents(t, dir, blocked))))
@@ -933,7 +933,7 @@ func TestTaskRunInterruptReleasesAndExits130(t *testing.T) {
 			InstanceID: storedSettings(t, dir)["instance_id"], Image: sandbox.ImageName(version),
 			TaskID: task.ID, RunID: run.ID, ProjectID: task.ProjectID,
 		},
-		removeVolumes: false,
+		remove: engine.KeepVolumes,
 	}}, fake.runner.releases, "the run's containers stop and its volumes stay, on a context the interrupt did not cancel")
 }
 

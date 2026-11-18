@@ -885,7 +885,7 @@ func (l *Loop) ReleaseOpenRun(ctx context.Context, taskID int64) error {
 		return err
 	}
 
-	if err := l.Runner.Release(ctx, ref, false); err != nil {
+	if err := l.Runner.Release(ctx, ref, KeepVolumes); err != nil {
 		return fmt.Errorf("task %d: release run %d: %w", taskID, row.ID, err)
 	}
 
@@ -896,11 +896,15 @@ func (l *Loop) ReleaseOpenRun(ctx context.Context, taskID int64) error {
 // the run ends. A Release error is held so the row is still ended. An end is
 // already recorded, so it is carried out past ctx's end, or the row stays open.
 func (p *pass) free(ctx context.Context, t store.Task, row store.Run, end bool, outcome string) error {
+	remove := KeepVolumes
+
 	if end {
 		var cancel context.CancelFunc
 
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), endTimeout)
 		defer cancel()
+
+		remove = RemoveAll
 	}
 
 	ref, err := p.ref(ctx, t, row)
@@ -908,7 +912,7 @@ func (p *pass) free(ctx context.Context, t store.Task, row store.Run, end bool, 
 		return err
 	}
 
-	relErr := p.Runner.Release(ctx, ref, end)
+	relErr := p.Runner.Release(ctx, ref, remove)
 	if relErr != nil {
 		relErr = fmt.Errorf("task %d: release run %d: %w", p.taskID, row.ID, relErr)
 	}
