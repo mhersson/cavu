@@ -556,7 +556,6 @@ func TestSandboxPushRefusedByTheForgeIsARejection(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "cavu/pushed", branch)
 	assert.NotEmpty(t, rejected)
-	t.Log(rejected)
 	assert.NotContains(t, rejected, pushToken)
 	assert.NotContains(t, rejected, "://")
 	assert.Empty(t, gitrepo.Git(t, bare, "for-each-ref", "refs/heads/cavu"))

@@ -77,14 +77,11 @@ type fakeSandbox struct {
 	runs     []runCall
 	reads    []string // the commit of each read
 	clones   []sidecar.CloneRequest
-	pushes   []sidecar.PushRequest
 	copied   map[string][]byte
 	lines    func(sidecar.Line)
 	phase    sandbox.Phase // of the last Up, "" after Down
 	files    map[string]string
 	cloneErr error
-	pushErr  error
-	rejected string // the reason Push answers with, "" for a push the forge took
 	upErr    error
 	readCode int
 	results  map[string]sandbox.Result // by step name
@@ -240,22 +237,10 @@ func (f *fakeSandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (string
 	return baseCommit, nil
 }
 
-func (f *fakeSandbox) Push(ctx context.Context, r sidecar.PushRequest) (string, string, error) {
+func (f *fakeSandbox) Push(_ context.Context, r sidecar.PushRequest) (string, string, error) {
 	f.record("push")
 
-	f.mu.Lock()
-	f.pushes = append(f.pushes, r)
-	f.mu.Unlock()
-
-	if err := ctx.Err(); err != nil {
-		return "", "", err
-	}
-
-	if f.pushErr != nil {
-		return "", "", f.pushErr
-	}
-
-	return r.Branch, f.rejected, nil
+	return r.Branch, "", nil
 }
 
 func (f *fakeSandbox) Up(_ context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error) {
