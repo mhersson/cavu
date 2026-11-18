@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"math/big"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,6 +35,16 @@ const goVersion = "1.25.0"
 func fixtureRun(t *testing.T, files map[string]string) (*Runner, engine.RunConfig, string) {
 	t.Helper()
 
+	return fixtureRunOn(t, files, func(bare string) (http.Handler, string) {
+		return gitrepo.Handler(t, bare), "/" + filepath.Base(bare)
+	})
+}
+
+// fixtureRunOn is fixtureRun on the server serve returns for the bare
+// repository, with the repository at the path it returns.
+func fixtureRunOn(t *testing.T, files map[string]string, serve func(bare string) (h http.Handler, path string)) (*Runner, engine.RunConfig, string) {
+	t.Helper()
+
 	gitrepo.Isolate(t)
 
 	rt := sandboxtest.Runtime(t)
@@ -43,13 +54,14 @@ func fixtureRun(t *testing.T, files map[string]string) (*Runner, engine.RunConfi
 	repo := gitrepo.New(t, files)
 	head := gitrepo.Git(t, repo, "rev-parse", "HEAD")
 	bare := strings.TrimPrefix(gitrepo.Bare(t, repo), "file://")
-	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, rt), gitrepo.Handler(t, bare))
+	h, path := serve(bare)
+	port := sandboxtest.StartTLSServer(t, sandboxtest.HostAddr(t, rt), h)
 
 	var c engine.RunConfig
 
 	c.TaskID, c.RunID, c.ProjectID = randomID(t), randomID(t), randomID(t)
 	c.InstanceID, c.Image = randomInstance(t), image
-	c.Repo.URL = "https://host.docker.internal:" + port + "/" + filepath.Base(bare)
+	c.Repo.URL = "https://host.docker.internal:" + port + path
 	c.Repo.BaseBranch, c.Repo.Branch = "main", "cavu/fixture"
 	c.Endpoint.Mode = "subscription"
 	c.Identity.Name, c.Identity.Email = "CAVU Test", "cavu@example.com"

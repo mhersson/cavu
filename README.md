@@ -52,7 +52,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu secret set forge_token < token.txt
    ```
 
-   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token for the clone from the App's installation on the repository. The App must grant these repository permissions: Pull requests read and write, and Contents, Checks, Commit statuses, Actions and Metadata read-only; an App granted less fails the clone. With `forge_app_id` empty, `forge_token` is used.
+   A GitHub App works instead of `forge_token`: set `forge_app_id` to the App's id and store its private key, in PEM, as `forge_app_key`. CAVU then gets a token for the clone from the App's installation on the repository. The App must grant these repository permissions: Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read-only; an App granted less fails the clone or the push. Whoever wants CAVU to change a workflow grants Workflows read and write too. With `forge_app_id` empty, `forge_token` is used.
 
    ```
    cavu settings set forge_app_id 123456

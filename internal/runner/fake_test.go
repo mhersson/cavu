@@ -82,13 +82,15 @@ type fakeSandbox struct {
 	runs     []runCall
 	reads    []string // the commit of each read
 	clones   []sidecar.CloneRequest
+	pushes   []sidecar.PushRequest
 	copied   map[string][]byte // into a phase container
 	imported map[string][]byte // into the import container
 	lines    func(sidecar.Line)
 	phase    sandbox.Phase // of the last Up, "" after Down
 	files    map[string]string
 	cloneErr error
-	onClone  func(sidecar.CloneRequest) error // over cloneErr: the clone fails with the error it makes from the request
+	onClone  func(sidecar.CloneRequest) error                               // over cloneErr: the clone fails with the error it makes from the request
+	onPush   func(sidecar.PushRequest) (branch, rejected string, err error) // else the push takes the branch asked for
 	upErr    error
 	readCode int
 	results  map[string]sandbox.Result // by step name
@@ -263,6 +265,15 @@ func (f *fakeSandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (string
 
 func (f *fakeSandbox) Push(_ context.Context, r sidecar.PushRequest) (string, string, error) {
 	f.record("push")
+
+	f.mu.Lock()
+	f.pushes = append(f.pushes, r)
+	hook := f.onPush
+	f.mu.Unlock()
+
+	if hook != nil {
+		return hook(r)
+	}
 
 	return r.Branch, "", nil
 }

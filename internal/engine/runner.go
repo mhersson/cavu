@@ -113,6 +113,11 @@ type Runner interface {
 	// Export exports commit, the work a session froze, never the working tree.
 	// It is safe to repeat for the same run.
 	Export(ctx context.Context, c RunConfig, commit string) (ExportResult, error)
+	// Publish imports an exported change's bundle into the project's mirror,
+	// pushes its head to the task's branch and, for a first publish, opens a
+	// draft pull request. A rejection is a result. Each part is safe to repeat,
+	// so a retry finishes a publish that failed half way.
+	Publish(ctx context.Context, c RunConfig, p PublishRequest) (PublishResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
 	Release(ctx context.Context, ref RunRef, removeVolumes bool) error
 	// CheckEnvironment prepares a project as a run does, under run and task id
@@ -205,6 +210,23 @@ type ExportResult struct {
 	DiffStat     []string      // git's summary of the diff: a line per file, a long list cut short, then the totals
 	Files        []ChangedFile // every path the change adds, modifies or deletes, a rename as a delete and an add
 	Problem      string        // non-empty: stop as agent_error with this text
+}
+
+// PublishRequest is an exported change to publish.
+type PublishRequest struct {
+	Bundle             []byte
+	Head, Prev, Branch string // Prev: the head published before, "" for a first publish
+	Number             int    // the task's pull request, 0 before the first publish
+	Title, Body        string
+}
+
+// PublishResult is what a publish did: the branch the push took, the head on
+// it, and the pull request.
+type PublishResult struct {
+	Branch, Head string
+	Number       int
+	URL, NodeID  string
+	Rejected     string // non-empty: stop as push_rejected with this text
 }
 
 // ChangedFile is a path a change touches.

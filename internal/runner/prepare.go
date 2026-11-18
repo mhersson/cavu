@@ -165,10 +165,15 @@ func (p *preparation) clone(ctx context.Context) (string, error) {
 	})
 }
 
-// CloneToken is the token a clone of repoURL uses: a personal access token as
-// it is, without reading the address, so another git host's repository clones
-// too; with an App, a token f mints for the repository.
+// CloneToken is the token a clone of repoURL uses.
 func CloneToken(ctx context.Context, f *forge.Client, repoURL string, a engine.ForgeAccess) (string, error) {
+	return repoToken(ctx, f, repoURL, a, forge.ForAPI)
+}
+
+// repoToken is a token for use on repoURL: a personal access token as it is,
+// without reading the address, so another git host's repository clones too;
+// with an App, a token f mints for the repository.
+func repoToken(ctx context.Context, f *forge.Client, repoURL string, a engine.ForgeAccess, use forge.Use) (string, error) {
 	if a.AppID == 0 {
 		return a.Token, nil
 	}
@@ -178,7 +183,7 @@ func CloneToken(ctx context.Context, f *forge.Client, repoURL string, a engine.F
 		return "", err
 	}
 
-	return f.Token(ctx, repo, forge.Access(a), forge.ForAPI)
+	return f.Token(ctx, repo, forge.Access(a), use)
 }
 
 // detect reads the root files under an empty allowlist, the one command that

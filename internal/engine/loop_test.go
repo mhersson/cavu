@@ -204,6 +204,11 @@ func (r *fakeRunner) Export(ctx context.Context, c engine.RunConfig, commit stri
 	return pop(&r.exports, exportOK)
 }
 
+// Publish is not scripted: the fake does not publish.
+func (r *fakeRunner) Publish(context.Context, engine.RunConfig, engine.PublishRequest) (engine.PublishResult, error) {
+	return engine.PublishResult{}, errors.New("fake: the runner does not publish")
+}
+
 func (r *fakeRunner) Review(ctx context.Context, c engine.RunConfig, rv engine.ReviewRequest, _ func(engine.Progress)) (engine.ReviewResult, error) {
 	if err := r.begin(ctx, call{method: "review", task: c.TaskID, runID: c.RunID, review: rv, eco: c.Ecosystems, cfg: c}); err != nil {
 		return engine.ReviewResult{}, err
