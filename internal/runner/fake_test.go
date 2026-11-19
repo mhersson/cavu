@@ -191,16 +191,6 @@ func (h *fakeHandle) Importer(ctx context.Context) (container, error) {
 	return h.fakeSandbox.Importer(ctx)
 }
 
-func (h *fakeHandle) Filler(ctx context.Context) (container, error) {
-	if !h.volumes {
-		h.record("filler")
-
-		return nil, errFakeNoVolumes
-	}
-
-	return h.fakeSandbox.Filler(ctx)
-}
-
 func (f *fakeSandbox) record(entry string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

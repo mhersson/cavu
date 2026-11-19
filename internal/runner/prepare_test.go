@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"net/http/httptest"
 	"slices"
@@ -1010,16 +1011,21 @@ func TestCheckWithAFailedFill(t *testing.T) {
 }
 
 // captureLog sends the default logger's records to a buffer as JSON until the
-// test ends.
+// test ends. SetDefault also redirects the log package, so its output and
+// flags are restored too.
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 
 	var buf bytes.Buffer
 
-	prev := slog.Default()
+	prev, out, flags := slog.Default(), log.Writer(), log.Flags()
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		log.SetOutput(out)
+		log.SetFlags(flags)
+	})
 
 	return &buf
 }

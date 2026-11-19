@@ -108,7 +108,10 @@ func TestCheckSeedsATaskWithItsGoBuildCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, engine.ResultPassed, res.Baseline, res.Output)
 
+	started = time.Now()
 	res, _, err = r.CheckEnvironment(t.Context(), c)
+	secondCheck := time.Since(started)
+
 	require.NoError(t, err)
 	require.Equal(t, engine.ResultPassed, res.Baseline, res.Output)
 	assert.Empty(t, logRecords(t, logged), "a fill failed")
@@ -136,5 +139,6 @@ func TestCheckSeedsATaskWithItsGoBuildCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, engine.ResultPassed, vr.Result, vr.Output)
 
-	t.Logf("%s: first check %s, the task's first verify %s", r.rt.Kind, firstCheck.Round(time.Millisecond), vr.Duration.Round(time.Millisecond))
+	t.Logf("%s: first check %s, second check %s, the task's first verify %s", r.rt.Kind,
+		firstCheck.Round(time.Millisecond), secondCheck.Round(time.Millisecond), vr.Duration.Round(time.Millisecond))
 }
