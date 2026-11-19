@@ -126,7 +126,8 @@ func TestMain(m *testing.M) {
 
 // instance is a child cavu's data directory, its instance id, the runtime it
 // drives and the fixture repository it is set up for. A path set is the
-// child's whole PATH; out keeps what every child printed.
+// child's whole PATH; env is added to every child's environment; out keeps
+// what every child printed.
 type instance struct {
 	t    *testing.T
 	rt   sandbox.Runtime
@@ -134,6 +135,7 @@ type instance struct {
 	id   string
 	repo string
 	path string
+	env  []string
 	out  strings.Builder
 }
 
@@ -156,7 +158,7 @@ func (in *instance) start(stdin string, out io.Writer, args ...string) (cmd *exe
 	var stdout, stderr bytes.Buffer
 
 	cmd = exec.CommandContext(in.t.Context(), child(in.t), args...)
-	cmd.Env = append(os.Environ(), "CAVU_DATA_DIR="+in.dir)
+	cmd.Env = append(append(os.Environ(), "CAVU_DATA_DIR="+in.dir), in.env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &stdout, &stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = time.Minute
