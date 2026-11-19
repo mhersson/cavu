@@ -102,9 +102,8 @@ func (s *server) createTask(w http.ResponseWriter, r *http.Request) error {
 	return s.replyTask(w, r, id, http.StatusCreated)
 }
 
-// addTask stores the task with the requester, and starts it when in asks. It
-// asks whether the project is runnable before it stores the task, so a start
-// that would be refused creates nothing.
+// addTask stores the task with the requester, and starts it when in asks. A
+// start the project cannot take creates nothing.
 func (s *server) addTask(ctx context.Context, in newTask, requester string) (int64, error) {
 	p, err := s.Store.ProjectByName(ctx, in.Project)
 	if errors.Is(err, store.ErrNotFound) {
@@ -115,23 +114,18 @@ func (s *server) addTask(ctx context.Context, in newTask, requester string) (int
 		return 0, fmt.Errorf("project %q: %w", in.Project, err)
 	}
 
-	if in.Start && !engine.Runnable(p) {
-		return 0, &apiError{http.StatusBadRequest, fmt.Sprintf(
-			"project %q has %v; check the project, or waive its verify", p.Name, engine.ErrNoBaseline)}
+	t, err := s.Loop.AddTask(ctx, store.Task{
+		ProjectID: p.ID, Title: in.Title, Body: in.Body, Requester: requester,
+	}, in.DependsOn, in.Start)
+	if errors.Is(err, engine.ErrNoBaseline) {
+		return 0, &apiError{http.StatusBadRequest, fmt.Sprintf("%v; check the project, or waive its verify", err)}
 	}
 
-	t, err := engine.AddTask(ctx, s.Store, store.Task{
-		ProjectID: p.ID, Title: in.Title, Body: in.Body, Requester: requester,
-	}, in.DependsOn)
 	if err != nil {
 		return 0, err
 	}
 
 	if in.Start {
-		if err := s.Loop.Start(ctx, t.ID); err != nil {
-			return 0, err
-		}
-
 		s.Nudge()
 	}
 

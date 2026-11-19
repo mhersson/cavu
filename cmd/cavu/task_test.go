@@ -1643,3 +1643,23 @@ func newest[T any](events []store.Event, typ string) (T, bool) {
 
 	return v, false
 }
+
+func TestTaskAddStartRefusedStoresNothing(t *testing.T) {
+	dir := t.TempDir()
+	cavuIn(t, dir, "project", "add", "web", "--repo", repo, "--verify", "make test")
+
+	code, stdout, stderr := runCavu("task", "add", "web", "--title", "Fix", "--start", "--data-dir", dir)
+
+	assert.Equal(t, 1, code)
+	assert.Empty(t, stdout, "no id is printed")
+	assert.Contains(t, stderr, "project check web", "the hint names the verb")
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	tasks, err := a.store.Tasks(t.Context(), true)
+	require.NoError(t, err)
+	assert.Empty(t, tasks)
+}

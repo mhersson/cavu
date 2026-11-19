@@ -130,16 +130,14 @@ func taskAdd(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return fmt.Errorf("project %q: %w", name[0], err)
 	}
 
-	t, err := engine.AddTask(ctx, a.store, store.Task{ProjectID: p.ID, Title: *title, Body: body, Requester: "cli"}, deps)
+	t, err := a.actions().AddTask(ctx, store.Task{ProjectID: p.ID, Title: *title, Body: body, Requester: "cli"}, deps, *start)
 	if err != nil {
-		return err
+		return withBaselineHint(err, p.Name)
 	}
 
-	if _, err := fmt.Fprintln(stdout, t.ID); err != nil || !*start {
-		return err
-	}
+	_, err = fmt.Fprintln(stdout, t.ID)
 
-	return startTask(ctx, a.actions(), t.ID, p.Name)
+	return err
 }
 
 // taskEdit changes only the title, body and dependencies it is given; an empty
@@ -206,7 +204,10 @@ func taskIDs(list string) ([]int64, error) {
 // startTask records that a person started the task, naming the verbs that
 // give its project a baseline when it has none.
 func startTask(ctx context.Context, l *engine.Loop, id int64, project string) error {
-	err := l.Start(ctx, id)
+	return withBaselineHint(l.Start(ctx, id), project)
+}
+
+func withBaselineHint(err error, project string) error {
 	if errors.Is(err, engine.ErrNoBaseline) {
 		return fmt.Errorf("%w; run cavu project check %s, or waive verify with cavu project set %s --no-verify", err, project, project)
 	}

@@ -22,26 +22,49 @@ var ErrNoBaseline = errors.New("neither a passed baseline nor a waived verify")
 
 const maxTitle = 200
 
-// AddTask stores a new draft task that holds only what a task may hold, and its dependencies.
-func AddTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) (store.Task, error) {
+// AddTask stores a new draft task that holds only what a task may hold, and its
+// dependencies, and with start starts it. A start the project cannot take is
+// refused before anything is stored.
+func (l *Loop) AddTask(ctx context.Context, t store.Task, dependsOn []int64, start bool) (store.Task, error) {
 	if err := checkTitle(t.Title); err != nil {
 		return store.Task{}, err
 	}
 
-	if err := checkDeps(ctx, s, 0, dependsOn); err != nil {
+	if start {
+		p, err := l.Store.Project(ctx, t.ProjectID)
+		if err != nil {
+			return store.Task{}, fmt.Errorf("project %d: %w", t.ProjectID, err)
+		}
+
+		if !Runnable(p) {
+			return store.Task{}, noBaseline(p)
+		}
+	}
+
+	if err := checkDeps(ctx, l.Store, 0, dependsOn); err != nil {
 		return store.Task{}, err
 	}
 
-	t, err := s.CreateTask(ctx, t)
+	t, err := l.Store.CreateTask(ctx, t)
 	if err != nil {
 		return store.Task{}, err
 	}
 
-	if err := s.SetTaskDeps(ctx, t.ID, dependsOn); err != nil {
+	if err := l.Store.SetTaskDeps(ctx, t.ID, dependsOn); err != nil {
 		return store.Task{}, fmt.Errorf("task %d: %w", t.ID, err)
 	}
 
+	if start {
+		if err := l.Start(ctx, t.ID); err != nil {
+			return store.Task{}, err
+		}
+	}
+
 	return t, nil
+}
+
+func noBaseline(p store.Project) error {
+	return refuse("project %q has %w", p.Name, ErrNoBaseline)
 }
 
 // EditTask writes a task's title, body and dependencies until its first run starts.
@@ -146,7 +169,7 @@ func (l *Loop) Start(ctx context.Context, taskID int64) error {
 		case f.Started:
 			return false, nil
 		case !Runnable(p):
-			return false, refuse("project %q has %w", p.Name, ErrNoBaseline)
+			return false, noBaseline(p)
 		}
 
 		return true, nil

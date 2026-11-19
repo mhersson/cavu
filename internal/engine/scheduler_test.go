@@ -393,7 +393,7 @@ func TestSchedulerOrder(t *testing.T) {
 
 func TestSchedulerDependencyChain(t *testing.T) {
 	h := newHarness(t)
-	b, err := engine.AddTask(t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{h.task.ID})
+	b, err := h.loop.AddTask(t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{h.task.ID}, false)
 	require.NoError(t, err)
 	h.startTask(b.ID)
 	g := h.gate("work")
