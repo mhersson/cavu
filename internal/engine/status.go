@@ -1,5 +1,7 @@
 package engine
 
+import "time"
+
 // Status is where a task stands, as a person sees it.
 type Status string
 
@@ -34,24 +36,53 @@ func StatusOf(f Facts) Status {
 	}
 }
 
+// The ways a task needs a person that no stop's action names.
+const (
+	NeedsReview = "review" // its pull request is ready
+	NeedsTake   = "take"   // its change was exported and no publish carried it out
+)
+
 // NeedsYou reports whether a task waits for a person: a stop that only a person
 // clears or a fault past its retries, a ready pull request, or a change no
 // publish carried out. It reads facts and caps and chooses nothing.
 func NeedsYou(s Snapshot) bool {
+	way, _ := Needs(s)
+
+	return way != ""
+}
+
+// Needs says in what way a task waits for a person and since when, as NeedsYou
+// reads it: the stop's action (ClearAnswer or ClearRetry), NeedsReview or
+// NeedsTake, else "" and the zero time. A ready pull request waits since the
+// later of its newest look and the end of the newest run, which may only have
+// replied to reviewers and so made it ready with no new look.
+func Needs(s Snapshot) (string, time.Time) {
 	f := s.Facts
 
 	switch StatusOf(f) {
 	case StatusBlocked:
-		return f.OpenStop.Action != ClearNone && !f.retriesFault(s.Caps)
+		if f.OpenStop.Action != ClearNone && !f.retriesFault(s.Caps) {
+			return f.OpenStop.Action, f.OpenStop.At
+		}
 	case StatusInReview:
 		if f.PR == nil {
-			return !f.RunOpen && s.Task.ReplayID == 0
+			if !f.RunOpen && s.Task.ReplayID == 0 {
+				return NeedsTake, f.RunEndedAt
+			}
+		} else if PullRequestOf(f, s.Watch.NoCI).Ready {
+			return NeedsReview, laterOf(f.PR.SeenAt, f.RunEndedAt)
 		}
-
-		return PullRequestOf(f, s.Watch.NoCI).Ready
-	default:
-		return false
 	}
+
+	return "", time.Time{}
+}
+
+func laterOf(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+
+	return a
 }
 
 // PullRequest is a task's pull request as a person sees it.

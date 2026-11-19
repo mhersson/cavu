@@ -18,6 +18,8 @@ type View struct {
 	CreatedAt           time.Time    `json:"created_at"`
 	Status              Status       `json:"status"`
 	NeedsYou            bool         `json:"needs_you"`
+	Needs               string       `json:"needs"`
+	NeedsYouSince       *time.Time   `json:"needs_you_since"`
 	Waiting             string       `json:"waiting"`
 	WaitingUntil        *time.Time   `json:"waiting_until"`
 	Dependencies        []Dep        `json:"dependencies"`
@@ -95,15 +97,18 @@ type Budget struct {
 
 // Row is a task in a list.
 type Row struct {
-	ID               int64     `json:"id"`
-	Project          string    `json:"project"`
-	Title            string    `json:"title"`
-	Status           Status    `json:"status"`
-	NeedsYou         bool      `json:"needs_you"`
-	StopReason       string    `json:"stop_reason"`
-	Waiting          string    `json:"waiting"`
-	PullRequestReady bool      `json:"pull_request_ready"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID               int64      `json:"id"`
+	Project          string     `json:"project"`
+	Title            string     `json:"title"`
+	Status           Status     `json:"status"`
+	NeedsYou         bool       `json:"needs_you"`
+	Needs            string     `json:"needs"`
+	NeedsYouSince    *time.Time `json:"needs_you_since"`
+	StopReason       string     `json:"stop_reason"`
+	Waiting          string     `json:"waiting"`
+	WaitingUntil     *time.Time `json:"waiting_until"`
+	PullRequestReady bool       `json:"pull_request_ready"`
+	CreatedAt        time.Time  `json:"created_at"`
 }
 
 // View reads the task as a person sees it now. waiting is the scheduler's
@@ -129,10 +134,12 @@ func (l *Loop) View(ctx context.Context, taskID int64, waiting func(int64) strin
 	turns, d := TurnsAndDuration(events)
 	v := View{
 		ID: t.ID, Project: p.Name, Title: t.Title, Body: t.Body, Requester: t.Requester, CreatedAt: t.CreatedAt.UTC(),
-		Status: StatusOf(f), NeedsYou: NeedsYou(s), Dependencies: s.Deps, Questions: []Question{},
+		Status: StatusOf(f), Dependencies: s.Deps, Questions: []Question{},
 		Turns: turns, DurationMS: d.Milliseconds(), CostMissingSessions: f.CostMissing,
 		Usage: make([]UsageRow, len(usage)), Budget: budgetOf(s),
 	}
+	v.Needs, v.NeedsYouSince = needsOf(s)
+	v.NeedsYou = v.Needs != ""
 	v.Waiting, v.WaitingUntil = waitingOf(s, waiting)
 
 	if st := f.OpenStop; st != nil {
@@ -213,10 +220,11 @@ func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) st
 		}
 
 		r := Row{
-			ID: t.ID, Project: names[t.ProjectID], Title: t.Title, Status: StatusOf(s.Facts), NeedsYou: NeedsYou(s),
-			CreatedAt: t.CreatedAt.UTC(),
+			ID: t.ID, Project: names[t.ProjectID], Title: t.Title, Status: StatusOf(s.Facts), CreatedAt: t.CreatedAt.UTC(),
 		}
-		r.Waiting, _ = waitingOf(s, waiting)
+		r.Needs, r.NeedsYouSince = needsOf(s)
+		r.NeedsYou = r.Needs != ""
+		r.Waiting, r.WaitingUntil = waitingOf(s, waiting)
 
 		if st := s.Facts.OpenStop; st != nil {
 			r.StopReason = st.Reason
@@ -230,6 +238,16 @@ func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) st
 	}
 
 	return rows, nil
+}
+
+// needsOf is Needs with its time as a view carries it: UTC, nil for no need.
+func needsOf(s Snapshot) (string, *time.Time) {
+	way, since := Needs(s)
+	if way == "" {
+		return "", nil
+	}
+
+	return way, new(since.UTC())
 }
 
 // waitingOf is why the task does not act and until when: the wait or the

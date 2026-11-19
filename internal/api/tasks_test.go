@@ -151,7 +151,8 @@ func TestTasksRoundTrip(t *testing.T) {
 
 	at := rfc3339(stored.CreatedAt)
 	assert.JSONEq(t, `{"id": 1, "project": "site", "title": "Add a footer", "body": "Below the fold.", "requester": "api",
-		"created_at": "`+at+`", "status": "draft", "needs_you": false, "waiting": "", "waiting_until": null, "dependencies": [],
+		"created_at": "`+at+`", "status": "draft", "needs_you": false, "needs": "", "needs_you_since": null, "waiting": "", "waiting_until": null,
+		"dependencies": [],
 		"stop": null, "questions": [], "review": null, "pull_request": null, "change": null, "turns": 0, "duration_ms": 0,
 		"cost_estimate_usd": 0, "cost_missing_sessions": 0, "usage": [],
 		"budget": {"turns": 0, "max_turns": 1000, "minutes": 0, "max_minutes": 300}}`, created)
@@ -163,7 +164,7 @@ func TestTasksRoundTrip(t *testing.T) {
 	status, body = f.call(t, "GET /api/tasks", "")
 	require.Equal(t, http.StatusOK, status, body)
 	assert.JSONEq(t, `{"tasks": [{"id": 1, "project": "site", "title": "Add a footer", "status": "draft", "needs_you": false,
-		"stop_reason": "", "waiting": "", "pull_request_ready": false, "created_at": "`+at+`"}]}`, body)
+		"needs": "", "needs_you_since": null, "stop_reason": "", "waiting": "", "waiting_until": null, "pull_request_ready": false, "created_at": "`+at+`"}]}`, body)
 
 	t.Run("a PATCH changes only the fields it names", func(t *testing.T) {
 		second := f.task(t, `{"project": "site", "title": "Add a header", "body": "On top.", "depends_on": [1]}`)
@@ -632,8 +633,8 @@ func TestListFilters(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, []any{map[string]any{
-			"id": 4.0, "project": "api", "title": "A question", "status": "blocked", "needs_you": true, "stop_reason": "question",
-			"waiting": "", "pull_request_ready": false, "created_at": rfc3339(stored.CreatedAt),
+			"id": 4.0, "project": "api", "title": "A question", "status": "blocked", "needs_you": true, "needs": engine.ClearAnswer,
+			"needs_you_since": "2030-01-02T03:04:05Z", "stop_reason": "question", "waiting": "", "waiting_until": nil, "pull_request_ready": false, "created_at": rfc3339(stored.CreatedAt),
 		}}, list(t, "?status=blocked"))
 	})
 

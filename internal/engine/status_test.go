@@ -215,7 +215,15 @@ func TestChangeOf(t *testing.T) {
 	}
 }
 
-func TestNeedsYou(t *testing.T) {
+type needsYouCase struct {
+	name   string
+	facts  engine.Facts
+	replay int64
+	want   bool
+}
+
+// needsYouCases are the snapshots NeedsYou and Needs are held to.
+func needsYouCases() []needsYouCase {
 	stopped := func(reason, action string, fault bool) engine.Facts {
 		return engine.Facts{Started: true, OpenStop: &engine.StopFact{Reason: reason, Action: action, Fault: fault}}
 	}
@@ -232,12 +240,7 @@ func TestNeedsYou(t *testing.T) {
 	}
 	unpublished := engine.Facts{Started: true, Exported: true}
 
-	tests := []struct {
-		name   string
-		facts  engine.Facts
-		replay int64
-		want   bool
-	}{
+	return []needsYouCase{
 		{name: "question", facts: stopped(engine.StopQuestion, engine.ClearAnswer, false), want: true},
 		{name: "verify failed", facts: stopped(engine.StopVerifyFailed, engine.ClearRetry, false), want: true},
 		{name: "checks failed", facts: stopped(engine.StopCIFailed, engine.ClearRetry, false), want: true},
@@ -259,12 +262,56 @@ func TestNeedsYou(t *testing.T) {
 		{name: "done", facts: engine.Facts{Started: true, Exported: true, Merged: true}},
 		{name: "cancelled", facts: engine.Facts{Started: true, Cancelled: true}},
 	}
+}
+
+func (tc needsYouCase) snapshot() engine.Snapshot {
+	s := engine.Snapshot{Facts: tc.facts, Caps: engine.Caps{FaultRetries: 2}}
+	s.Task.ReplayID = tc.replay
+
+	return s
+}
+
+func TestNeedsYou(t *testing.T) {
+	for _, tc := range needsYouCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, engine.NeedsYou(tc.snapshot()))
+		})
+	}
+}
+
+func TestNeedsMatchesNeedsYou(t *testing.T) {
+	for _, tc := range needsYouCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			way, _ := engine.Needs(tc.snapshot())
+			assert.Equal(t, tc.want, way != "")
+		})
+	}
+}
+
+func TestNeedsNamesTheWay(t *testing.T) {
+	stop := func(action string) engine.Facts {
+		return engine.Facts{Started: true, OpenStop: &engine.StopFact{Reason: engine.StopQuestion, Action: action}}
+	}
+	ready := pullRequest(&engine.Observation{State: engine.PROpen, Head: "h2", Checks: engine.ChecksPassed})
+	ready.Started = true
+
+	tests := []struct {
+		name  string
+		facts engine.Facts
+		want  string
+	}{
+		{"a question", stop(engine.ClearAnswer), engine.ClearAnswer},
+		{"a verify failure", stop(engine.ClearRetry), engine.ClearRetry},
+		{"a usage limit", stop(engine.ClearNone), ""},
+		{"a ready pull request", ready, engine.NeedsReview},
+		{"an export with no pull request", engine.Facts{Started: true, Exported: true}, engine.NeedsTake},
+		{"a running task", engine.Facts{Started: true, RunOpen: true}, ""},
+	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s := engine.Snapshot{Facts: tc.facts, Caps: engine.Caps{FaultRetries: 2}}
-			s.Task.ReplayID = tc.replay
-			assert.Equal(t, tc.want, engine.NeedsYou(s))
+			way, _ := engine.Needs(engine.Snapshot{Facts: tc.facts})
+			assert.Equal(t, tc.want, way)
 		})
 	}
 }

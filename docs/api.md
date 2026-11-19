@@ -158,11 +158,12 @@ A setting's value is a string, null or a JSON object, which is stored as its tex
 Answers 200 with every task but a replay's shadow tasks, oldest first:
 
 ```json
-{"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "needs_you": true, "stop_reason": "question",
-            "waiting": "", "pull_request_ready": false, "created_at": "2030-01-02T03:04:05Z"}]}
+{"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "needs_you": true, "needs": "answer",
+            "needs_you_since": "2030-01-02T04:00:00Z", "stop_reason": "question",
+            "waiting": "", "waiting_until": null, "pull_request_ready": false, "created_at": "2030-01-02T03:04:05Z"}]}
 ```
 
-The query `project=NAME` keeps the tasks of one project, `status=STATUS` the tasks with one status, and `needs_you=true` the tasks that need a person; a project that does not exist, a status that is not one of [the task's](#the-task), or a `needs_you` that is not a boolean is 400. `stop_reason` is the open stop's reason, else `""`; `pull_request_ready` is the `ready` of the task's `pull_request`, false for a task with none; the other fields are the task's.
+The query `project=NAME` keeps the tasks of one project, `status=STATUS` the tasks with one status, and `needs_you=true` the tasks that need a person; a project that does not exist, a status that is not one of [the task's](#the-task), or a `needs_you` that is not a boolean is 400. `stop_reason` is the open stop's reason, else `""`; `pull_request_ready` is the `ready` of the task's `pull_request`, false for a task with none; `needs`, `needs_you_since`, `waiting` and `waiting_until` are the task's.
 
 ### `POST /api/tasks`
 
@@ -204,7 +205,8 @@ Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action
 
 ```json
 {"id": 7, "project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "requester": "api",
- "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "needs_you": true, "waiting": "", "waiting_until": null,
+ "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "needs_you": true, "needs": "answer", "needs_you_since": "2030-01-02T04:00:00Z",
+ "waiting": "", "waiting_until": null,
  "dependencies": [{"id": 3, "status": "done"}],
  "stop": {"reason": "question", "explanation": "Which pages should the footer link to?", "action": "answer", "resets_at": null},
  "questions": [{"question": "Which pages should the footer link to?", "suggested_answer": ""},
@@ -230,6 +232,8 @@ A list is `[]` when empty, never null.
 | `created_at` | When the task was created. |
 | `status` | Where the task stands: `cancelled` once cancelled, started or not; else `draft` until started; `done` once its change is merged; `blocked` while a stop is open; `in_review` once its change is exported, or while it has a pull request and no run is open; `queued` while no run is open; else `running`. |
 | `needs_you` | Whether the task waits for a person: it is `blocked` on a stop that only a person clears, which is any stop but a usage limit, which resets by itself, and a `sandbox` stop or a failed model endpoint while CAVU still retries it; its `pull_request` is `ready`; or it is `in_review` with an exported change and no pull request, as with the switch `publish` off, once no run is open (while the exported run is still open, before its publish or finish, it does not), which waits for a person to take the change and record `done`. |
+| `needs` | In what way the task needs a person: `answer` or `retry`, the `action` of its stop; `review`, when its `pull_request` is `ready`; `take`, when its change was exported with no pull request; else `""`. It is `""` exactly when `needs_you` is false. |
+| `needs_you_since` | When the task came to need a person, as a UTC time, null when `needs` is `""`: the time of the stop for `answer` and `retry`; the end of the newest run for `take`; for `review` the later of the newest look at the pull request and the end of the newest run. |
 | `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; for a task whose pull request CAVU watches, what the watch waits for, or the error of the last look at the pull request and when the next look comes; else `""`. |
 | `waiting_until` | When the wait in `waiting` ends on a clock: the reset of the usage limit of the task, or of another task that holds it, the next try after a fault, local midnight under a spent daily cap, or the end of the time the pull request's checks are given to start or to finish; else null. |
 | `dependencies` | The tasks that must be done before this one runs, each with its `id` and its `status`. `POST` and `PATCH` take their ids as `depends_on`. |

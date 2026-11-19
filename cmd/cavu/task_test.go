@@ -1540,13 +1540,17 @@ func TestTaskShowPrintsDependenciesAndTheWait(t *testing.T) {
 	assert.Empty(t, labelled(out, "wait:"), "a task whose dependencies are done does not wait")
 }
 
+var askedAt = time.Date(2030, 3, 4, 5, 6, 7, 0, time.UTC)
+
 // needsYouTasks adds a task stopped on a question, which only a person clears,
 // and a task blocked on a usage limit, which ends by itself.
 func needsYouTasks(t *testing.T, dir string) (asks, limited string) {
 	t.Helper()
 
 	asks, limited = addTask(t, dir, "Asks"), addTask(t, dir, "Nobody")
-	seedEvents(t, dir, asks, nil, event(engine.TaskStarted, "user", struct{}{}), question())
+	asked := question()
+	asked.At = askedAt
+	seedEvents(t, dir, asks, nil, event(engine.TaskStarted, "user", struct{}{}), asked)
 	seedEvents(t, dir, limited, nil, event(engine.TaskStarted, "user", struct{}{}), event(engine.Stopped, "engine",
 		engine.StoppedPayload{Reason: engine.StopUsageLimit, Explanation: "limit", Action: engine.ClearNone, ResetsAt: time.Now().Add(time.Hour)}))
 
@@ -1558,7 +1562,10 @@ func TestTaskShowSaysWhenTheTaskNeedsYou(t *testing.T) {
 	asks, limited := needsYouTasks(t, dir)
 
 	out := cavuIn(t, dir, "task", "show", asks)
-	assert.Equal(t, []string{"you"}, labelled(out, "needs:"))
+	needs := labelled(out, "needs:")
+	require.Len(t, needs, 1)
+	assert.Contains(t, needs[0], engine.ClearAnswer)
+	assert.Contains(t, needs[0], askedAt.Local().Format(time.DateTime))
 	assert.Equal(t, strings.Index(out, "status:")+len("status:  blocked\n"), strings.Index(out, "needs:"), "the line follows the status")
 
 	out = cavuIn(t, dir, "task", "show", limited)
@@ -1580,7 +1587,7 @@ func TestTaskListHasANeedsYouColumn(t *testing.T) {
 		rows[strings.Fields(l)[0]] = strings.Fields(l)
 	}
 
-	assert.Equal(t, []string{asks, "web", string(engine.StatusBlocked), "yes", "Asks"}, rows[asks])
+	assert.Equal(t, []string{asks, "web", string(engine.StatusBlocked), engine.ClearAnswer, "Asks"}, rows[asks])
 	assert.Equal(t, []string{limited, "web", string(engine.StatusBlocked), "Nobody"}, rows[limited])
 }
 
