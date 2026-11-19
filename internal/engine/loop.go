@@ -887,7 +887,7 @@ func (p *pass) fault(ctx context.Context, o openRun, turns int, usage []store.Us
 }
 
 func stopPayload(a Action) StoppedPayload {
-	return StoppedPayload{Reason: a.Stop, Explanation: a.Explain, Action: a.Clear, ResetsAt: a.ResetsAt, Why: a.Why}
+	return StoppedPayload{Reason: a.Stop, Explanation: a.Explain, Action: a.Clear, ResetsAt: a.ResetsAt, Fault: a.Fault, Why: a.Why}
 }
 
 // halt records a stop and usage tied to it, with the run's end when the stop

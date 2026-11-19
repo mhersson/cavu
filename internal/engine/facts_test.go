@@ -40,6 +40,8 @@ var (
 	stopAt        = time.Date(2030, 1, 1, 11, 0, 0, 0, time.UTC)
 	sandboxStop   = store.Event{Type: engine.Stopped, At: stopAt, Payload: json.RawMessage(`{"reason":"sandbox","explanation":"The runner failed.","action":"retry"}`)}
 	resumeSession = ev(engine.SessionStarted, `{"mode":"continue","session_id":"s1","resume":true}`)
+	endpointEnd   = ev(engine.SessionEnded, `{"outcome":"endpoint_failed","turns":3,"detail":"upstream status 529: Overloaded"}`)
+	endpointStop  = store.Event{Type: engine.Stopped, At: stopAt, Payload: json.RawMessage(`{"reason":"endpoint","explanation":"The model endpoint failed.","action":"retry","fault":true}`)}
 	doneFact      = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, Title: "Fix login", Summary: "Fixed it.", HeadCommit: "def456"}
 )
 
@@ -120,6 +122,38 @@ func TestReduce(t *testing.T) {
 			want: engine.Facts{
 				Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1",
 				OpenStop: &engine.StopFact{Reason: engine.StopSandbox, Explanation: "The runner failed.", Action: "retry", At: stopAt}, Faults: 2,
+			},
+		},
+		{
+			name:   "a failed endpoint's stop is a fault",
+			events: preparedRun(firstSession, endpointEnd, endpointStop),
+			want: engine.Facts{
+				Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1", Turns: 3,
+				Session:  &engine.SessionFact{Outcome: engine.OutcomeEndpointFailed, Detail: "upstream status 529: Overloaded"},
+				OpenStop: &engine.StopFact{Reason: engine.StopEndpoint, Explanation: "The model endpoint failed.", Action: "retry", At: stopAt, Fault: true},
+				Faults:   1,
+			},
+		},
+		{
+			name: "a refused endpoint's stop is no fault",
+			events: preparedRun(firstSession, ev(engine.SessionEnded, `{"outcome":"endpoint","detail":"upstream status 403: Forbidden"}`),
+				ev(engine.Stopped, `{"reason":"endpoint","explanation":"The model endpoint refused.","action":"retry"}`)),
+			want: engine.Facts{
+				Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1",
+				Session:  &engine.SessionFact{Outcome: engine.OutcomeEndpoint, Detail: "upstream status 403: Forbidden"},
+				OpenStop: &engine.StopFact{Reason: engine.StopEndpoint, Explanation: "The model endpoint refused.", Action: "retry"},
+			},
+		},
+		{
+			name: "an endpoint stop with no fault field reads as refused",
+			events: preparedRun(firstSession, ev(engine.SessionEnded, `{"outcome":"endpoint","detail":"upstream status 502: Bad gateway"}`),
+				ev(engine.Stopped, `{"reason":"endpoint","explanation":"The model endpoint failed or refused the agent's requests: upstream status 502: Bad gateway","action":"retry","why":"The session could not use the model endpoint."}`)),
+			want: engine.Facts{
+				Started: true, RunOpen: true, RunReason: "initial", Prepared: true, SessionID: "s1",
+				Session: &engine.SessionFact{Outcome: engine.OutcomeEndpoint, Detail: "upstream status 502: Bad gateway"},
+				OpenStop: &engine.StopFact{
+					Reason: engine.StopEndpoint, Explanation: "The model endpoint failed or refused the agent's requests: upstream status 502: Bad gateway", Action: "retry",
+				},
 			},
 		},
 		{
@@ -442,6 +476,40 @@ func TestReduceRetryAfterSandboxStop(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// A failed endpoint's stop clears by itself after its wait into the action a
+// person's retry gives; its claim closes the stop and keeps the task's counts.
+func TestAFailedEndpointResumesAsARetryWould(t *testing.T) {
+	events := preparedRun(firstSession, unfinished, autoContinue, endpointEnd, endpointStop)
+	for i := range events {
+		events[i].ID = int64(i + 1)
+	}
+
+	s := snap(engine.Reduce(events))
+	s.Now = stopAt
+
+	wait := engine.Decide(s)
+	wait.Why = ""
+	assert.Equal(t, engine.Action{Kind: engine.KindWait, Until: stopAt.Add(30 * time.Second)}, wait)
+
+	s.Now = stopAt.Add(30 * time.Second)
+	got := engine.Decide(s)
+
+	byPerson := snap(engine.Reduce(append(slices.Clone(events), store.Event{ID: int64(len(events) + 1), Type: engine.HumanRetried})))
+	retry := engine.Decide(byPerson)
+
+	got.Why, retry.Why = "", ""
+	assert.Equal(t, work(engine.ModeContinue, false), retry)
+	assert.Equal(t, retry, got)
+
+	f := engine.Reduce(append(events, resumeSession))
+	assert.Nil(t, f.OpenStop)
+	assert.Nil(t, f.Session)
+	assert.Equal(t, 1, f.Faults)
+	assert.Equal(t, 1, f.Continuations)
+	assert.Equal(t, 3, f.Turns)
+	assert.Equal(t, int64(1), f.LastHumanEventID)
 }
 
 func TestTurnsAndDuration(t *testing.T) {

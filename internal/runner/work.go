@@ -437,6 +437,8 @@ func stopped(dr driver.Result) (string, time.Time) {
 		return engine.OutcomeMaxTurns, time.Time{}
 	case driver.ReasonAuth, driver.ReasonEndpoint:
 		return engine.OutcomeEndpoint, time.Time{}
+	case driver.ReasonEndpointFailed:
+		return engine.OutcomeEndpointFailed, time.Time{}
 	}
 
 	return "", time.Time{}

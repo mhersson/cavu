@@ -902,7 +902,7 @@ func TestSetupsOfOneProjectTakeTurns(t *testing.T) {
 		f.onRead = func() { read <- struct{}{} }
 		r := f.runner()
 
-		held, err := r.takeTurn(t.Context(), 3)
+		held, err := r.takeTurn(t.Context(), 3, setupTurn)
 		require.NoError(t, err)
 
 		defer held()
@@ -953,21 +953,72 @@ func TestSetupsOfOneProjectTakeTurns(t *testing.T) {
 	t.Run("a wait ends with its context", func(t *testing.T) {
 		r := newFake().runner()
 
-		held, err := r.takeTurn(t.Context(), 3)
+		held, err := r.takeTurn(t.Context(), 3, setupTurn)
 		require.NoError(t, err)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		_, err = r.takeTurn(ctx, 3)
+		_, err = r.takeTurn(ctx, 3, setupTurn)
 		require.ErrorIs(t, err, context.Canceled)
 
 		held()
 
-		release, err := r.takeTurn(t.Context(), 3)
+		release, err := r.takeTurn(t.Context(), 3, setupTurn)
 		require.NoError(t, err)
 		release()
 	})
+}
+
+// While one run's clone writes the project's mirror, another run of the
+// project neither clones nor imports into it: it waits for the turn, here
+// until its context ends.
+func TestMirrorWritesOfOneProjectTakeTurns(t *testing.T) {
+	for name, write := range map[string]func(context.Context, *Runner, engine.RunConfig) error{
+		"a clone": func(ctx context.Context, r *Runner, c engine.RunConfig) error {
+			_, err := r.Prepare(ctx, c)
+
+			return err
+		},
+		"an import": func(ctx context.Context, r *Runner, c engine.RunConfig) error {
+			_, err := r.Publish(ctx, c, firstPublish())
+
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			inside, release := make(chan struct{}), make(chan struct{})
+			f.onClone = func(sidecar.CloneRequest) error {
+				close(inside)
+				<-release
+
+				return nil
+			}
+
+			r := f.runner()
+			first := make(chan error, 1)
+
+			go func() {
+				_, err := r.Prepare(t.Context(), testConfig())
+				first <- err
+			}()
+
+			<-inside
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			c := testConfig()
+			c.TaskID, c.RunID = 6, 8
+			require.ErrorIs(t, write(ctx, r, c), context.Canceled)
+
+			close(release)
+			require.NoError(t, <-first)
+			assert.Len(t, f.clones, 1, "a second clone ran while the first wrote the mirror")
+			assert.Empty(t, f.runsIn(phaseImport), "an import ran while a clone wrote the mirror")
+		})
+	}
 }
 
 func TestPlainVariablesReachEveryPhase(t *testing.T) {

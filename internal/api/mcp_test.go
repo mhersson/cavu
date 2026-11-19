@@ -90,7 +90,7 @@ func TestMCPTools(t *testing.T) {
 		names = append(names, tl.Name)
 	}
 
-	assert.ElementsMatch(t, []string{"create_task", "get_task", "list_tasks", "run_task", "cancel_task", "list_projects"}, names)
+	assert.ElementsMatch(t, []string{"create_task", "get_task", "list_tasks", "run_task", "cancel_task", "answer_task", "list_projects"}, names)
 }
 
 func TestMCPCreateAndStart(t *testing.T) {
@@ -153,6 +153,35 @@ func TestMCPRunTask(t *testing.T) {
 	})
 }
 
+func TestMCPAnswerTask(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+	cs := f.client(t)
+
+	t.Run("a question is answered", func(t *testing.T) {
+		id := f.task(t, `{"project": "site", "title": "Pick a colour"}`)
+		f.ask(t, id, "Which colour?")
+		nudges := f.nudges.Load()
+
+		got := tool(t, cs, "answer_task", map[string]any{"id": id, "answer": "Blue."})
+		assert.Nil(t, got["stop"])
+		assert.Equal(t, 1, f.count(t, id, engine.HumanAnswered))
+		assert.Equal(t, nudges+1, f.nudges.Load())
+		assert.Equal(t, f.view(t, id), got, "the task as REST shows it")
+	})
+
+	t.Run("a task with no question is refused", func(t *testing.T) {
+		id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+		before, nudges := f.record(t), f.nudges.Load()
+
+		res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "answer_task", Arguments: map[string]any{"id": id, "answer": "Blue."}})
+		require.NoError(t, err)
+		refused(t, res)
+		assert.Equal(t, before, f.record(t), "no event is written")
+		assert.Equal(t, nudges, f.nudges.Load())
+	})
+}
+
 func TestMCPCancelAndRead(t *testing.T) {
 	f := newServer(t)
 	f.addProject(t, site)
@@ -179,8 +208,8 @@ func TestMCPCancelAndRead(t *testing.T) {
 	assert.Equal(t, object(t, body), list, "the list as REST shows it")
 
 	assert.Equal(t, map[string]any{"projects": []any{
-		map[string]any{"name": "site", "runnable": true},
-		map[string]any{"name": "web", "runnable": false},
+		map[string]any{"name": "site", "repo_url": "https://example.com/site.git", "base_branch": "main", "runnable": true},
+		map[string]any{"name": "web", "repo_url": "https://example.com/web.git", "base_branch": "main", "runnable": false},
 	}}, tool(t, cs, "list_projects", nil))
 }
 

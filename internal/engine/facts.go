@@ -29,7 +29,7 @@ type Facts struct {
 	Continuations, VerifyFixes int             // session starts marked automatic, per mode, since the last human action
 	CIFixes, CommentRuns       int             // runs started on the pull request's failed checks and on its reviewers' requests, since the last human action
 	ReviewFixes                int             // automatic fix_review session starts since the last human action
-	Faults                     int             // sandbox stops since the last human action
+	Faults                     int             // sandbox stops and failed endpoints since the last human action
 	Turns                      int             // of sessions and reviews since the last human action
 	SessionTime                time.Duration   // from each session's or review's start to its end, since the last human action
 	CostMissing                int             // sessions and reviews of the whole task that ended without a cost
@@ -53,6 +53,7 @@ type StopFact struct {
 	Action              string // the one action that clears the stop
 	ResetsAt            time.Time
 	At                  time.Time // when the stop was recorded
+	Fault               bool      // an endpoint stop the endpoint's failure gave, which Decide retries
 }
 
 // PRFact is the task's pull request.
@@ -257,9 +258,9 @@ func (f *Facts) apply(e store.Event) {
 		f.Merged = true
 	case Stopped:
 		p := decode[StoppedPayload](e.Payload)
-		f.OpenStop = &StopFact{Reason: p.Reason, Explanation: p.Explanation, Action: p.Action, ResetsAt: p.ResetsAt, At: e.At}
+		f.OpenStop = &StopFact{Reason: p.Reason, Explanation: p.Explanation, Action: p.Action, ResetsAt: p.ResetsAt, At: e.At, Fault: p.Fault}
 
-		if p.Reason == StopSandbox {
+		if p.Reason == StopSandbox || p.Fault {
 			f.Faults++
 		}
 	}

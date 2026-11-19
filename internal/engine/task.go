@@ -214,10 +214,21 @@ func refuse(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrRefused}, args...)...)
 }
 
-// human reads the task's events, lets guard decide (false: refuse with its
-// error, or with none do nothing), and records the user's event through the
-// loop's one write, only if no event came since the read.
+// human records the user's event after guard allows it on the task's events (false: refuse with
+// its error, or with none do nothing); a write that lost to a newer event reads and guards again, up to maxConflicts times.
 func (l *Loop) human(ctx context.Context, taskID int64, typ string, payload any, guard func(Facts, store.Project) (bool, error)) error {
+	var err error
+
+	for range maxConflicts {
+		if err = l.humanOnce(ctx, taskID, typ, payload, guard); !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+	}
+
+	return err
+}
+
+func (l *Loop) humanOnce(ctx context.Context, taskID int64, typ string, payload any, guard func(Facts, store.Project) (bool, error)) error {
 	t, err := l.Store.Task(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("task %d: %w", taskID, err)

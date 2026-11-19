@@ -23,14 +23,15 @@ const (
 
 // Result reasons.
 const (
-	ReasonDone          = "done"
-	ReasonMaxTurns      = "max_turns"
-	ReasonUsageLimit    = "usage_limit"
-	ReasonAuth          = "auth"
-	ReasonEndpoint      = "endpoint"
-	ReasonResumeRefused = "resume_refused"
-	ReasonInterrupted   = "interrupted"
-	ReasonCrashed       = "crashed"
+	ReasonDone           = "done"
+	ReasonMaxTurns       = "max_turns"
+	ReasonUsageLimit     = "usage_limit"
+	ReasonAuth           = "auth"
+	ReasonEndpoint       = "endpoint"        // the model endpoint refused the session's requests
+	ReasonEndpointFailed = "endpoint_failed" // the model endpoint failed: a status of 500 or above, or no answer
+	ReasonResumeRefused  = "resume_refused"
+	ReasonInterrupted    = "interrupted"
+	ReasonCrashed        = "crashed"
 )
 
 // Driver runs one agent session on a Target.

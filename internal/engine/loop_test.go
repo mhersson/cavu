@@ -1994,6 +1994,68 @@ func TestLoopRetriesAFault(t *testing.T) {
 	assert.Equal(t, 1, h.spy.created(), "every retry runs on the first run")
 }
 
+// A failed model endpoint is retried by itself as a runner fault is, on the
+// same waits and the same cap, counted with the runner's faults; a refused one
+// waits for a person.
+func TestLoopRetriesAFailedEndpoint(t *testing.T) {
+	// after moves h's clock by d, runs the task and returns the runner calls the run made.
+	after := func(h *harness, d time.Duration, want engine.Status) []string {
+		h.t.Helper()
+		h.clock.Advance(d)
+
+		before := len(h.runner.calls)
+
+		status, err := h.run(h.t.Context())
+		require.NoError(h.t, err)
+		assert.Equal(h.t, want, status)
+
+		return h.runner.trace()[before:]
+	}
+
+	stopped := []string{"work/continue", "release/keep"}
+
+	t.Run("failed", func(t *testing.T) {
+		h := newHarness(t)
+
+		failed := step[engine.WorkResult]{res: engine.WorkResult{Outcome: engine.OutcomeEndpointFailed, Detail: "upstream status 529: Overloaded"}}
+		fault := step[engine.WorkResult]{err: errors.New("the container daemon is unreachable")}
+		h.runner.works = []step[engine.WorkResult]{failed, fault, failed}
+
+		assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, after(h, 0, engine.StatusBlocked))
+		assert.Equal(t, engine.StopEndpoint, h.lastStop().Reason)
+		assert.True(t, h.lastStop().Fault)
+
+		assert.Empty(t, after(h, 30*time.Second-time.Millisecond, engine.StatusBlocked), "no retry before 30 seconds")
+		assert.Equal(t, stopped, after(h, time.Millisecond, engine.StatusBlocked))
+		assert.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+		assert.Empty(t, after(h, 2*time.Minute-time.Millisecond, engine.StatusBlocked), "no retry before 2 minutes")
+		assert.Equal(t, stopped, after(h, time.Millisecond, engine.StatusBlocked))
+		assert.True(t, h.lastStop().Fault)
+		assert.Empty(t, after(h, time.Hour, engine.StatusBlocked), "a third fault waits for a person")
+
+		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+		assert.Equal(t, []string{"work/continue", "verify", "export", "release/run", "release/remove"}, after(h, 0, engine.StatusInReview))
+
+		works := h.runner.callsOf("work")
+		require.Len(t, works, 4)
+
+		for _, w := range works[1:] {
+			assert.True(t, w.work.Resume)
+			assert.Equal(t, works[0].work.SessionID, w.work.SessionID)
+		}
+	})
+
+	t.Run("refused", func(t *testing.T) {
+		h := newHarness(t)
+		h.runner.works = []step[engine.WorkResult]{{res: engine.WorkResult{Outcome: engine.OutcomeEndpoint, Detail: "upstream status 403: Forbidden"}}}
+
+		assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, after(h, 0, engine.StatusBlocked))
+		assert.Equal(t, engine.StopEndpoint, h.lastStop().Reason)
+		assert.False(t, h.lastStop().Fault)
+		assert.Empty(t, after(h, time.Hour, engine.StatusBlocked), "a refused endpoint waits for a person")
+	})
+}
+
 func TestDependencies(t *testing.T) {
 	// dependent adds and starts a task that depends on the harness's task.
 	dependent := func(h *harness) store.Task {

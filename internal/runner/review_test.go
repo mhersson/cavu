@@ -329,8 +329,12 @@ func TestReviewResultMapping(t *testing.T) {
 			want: engine.ReviewResult{Outcome: engine.OutcomeUsageLimit, Detail: "429 usage", ResetsAt: resets},
 		},
 		{
-			name: "an endpoint failure", r: fullReview(), res: driver.Result{Reason: driver.ReasonEndpoint, Detail: "502"},
-			want: engine.ReviewResult{Outcome: engine.OutcomeEndpoint, Detail: "502"},
+			name: "an endpoint that refused", r: fullReview(), res: driver.Result{Reason: driver.ReasonEndpoint, Detail: "403"},
+			want: engine.ReviewResult{Outcome: engine.OutcomeEndpoint, Detail: "403"},
+		},
+		{
+			name: "an endpoint that failed", r: fullReview(), res: driver.Result{Reason: driver.ReasonEndpointFailed, Detail: "502"},
+			want: engine.ReviewResult{Outcome: engine.OutcomeEndpointFailed, Detail: "502"},
 		},
 		{
 			name: "an authentication failure", r: fullReview(), res: driver.Result{Reason: driver.ReasonAuth, Detail: "401"},

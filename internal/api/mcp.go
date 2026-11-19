@@ -22,13 +22,21 @@ type taskQuery struct {
 	Status  engine.Status `json:"status,omitempty" jsonschema:"keep the tasks with this status: draft, queued, running, blocked, in_review, done or cancelled"`
 }
 
+// taskAnswer answers the question a task stopped on.
+type taskAnswer struct {
+	ID     int64  `json:"id" jsonschema:"the task's id"`
+	Answer string `json:"answer" jsonschema:"the answer to the task's questions"`
+}
+
 type projectList struct {
 	Projects []projectItem `json:"projects"`
 }
 
 type projectItem struct {
-	Name     string `json:"name"`
-	Runnable bool   `json:"runnable"`
+	Name       string `json:"name"`
+	RepoURL    string `json:"repo_url"`
+	BaseBranch string `json:"base_branch"`
+	Runnable   bool   `json:"runnable"`
 }
 
 // tools returns the handler of the MCP tools. It is stateless, so it keeps no
@@ -40,7 +48,7 @@ func (s *server) tools() http.Handler {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "cavu", Version: s.Version},
 		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}})
 
-	addTool(srv, "create_task", "Create a draft task in a project; with start, start it as well.",
+	addTool(srv, "create_task", "Create a draft task in a project; with start, start it as well. The agent starts from the project's base branch, never from the caller's working tree or unpushed commits. The title and body appear in the pull request CAVU opens.",
 		func(ctx context.Context, in newTask) (taskJSON, error) {
 			id, err := s.addTask(ctx, in, "mcp")
 			if err != nil {
@@ -59,6 +67,8 @@ func (s *server) tools() http.Handler {
 		s.runTask)
 	addTool(srv, "cancel_task", "Cancel a task.",
 		func(ctx context.Context, in taskRef) (taskJSON, error) { return s.perform(ctx, in.ID, "cancel", "") })
+	addTool(srv, "answer_task", "Answer the questions a task stopped on; any other task is refused.",
+		s.answerTask)
 	addTool(srv, "list_projects", "List the projects, and whether each is runnable: whether its tasks may start.",
 		s.listProjects)
 
@@ -99,7 +109,7 @@ func (s *server) runTask(ctx context.Context, in taskRef) (taskJSON, error) {
 	if v.Stop != nil {
 		if v.Stop.Action == engine.ClearAnswer {
 			return taskJSON{}, &apiError{http.StatusBadRequest, fmt.Sprintf(
-				"task %d stopped on a question and needs an answer: the action answer of POST /api/tasks/%d/actions, or cavu task answer %d",
+				"task %d stopped on a question and needs an answer: the tool answer_task, the action answer of POST /api/tasks/%d/actions, or cavu task answer %d",
 				in.ID, in.ID, in.ID)}
 		}
 
@@ -107,6 +117,26 @@ func (s *server) runTask(ctx context.Context, in taskRef) (taskJSON, error) {
 	}
 
 	return s.perform(ctx, in.ID, action, "")
+}
+
+// answerTask answers the open question of a task. The engine refuses a task with
+// none too; this line names the stop it has, which the engine's does not.
+func (s *server) answerTask(ctx context.Context, in taskAnswer) (taskJSON, error) {
+	v, err := s.taskView(ctx, in.ID)
+	if err != nil {
+		return taskJSON{}, err
+	}
+
+	if v.Stop == nil || v.Stop.Action != engine.ClearAnswer {
+		have := "no open stop"
+		if v.Stop != nil {
+			have = "the open stop " + v.Stop.Reason
+		}
+
+		return taskJSON{}, &apiError{http.StatusBadRequest, fmt.Sprintf("task %d has %s, not a question to answer", in.ID, have)}
+	}
+
+	return s.perform(ctx, in.ID, "answer", in.Answer)
 }
 
 func (s *server) listProjects(ctx context.Context, _ struct{}) (projectList, error) {
@@ -117,7 +147,7 @@ func (s *server) listProjects(ctx context.Context, _ struct{}) (projectList, err
 
 	l := projectList{Projects: make([]projectItem, len(ps))}
 	for i, p := range ps {
-		l.Projects[i] = projectItem{p.Name, engine.Runnable(p)}
+		l.Projects[i] = projectItem{p.Name, p.RepoURL, p.BaseBranch, engine.Runnable(p)}
 	}
 
 	return l, nil

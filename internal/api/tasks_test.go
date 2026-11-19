@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -302,47 +302,51 @@ func TestTaskActions(t *testing.T) {
 	}
 }
 
-// racer is the store the handler's Loop records through. Before the first
-// Append it is asked for, it lets another event land through the real store,
-// as the scheduler's would between the action's read and its write.
+// racer is the store the handler's Loop records through. While racing is set,
+// before every Append it is asked for it lets another event land through the
+// real store, as the scheduler's would between the action's read and its write.
 type racer struct {
 	*store.Store
 
-	once sync.Once
+	racing atomic.Bool
 }
 
 func (r *racer) Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error) {
-	var err error
-
 	// A progress event leaves the question open but moves the newest event id.
-	r.once.Do(func() {
-		_, err = r.Store.Append(ctx, taskID, -1, []store.Event{{
+	if r.racing.Load() {
+		if _, err := r.Store.Append(ctx, taskID, -1, []store.Event{{
 			TaskID: taskID, Type: engine.AgentText, Actor: "agent", Payload: json.RawMessage(`{"text": "Still here."}`),
-		}}, nil)
-	})
-
-	if err != nil {
-		return 0, err
+		}}, nil); err != nil {
+			return 0, err
+		}
 	}
 
 	return r.Store.Append(ctx, taskID, expectLast, events, usage)
 }
 
 func TestActionRacesTheLoop(t *testing.T) {
-	f := newServer(t, func(s *store.Store) engine.Store { return &racer{Store: s} })
+	r := &racer{}
+	f := newServer(t, func(s *store.Store) engine.Store {
+		r.Store = s
+
+		return r
+	})
 	f.addProject(t, site)
 
 	id := f.task(t, `{"project": "site", "title": "Pick a colour"}`)
 	f.ask(t, id, "Which colour?")
+	r.racing.Store(true)
 
 	answer := fmt.Sprintf("POST /api/tasks/%d/actions", id)
 
 	status, body := f.call(t, answer, `{"action": "answer", "text": "Blue."}`)
 	require.Equal(t, http.StatusConflict, status, body)
 	assertError(t, body)
-	assert.Equal(t, 1, f.count(t, id, engine.AgentText), "the other event landed")
+	assert.Positive(t, f.count(t, id, engine.AgentText), "the other events landed")
 	assert.Zero(t, f.count(t, id, engine.HumanAnswered), "the action that lost writes nothing")
 	assert.Zero(t, f.nudges.Load())
+
+	r.racing.Store(false)
 
 	status, body = f.call(t, answer, `{"action": "answer", "text": "Blue."}`)
 	require.Equal(t, http.StatusOK, status, body)

@@ -29,11 +29,20 @@ const (
 	maxRateWait  = time.Hour
 )
 
+// The clock of a task whose drive or read failed: it is read again firstReread
+// after the failure, doubled for each failure in a row up to maxReread, until an
+// event comes or the task rests or is watched.
+const (
+	firstReread = time.Minute
+	maxReread   = 30 * time.Minute
+)
+
 // Scheduler drives every task that can act, at most the concurrency setting at
 // a time, and runs requested environment checks one at a time, each in a slot.
 // It looks at the pull request of each task Decide watches on a clock of its
-// own, which decides nothing and is kept in memory only. What else it keeps is
-// a cache of the store, so a new Scheduler carries on where an old one stopped.
+// own, and reads a task whose drive or read failed again on another; neither
+// decides anything, and both are kept in memory only. What else it keeps is a
+// cache of the store, so a new Scheduler carries on where an old one stopped.
 type Scheduler struct {
 	Loop    *Loop
 	Tick    time.Duration                 // 0 means 2 seconds
@@ -54,9 +63,10 @@ type Scheduler struct {
 // round is what one Run keeps. Only Run's goroutine touches it.
 type round struct {
 	drives   map[int64]*flight
-	polls    map[int64]*poll // each watched task's clock, kept until it rests or a read or drive of it fails: a stop between two looks keeps a rate limit's wait
-	seen     map[int64]int64 // a task's newest event id when it was found with nothing to drive
-	loose    map[int64]bool  // tasks whose last drive may have left containers up
+	polls    map[int64]*poll  // each watched task's clock, kept until it rests or a read or drive of it fails: a stop between two looks keeps a rate limit's wait
+	rereads  map[int64]reread // the clock of each task whose newest drive or read failed
+	seen     map[int64]int64  // a task's newest event id when it was found with nothing to drive
+	loose    map[int64]bool   // tasks whose last drive may have left containers up
 	checking bool
 	ends     chan end
 	looks    chan look
@@ -88,6 +98,24 @@ func (p *poll) due() time.Time {
 	return p.next
 }
 
+// reread is the clock of a task whose drive or read failed.
+type reread struct {
+	next time.Time     // when the task is read again without an event
+	wait time.Duration // the wait before next
+}
+
+// failed has the task read again after an event or when its clock comes due,
+// not at every pass, where a failing clean would repeat at each.
+func (r *round) failed(id, last int64, now time.Time) {
+	r.seen[id] = last
+	delete(r.polls, id)
+
+	f := r.rereads[id]
+	f.wait = min(max(2*f.wait, firstReread), maxReread)
+	f.next = now.Add(f.wait)
+	r.rereads[id] = f
+}
+
 // look is how a look at a task's pull request ended.
 type look struct {
 	id   int64
@@ -115,7 +143,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	s.Loop.Paused = s.paused
 	r := &round{
-		drives: map[int64]*flight{}, polls: map[int64]*poll{}, seen: map[int64]int64{}, loose: map[int64]bool{},
+		drives: map[int64]*flight{}, polls: map[int64]*poll{}, rereads: map[int64]reread{}, seen: map[int64]int64{}, loose: map[int64]bool{},
 		ends: make(chan end), looks: make(chan look), checked: make(chan error, 1),
 	}
 	nudge := s.nudges()
@@ -236,16 +264,21 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 			continue
 		}
 
-		// A watched task is also read when its clock comes due, and never while a look is in flight.
-		if p := r.polls[id]; p != nil && p.looking || r.seen[id] == ids[id] && (p == nil || now.Before(p.due())) {
+		// A watched task, or one whose drive or read failed, is also read when its
+		// clock comes due; a watched task never while a look is in flight.
+		p, f := r.polls[id], r.rereads[id]
+		if p != nil && p.looking || r.seen[id] == ids[id] && (p == nil || now.Before(p.due())) && (f.next.IsZero() || now.Before(f.next)) {
 			continue
+		}
+
+		if r.seen[id] != ids[id] {
+			delete(r.rereads, id) // an event came
 		}
 
 		snap, err := s.Loop.Snapshot(ctx, id)
 		if err != nil {
 			s.report(ctx, id, err)
-			r.seen[id] = ids[id]
-			delete(r.polls, id) // read again only after an event, so the error is reported once
+			r.failed(id, ids[id], now)
 
 			continue
 		}
@@ -260,6 +293,7 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 
 		if s.Only != nil && !s.Only(snap.Task) {
 			r.seen[id] = snap.LastEventID
+			delete(r.rereads, id)
 
 			continue
 		}
@@ -282,9 +316,11 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 		case a.Kind == KindWatch:
 			why = s.watch(ctx, r, id, a, now)
 			r.seen[id] = snap.LastEventID
+			delete(r.rereads, id)
 		case a.Kind == KindNone:
 			r.seen[id] = snap.LastEventID
 			delete(r.polls, id)
+			delete(r.rereads, id)
 		case a.Kind == KindWait:
 			why = a.Why
 		case slotless(a.Kind) || r.busy() < slots:
@@ -444,8 +480,7 @@ func (s *Scheduler) ended(ctx context.Context, r *round, e end) {
 	case e.cut: // the next pass, or the end of Run, takes the task up
 	case e.err != nil:
 		s.report(ctx, e.id, e.err)
-		r.seen[e.id] = e.last
-		delete(r.polls, e.id) // read again only after an event, or a failing clean would repeat at every pass
+		r.failed(e.id, e.last, s.Loop.Now())
 	default:
 		delete(r.loose, e.id) // a drive that rests or waits has released its run
 	}

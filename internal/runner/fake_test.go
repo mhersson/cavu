@@ -89,7 +89,7 @@ type fakeSandbox struct {
 	phase    sandbox.Phase // of the last Up, "" after Down
 	files    map[string]string
 	cloneErr error
-	onClone  func(sidecar.CloneRequest) error                               // over cloneErr: the clone fails with the error it makes from the request
+	onClone  func(sidecar.CloneRequest) error                               // runs as the clone starts; an error it makes from the request fails the clone
 	onPush   func(sidecar.PushRequest) (branch, rejected string, err error) // else the push takes the branch asked for
 	upErr    error
 	readCode int
@@ -253,7 +253,9 @@ func (f *fakeSandbox) Clone(ctx context.Context, r sidecar.CloneRequest) (string
 	}
 
 	if f.onClone != nil {
-		return "", f.onClone(r)
+		if err := f.onClone(r); err != nil {
+			return "", err
+		}
 	}
 
 	if f.cloneErr != nil {

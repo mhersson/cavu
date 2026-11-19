@@ -524,7 +524,10 @@ func (m *mapper) outcome(l streamLine) {
 		// terminal_reason is not consulted, so a release that drops or renames
 		// it degrades instead of failing every run.
 		reason = driver.ReasonDone
-	case status >= 0 || l.TerminalReason == "api_error":
+	// A dropped connection in subscription mode ends with no status.
+	case status >= 500 || status < 0 && l.TerminalReason == "api_error":
+		reason = driver.ReasonEndpointFailed
+	case status >= 0:
 		reason = driver.ReasonEndpoint
 	}
 

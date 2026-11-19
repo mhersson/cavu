@@ -72,9 +72,24 @@ type Runner struct {
 	// runs holds only runs whose volumes are in place and whose ecosystems
 	// are known; only Prepare and ensureUp add one.
 	runs map[int64]*run
-	// turns holds each project's setup turn: a full channel is a setup in
-	// progress. A channel, not a mutex, so a waiter can give up with its context.
-	turns map[int64]chan struct{}
+	// turns holds each project's turns: a full channel is a turn taken. A
+	// channel, not a mutex, so a waiter can give up with its context.
+	turns map[turnKey]chan struct{}
+}
+
+// turnKind is one of the turns a project's runs take one at a time.
+type turnKind int
+
+const (
+	setupTurn turnKind = iota
+	// mirrorTurn is held over each write into the project's mirror: two fetches
+	// into one mirror at once can fail to lock a ref the other moved.
+	mirrorTurn
+)
+
+type turnKey struct {
+	projectID int64
+	kind      turnKind
 }
 
 var _ engine.Runner = (*Runner)(nil)
@@ -82,7 +97,7 @@ var _ engine.Runner = (*Runner)(nil)
 // New returns a runner that runs sandboxes on rt and agents through d, and
 // gets a GitHub App's tokens from f.
 func New(rt sandbox.Runtime, d driver.Driver, f *forge.Client) *Runner {
-	return &Runner{rt: rt, driver: d, forge: f, open: openSandbox, runs: map[int64]*run{}, turns: map[int64]chan struct{}{}}
+	return &Runner{rt: rt, driver: d, forge: f, open: openSandbox, runs: map[int64]*run{}, turns: map[turnKey]chan struct{}{}}
 }
 
 // sandboxer is the part of *sandbox.Sandbox the runner uses.
@@ -148,6 +163,7 @@ func openSandbox(o sandbox.Options) (sandboxer, error) {
 // run is what the runner keeps of one run between calls. A sandbox is not
 // safe for concurrent use; the engine makes one call on a run at a time.
 type run struct {
+	r          *Runner // for the import's turn on the project's mirror
 	sb         sandboxer
 	agent      container     // the agent's container while a session phase is up
 	phase      sandbox.Phase // that session phase: the agent phase or the read-only one
@@ -322,15 +338,17 @@ func (r *Runner) state(runID int64) *run {
 	return r.runs[runID]
 }
 
-// takeTurn waits for projectID's setup turn and returns the function that
+// takeTurn waits for projectID's turn of kind and returns the function that
 // gives it back, or ctx's error when the action ends first.
-func (r *Runner) takeTurn(ctx context.Context, projectID int64) (func(), error) {
+func (r *Runner) takeTurn(ctx context.Context, projectID int64, kind turnKind) (func(), error) {
+	key := turnKey{projectID, kind}
+
 	r.mu.Lock()
 
-	turn, ok := r.turns[projectID]
+	turn, ok := r.turns[key]
 	if !ok {
 		turn = make(chan struct{}, 1)
-		r.turns[projectID] = turn
+		r.turns[key] = turn
 	}
 
 	r.mu.Unlock()
@@ -385,7 +403,7 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig, phase sandbox
 			return err
 		}
 
-		st = &run{sb: sb, ecosystems: c.Ecosystems}
+		st = &run{r: r, sb: sb, ecosystems: c.Ecosystems}
 		r.setState(c.RunID, st)
 	}
 

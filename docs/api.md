@@ -27,7 +27,7 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist. |
-| 409 | The write conflicts with what is stored: another project has the name, or an event was recorded on the task between an action's read and its write. Nothing was written; send it again. |
+| 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Nothing was written; send it again. |
 | 413 | The body is larger than 1 MiB. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
 | 500 | The server failed. It logs the cause; the answer holds no detail. |
@@ -194,7 +194,7 @@ Records a person's action on the task:
 | `cancel` | Cancels the task. | The task is cancelled or done. |
 | `done` | Records that the task's change was merged. | The task is not `in_review`, or has a pull request. |
 
-Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action or one that is refused, or 409 when an event was recorded on the task between the action's read and its write, such as the server's own next step; nothing is recorded then, and the request may be sent again.
+Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action or one that is refused, or 409 when events kept being recorded on the task, such as the server's own progress, between the action's read and its write every time the server tried; nothing is recorded then, and the request may be sent again.
 
 ### The task
 
@@ -280,7 +280,7 @@ A task's pull request leaves these events: `publish_started` and `published` for
 
 ## MCP
 
-`POST /mcp` serves six tools to an MCP client over the streamable HTTP transport. It takes only an API token, as `Authorization: Bearer <token>`: a request without a token the server knows is 401 with the JSON error above, whatever cookie it carries, and no request there needs `X-CAVU-CSRF`. The server is stateless: it keeps no session between requests and sets no `Mcp-Session-Id`. It advertises the tools and nothing else: no `listChanged`, no logging, no resources or prompts, so a client has no reason to open a stream and the server holds none. It answers each call with one JSON message, and any method but `POST` with 405.
+`POST /mcp` serves seven tools to an MCP client over the streamable HTTP transport. It takes only an API token, as `Authorization: Bearer <token>`: a request without a token the server knows is 401 with the JSON error above, whatever cookie it carries, and no request there needs `X-CAVU-CSRF`. The server is stateless: it keeps no session between requests and sets no `Mcp-Session-Id`. It advertises the tools and nothing else: no `listChanged`, no logging, no resources or prompts, so a client has no reason to open a stream and the server holds none. It answers each call with one JSON message, and any method but `POST` with 405.
 
 A tool that does what a REST route does calls that route's code, so it refuses what the route refuses, and every tool gives a task as [the task](#the-task) shows it:
 
@@ -289,8 +289,9 @@ A tool that does what a REST route does calls that route's code, so it refuses w
 | `create_task` | `project`, `title`, and optionally `body`, `depends_on` and `start` | Creates a task as `POST /api/tasks` does, with the requester `mcp`, and answers with the task. |
 | `get_task` | `id` | Answers with the task. |
 | `list_tasks` | optionally `project` and `status` | Answers with the list `GET /api/tasks` gives for that query. |
-| `run_task` | `id` | Records the action `start` for a task with no open stop, else the action `retry`, as `POST /api/tasks/{id}/actions` does, and answers with the task. A task stopped on a question is refused with a line saying it needs an answer, which the action `answer` or `cavu task answer ID` gives. |
+| `run_task` | `id` | Records the action `start` for a task with no open stop, else the action `retry`, as `POST /api/tasks/{id}/actions` does, and answers with the task. A task stopped on a question is refused with a line saying it needs an answer, which the tool `answer_task`, the action `answer` or `cavu task answer ID` gives. |
 | `cancel_task` | `id` | Records the action `cancel` as `POST /api/tasks/{id}/actions` does, and answers with the task. |
-| `list_projects` | none | Answers with each project's name and whether it is [runnable](#the-project): `{"projects": [{"name": "web", "runnable": true}]}`. |
+| `answer_task` | `id` and `answer` | Records the action `answer` with that text for a task whose open stop is a question, as `POST /api/tasks/{id}/actions` does, and answers with the task. Any other task is refused with a line naming the stop it has, or that it has none. |
+| `list_projects` | none | Answers with each project's name, `repo_url` and `base_branch` and whether it is [runnable](#the-project): `{"projects": [{"name": "web", "repo_url": "https://example.com/web.git", "base_branch": "main", "runnable": true}]}`. |
 
-A tool's answer is its structured content, and the same JSON as its text. A call the server refuses, for what it holds, for the task's state, or for a task or project that does not exist, is a tool result marked `isError` whose text is one line saying why, the line a REST route answers for the same refusal; a failure of the server's own is `internal error`. An argument the tool does not take, of the wrong type, or missing, is refused before the tool runs. A request the transport cannot take is refused with an HTTP status and a plain-text line, such as 413 for a body over 1 MiB or 415 for a `Content-Type` other than `application/json`, and a call of a tool that does not exist is a JSON-RPC error. A refused call writes nothing.
+A tool's answer is its structured content, and the same JSON as its text. A call the server refuses, for what it holds, for the task's state, or for a task or project that does not exist, is a tool result marked `isError` whose text is one line saying why, the line a REST route answers for the same refusal, except the refusal `answer_task` gives, which its row describes; a failure of the server's own is `internal error`. An argument the tool does not take, of the wrong type, or missing, is refused before the tool runs. A request the transport cannot take is refused with an HTTP status and a plain-text line, such as 413 for a body over 1 MiB or 415 for a `Content-Type` other than `application/json`, and a call of a tool that does not exist is a JSON-RPC error. A refused call writes nothing.

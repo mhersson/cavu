@@ -100,8 +100,8 @@ const (
 	StopChangesRequested = "changes_requested" // reviewers still ask for changes after the follow-up runs
 )
 
-// The waits before a runner fault is retried: after the first fault since the
-// last human action, and after the second.
+// The waits before a runner fault or a failed model endpoint is retried: after
+// the first fault since the last human action, and after the second.
 const (
 	firstFaultWait  = 30 * time.Second
 	secondFaultWait = 2 * time.Minute
@@ -139,6 +139,7 @@ type Action struct {
 	Explain   string    // stop: one line for a person
 	Clear     string    // stop: the one action that clears it
 	ResetsAt  time.Time // stop: when a usage limit resets, always after Now
+	Fault     bool      // stop: an endpoint that failed, not refused, which Decide retries
 }
 
 // Decide returns the next action for s; the first rule that matches wins, then
@@ -161,7 +162,10 @@ func Decide(s Snapshot) Action {
 		return wait
 	}
 
-	if t := s.Pause.EndpointTask; t != 0 {
+	// A task's own retry of its failed endpoint goes ahead: in an outage every
+	// running session fails, and the stops would hold each other's retries.
+	retrying := s.Facts.OpenStop != nil && s.Facts.OpenStop.Fault
+	if t := s.Pause.EndpointTask; t != 0 && !retrying {
 		return Action{Kind: KindWait, Why: fmt.Sprintf("Task %d stopped on the model endpoint; retrying or cancelling it lifts the pause.", t)}
 	}
 
@@ -214,18 +218,33 @@ func decide(s Snapshot) Action {
 		f.OpenStop, f.Review.Halt = nil, nil
 	}
 
-	if f.stoppedFor(StopSandbox) && f.Faults <= s.Caps.FaultRetries {
+	resumeWhy := "A person asked the agent to carry on."
+
+	if (f.stoppedFor(StopSandbox) || f.OpenStop != nil && f.OpenStop.Fault) && f.Faults <= s.Caps.FaultRetries {
 		backoff := firstFaultWait
 		if f.Faults > 1 {
 			backoff = secondFaultWait
 		}
 
 		if until := f.OpenStop.At.Add(backoff); s.Now.Before(until) {
-			return Action{Kind: KindWait, Why: "The runner failed; the action it cut is retried after a pause.", Until: until}
+			why := "The runner failed; the action it cut is retried after a pause."
+			if f.OpenStop.Fault {
+				why = "The model endpoint failed; the session it ended is tried again after a pause."
+			}
+
+			return Action{Kind: KindWait, Why: why, Until: until}
 		}
 
-		// The claim of the action decided below closes the stop.
-		f.OpenStop = nil
+		// A failed endpoint's session is resumed as a person's retry resumes it, but
+		// the task keeps its caps and its budget's counts. A review is redone.
+		if f.OpenStop.Fault && f.Review.Halt == nil {
+			f.resume("")
+
+			resumeWhy = "The model endpoint failed; after the pause the agent carries on with its session."
+		}
+
+		// The claim of the action decided below closes the stop and a review's halt.
+		f.OpenStop, f.Review.Halt = nil, nil
 	}
 
 	// A cancelled task is over: its pull request, open or closed, is not watched.
@@ -314,7 +333,7 @@ func decide(s Snapshot) Action {
 	}
 
 	if f.Resumed != nil {
-		return work(ModeContinue, "A person asked the agent to carry on.")
+		return work(ModeContinue, resumeWhy)
 	}
 
 	if f.Session == nil && f.SessionID == "" && s.Switches.Readiness {
@@ -581,7 +600,13 @@ func sessionStop(sess *SessionFact, s Snapshot) (Action, bool) {
 		return a, true
 	case OutcomeEndpoint:
 		return halt(StopEndpoint, ClearRetry, "The session could not use the model endpoint.",
-			withDetail("The model endpoint failed or refused the agent's requests", sess.Detail)), true
+			withDetail("The model endpoint refused the agent's requests", sess.Detail)), true
+	case OutcomeEndpointFailed:
+		a := halt(StopEndpoint, ClearRetry, "The model endpoint failed.",
+			withDetail("The model endpoint failed", sess.Detail))
+		a.Fault = true
+
+		return a, true
 	case OutcomeTimeout:
 		return halt(StopTimeout, ClearRetry, "The session timed out.", timeUsed(s)), true
 	case OutcomeMaxTurns:

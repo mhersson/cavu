@@ -487,8 +487,8 @@ func TestMapperEndpointFailures(t *testing.T) {
 	}{
 		{"unauthorized", 401, "Invalid bearer token", driver.ReasonAuth},
 		{"rate limited", 429, "Too many requests", driver.ReasonEndpoint},
-		{"server error", 500, "Internal server error", driver.ReasonEndpoint},
-		{"overloaded", 529, "Overloaded", driver.ReasonEndpoint},
+		{"server error", 500, "Internal server error", driver.ReasonEndpointFailed},
+		{"overloaded", 529, "Overloaded", driver.ReasonEndpointFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, res := replayData(t, resultLine(t, map[string]any{
@@ -518,6 +518,30 @@ func TestMapperEndpointFailures(t *testing.T) {
 	})
 }
 
+// TestMapperEndpointResults maps result lines in the shape the pinned version wrote against a mock
+// endpoint, cut to the fields the mapper reads. The 429 was not probed; the 403's whole stream maps to auth.
+func TestMapperEndpointResults(t *testing.T) {
+	for _, tc := range []struct{ name, fields, reason string }{
+		{"529", `"api_error_status":529,"result":"API Error: 529 mockapi: scripted 529."`, driver.ReasonEndpointFailed},
+		{"502", `"api_error_status":502,"result":"API Error: 502 mockapi: scripted 502."`, driver.ReasonEndpointFailed},
+		{"500", `"api_error_status":500,"result":"API Error: 500 mockapi: scripted 500."`, driver.ReasonEndpointFailed},
+		{
+			"a dropped connection in subscription mode",
+			`"api_error_status":null,"api_error":"connection_failed","result":"API Error: Connection dropped (ECONNRESET)."`, driver.ReasonEndpointFailed,
+		},
+		{"403", `"api_error_status":403,"result":"Failed to authenticate. API Error: 403 mockapi: scripted 403"`, driver.ReasonEndpoint},
+		{"429 without the usage-limit text", `"api_error_status":429,"result":"API Error: 429 mockapi: scripted 429."`, driver.ReasonEndpoint},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error",` + tc.fields + "}\n"
+			_, res := replayData(t, []byte(line), 1)
+
+			assert.Equal(t, tc.reason, res.Reason)
+			assert.True(t, res.IsError)
+		})
+	}
+}
+
 func TestMapperUsageLimitFromResult(t *testing.T) {
 	for _, text := range []string{
 		"You've hit your weekly limit - resets Friday",
@@ -545,7 +569,7 @@ func TestMapperErrorReasons(t *testing.T) {
 	}{
 		{"status 400", map[string]any{"is_error": true, "api_error_status": 400, "result": "bad"}, driver.ReasonEndpoint, "bad"},
 		{"status 404", map[string]any{"is_error": true, "api_error_status": 404, "result": "no model"}, driver.ReasonEndpoint, "no model"},
-		{"connection failure", map[string]any{"is_error": true, "terminal_reason": "api_error", "result": "connect ECONNREFUSED"}, driver.ReasonEndpoint, "connect ECONNREFUSED"},
+		{"connection failure", map[string]any{"is_error": true, "terminal_reason": "api_error", "result": "connect ECONNREFUSED"}, driver.ReasonEndpointFailed, "connect ECONNREFUSED"},
 		{"execution error", map[string]any{"is_error": true, "subtype": "error_during_execution", "errors": []string{"it broke"}}, driver.ReasonCrashed, "it broke"},
 		{"unknown error", map[string]any{"is_error": true, "subtype": "error_future", "terminal_reason": "something_new"}, driver.ReasonCrashed, "error_future"},
 		{"not logged in", map[string]any{"is_error": true, "result": "Not logged in · Please run /login"}, driver.ReasonAuth, "Not logged in"},
