@@ -141,7 +141,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.waiting, s.stops = map[int64]string{}, map[int64]StopFact{}
 	s.mu.Unlock()
 
-	s.Loop.Paused = s.paused
+	s.Loop.Paused = s.Paused
 	r := &round{
 		drives: map[int64]*flight{}, polls: map[int64]*poll{}, rereads: map[int64]reread{}, seen: map[int64]int64{}, loose: map[int64]bool{},
 		ends: make(chan end), looks: make(chan look), checked: make(chan error, 1),
@@ -217,8 +217,8 @@ func (s *Scheduler) Waiting(taskID int64) string {
 	return s.waiting[taskID]
 }
 
-// paused answers Loop.Paused from the open stops the passes saw.
-func (s *Scheduler) paused(taskID int64) Pause {
+// Paused answers Loop.Paused from the open stops the scheduler's passes saw.
+func (s *Scheduler) Paused(taskID int64) Pause {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -308,7 +308,7 @@ func (s *Scheduler) pass(ctx context.Context, r *round) {
 
 	for _, snap := range acts {
 		id := snap.Task.ID
-		snap.Pause = s.paused(id) // now from every stop this pass read
+		snap.Pause = s.Paused(id) // now from every stop this pass read
 		a := Decide(snap)
 		why := ""
 

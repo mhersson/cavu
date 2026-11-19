@@ -234,8 +234,8 @@ func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) st
 
 // waitingOf is why the task does not act and until when: the wait or the
 // watch Decide gives, with its end when a clock has one. The scheduler tells
-// those in Decide's words, and its own reasons, from the slots, the other
-// tasks' pauses and the looks at a pull request, which come first with no end.
+// those in Decide's words, and its own reasons, such as every slot taken or a
+// failed look at a pull request, which come first with no end.
 func waitingOf(s Snapshot, waiting func(int64) string) (string, *time.Time) {
 	var (
 		why   string
