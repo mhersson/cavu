@@ -374,14 +374,22 @@ func (a *app) close() {
 	}
 }
 
-// verbFlags is the flag set of a verb that opens the app.
+// verbFlags is a verb's flag set; dataDir is nil for a set made without --data-dir.
 type verbFlags struct {
 	*flag.FlagSet
 
 	dataDir *string
 }
 
+// newVerbFlags is a verb's flag set with --data-dir.
 func newVerbFlags(usage string, stderr io.Writer) verbFlags {
+	f := newFlags(usage, stderr)
+	f.dataDir = f.String("data-dir", "", "the data directory (default: $CAVU_DATA_DIR, else $XDG_DATA_HOME/cavu, else ~/.local/share/cavu)")
+
+	return f
+}
+
+func newFlags(usage string, stderr io.Writer) verbFlags {
 	fs := flag.NewFlagSet("cavu", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -389,9 +397,7 @@ func newVerbFlags(usage string, stderr io.Writer) verbFlags {
 		fs.PrintDefaults()
 	}
 
-	dir := fs.String("data-dir", "", "the data directory (default: $CAVU_DATA_DIR, else $XDG_DATA_HOME/cavu, else ~/.local/share/cavu)")
-
-	return verbFlags{FlagSet: fs, dataDir: dir}
+	return verbFlags{FlagSet: fs}
 }
 
 // parse returns the verb's n positional arguments. They come before the flags,
