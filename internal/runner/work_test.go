@@ -118,9 +118,14 @@ func TestWorkMapsResults(t *testing.T) {
 			want: engine.WorkResult{Outcome: engine.OutcomeEndpoint, Detail: "401"},
 		},
 		{
-			name: "endpoint",
-			res:  driver.Result{Reason: driver.ReasonEndpoint, Detail: "502"},
-			want: engine.WorkResult{Outcome: engine.OutcomeEndpoint, Detail: "502"},
+			name: "endpoint refused",
+			res:  driver.Result{Reason: driver.ReasonEndpoint, Detail: "403"},
+			want: engine.WorkResult{Outcome: engine.OutcomeEndpoint, Detail: "403"},
+		},
+		{
+			name: "endpoint failed",
+			res:  driver.Result{Reason: driver.ReasonEndpointFailed, Detail: "502"},
+			want: engine.WorkResult{Outcome: engine.OutcomeEndpointFailed, Detail: "502"},
 		},
 		{
 			name: "crashed, without a cost",

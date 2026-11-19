@@ -47,18 +47,19 @@ var ProgressTypes = []string{AgentText, AgentTool, RateLimit, EgressDenied}
 
 // Session outcomes.
 const (
-	OutcomeDone       = "done"
-	OutcomeBlocked    = "blocked"
-	OutcomeFailed     = "failed"
-	OutcomeUnfinished = "unfinished"
-	OutcomeCrashed    = "crashed"
-	OutcomeMaxTurns   = "max_turns"
-	OutcomeTimeout    = "timeout"
-	OutcomeUsageLimit = "usage_limit"
-	OutcomeEndpoint   = "endpoint"
-	OutcomeReady      = "ready"     // a readiness turn found nothing missing
-	OutcomeBudget     = "budget"    // the proxy's count reached the budget the session was given
-	OutcomeUnmetered  = "unmetered" // the proxy could not price or meter a model call; the detail says why
+	OutcomeDone           = "done"
+	OutcomeBlocked        = "blocked"
+	OutcomeFailed         = "failed"
+	OutcomeUnfinished     = "unfinished"
+	OutcomeCrashed        = "crashed"
+	OutcomeMaxTurns       = "max_turns"
+	OutcomeTimeout        = "timeout"
+	OutcomeUsageLimit     = "usage_limit"
+	OutcomeEndpoint       = "endpoint"        // the model endpoint refused the session's requests
+	OutcomeEndpointFailed = "endpoint_failed" // the model endpoint failed: a status of 500 or above, or no answer
+	OutcomeReady          = "ready"           // a readiness turn found nothing missing
+	OutcomeBudget         = "budget"          // the proxy's count reached the budget the session was given
+	OutcomeUnmetered      = "unmetered"       // the proxy could not price or meter a model call; the detail says why
 )
 
 // Verify results.
@@ -258,6 +259,7 @@ type (
 		Explanation string    `json:"explanation"`
 		Action      string    `json:"action"` // the one action that clears the stop
 		ResetsAt    time.Time `json:"resets_at,omitzero"`
+		Fault       bool      `json:"fault,omitempty"`  // an endpoint stop the endpoint's failure gave, which Decide retries; false when it refused
 		Why         string    `json:"why,omitempty"`    // empty for a runner fault, a run config that cannot be built, an export problem or a rejected push
 		Detail      string    `json:"detail,omitempty"` // the whole text of a runner fault, a run config that cannot be built, an export problem or a rejected push
 	}

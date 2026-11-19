@@ -1435,8 +1435,8 @@ func TestErrorResults(t *testing.T) {
 	}{
 		{http.StatusUnauthorized, driver.ReasonAuth},
 		{http.StatusTooManyRequests, driver.ReasonEndpoint},
-		{http.StatusInternalServerError, driver.ReasonEndpoint},
-		{529, driver.ReasonEndpoint},
+		{http.StatusInternalServerError, driver.ReasonEndpointFailed},
+		{529, driver.ReasonEndpointFailed},
 	} {
 		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
 			steps := slices.Repeat([]mockapi.Step{{Status: tc.status}}, 4)

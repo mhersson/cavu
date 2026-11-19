@@ -81,6 +81,21 @@ func faulted(n int, at time.Time) engine.Facts {
 	return f
 }
 
+// endpointStopped is a session the model endpoint ended, and the endpoint stop
+// it gave at at: failed, as the task's nth fault, or refused.
+func endpointStopped(failed bool, faults int, at time.Time) engine.Facts {
+	outcome := engine.OutcomeEndpoint
+	if failed {
+		outcome = engine.OutcomeEndpointFailed
+	}
+
+	f := ended(engine.SessionFact{Outcome: outcome})
+	f.OpenStop = &engine.StopFact{Reason: engine.StopEndpoint, At: at, Fault: failed}
+	f.Faults = faults
+
+	return f
+}
+
 func ended(s engine.SessionFact) engine.Facts {
 	f := prepared()
 	f.SessionID = "s1"
@@ -151,6 +166,13 @@ func decideCases() []decideCase {
 
 	longSummary := strings.Repeat("日本語", 200)
 
+	pastWait := now.Add(-30*time.Second - time.Nanosecond)
+
+	failedOverBudget := endpointStopped(true, 1, pastWait)
+	failedOverBudget.Turns = 1000
+
+	failedHalt := engine.Action{Kind: engine.KindStop, Stop: engine.StopEndpoint, Clear: engine.ClearRetry, Fault: true}
+
 	merged := exported
 	merged.Merged = true
 
@@ -204,6 +226,16 @@ func decideCases() []decideCase {
 		{name: "a second fault before its backoff", snap: snap(faulted(2, now)), want: wait(now.Add(2 * time.Minute)), clock: true},
 		{name: "a second fault after its backoff", snap: snap(faulted(2, now.Add(-2*time.Minute-time.Nanosecond))), want: continueWork, clock: true},
 		{name: "a third fault", snap: snap(faulted(3, now)), want: none},
+		{name: "a failed endpoint before its wait", snap: snap(endpointStopped(true, 1, now)), want: wait(now.Add(30 * time.Second)), clock: true},
+		{name: "a failed endpoint after its wait", snap: snap(endpointStopped(true, 1, pastWait)), want: continueWork, clock: true},
+		{name: "a second failed endpoint before its wait", snap: snap(endpointStopped(true, 2, now)), want: wait(now.Add(2 * time.Minute)), clock: true},
+		{name: "a second failed endpoint after its wait", snap: snap(endpointStopped(true, 2, now.Add(-2*time.Minute-time.Nanosecond))), want: continueWork, clock: true},
+		{name: "a failed endpoint past the fault cap", snap: snap(endpointStopped(true, 3, now)), want: none},
+		{name: "a refused endpoint", snap: snap(endpointStopped(false, 0, now)), want: none},
+		{
+			name: "a failed endpoint after its wait keeps the task's spent turns", snap: snap(failedOverBudget),
+			want: halt(engine.StopBudget, engine.ClearRetry), clock: true,
+		},
 		{name: "another open stop", snap: snap(openStop(engine.StopQuestion, time.Time{})), want: none},
 		{name: "cancelled with its stop recorded", snap: snap(cancelledStop), want: none},
 		{name: "exported with the run open", snap: snap(exportedOpen), want: engine.Action{Kind: engine.KindFinish}},
@@ -267,6 +299,11 @@ func decideCases() []decideCase {
 			name: "session endpoint with a long detail", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeEndpoint, Detail: "503 " + longSummary})),
 			want: halt(engine.StopEndpoint, engine.ClearRetry), explainHas: "503",
 		},
+		{name: "session endpoint failed", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeEndpointFailed})), want: failedHalt},
+		{
+			name: "session endpoint failed with a status", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeEndpointFailed, Detail: "upstream status 529: Overloaded"})),
+			want: failedHalt, explainHas: "529",
+		},
 		{name: "session timeout", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeTimeout})), want: halt(engine.StopTimeout, engine.ClearRetry)},
 		{name: "session max turns", snap: snap(ended(engine.SessionFact{Outcome: engine.OutcomeMaxTurns})), want: halt(engine.StopBudget, engine.ClearRetry)},
 		{
@@ -301,6 +338,14 @@ func decideCases() []decideCase {
 		{name: "verify waived", snap: snap(verified(engine.ResultWaived, 0)), want: engine.Action{Kind: engine.KindExport}},
 		{name: "an endpoint pause holds a session", snap: paused(prepared(), endpointPause), want: wait(time.Time{}), whyHas: "7"},
 		{name: "an endpoint pause holds a prepare", snap: paused(startedOnly, endpointPause), want: wait(time.Time{}), whyHas: "7"},
+		{
+			name: "a failed endpoint's retry is not held by another task's endpoint stop", snap: paused(endpointStopped(true, 1, pastWait), endpointPause),
+			want: continueWork, clock: true,
+		},
+		{
+			name: "a runner fault's retry is held by another task's endpoint stop", snap: paused(faulted(1, pastWait), endpointPause),
+			want: wait(time.Time{}), whyHas: "7", clock: true,
+		},
 		{name: "an endpoint pause leaves a verify alone", snap: paused(verified("", 0), endpointPause), want: engine.Action{Kind: engine.KindVerify}},
 		{name: "an endpoint pause leaves an export alone", snap: paused(verified(engine.ResultPassed, 0), endpointPause), want: engine.Action{Kind: engine.KindExport}},
 		{name: "a usage limit pause holds a session", snap: paused(prepared(), limitPause), want: wait(limitPause.LimitedUntil), whyHas: "9", clock: true},
@@ -638,6 +683,12 @@ func watchCases() []decideCase {
 	fixPassed.Session = &engine.SessionFact{Outcome: engine.OutcomeDone, Changed: true, HeadCommit: "head3"}
 	fixPassed.Verify = engine.ResultPassed
 
+	// endpointFailedInRun is a fix run's session the model endpoint failed, past the stop's wait.
+	endpointFailedInRun := fixRun(engine.ReasonCIFix, pull(now, nil))
+	endpointFailedInRun.Session = &engine.SessionFact{Outcome: engine.OutcomeEndpointFailed}
+	endpointFailedInRun.OpenStop = &engine.StopFact{Reason: engine.StopEndpoint, At: now.Add(-time.Minute), Fault: true}
+	endpointFailedInRun.Faults = 1
+
 	endedUnexported := asked(engine.ChecksPassed, 1, "c1", "c2", "c3")
 	endedUnexported.RunReason, endedUnexported.RunRequests = engine.ReasonComments, []string{"c1", "c2", "c3"}
 	endedUnexported.PR.Seen.Draft = false
@@ -710,6 +761,10 @@ func watchCases() []decideCase {
 			want: engine.Action{Kind: engine.KindWork, WorkMode: engine.ModeComments, Requests: []string{"c2", "c3"}},
 		},
 		{name: "a fix run is not reviewed", snap: watchSnap(fixPassed), want: engine.Action{Kind: engine.KindExport}},
+		{
+			name: "a fix run's failed endpoint carries on as a person's retry would", snap: watchSnap(endpointFailedInRun),
+			want: work(engine.ModeContinue, false), clock: true,
+		},
 		{name: "a follow-up run that ended without an export is watched", snap: watchSnap(endedUnexported), want: watch(time.Time{})},
 	}
 }
