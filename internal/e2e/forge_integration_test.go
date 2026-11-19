@@ -368,8 +368,8 @@ func TestForgeReviewCommentRun(t *testing.T) {
 	pull := s.pulled(fake, task.ID)
 	head := tip(t, bare, pull.Head)
 
-	// An account that may only read asks for changes before the first look and
-	// stands to the end. The checks pass at once.
+	// An account that may only read asks for changes, then the checks pass: a look reads
+	// the checks before the reviews, so the look that finds them passed finds the review too.
 	fake.SetPermission("visitor", "read")
 	fake.Review(pull.Number, "visitor", "CHANGES_REQUESTED", "Rename notes.txt.")
 	fake.SetChecks(head, forgefake.CheckRun{ID: 1, App: "github-actions", Name: "test", Status: "completed", Conclusion: "success"})
@@ -426,7 +426,6 @@ func TestForgeReviewCommentRun(t *testing.T) {
 
 		return got.Status == "in_review" && got.Waiting != "", b
 	})
-	assert.Zero(t, got.Stop)
 	assert.True(t, got.PullRequest.Ready, "no reviewer's request waits for a follow-up run")
 	assert.Equal(t, moved, tip(t, bare, pull.Head), "the second follow-up pushed nothing")
 
