@@ -69,6 +69,32 @@ jobs:
       - name: make image test-integration
         run: make image test-integration
 
+  # No make image: the tests build every image they use on the runtime
+  # CAVU_TEST_RUNTIME names, and make image would build on Docker.
+  integration-podman:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # Above the 30 minutes test-integration gives the tests.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: podman info
+        run: podman info
+
+      - name: pull the test image
+        run: podman pull docker.io/library/busybox:1.37
+
+      - name: make test-integration
+        run: make test-integration
+        env:
+          CAVU_TEST_RUNTIME: podman
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:
