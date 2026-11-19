@@ -891,7 +891,7 @@ func TestTaskRunDrivesWhenTheLockIsFree(t *testing.T) {
 
 	x, ok := newest[engine.ExportedPayload](events, engine.Exported)
 	require.True(t, ok)
-	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+	assert.Equal(t, []string{string(engine.StatusInReview)}, labelled(strings.Join(tail, "\n"), "status:"))
 	assert.Contains(t, strings.Join(tail, "\n"), x.DiffPath)
 	assert.Equal(t, []string{"login.go | 1 +", "1 file changed, 1 insertion(+)"}, x.DiffStat)
 	assert.Equal(t, x.DiffStat, labelled(strings.Join(tail, "\n"), "changed:"), "the end of the run shows the change's summary")
@@ -1212,7 +1212,7 @@ func TestTaskRunPrintsFromThePersonsNewestAction(t *testing.T) {
 
 	events := storedEvents(t, dir, id)
 	tail := eventLines(t, stdout, events[slices.IndexFunc(events, func(e store.Event) bool { return e.Type == engine.HumanAnswered }):])
-	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+	assert.Equal(t, []string{string(engine.StatusInReview)}, labelled(strings.Join(tail, "\n"), "status:"))
 }
 
 func TestTaskRunFollowsUnderAServer(t *testing.T) {
@@ -1259,7 +1259,7 @@ func TestTaskRunFollowsUnderAServer(t *testing.T) {
 	assert.Len(t, events, 6)
 
 	tail := eventLines(t, stdout, events)
-	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+	assert.Equal(t, []string{string(engine.StatusInReview)}, labelled(strings.Join(tail, "\n"), "status:"))
 }
 
 // The follow ends once the task's pull request is watched: the watch is the server's.
@@ -1292,7 +1292,7 @@ func TestTaskRunEndsAtTheWatch(t *testing.T) {
 	assert.Equal(t, 0, exitCodeOf(t, done), out.String())
 
 	tail := eventLines(t, out.String(), storedEvents(t, dir, id))
-	assert.Equal(t, []string{"status:", string(engine.StatusInReview)}, strings.Fields(tail[0]))
+	assert.Equal(t, []string{string(engine.StatusInReview)}, labelled(strings.Join(tail, "\n"), "status:"))
 }
 
 // The verb ends at the pull request it opened, though its own scheduler's look
@@ -1538,6 +1538,60 @@ func TestTaskShowPrintsDependenciesAndTheWait(t *testing.T) {
 	out = cavuIn(t, dir, "task", "show", id)
 	assert.Contains(t, labelled(out, "depends:")[0], string(engine.StatusDone))
 	assert.Empty(t, labelled(out, "wait:"), "a task whose dependencies are done does not wait")
+}
+
+// needsYouTasks adds a task stopped on a question, which only a person clears,
+// and a task blocked on a usage limit, which ends by itself.
+func needsYouTasks(t *testing.T, dir string) (asks, limited string) {
+	t.Helper()
+
+	asks, limited = addTask(t, dir, "Asks"), addTask(t, dir, "Nobody")
+	seedEvents(t, dir, asks, nil, event(engine.TaskStarted, "user", struct{}{}), question())
+	seedEvents(t, dir, limited, nil, event(engine.TaskStarted, "user", struct{}{}), event(engine.Stopped, "engine",
+		engine.StoppedPayload{Reason: engine.StopUsageLimit, Explanation: "limit", Action: engine.ClearNone, ResetsAt: time.Now().Add(time.Hour)}))
+
+	return asks, limited
+}
+
+func TestTaskShowSaysWhenTheTaskNeedsYou(t *testing.T) {
+	dir := webData(t)
+	asks, limited := needsYouTasks(t, dir)
+
+	out := cavuIn(t, dir, "task", "show", asks)
+	assert.Equal(t, []string{"you"}, labelled(out, "needs:"))
+	assert.Equal(t, strings.Index(out, "status:")+len("status:  blocked\n"), strings.Index(out, "needs:"), "the line follows the status")
+
+	out = cavuIn(t, dir, "task", "show", limited)
+	assert.Empty(t, labelled(out, "needs:"))
+	assert.Equal(t, []string{string(engine.StatusBlocked)}, labelled(out, "status:"))
+}
+
+func TestTaskListHasANeedsYouColumn(t *testing.T) {
+	dir := webData(t)
+	asks, limited := needsYouTasks(t, dir)
+
+	rows := map[string][]string{}
+
+	lines := strings.Split(strings.TrimSpace(cavuIn(t, dir, "task", "list")), "\n")
+	require.Len(t, lines, 3)
+	assert.Equal(t, []string{"ID", "PROJECT", "STATUS", "NEEDS", "YOU", "TITLE"}, strings.Fields(lines[0]))
+
+	for _, l := range lines[1:] {
+		rows[strings.Fields(l)[0]] = strings.Fields(l)
+	}
+
+	assert.Equal(t, []string{asks, "web", string(engine.StatusBlocked), "yes", "Asks"}, rows[asks])
+	assert.Equal(t, []string{limited, "web", string(engine.StatusBlocked), "Nobody"}, rows[limited])
+}
+
+func TestTaskListNeedsYouKeepsTheTasksThatNeedAPerson(t *testing.T) {
+	dir := webData(t)
+	asks, _ := needsYouTasks(t, dir)
+
+	lines := strings.Split(strings.TrimSpace(cavuIn(t, dir, "task", "list", "--needs-you")), "\n")
+
+	require.Len(t, lines, 2, "a header and the one task")
+	assert.Equal(t, asks, strings.Fields(lines[1])[0])
 }
 
 func TestEventLine(t *testing.T) {

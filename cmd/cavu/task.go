@@ -27,7 +27,7 @@ func init() {
 const (
 	taskAddUsage    = "cavu task add PROJECT --title TITLE [--depends-on ID[,ID]...] [--start] [--body-file FILE, else the body is read from a pipe] [--data-dir DIR]"
 	taskEditUsage   = "cavu task edit ID [--title TITLE] [--body-file FILE] [--depends-on ID[,ID]...] [--data-dir DIR]"
-	taskListUsage   = "cavu task list [--data-dir DIR]"
+	taskListUsage   = "cavu task list [--needs-you] [--data-dir DIR]"
 	taskShowUsage   = "cavu task show ID [--events] [--data-dir DIR]"
 	taskDiffUsage   = "cavu task diff ID [--data-dir DIR]"
 	taskRunUsage    = "cavu task run ID [--data-dir DIR]"
@@ -236,6 +236,8 @@ func readBody(file string, stdin io.Reader) (string, error) {
 
 func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	f := newVerbFlags(taskListUsage, stderr)
+	needsYou := f.Bool("needs-you", false, "list only the tasks that wait for a person")
+
 	if _, err := f.parse(args, 0); err != nil {
 		return err
 	}
@@ -246,26 +248,25 @@ func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	defer a.close()
 
-	names, err := a.store.ProjectNames(ctx)
-	if err != nil {
-		return err
-	}
-
-	tasks, err := a.store.Tasks(ctx, false)
+	rows, err := a.actions().List(ctx, 0, nil)
 	if err != nil {
 		return err
 	}
 
 	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tPROJECT\tSTATUS\tTITLE")
+	fmt.Fprintln(w, "ID\tPROJECT\tSTATUS\tNEEDS YOU\tTITLE")
 
-	for _, t := range tasks {
-		events, err := a.store.EventsOmitting(ctx, t.ID, engine.ProgressTypes...)
-		if err != nil {
-			return err
+	for _, r := range rows {
+		if *needsYou && !r.NeedsYou {
+			continue
 		}
 
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", t.ID, names[t.ProjectID], engine.StatusOf(engine.Reduce(events)), t.Title)
+		var needs string
+		if r.NeedsYou {
+			needs = "yes"
+		}
+
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", r.ID, r.Project, r.Status, needs, r.Title)
 	}
 
 	return w.Flush()
@@ -276,21 +277,6 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	withEvents := f.Bool("events", false, "list every event of the task")
 
 	return onTask(ctx, f, args, func(a *app, id int64) error {
-		t, err := a.store.Task(ctx, id)
-		if err != nil {
-			return fmt.Errorf("task %d: %w", id, err)
-		}
-
-		p, err := a.store.Project(ctx, t.ProjectID)
-		if err != nil {
-			return err
-		}
-
-		events, err := a.store.EventsOmitting(ctx, id, engine.ProgressTypes...)
-		if err != nil {
-			return err
-		}
-
 		var pauses engine.Pauses
 		if err := pauses.Read(ctx, a.store); err != nil {
 			return err
@@ -299,26 +285,12 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		l := a.actions()
 		l.Paused = pauses.Of
 
-		snap, err := l.Snapshot(ctx, id)
+		v, err := l.View(ctx, id, nil)
 		if err != nil {
 			return err
 		}
 
-		fmt.Fprintf(stdout, "task:    %d\nproject: %s\ntitle:   %s\n", t.ID, p.Name, t.Title)
-		printState(stdout, snap)
-		printQueue(stdout, snap)
-
-		turns, d := engine.TurnsAndDuration(events)
-		fmt.Fprintf(stdout, "turns:   %d\nduration: %s\n", turns, d.Round(time.Second))
-
-		used, limits := snap.Facts, snap.Limits
-		spent, today := money(snap)
-		fmt.Fprintf(stdout, "budget:  %d of %d turns, %.0f of %.0f minutes%s since a person last acted%s\n",
-			used.Turns, limits.Turns, used.SessionTime.Minutes(), limits.SessionTime.Minutes(), spent, today)
-
-		if err := printUsage(ctx, stdout, a.store, id, used.CostMissing); err != nil {
-			return err
-		}
+		printView(stdout, v)
 
 		if !*withEvents {
 			return nil
@@ -335,71 +307,32 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	})
 }
 
-// money is what the budget line says of the money caps in force: the task's
-// spend of its cap, and the instance's today of the daily cap.
-func money(s engine.Snapshot) (task, day string) {
-	if c := s.Limits.TaskMicroUSD; c > 0 {
-		task = fmt.Sprintf(", %s of %s", dollars(s.Spent.TaskMicroUSD), dollars(c))
+// printView prints what a person reads about the task: its status, whether it
+// needs you, its open stop with every question the agent asked and the answer
+// it suggested, its pull request, the review's findings left open, its minor
+// ones and why its newest review gave no verdict, the change it shows with
+// git's summary of it and its flagged paths, its dependencies and wait, and
+// what it has used.
+func printView(w io.Writer, v engine.View) {
+	fmt.Fprintf(w, "task:    %d\nproject: %s\ntitle:   %s\nstatus:  %s\n", v.ID, v.Project, v.Title, v.Status)
+
+	if v.NeedsYou {
+		fmt.Fprintln(w, "needs:   you")
 	}
 
-	if c := s.Limits.DayMicroUSD; c > 0 {
-		day = fmt.Sprintf("; %s of the daily %s today", dollars(s.Spent.DayMicroUSD), dollars(c))
-	}
-
-	return task, day
-}
-
-func dollars(microUSD int64) string {
-	return fmt.Sprintf("$%.2f", float64(microUSD)/1e6)
-}
-
-// printQueue prints the task's dependencies, each with its status, and why
-// Decide holds the task, or watches its pull request, while it does.
-func printQueue(w io.Writer, snap engine.Snapshot) {
-	if len(snap.Deps) > 0 {
-		deps := make([]string, len(snap.Deps))
-		for i, d := range snap.Deps {
-			deps[i] = fmt.Sprintf("%d (%s)", d.TaskID, d.Status)
-		}
-
-		fmt.Fprintf(w, "depends: %s\n", strings.Join(deps, ", "))
-	}
-
-	if act := engine.Decide(snap); act.Kind == engine.KindWait || act.Kind == engine.KindWatch {
-		fmt.Fprintf(w, "wait:    %s\n", waitText(act))
-	}
-}
-
-// printState prints the task's status, its open stop with every question the
-// agent asked and the answer it suggested, its pull request, the review's
-// findings left open, its minor ones and why its newest review gave no
-// verdict, and the change it shows with git's summary of it and its flagged
-// paths, and returns the status.
-func printState(w io.Writer, s engine.Snapshot) engine.Status {
-	facts := s.Facts
-	status := engine.StatusOf(facts)
-
-	fmt.Fprintf(w, "status:  %s\n", status)
-
-	if facts.OpenStop != nil {
-		s := facts.OpenStop
+	if s := v.Stop; s != nil {
 		fmt.Fprintf(w, "stop:    %s\nwhy:     %s\naction:  %s\n", s.Reason, s.Explanation, s.Action)
+	}
 
-		// The stop's explanation holds only the first question.
-		if facts.OpenStop.Reason == engine.StopQuestion && facts.Session != nil {
-			suggested := facts.Session.SuggestedAnswers
+	for _, q := range v.Questions {
+		fmt.Fprintf(w, "asked:   %s\n", q.Question)
 
-			for i, q := range facts.Session.Questions {
-				fmt.Fprintf(w, "asked:   %s\n", q)
-
-				if i < len(suggested) && suggested[i] != "" {
-					fmt.Fprintf(w, "suggest: %s\n", suggested[i])
-				}
-			}
+		if q.SuggestedAnswer != "" {
+			fmt.Fprintf(w, "suggest: %s\n", q.SuggestedAnswer)
 		}
 	}
 
-	if pr := engine.PullRequestOf(facts, s.Watch.NoCI); pr != nil {
+	if pr := v.PullRequest; pr != nil {
 		state := pr.State
 		if pr.Ready {
 			state += ", ready for your review"
@@ -408,19 +341,21 @@ func printState(w io.Writer, s engine.Snapshot) engine.Status {
 		fmt.Fprintf(w, "pr:      %s (%s)\nchecks:  %s\n", pr.URL, state, engine.ChecksText(pr.Checks, pr.Failed))
 	}
 
-	for _, f := range facts.Review.Open {
-		fmt.Fprintf(w, "open:    %s\n", findingLine(f))
+	if r := v.Review; r != nil {
+		for _, f := range r.Open {
+			fmt.Fprintf(w, "open:    %s\n", findingLine(f))
+		}
+
+		for _, f := range r.Minor {
+			fmt.Fprintf(w, "minor:   %s\n", findingLine(f))
+		}
+
+		if r.Failed != "" {
+			fmt.Fprintf(w, "review:  no verdict: %s\n", r.Failed)
+		}
 	}
 
-	for _, f := range facts.Review.Minor {
-		fmt.Fprintf(w, "minor:   %s\n", findingLine(f))
-	}
-
-	if facts.Review.Failed != "" {
-		fmt.Fprintf(w, "review:  no verdict: %s\n", facts.Review.Failed)
-	}
-
-	if x := engine.ChangeOf(facts); x != nil {
+	if x := v.Change; x != nil {
 		fmt.Fprintf(w, "diff:    %s\n", x.DiffPath)
 
 		for _, l := range x.DiffStat {
@@ -441,46 +376,64 @@ func printState(w io.Writer, s engine.Snapshot) engine.Status {
 		}
 	}
 
-	return status
+	if len(v.Dependencies) > 0 {
+		deps := make([]string, len(v.Dependencies))
+		for i, d := range v.Dependencies {
+			deps[i] = fmt.Sprintf("%d (%s)", d.TaskID, d.Status)
+		}
+
+		fmt.Fprintf(w, "depends: %s\n", strings.Join(deps, ", "))
+	}
+
+	if v.Waiting != "" {
+		var until time.Time
+		if v.WaitingUntil != nil {
+			until = *v.WaitingUntil
+		}
+
+		fmt.Fprintf(w, "wait:    %s\n", waitText(v.Waiting, until))
+	}
+
+	b := v.Budget
+
+	fmt.Fprintf(w, "turns:   %d\nduration: %s\n", v.Turns, (time.Duration(v.DurationMS) * time.Millisecond).Round(time.Second))
+	fmt.Fprintf(w, "budget:  %d of %d turns, %d of %d minutes", b.Turns, b.MaxTurns, b.Minutes, b.MaxMinutes)
+
+	// The money of a cap is there only while that cap is in force.
+	if b.USD != nil {
+		fmt.Fprintf(w, ", $%.2f of $%.2f", *b.USD, *b.MaxUSD)
+	}
+
+	fmt.Fprint(w, " since a person last acted")
+
+	if b.DayUSD != nil {
+		fmt.Fprintf(w, "; $%.2f of the daily $%.2f today", *b.DayUSD, *b.MaxDayUSD)
+	}
+
+	fmt.Fprintln(w)
+
+	for _, u := range v.Usage {
+		fmt.Fprintf(w, "usage:   %s %s input=%d output=%d cache_read=%d cache_write=%d\n", u.Source, u.Model, u.Input, u.Output, u.CacheRead, u.CacheWrite)
+	}
+
+	// An estimate from list prices, not a bill, that leaves out the sessions without a cost.
+	fmt.Fprintf(w, "cost (estimate): $%.4f", v.CostEstimateUSD)
+
+	if n := v.CostMissingSessions; n > 0 {
+		noun := "sessions"
+		if n == 1 {
+			noun = "session"
+		}
+
+		fmt.Fprintf(w, ", leaving out %d %s that ended without one", n, noun)
+	}
+
+	fmt.Fprintln(w)
 }
 
 // findingLine is a finding's severity, where, what and why, each that is set.
 func findingLine(f engine.Finding) string {
 	return strings.Join(slices.DeleteFunc([]string{f.Severity, f.Where, f.What, f.Why}, func(s string) bool { return s == "" }), " | ")
-}
-
-// printUsage prints a row per source and model and the one cost row, an
-// estimate from list prices, not a bill, which ends with how many sessions
-// without a cost it leaves out, when any.
-func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64, missing int) error {
-	rows, err := s.UsageTotals(ctx, taskID)
-	if err != nil {
-		return err
-	}
-
-	var cost float64
-
-	for _, u := range rows {
-		fmt.Fprintf(w, "usage:   %s %s input=%d output=%d cache_read=%d cache_write=%d\n",
-			u.Source, u.Model, u.Input, u.Output, u.CacheRead, u.CacheWrite)
-
-		cost += u.CostEstimateUSD
-	}
-
-	fmt.Fprintf(w, "cost (estimate): $%.4f", cost)
-
-	if missing > 0 {
-		noun := "sessions"
-		if missing == 1 {
-			noun = "session"
-		}
-
-		fmt.Fprintf(w, ", leaving out %d %s that ended without one", missing, noun)
-	}
-
-	fmt.Fprintln(w)
-
-	return nil
 }
 
 func printEvents(w io.Writer, events []store.Event) {
@@ -537,7 +490,7 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 
 		if engine.Decide(snap).Kind == engine.KindWatch {
-			return ended(stdout, snap, true)
+			return ended(ctx, stdout, l, id, true)
 		}
 
 		err = a.driven(ctx, func(t store.Task) bool { return t.ID == id }, func(ctx context.Context) error {
@@ -578,20 +531,25 @@ func taskRun(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			fmt.Fprintf(stderr, "cavu: %v\n", err)
 		}
 
-		return ended(stdout, snap, watched)
+		return ended(ctx, stdout, l, id, watched)
 	})
 }
 
-// ended prints the task's state where task run ends, and when Decide watches
-// its pull request, that cavu serve does. A stopped task exits 3.
-func ended(w io.Writer, s engine.Snapshot, watched bool) error {
-	status := printState(w, s)
+// ended prints the task as task show does where task run ends, and when
+// Decide watches its pull request, that cavu serve does. A stopped task exits 3.
+func ended(ctx context.Context, w io.Writer, l *engine.Loop, id int64, watched bool) error {
+	v, err := l.View(ctx, id, nil)
+	if err != nil {
+		return err
+	}
+
+	printView(w, v)
 
 	if watched {
 		fmt.Fprintln(w, "cavu serve watches the pull request from here; task run does not.")
 	}
 
-	if status == engine.StatusBlocked || status == engine.StatusCancelled {
+	if v.Status == engine.StatusBlocked || v.Status == engine.StatusCancelled {
 		return exitError{code: 3}
 	}
 
@@ -652,8 +610,8 @@ func follow(ctx context.Context, l *engine.Loop, taskID int64, events, waits io.
 			return nil
 		case act.Kind != engine.KindWait:
 			waited = ""
-		case waitText(act) != waited:
-			waited = waitText(act)
+		case waitText(act.Why, act.Until) != waited:
+			waited = waitText(act.Why, act.Until)
 			fmt.Fprintf(waits, "%s wait %s\n", snap.Now.Format(time.TimeOnly), waited)
 		}
 
@@ -666,12 +624,12 @@ func follow(ctx context.Context, l *engine.Loop, taskID int64, events, waits io.
 }
 
 // waitText is a wait's reason, with its end when a clock ends it.
-func waitText(act engine.Action) string {
-	if act.Until.IsZero() {
-		return act.Why
+func waitText(why string, until time.Time) string {
+	if until.IsZero() {
+		return why
 	}
 
-	return fmt.Sprintf("%s (until %s)", act.Why, act.Until.Local().Format(time.DateTime))
+	return fmt.Sprintf("%s (until %s)", why, until.Local().Format(time.DateTime))
 }
 
 // maxLine bounds an event's line, in bytes.
