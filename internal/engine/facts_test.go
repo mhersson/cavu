@@ -789,6 +789,61 @@ func TestReduceObservations(t *testing.T) {
 	})
 }
 
+// A merge closes the stop it was seen under: the task is done, with no stop
+// left for a retry.
+func TestAMergeClosesTheOpenStop(t *testing.T) {
+	failing := engine.Observation{State: engine.PROpen, Draft: true, Head: "head456", Checks: engine.ChecksFailed, Failed: []string{"lint"}}
+
+	tests := []struct {
+		name   string
+		look   engine.Observation // seen before the stop; the merge is seen on its head
+		events []store.Event      // from the stop on
+	}{
+		{
+			name:   "a takeover",
+			look:   engine.Observation{State: engine.PROpen, Draft: true, Head: "theirs", Checks: engine.ChecksPending},
+			events: []store.Event{ev(engine.Stopped, `{"reason":"taken_over","explanation":"Taken over.","action":"retry"}`)},
+		},
+		{
+			name:   "failed checks after the fix runs",
+			look:   failing,
+			events: []store.Event{ev(engine.Stopped, `{"reason":"ci_failed","explanation":"Checks failed.","action":"retry"}`)},
+		},
+		{
+			name: "a fix run stopped on the endpoint",
+			look: failing,
+			events: []store.Event{
+				ev(engine.RunStarted, `{"reason":"ci_fix","head":"head456"}`), ev(engine.PrepareStarted, ""),
+				ev(engine.Prepared, `{"base_commit":"base123"}`), ev(engine.SessionStarted, `{"mode":"fix_ci","session_id":"s1","resume":true}`),
+				ev(engine.SessionEnded, `{"outcome":"endpoint"}`),
+				ev(engine.Stopped, `{"reason":"endpoint","explanation":"The endpoint failed.","action":"retry"}`),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.publishedRun()
+
+			merged := tc.look
+			merged.State, merged.Draft = engine.PRMerged, false
+
+			for _, e := range slices.Concat([]store.Event{observed(tc.look)}, tc.events, []store.Event{observed(merged)}) {
+				h.add(0, e.Type, "engine", string(e.Payload))
+			}
+
+			before := h.recorded(h.task.ID)
+			f := engine.Reduce(before)
+			assert.Equal(t, engine.StatusDone, engine.StatusOf(f))
+			assert.Nil(t, f.OpenStop)
+
+			require.ErrorIs(t, h.loop.Retry(t.Context(), h.task.ID), engine.ErrRefused)
+			assert.Equal(t, before, h.recorded(h.task.ID))
+		})
+	}
+}
+
 // A retry decides again on the first look after it, which is recorded even
 // when it equals the one before.
 func TestARetryDecidesOnTheNextLook(t *testing.T) {

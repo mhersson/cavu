@@ -490,6 +490,7 @@ func TestForgeTakenOver(t *testing.T) {
 
 		return got.Status == "done", b
 	})
+	assert.Zero(t, got.Stop, "the merge closed the stop")
 	assert.Equal(t, theirs, tip(t, bare, pull.Head), "CAVU pushed nothing over the person's commit")
 }
 
