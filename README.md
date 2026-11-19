@@ -219,7 +219,7 @@ cavu service install
 cavu service uninstall
 ```
 
-Read the log with `journalctl --user -u cavu` on Linux, or in `~/Library/Logs/cavu.log` on macOS. Running `cavu service install` again rewrites the file when it changed and restarts the service, so after you replace the binary it is how the service picks up the new one. `cavu service uninstall` stops the service and removes its file, and keeps the data directory.
+Read the log with `journalctl --user -u cavu` on Linux, or in `~/Library/Logs/cavu.log` on macOS. Running `cavu service install` again rewrites the file when it changed and restarts the service, so after you replace the binary it is how the service picks up the new one. `cavu service uninstall` stops the service and removes its file, and keeps the data directory. To run `cavu doctor`, which a running server refuses, stop the service first with `systemctl --user stop cavu` on Linux or `launchctl bootout gui/$(id -u)/com.github.mhersson.cavu` on macOS, and start it again afterwards with `systemctl --user start cavu` or `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.mhersson.cavu.plist`.
 
 ### Replaying tasks
 
