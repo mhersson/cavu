@@ -43,6 +43,8 @@ type Store interface {
 	TaskDeps(ctx context.Context, taskID int64) ([]int64, error)
 	LastEventIDs(ctx context.Context) (map[int64]int64, error)
 	Projects(ctx context.Context) ([]store.Project, error)
+	Tasks(ctx context.Context, includeReplays bool) ([]store.Task, error)
+	RemoveProject(ctx context.Context, id int64, at time.Time, secretPrefix string) error
 }
 
 // Loop carries out the actions Decide chooses, through a Runner.
