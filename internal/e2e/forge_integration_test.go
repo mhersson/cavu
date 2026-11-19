@@ -645,3 +645,129 @@ func TestForgeChecksReadAsJobs(t *testing.T) {
 		return strings.Contains(q.Path, "/actions/runs/1/jobs")
 	}), "the watch read the jobs of the head's workflow run")
 }
+
+func TestForgeCredentialsNeverInSandbox(t *testing.T) {
+	t.Parallel()
+
+	mock := mockapi.Start(t, []mockapi.Step{change, done})
+	in := setup(t, mock.HostURL())
+	fake, _ := in.forge()
+
+	// The instance reaches the forge as a GitHub App, and its forge token is one the
+	// fixture's git refuses, so a clone and a push that pass took the App's tokens.
+	const refused = "ghp_REFUSEDFORGETOKEN0123456789"
+
+	in.ok("settings", "set", "forge_app_id", "1")
+
+	for _, s := range [][2]string{{"forge_app_key", forgefake.AppKey()}, {"forge_token", refused}} {
+		r := in.cavu(s[1], "secret", "set", s[0])
+		require.Zero(t, r.code, r)
+	}
+
+	// The key is looked for by a line from its middle: the PEM's first and last are every key's.
+	lines := strings.Split(forgefake.AppKey(), "\n")
+	keyLine := lines[len(lines)/2]
+
+	// secrets is the key's line, the forge token and every token the fake minted so far.
+	secrets := func() []string {
+		vs := []string{keyLine, refused}
+		for _, tok := range fake.Tokens() {
+			vs = append(vs, tok.Value)
+		}
+
+		return vs
+	}
+
+	s := in.serve()
+
+	defer s.stop()
+
+	// It runs after the deferred stop, so the server's own output is in out too.
+	t.Cleanup(func() {
+		out := in.out.String() + s.answers.String()
+		for _, v := range secrets() {
+			assert.NotContains(t, out, v)
+		}
+	})
+
+	s.project("notes", nil, map[string]bool{"readiness": false, "review": false})
+
+	release := mock.Hold()
+
+	var task apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+	require.True(t, modelCalled(mock, s.ended), "cavu serve made no model call")
+
+	minted := len(fake.Tokens())
+	require.Positive(t, minted, "the clone took a token the App minted")
+
+	var marks []string
+	for _, v := range secrets() {
+		marks = append(marks, mark(v))
+	}
+
+	agent, held := in.container("agent"), strings.Join(marks, "|")
+	assert.Empty(t, in.sh(agent, procScan, held))
+	assert.Empty(t, in.files(agent, held))
+	assert.NotEmpty(t, in.files(agent, mark(title)), "the scanned directories hold the task's files")
+
+	release()
+
+	s.pulled(fake, task.ID)
+	assert.Greater(t, len(fake.Tokens()), minted, "the push took a token of its own")
+
+	// The run ends after its publish, so by then its events are written.
+	var events []apiEvent
+
+	within(t, time.Minute, func() (bool, string) {
+		events = s.events(task.ID)
+
+		return slices.ContainsFunc(events, func(e apiEvent) bool { return e.Type == "run_ended" }), strings.Join(eventLines(events), "\n")
+	})
+
+	recorded := strings.Join(eventLines(events), "\n")
+	for _, v := range secrets() {
+		assert.NotContains(t, recorded, v)
+	}
+}
+
+func TestForgeRestartKeepsWatching(t *testing.T) {
+	t.Parallel()
+
+	mock := mockapi.Start(t, []mockapi.Step{change, done})
+	in := setup(t, mock.HostURL())
+	fake, bare := in.forge()
+	s := in.serve()
+
+	// It stops the server that runs at the end: the one the restart started.
+	defer s.stop()
+
+	s.project("notes", nil, map[string]bool{"readiness": false, "review": false})
+
+	var task, got apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+
+	// The head's check runs, so the pull request waits and the watch looks every 10 seconds.
+	pull := s.pulled(fake, task.ID)
+	fake.SetChecks(tip(t, bare, pull.Head), forgefake.CheckRun{ID: 1, App: "github-actions", Name: "test", Status: "in_progress"})
+
+	within(t, 2*time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.PullRequest != nil && got.PullRequest.Checks == "pending", b
+	})
+
+	s.stop()
+	s.start()
+
+	fake.Merge(pull.Number)
+
+	within(t, 2*time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.Status == "done", b
+	})
+	assert.Len(t, payloads[engine.RunStartedPayload](t, s.events(task.ID), "run_started"), 1, "the restart started no run")
+}

@@ -429,6 +429,22 @@ func (in *instance) sh(container, script string, args ...string) string {
 	return in.client(append([]string{"exec", "--user=1000:1000", container, "sh", "-c", script, "sh"}, args...)...)
 }
 
+// files runs fileScan for pattern in container over /tmp and every directory
+// mounted into it.
+func (in *instance) files(container, pattern string) string {
+	in.t.Helper()
+
+	info, err := in.rt.Inspect(in.t.Context(), container)
+	require.NoError(in.t, err)
+
+	dirs := []string{"/tmp"}
+	for _, m := range info.Mounts {
+		dirs = append(dirs, m.Target)
+	}
+
+	return in.sh(container, fileScan, append([]string{pattern}, dirs...)...)
+}
+
 // procScan prints each process environment and command line that matches the
 // extended pattern $1, and fails on one it cannot read while it exists.
 const procScan = `s=0
@@ -457,9 +473,9 @@ p=$(sh -c '%[1]s' sh '%[4]s') &&
 test -n "$p"`, procScan, fileScan, found, planted)
 }
 
-// mark is a pattern for v that its own text does not match, so a scan never
-// finds its own command line.
-func mark(v string) string { return "[" + v[:1] + "]" + v[1:] }
+// mark is an extended pattern that matches v as it is written and not its own
+// text, so a scan never finds its own command line.
+func mark(v string) string { return "[" + v[:1] + "]" + regexp.QuoteMeta(v[1:]) }
 
 // values returns what follows prefix on every line of out that starts with it.
 func values(out, prefix string) []string {
@@ -635,18 +651,9 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	release, _, wait := in.runHeld(mock, id)
 
 	agent := in.container("agent")
-	info, err := in.rt.Inspect(t.Context(), agent)
-	require.NoError(t, err)
-
-	dirs := []string{"/tmp"}
-	for _, m := range info.Mounts {
-		dirs = append(dirs, m.Target)
-	}
-
-	files := func(pattern string) string { return in.sh(agent, fileScan, append([]string{pattern}, dirs...)...) }
 
 	assert.Empty(t, in.sh(agent, procScan, credentials))
-	assert.Empty(t, files(credentials))
+	assert.Empty(t, in.files(agent, credentials))
 
 	pids := strings.Fields(in.sh(agent, "pgrep -x claude"))
 	require.Len(t, pids, 1)
@@ -663,7 +670,7 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	standIn := standIns[0]
 
 	assert.Contains(t, strings.Split(in.sh(agent, procScan, mark(standIn)), "\n"), "/proc/"+pids[0]+"/environ")
-	assert.NotEmpty(t, files(mark(title)))
+	assert.NotEmpty(t, in.files(agent, mark(title)))
 
 	for _, c := range []string{agent, in.container("sidecar")} {
 		out := in.client("container", "inspect", c)
