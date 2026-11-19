@@ -229,7 +229,7 @@ A list is `[]` when empty, never null.
 | `requester` | What created the task: `cli` for a `cavu task add`, `api` for `POST /api/tasks`, `mcp` for the MCP tool `create_task`. |
 | `created_at` | When the task was created. |
 | `status` | Where the task stands: `cancelled` once cancelled, started or not; else `draft` until started; `done` once its change is merged; `blocked` while a stop is open; `in_review` once its change is exported, or while it has a pull request and no run is open; `queued` while no run is open; else `running`. |
-| `needs_you` | Whether the task waits for a person: it is `blocked` on a stop that only a person clears, which is any stop but a usage limit, which resets by itself, and a `sandbox` stop or a failed model endpoint while CAVU still retries it; its `pull_request` is `ready`; or it is `in_review` with an exported change and no pull request, as with the switch `publish` off, which waits for a person to take the change and record `done`. |
+| `needs_you` | Whether the task waits for a person: it is `blocked` on a stop that only a person clears, which is any stop but a usage limit, which resets by itself, and a `sandbox` stop or a failed model endpoint while CAVU still retries it; its `pull_request` is `ready`; or it is `in_review` with an exported change and no pull request, as with the switch `publish` off, once no run is open (while the exported run is still open, before its publish or finish, it does not), which waits for a person to take the change and record `done`. |
 | `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; for a task whose pull request CAVU watches, what the watch waits for, or the error of the last look at the pull request and when the next look comes; else `""`. |
 | `waiting_until` | When the wait in `waiting` ends on a clock: the reset of the usage limit of the task, or of another task that holds it, the next try after a fault, local midnight under a spent daily cap, or the end of the time the pull request's checks are given to start or to finish; else null. |
 | `dependencies` | The tasks that must be done before this one runs, each with its `id` and its `status`. `POST` and `PATCH` take their ids as `depends_on`. |
@@ -261,7 +261,7 @@ Answers 200 with a stream of [server-sent events](https://html.spec.whatwg.org/m
 
 ```
 id: 42
-data: {"id":42,"task_id":7,"run_id":3,"at":"2030-01-02T03:04:05Z","type":"agent_text","actor":"agent","payload":{"text":"Adding the footer."}}
+data: {"id":42,"task_id":7,"run_id":3,"at":"2030-01-02T03:04:05Z","type":"agent_text","actor":"agent","payload":{"text":"Adding the footer."},"text":"Adding the footer."}
 
 ```
 
@@ -285,7 +285,7 @@ An event is one fact in a task's history, recorded once and never changed:
 | `type` | What happened, such as `task_started`, `agent_text` or `stopped`. |
 | `actor` | Who recorded it: `user`, `engine`, `runner` or `agent`. |
 | `payload` | The event's details, a JSON value whose shape the type sets. |
-| `text` | One sentence that tells the event, for a person; the same line `cavu task run` prints. |
+| `text` | One sentence that tells the event, for a person; the sentence `cavu task run` prints after the clock and the type. |
 
 A task's pull request leaves these events: `publish_started` and `published` for a push of the branch and the pull request opened or updated by it, `pr_observed` for what GitHub showed of the pull request: CAVU's first look since its push, its ready-marking or a person's action, each later look that differs from the last record, and the look before a push that finds the pull request merged or closed or its branch moved by a person, and `ready_started` and `pr_ready` for CAVU marking it ready for review. After a follow-up run for reviewers' requests, `reply_started` and `replied` record CAVU's one comment on the pull request that answers them. `home_removed` records that the task's home volume was removed once the task could run no more: it is done or cancelled, or its change was exported with no pull request to follow, as with the switch `publish` off.
 
