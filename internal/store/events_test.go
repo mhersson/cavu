@@ -404,6 +404,10 @@ func TestEventsAfter(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []int64{a[0], c[0]}, eventIDs(got))
 
+	got, err = s.EventsAfter(ctx, a[0], one.ID, 0)
+	require.NoError(t, err)
+	require.Equal(t, []int64{c[0]}, eventIDs(got))
+
 	got, err = s.EventsAfter(ctx, 0, 0, 2)
 	require.NoError(t, err)
 	require.Equal(t, []int64{a[0], b[0]}, eventIDs(got))
