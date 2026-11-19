@@ -138,9 +138,10 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // classify gives err's status and the one line the caller sees: content the
-// engine refuses is a 400, a write that conflicts with what is stored or a removal the runtime would not do a 409,
-// and a row that does not exist a 404. An error that is not the caller's is
-// logged with the route and given without detail.
+// engine refuses is a 400, a write that conflicts with what is stored or a
+// removal the runtime would not do a 409, and a row that does not exist a 404.
+// An error that is not the caller's is logged with the route and given
+// without detail.
 func classify(ctx context.Context, route string, err error) (int, string) {
 	switch e, ok := errors.AsType[*apiError](err); {
 	case ok:
