@@ -16,6 +16,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // CSS files read as raw text are empty unless processed; the colour check reads them.
+    css: { include: /\.css/ },
     setupFiles: './src/test-setup.ts',
   },
 })
