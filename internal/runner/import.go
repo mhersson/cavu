@@ -63,7 +63,16 @@ func (st *run) imported(ctx context.Context, c engine.RunConfig, bundle []byte, 
 		return "", err
 	}
 
+	release, err := st.r.takeTurn(ctx, c.ProjectID, mirrorTurn)
+	if err != nil {
+		return "", err
+	}
+
 	_, problem, err = gitStep(ctx, imp, importCommand(importScript, tmpfsBundle, c.Repo.Branch, head, prev, taskRef(c.TaskID)))
+
+	// read writes nothing into the mirror: the turn ends with the import.
+	release()
+
 	if err != nil || problem != "" {
 		return problem, err
 	}

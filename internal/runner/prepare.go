@@ -73,7 +73,7 @@ func (r *Runner) prepare(ctx context.Context, c engine.RunConfig, check bool) (e
 		return engine.PrepareResult{}, nil, maskErr(err, masker(c))
 	}
 
-	st := &run{sb: sb}
+	st := &run{r: r, sb: sb}
 	ctx, end := st.begin(ctx)
 	p := &preparation{r: r, c: c, st: st, check: check}
 
@@ -170,6 +170,13 @@ func (p *preparation) clone(ctx context.Context) (string, error) {
 		return "", err
 	}
 
+	// The clone op fetches into the mirror before it clones the workspace from it.
+	release, err := p.r.takeTurn(ctx, c.ProjectID, mirrorTurn)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	return p.st.sb.Clone(ctx, sidecar.CloneRequest{
 		URL: c.Repo.URL, Token: p.token, BaseBranch: c.Repo.BaseBranch, Commit: c.Repo.BaseCommit, Branch: c.Repo.Branch,
 		Name: c.Identity.Name, Email: c.Identity.Email,
@@ -234,7 +241,7 @@ type stepFailure struct{ step, output string }
 // the project's secrets. A project's setups take turns, so runs beside each
 // other do not install into the shared caches at once.
 func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailure, error) {
-	release, err := p.r.takeTurn(ctx, p.c.ProjectID)
+	release, err := p.r.takeTurn(ctx, p.c.ProjectID, setupTurn)
 	if err != nil {
 		return nil, err
 	}

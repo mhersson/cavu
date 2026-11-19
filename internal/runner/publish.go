@@ -27,7 +27,7 @@ func (r *Runner) Publish(ctx context.Context, c engine.RunConfig, p engine.Publi
 		}
 
 		// Not kept: only Prepare and ensureUp add a run, with its ecosystems.
-		st = &run{sb: sb}
+		st = &run{r: r, sb: sb}
 	}
 
 	res, token, err := r.publish(ctx, st, c, p)
