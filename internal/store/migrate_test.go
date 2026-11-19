@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -163,4 +164,147 @@ func TestMigrationSixKeepsProjects(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "r", p.RepoURL)
 	require.Equal(t, ForgePolicy{}, p.Forge)
+}
+
+type columnInfo struct {
+	Name, Type string
+	NotNull    bool
+	Default    string
+	PK         int
+}
+
+func projectColumnInfo(t *testing.T, s *Store) []columnInfo {
+	t.Helper()
+
+	rows, err := s.db.Query(`SELECT name, type, "notnull", COALESCE(dflt_value, ''), pk FROM pragma_table_info('projects') ORDER BY cid`)
+	require.NoError(t, err)
+
+	defer rows.Close()
+
+	var out []columnInfo
+
+	for rows.Next() {
+		var c columnInfo
+		require.NoError(t, rows.Scan(&c.Name, &c.Type, &c.NotNull, &c.Default, &c.PK))
+
+		out = append(out, c)
+	}
+
+	require.NoError(t, rows.Err())
+
+	return out
+}
+
+func projectRows(t *testing.T, s *Store) [][]any {
+	t.Helper()
+
+	rows, err := s.db.Query(`SELECT * FROM projects ORDER BY id`)
+	require.NoError(t, err)
+
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+
+	var out [][]any
+
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+
+		require.NoError(t, rows.Scan(ptrs...))
+
+		out = append(out, vals)
+	}
+
+	require.NoError(t, rows.Err())
+
+	return out
+}
+
+func TestMigrationSevenKeepsEverythingAndFreesNames(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cavu.db")
+	ctx := context.Background()
+
+	old, err := open(ctx, path, migrations[:6])
+	require.NoError(t, err)
+
+	for _, name := range []string{"alpha", "beta"} {
+		_, err = old.db.Exec(`INSERT INTO projects (name, repo_url, base_branch, setup_command, verify_command,
+			verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches, caps, forge)
+			VALUES (?, 'r', 'main', 'setup', 'verify', 1, '{"go":"1"}', '["h"]', '{"A":"b"}', '["V"]', '{"s":true}', '{"c":"1"}', '{"NoCI":true}')`, name)
+		require.NoError(t, err)
+	}
+
+	_, err = old.db.Exec(`UPDATE projects SET baseline_commit = 'abc', baseline_passed = 1, baseline_at = 5, baseline_output = 'out',
+		check_requested_at = 7 WHERE name = 'beta'`)
+	require.NoError(t, err)
+
+	for _, project := range []int{1, 2, 2} {
+		_, err = old.db.Exec(`INSERT INTO tasks (project_id, title, body, requester, base_commit, reference,
+			replay_id, overrides, created_at) VALUES (?, 't', '', 'cli', '', 0, 0, '{}', 1)`, project)
+		require.NoError(t, err)
+	}
+
+	_, err = old.db.Exec(`INSERT INTO events (task_id, at, type, actor, payload) VALUES (1, 1, 'x', 'user', '{}'), (3, 2, 'y', 'user', '{}')`)
+	require.NoError(t, err)
+
+	before := projectColumnInfo(t, old)
+
+	oldRows := projectRows(t, old)
+
+	require.NoError(t, old.Close())
+
+	s, err := Open(ctx, path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = s.Close() })
+
+	assert.Equal(t, append(before, columnInfo{Name: "removed_at", Type: "INTEGER"}), projectColumnInfo(t, s),
+		"the rebuilt table is the old one plus removed_at")
+
+	var uniques []string
+
+	rows, err := s.db.Query(`SELECT name FROM pragma_index_list('projects') WHERE "unique" = 1 AND partial = 1`)
+	require.NoError(t, err)
+
+	defer rows.Close()
+
+	for rows.Next() {
+		var n string
+		require.NoError(t, rows.Scan(&n))
+
+		uniques = append(uniques, n)
+	}
+
+	require.NoError(t, rows.Err())
+	require.Equal(t, []string{"projects_name"}, uniques)
+
+	newRows := projectRows(t, s)
+	require.Len(t, newRows, len(oldRows))
+
+	for i, want := range oldRows {
+		require.Equal(t, append(want, nil), newRows[i], "every column and id kept, removed_at empty")
+	}
+
+	var tasks, events, bad int
+	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&tasks))
+	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&events))
+	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&bad))
+	require.Equal(t, 3, tasks)
+	require.Equal(t, 2, events)
+	require.Zero(t, bad)
+
+	fresh, err := s.CreateProject(ctx, Project{Name: "gamma"})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), fresh.ID, "the id sequence goes on above every old id")
+
+	_, err = s.CreateProject(ctx, Project{Name: "alpha"})
+	require.ErrorIs(t, err, ErrConflict, "a live name stays unique")
 }
