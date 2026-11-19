@@ -232,26 +232,31 @@ func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) st
 	return rows, nil
 }
 
-// waitingOf is why the task does not act and until when: the scheduler's
-// reason, which also knows the slots and the other tasks' pauses, with no end;
-// else the wait or the watch Decide gives, with its end when a clock has one.
+// waitingOf is why the task does not act and until when: the wait or the
+// watch Decide gives, with its end when a clock has one. The scheduler tells
+// those in Decide's words, and its own reasons, from the slots, the other
+// tasks' pauses and the looks at a pull request, which come first with no end.
 func waitingOf(s Snapshot, waiting func(int64) string) (string, *time.Time) {
-	if waiting != nil {
-		if why := waiting(s.Task.ID); why != "" {
-			return why, nil
+	var (
+		why   string
+		until *time.Time
+	)
+
+	if a := Decide(s); a.Kind == KindWait || a.Kind == KindWatch {
+		why = a.Why
+
+		if !a.Until.IsZero() {
+			until = new(a.Until.UTC())
 		}
 	}
 
-	a := Decide(s)
-
-	switch {
-	case a.Kind != KindWait && a.Kind != KindWatch:
-		return "", nil
-	case a.Until.IsZero():
-		return a.Why, nil
-	default:
-		return a.Why, new(a.Until.UTC())
+	if waiting != nil {
+		if told := waiting(s.Task.ID); told != "" && told != why {
+			return told, nil
+		}
 	}
+
+	return why, until
 }
 
 // budgetOf is what the snapshot's task used of its budget.

@@ -73,17 +73,24 @@ func TestViewWaitsOutAUsageLimit(t *testing.T) {
 	assert.NotEmpty(t, v.Waiting)
 	assert.Equal(t, new(resets.UTC()), v.WaitingUntil)
 
-	scheduler := func(taskID int64) string {
-		if taskID == id {
-			return engine.WaitingForSlot
-		}
+	decided := v.Waiting
+	tells := func(why string) func(int64) string {
+		return func(taskID int64) string {
+			if taskID == id {
+				return why
+			}
 
-		return ""
+			return ""
+		}
 	}
 
-	v = h.viewOf(id, scheduler)
+	v = h.viewOf(id, tells(engine.WaitingForSlot))
 	assert.Equal(t, engine.WaitingForSlot, v.Waiting, "the scheduler's reason comes first")
 	assert.Nil(t, v.WaitingUntil, "and has no end")
+
+	v = h.viewOf(id, tells(decided))
+	assert.Equal(t, decided, v.Waiting)
+	assert.Equal(t, new(resets.UTC()), v.WaitingUntil, "the scheduler tells Decide's own wait, whose end is known")
 }
 
 func TestViewGivesEachDependencyWithItsStatus(t *testing.T) {
