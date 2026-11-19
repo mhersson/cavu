@@ -267,7 +267,7 @@ An event is one fact in a task's history, recorded once and never changed:
 
 ```json
 {"id": 42, "task_id": 7, "run_id": 3, "at": "2030-01-02T03:04:05Z", "type": "agent_text", "actor": "agent",
- "payload": {"text": "Adding the footer."}}
+ "payload": {"text": "Adding the footer."}, "text": "Adding the footer."}
 ```
 
 | Field | Meaning |
@@ -279,6 +279,7 @@ An event is one fact in a task's history, recorded once and never changed:
 | `type` | What happened, such as `task_started`, `agent_text` or `stopped`. |
 | `actor` | Who recorded it: `user`, `engine`, `runner` or `agent`. |
 | `payload` | The event's details, a JSON value whose shape the type sets. |
+| `text` | One sentence that tells the event, for a person; the same line `cavu task run` prints. |
 
 A task's pull request leaves these events: `publish_started` and `published` for a push of the branch and the pull request opened or updated by it, `pr_observed` for what GitHub showed of the pull request: CAVU's first look since its push, its ready-marking or a person's action, each later look that differs from the last record, and the look before a push that finds the pull request merged or closed or its branch moved by a person, and `ready_started` and `pr_ready` for CAVU marking it ready for review. After a follow-up run for reviewers' requests, `reply_started` and `replied` record CAVU's one comment on the pull request that answers them. `home_removed` records that the task's home volume was removed once the task could run no more: it is done or cancelled, or its change was exported with no pull request to follow, as with the switch `publish` off.
 

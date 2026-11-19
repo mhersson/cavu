@@ -51,8 +51,8 @@ func wire(e store.Event) string {
 		run = strconv.FormatInt(e.RunID, 10)
 	}
 
-	return fmt.Sprintf(`{"id": %d, "task_id": %d, "run_id": %s, "at": %q, "type": %q, "actor": %q, "payload": %s}`,
-		e.ID, e.TaskID, run, rfc3339(e.At), e.Type, e.Actor, e.Payload)
+	return fmt.Sprintf(`{"id": %d, "task_id": %d, "run_id": %s, "at": %q, "type": %q, "actor": %q, "payload": %s, "text": %q}`,
+		e.ID, e.TaskID, run, rfc3339(e.At), e.Type, e.Actor, e.Payload, engine.EventText(e))
 }
 
 // page is the body of a page of events.
@@ -63,6 +63,22 @@ func page(events []store.Event) string {
 	}
 
 	return `{"events": [` + strings.Join(items, ", ") + `]}`
+}
+
+func TestEventCarriesItsSentence(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+	f.say(t, id, 0, 1)
+
+	status, body := f.call(t, fmt.Sprintf("GET /api/tasks/%d/events", id), "")
+	require.Equal(t, http.StatusOK, status, body)
+
+	var page struct{ Events []struct{ Text string } }
+	require.NoError(t, json.Unmarshal([]byte(body), &page))
+	require.Len(t, page.Events, 1)
+	assert.Contains(t, page.Events[0].Text, "line 0", "the agent's text is a fact of the sentence")
 }
 
 func TestEventPages(t *testing.T) {

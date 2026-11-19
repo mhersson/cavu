@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
 )
 
@@ -29,10 +30,11 @@ type eventJSON struct {
 	Type    string          `json:"type"`
 	Actor   string          `json:"actor"`
 	Payload json.RawMessage `json:"payload"`
+	Text    string          `json:"text"`
 }
 
 func eventView(e store.Event) eventJSON {
-	v := eventJSON{ID: e.ID, TaskID: e.TaskID, At: e.At.UTC(), Type: e.Type, Actor: e.Actor, Payload: e.Payload}
+	v := eventJSON{ID: e.ID, TaskID: e.TaskID, At: e.At.UTC(), Type: e.Type, Actor: e.Actor, Payload: e.Payload, Text: engine.EventText(e)}
 	if e.RunID != 0 {
 		v.RunID = new(e.RunID)
 	}
