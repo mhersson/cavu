@@ -121,6 +121,8 @@ func (in *instance) forge() (*forgefake.Fake, string) {
 }
 
 func TestForgeTaskEndToEnd(t *testing.T) {
+	t.Parallel()
+
 	// The first task's work, then the second's, which waits until the first is merged.
 	mock := mockapi.Start(t, []mockapi.Step{change, done, change, done})
 	in := setup(t, mock.HostURL())

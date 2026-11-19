@@ -111,7 +111,9 @@ func child(t *testing.T) string {
 }
 
 func TestMain(m *testing.M) {
-	code := m.Run()
+	// Git is isolated once for the binary: a test's own isolation, through
+	// t.Setenv, would keep it from running in parallel.
+	code := gitrepo.Run(m)
 
 	if image.bin != "" {
 		name := sandbox.ImageName(sandboxtest.CavuVersion)
@@ -269,8 +271,6 @@ func (in *instance) ok(args ...string) string {
 // the image.
 func setup(t *testing.T, endpoint string) *instance {
 	t.Helper()
-
-	gitrepo.Isolate(t)
 
 	rt := sandboxtest.Runtime(t)
 	bare := strings.TrimPrefix(gitrepo.Bare(t, gitrepo.New(t, map[string]string{"notes.txt": "first line\n"})), "file://")
