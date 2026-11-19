@@ -56,12 +56,14 @@ func NeedsYou(s Snapshot) bool {
 
 // PullRequest is a task's pull request as a person sees it.
 type PullRequest struct {
-	Number            int
-	URL, Branch, Head string // Head is the pull request's head as CAVU has it
-	State             string // PROpen, PRMerged or PRClosed as the newest look has it; PROpen before any look
-	Ready             bool   // open, no draft, checks passed (or none, with no CI), and the task waits for a person, not for a follow-up run
-	Checks            string // a Checks* value of the head; "" until a look showed it
-	Failed            []string
+	Number int      `json:"number"`
+	URL    string   `json:"url"`
+	Branch string   `json:"branch"`
+	Head   string   `json:"head"`   // the pull request's head as CAVU has it
+	State  string   `json:"state"`  // PROpen, PRMerged or PRClosed as the newest look has it; PROpen before any look
+	Ready  bool     `json:"ready"`  // open, no draft, checks passed (or none, with no CI), and the task waits for a person, not for a follow-up run
+	Checks string   `json:"checks"` // a Checks* value of the head; "" until a look showed it
+	Failed []string `json:"failed_checks"`
 }
 
 // PullRequestOf reads the task's pull request, nil before its first publish.

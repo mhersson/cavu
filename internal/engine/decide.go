@@ -28,8 +28,8 @@ type Pause struct {
 
 // Dep is one dependency of a task, with where it stands.
 type Dep struct {
-	TaskID int64
-	Status Status
+	TaskID int64  `json:"id"`
+	Status Status `json:"status"`
 }
 
 // Snapshot is a task at one moment, as Decide sees it.

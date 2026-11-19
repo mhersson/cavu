@@ -36,6 +36,7 @@ type Store interface {
 	Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error)
 	UsageSince(ctx context.Context, taskID, afterEventID int64) ([]store.Usage, error)
 	UsageBetween(ctx context.Context, from, to time.Time) ([]store.Usage, error)
+	UsageTotals(ctx context.Context, taskID int64) ([]store.Usage, error)
 	CreateRun(ctx context.Context, r store.Run) (store.Run, error)
 	UpdateRun(ctx context.Context, r store.Run) error
 	OpenRun(ctx context.Context, taskID int64) (store.Run, bool, error)
@@ -43,6 +44,7 @@ type Store interface {
 	TaskDeps(ctx context.Context, taskID int64) ([]int64, error)
 	LastEventIDs(ctx context.Context) (map[int64]int64, error)
 	Projects(ctx context.Context) ([]store.Project, error)
+	ProjectNames(ctx context.Context) (map[int64]string, error)
 	Tasks(ctx context.Context, includeReplays bool) ([]store.Task, error)
 	RemoveProject(ctx context.Context, id int64, at time.Time, secretPrefix string) error
 }
