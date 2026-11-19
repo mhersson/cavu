@@ -83,7 +83,7 @@ type turnKind int
 const (
 	setupTurn turnKind = iota
 	// mirrorTurn is held over each write into the project's mirror: two fetches
-	// into one mirror at once fail to lock a ref the other moved.
+	// into one mirror at once can fail to lock a ref the other moved.
 	mirrorTurn
 )
 
