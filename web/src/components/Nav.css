@@ -68,3 +68,7 @@
 .live[data-live="false"]::before {
   background: var(--grey0);
 }
+
+.btn.link.signout {
+  color: var(--grey2);
+}

@@ -26,10 +26,10 @@ export default function Nav({ count, live, version }: Props) {
       </NavLink>
       <div className="nav-foot">
         <span className="live" role="status" data-live={live}>
-          {live ? 'Live' : 'Offline'}
+          {live ? 'live' : 'offline'}
         </span>
         <span>{version}</span>
-        <button className="btn link" onClick={() => void signOut()}>
+        <button className="btn link signout" onClick={() => void signOut()}>
           Sign out
         </button>
       </div>
