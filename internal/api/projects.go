@@ -213,7 +213,6 @@ func (s *server) editProject(w http.ResponseWriter, r *http.Request) error {
 	return s.replyProject(w, r, http.StatusOK)
 }
 
-// removeProject refuses while the project has open tasks; see engine.RemoveProject.
 func (s *server) removeProject(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {

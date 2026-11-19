@@ -23,7 +23,7 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless; or the query names a project or a status that does not exist; or a query value or header that must be a whole number is not one. |
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks; or the query names a project or a status that does not exist; or a query value or header that must be a whole number is not one. |
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist. |
@@ -58,7 +58,7 @@ Ends the session of the cookie the request carries and answers 204 with the cook
 
 ### `GET /api/projects`
 
-Answers 200 with every project, ordered by name:
+Answers 200 with every project that is not removed, ordered by name:
 
 ```json
 {"projects": [{"id": 1, "name": "web", "...": "..."}]}
@@ -78,7 +78,7 @@ Changes the fields the body names and keeps the others: a field left out or sent
 
 ### `DELETE /api/projects/{id}`
 
-Removes the project, as `cavu project remove` does: its cache and mirror volumes and its secrets. Its tasks, with their events and artifacts, stay, and its finished tasks still show its name. Answers 204 with no body. A removed project answers 404 on every project route, and its name can be used for a new project. Answers 400 while the project has a task that is neither done nor cancelled, with the line naming them, and 409 when the container runtime would not remove the volumes, with the runtime's error in the line; the project is then as it was. There is no undo.
+Removes the project, as `cavu project remove` does: its cache and mirror volumes and its secrets. Its tasks, with their events and artifacts, stay, and its finished tasks still show its name. Answers 204 with no body. A removed project answers 404 on every project route, and its name can be used for a new project. Answers 400 while the project has a task that is neither done nor cancelled, with the line naming them, and 409 when the container runtime would not remove the volumes, with the runtime's error in the line; the project and its secrets stay, and removing it again finishes the job. There is no undo.
 
 ### `POST /api/projects/{id}/check`
 
