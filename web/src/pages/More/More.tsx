@@ -23,10 +23,11 @@ export default function More() {
       <div className="more-list">
         <Link className="more-item" to="/projects">
           <span className="t1">Projects</span>
-          {projects !== null && <span className="t2" data-projects={projects}>{projects} projects</span>}
+          {projects !== null && <span className="t2">{projects} projects</span>}
         </Link>
         <Link className="more-item" to="/settings">
           <span className="t1">Settings</span>
+          <span className="t2">The model endpoint, models, limits, GitHub</span>
         </Link>
         <button className="more-item" onClick={() => void signOut()}>
           <span className="t1">Sign out</span>
