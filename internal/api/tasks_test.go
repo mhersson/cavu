@@ -837,3 +837,103 @@ func TestListMarksReadyPullRequests(t *testing.T) {
 	assert.Equal(t, map[float64]any{float64(ready): true, float64(failing): false, float64(bare): false}, got)
 	assert.Equal(t, got, needsYou, "a ready pull request needs a person, and the others here do not")
 }
+
+// thirty gives the fixture 30 tasks of site, with the ids 1 to 30: the even
+// ones are done, those one above a multiple of four stopped on a question, and
+// the others are drafts.
+func (f *fixture) thirty(t *testing.T) {
+	t.Helper()
+
+	f.addProject(t, site)
+
+	for i := range 30 {
+		id := f.task(t, fmt.Sprintf(`{"project": "site", "title": "Task %d"}`, i+1))
+		require.EqualValues(t, i+1, id)
+
+		switch {
+		case id%2 == 0:
+			f.add(t, id, engine.TaskStarted, struct{}{})
+			f.add(t, id, engine.Exported, engine.ExportedPayload{HeadCommit: "4b825dc"})
+			f.add(t, id, engine.Merged, struct{}{})
+		case id%4 == 1:
+			f.ask(t, id, "Which colour?")
+		}
+	}
+}
+
+// listed lists the tasks with the query and gives their ids in order.
+func (f *fixture) listed(t *testing.T, query string) []int64 {
+	t.Helper()
+
+	status, body := f.call(t, "GET /api/tasks"+query, "")
+	require.Equal(t, http.StatusOK, status, body)
+
+	var l struct{ Tasks []struct{ ID int64 } }
+	require.NoError(t, json.Unmarshal([]byte(body), &l))
+
+	ids := []int64{}
+	for _, task := range l.Tasks {
+		ids = append(ids, task.ID)
+	}
+
+	return ids
+}
+
+// ids gives n ids from first, step apart.
+func ids(first, step int64, n int) []int64 {
+	out := make([]int64, n)
+	for i := range out {
+		out[i] = first + int64(i)*step
+	}
+
+	return out
+}
+
+func TestTaskListLimitAndOrder(t *testing.T) {
+	f := newServer(t)
+	f.thirty(t)
+
+	for _, tc := range []struct {
+		query string
+		want  []int64
+	}{
+		{"?limit=10&order=newest", ids(30, -1, 10)},
+		{"?limit=10&order=newest&status=done", ids(30, -2, 10)},
+		{"?limit=10&order=oldest&status=done", ids(2, 2, 10)},
+		{"?order=newest&status=draft,blocked", ids(29, -2, 15)},
+		{"?limit=3&status=blocked,draft", ids(1, 2, 3)},
+		{"?limit=5&order=newest&needs_you=true", ids(29, -4, 5)},
+		{"?limit=50", ids(1, 1, 30)},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			assert.Equal(t, tc.want, f.listed(t, tc.query))
+		})
+	}
+
+	for _, query := range []string{"?limit=ten", "?limit=-1", "?order=sideways", "?status=done,paused", "?status=done,"} {
+		t.Run("refused: "+query, func(t *testing.T) {
+			status, body := f.call(t, "GET /api/tasks"+query, "")
+			require.Equal(t, http.StatusBadRequest, status, body)
+			assertError(t, body)
+		})
+	}
+}
+
+func TestTaskListWithoutLimitIsUnchanged(t *testing.T) {
+	f := newServer(t)
+	f.thirty(t)
+
+	for _, tc := range []struct {
+		query string
+		want  []int64
+	}{
+		{"", ids(1, 1, 30)},
+		{"status=done", ids(2, 2, 15)},
+		{"needs_you=true", ids(1, 4, 8)},
+	} {
+		t.Run("filtered by "+tc.query, func(t *testing.T) {
+			assert.Equal(t, tc.want, f.listed(t, "?"+tc.query), "every task the filters keep, oldest first")
+			assert.Equal(t, tc.want, f.listed(t, "?"+tc.query+"&limit=0&order=oldest"))
+		})
+	}
+}

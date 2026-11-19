@@ -56,7 +56,35 @@ func number(name, v string) (int64, error) {
 	return n, nil
 }
 
-// events answers a page of the task's events after the query's after, oldest first.
+// boolean reads true or false from a query value; "" is absent.
+func boolean(name, v string, absent bool) (bool, error) {
+	if v == "" {
+		return absent, nil
+	}
+
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, &apiError{http.StatusBadRequest, fmt.Sprintf("%s %q: want true or false", name, v)}
+	}
+
+	return b, nil
+}
+
+// newestFirst reads a query's order: oldest, which "" is too, or newest.
+func newestFirst(order string) (bool, error) {
+	switch order {
+	case "", "oldest":
+		return false, nil
+	case "newest":
+		return true, nil
+	}
+
+	return false, &apiError{http.StatusBadRequest, fmt.Sprintf("order %q: want oldest or newest", order)}
+}
+
+// events answers a page of the task's events after the query's after, oldest
+// first, or with order=newest below it, newest first; agent=false leaves out
+// the agent's.
 func (s *server) events(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {
@@ -75,11 +103,26 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	newest, err := newestFirst(q.Get("order"))
+	if err != nil {
+		return err
+	}
+
+	agent, err := boolean("agent", q.Get("agent"), true)
+	if err != nil {
+		return err
+	}
+
 	if _, err := s.Store.Task(r.Context(), id); err != nil {
 		return fmt.Errorf("task %d: %w", id, err)
 	}
 
-	events, err := s.Store.EventsAfter(r.Context(), after, id, int(cmp.Or(min(limit, pageMax), pageSize)))
+	p := store.EventPage{After: after, Limit: int(cmp.Or(min(limit, pageMax), pageSize)), Newest: newest}
+	if !agent {
+		p.OmitActor = "agent"
+	}
+
+	events, err := s.Store.EventsPage(r.Context(), id, p)
 	if err != nil {
 		return err
 	}

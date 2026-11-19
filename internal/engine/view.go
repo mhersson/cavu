@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -194,9 +195,21 @@ func (l *Loop) View(ctx context.Context, taskID int64, waiting func(int64) strin
 	return v, nil
 }
 
-// List lists every task but a replay's shadows, oldest first, of the project
-// projectID when it is not 0. A removed project's tasks keep its name.
-func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) string) ([]Row, error) {
+// ListQuery narrows a list of tasks: to the project ProjectID when it is not
+// 0, to the statuses in Statuses when it has any, and with NeedsYou to the
+// tasks that need a person. Newest lists the newest first, and Limit, when it
+// is not 0, keeps the first Limit tasks the other fields keep.
+type ListQuery struct {
+	ProjectID int64
+	Statuses  []Status
+	NeedsYou  bool
+	Newest    bool
+	Limit     int
+}
+
+// List lists the tasks q keeps, but a replay's shadows, oldest first unless q
+// says newest. A removed project's tasks keep its name.
+func (l *Loop) List(ctx context.Context, q ListQuery, waiting func(int64) string) ([]Row, error) {
 	names, err := l.Store.ProjectNames(ctx)
 	if err != nil {
 		return nil, err
@@ -207,10 +220,18 @@ func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) st
 		return nil, err
 	}
 
+	if q.Newest {
+		slices.Reverse(ts)
+	}
+
 	rows := []Row{}
 
 	for _, t := range ts {
-		if projectID != 0 && t.ProjectID != projectID {
+		if q.Limit > 0 && len(rows) == q.Limit {
+			break
+		}
+
+		if q.ProjectID != 0 && t.ProjectID != q.ProjectID {
 			continue
 		}
 
@@ -232,6 +253,10 @@ func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) st
 
 		if pr := PullRequestOf(s.Facts, s.Watch.NoCI); pr != nil {
 			r.PullRequestReady = pr.Ready
+		}
+
+		if len(q.Statuses) > 0 && !slices.Contains(q.Statuses, r.Status) || q.NeedsYou && !r.NeedsYou {
+			continue
 		}
 
 		rows = append(rows, r)

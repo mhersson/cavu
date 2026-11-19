@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -127,6 +128,69 @@ func TestEventPages(t *testing.T) {
 	})
 }
 
+// mixed gives the task twelve events of the engine's, each followed by three
+// of the agent's, and returns every event of the task as stored.
+func (f *fixture) mixed(t *testing.T, taskID int64) []store.Event {
+	t.Helper()
+
+	for range 12 {
+		f.add(t, taskID, engine.VerifyEnded, engine.VerifyEndedPayload{Result: engine.ResultPassed})
+		f.say(t, taskID, 0, 3)
+	}
+
+	all, err := f.store.Events(t.Context(), taskID, 0, 0)
+	require.NoError(t, err)
+
+	return all
+}
+
+func TestEventsNewestFirstWithoutTheAgent(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+
+	all := f.mixed(t, id)
+
+	var want []store.Event // the events that are not the agent's, newest first
+
+	for _, e := range slices.Backward(all) {
+		if e.Actor != "agent" {
+			want = append(want, e)
+		}
+	}
+
+	require.Len(t, want, 12)
+
+	for _, tc := range []struct {
+		after string
+		want  []store.Event
+	}{
+		{"", want[:5]},
+		{fmt.Sprintf("&after=%d", want[4].ID), want[5:10]},
+		{fmt.Sprintf("&after=%d", want[9].ID), want[10:]},
+		{fmt.Sprintf("&after=%d", want[11].ID), nil},
+	} {
+		status, body := f.call(t, fmt.Sprintf("GET /api/tasks/%d/events?order=newest&agent=false&limit=5%s", id, tc.after), "")
+		require.Equal(t, http.StatusOK, status, body)
+		assert.JSONEq(t, page(tc.want), body, "the page after %q", tc.after)
+	}
+}
+
+func TestEventsDefaultIsUnchanged(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+	all := f.mixed(t, id)
+
+	for _, query := range []string{"", "?order=oldest&agent=true"} {
+		status, body := f.call(t, fmt.Sprintf("GET /api/tasks/%d/events%s", id, query), "")
+		require.Equal(t, http.StatusOK, status, body)
+		assert.JSONEq(t, page(all), body, "every event, the agent's too, oldest first, for %q", query)
+	}
+}
+
 func TestEventRequestsRefused(t *testing.T) {
 	f := newServer(t)
 	f.addProject(t, site)
@@ -141,6 +205,8 @@ func TestEventRequestsRefused(t *testing.T) {
 		{"a page of an unknown task", "GET /api/tasks/99/events", "", http.StatusNotFound},
 		{"a page whose limit is not a number", fmt.Sprintf("GET /api/tasks/%d/events?limit=many", id), "", http.StatusBadRequest},
 		{"a page after a negative id", fmt.Sprintf("GET /api/tasks/%d/events?after=-1", id), "", http.StatusBadRequest},
+		{"a page in no order", fmt.Sprintf("GET /api/tasks/%d/events?order=sideways", id), "", http.StatusBadRequest},
+		{"a page whose agent is not a boolean", fmt.Sprintf("GET /api/tasks/%d/events?agent=maybe", id), "", http.StatusBadRequest},
 		{"a stream of an unknown task", "GET /api/events?task=99", "", http.StatusNotFound},
 		{"a stream after what is not a number", "GET /api/events?after=last", "", http.StatusBadRequest},
 		{"a stream whose Last-Event-ID is not a number", "GET /api/events", "last", http.StatusBadRequest},

@@ -234,7 +234,7 @@ func TestList(t *testing.T) {
 			return ""
 		}
 
-		rows, err := h.loop.List(ctx, projectID, scheduler)
+		rows, err := h.loop.List(ctx, engine.ListQuery{ProjectID: projectID}, scheduler)
 		require.NoError(t, err)
 
 		out := []row{}
@@ -303,7 +303,7 @@ func TestNeedsYouSince(t *testing.T) {
 			assert.Equal(t, tc.since, v.NeedsYouSince)
 			assert.Equal(t, tc.way != "", v.NeedsYou)
 
-			rows, err := h.loop.List(t.Context(), 0, nil)
+			rows, err := h.loop.List(t.Context(), engine.ListQuery{}, nil)
 			require.NoError(t, err)
 			require.Len(t, rows, 1)
 			assert.Equal(t, tc.way, rows[0].Needs)
@@ -323,7 +323,7 @@ func TestRowCarriesTheWait(t *testing.T) {
 		Reason: engine.StopUsageLimit, Explanation: "The usage limit was reached.", Action: engine.ClearNone, ResetsAt: resets,
 	})
 
-	rows, err := h.loop.List(t.Context(), 0, nil)
+	rows, err := h.loop.List(t.Context(), engine.ListQuery{}, nil)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 

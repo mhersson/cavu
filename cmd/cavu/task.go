@@ -249,7 +249,7 @@ func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	defer a.close()
 
-	rows, err := a.actions().List(ctx, 0, nil)
+	rows, err := a.actions().List(ctx, engine.ListQuery{NeedsYou: *needsYou}, nil)
 	if err != nil {
 		return err
 	}
@@ -258,10 +258,6 @@ func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	fmt.Fprintln(w, "ID\tPROJECT\tSTATUS\tNEEDS YOU\tTITLE")
 
 	for _, r := range rows {
-		if *needsYou && !r.NeedsYou {
-			continue
-		}
-
 		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", r.ID, r.Project, r.Status, r.Needs, r.Title)
 	}
 
