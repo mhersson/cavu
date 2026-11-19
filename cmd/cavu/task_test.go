@@ -1543,153 +1543,23 @@ func TestTaskShowPrintsDependenciesAndTheWait(t *testing.T) {
 func TestEventLine(t *testing.T) {
 	at := time.Date(2026, 11, 17, 9, 30, 15, 0, time.Local)
 
-	// A fix run's head as git gives it, and its first twelve characters; four
-	// requests, a count that neither the time nor the short head holds.
-	head := "fed789abcdef0123456789abcdef0123456789ab"
-	short := head[:12]
-	requests := []string{"PRRT_kwDOAbc1", "PRRT_kwDOAbc2", "PRR_kwDOAbc3", "PRRT_kwDOAbc4"}
-
-	tests := []struct {
-		typ     string
-		payload any
-		values  []string
-	}{
-		{engine.AgentText, engine.AgentTextPayload{Text: "Reading the handler.\nThen the tests."}, []string{"Reading the handler.", "Then the tests."}},
-		{engine.AgentTool, engine.AgentToolPayload{Name: "Bash", Summary: "go test ./..."}, []string{"Bash", "go test ./..."}},
-		{engine.SessionStarted, engine.SessionStartedPayload{Mode: engine.ModeFixVerify, SessionID: "abc"}, []string{engine.ModeFixVerify}},
-		{engine.SessionEnded, engine.SessionEndedPayload{Outcome: engine.OutcomeUnfinished, Turns: 17}, []string{engine.OutcomeUnfinished, "17"}},
-		{engine.VerifyEnded, engine.VerifyEndedPayload{Result: engine.ResultTimeout, Output: "FAIL"}, []string{engine.ResultTimeout}},
-		{engine.PrepareFailed, engine.PrepareFailedPayload{Step: "setup", Output: "npm ERR!"}, []string{"setup"}},
-		{engine.Stopped, engine.StoppedPayload{Reason: engine.StopQuestion, Explanation: "Which API version?"}, []string{engine.StopQuestion, "Which API version?"}},
-		{engine.Prepared, engine.PreparedPayload{BaseCommit: "base123"}, []string{"base123"}},
-		{engine.ReviewStarted, engine.ReviewStartedPayload{SessionID: "r1", Scoped: true, Head: "fed789", Why: "A fix changed the code."}, nil},
-		{
-			engine.ReviewEnded,
-			engine.ReviewEndedPayload{
-				Outcome: engine.ReviewReviewed, Scoped: true, Turns: 17, Findings: slices.Repeat([]engine.Finding{{Severity: engine.SeverityImportant}}, 4),
-				Addressed: []bool{true, false, true, false, false, false},
-			},
-			[]string{engine.ReviewReviewed, "17", "4", "2", "6"},
-		},
-		{engine.SessionCut, engine.SessionCutPayload{Turns: 4}, []string{"4"}},
-		{engine.PublishStarted, engine.PublishStartedPayload{Why: "The change is not on GitHub yet."}, []string{"The change is not on GitHub yet."}},
-		{
-			engine.Published,
-			engine.PublishedPayload{Branch: "cavu/fix-the-login", Head: "fed789", Number: 7, URL: "https://github.com/acme/web/pull/7", NodeID: "PR_7"},
-			[]string{"cavu/fix-the-login", "https://github.com/acme/web/pull/7"},
-		},
-		{
-			engine.PRObserved,
-			engine.Observation{
-				State: engine.PROpen, Draft: true, Head: "fed789", Conflict: true, Checks: engine.ChecksFailed, Failed: []string{"lint", "unit-tests"},
-				Comments: []engine.Comment{{ID: "c1", Author: "octocat"}, {ID: "c2", Author: "hubot"}},
-			},
-			[]string{engine.PROpen, engine.ChecksFailed, "lint", "unit-tests", "2"},
-		},
-		{engine.ReadyStarted, engine.ReadyStartedPayload{Why: "The checks passed."}, []string{"The checks passed."}},
-		{engine.PRReady, struct{}{}, nil},
-		{engine.ReplyStarted, engine.ReplyStartedPayload{Why: "The follow-up run is over."}, []string{"The follow-up run is over."}},
-		{engine.Replied, struct{}{}, nil},
-		{engine.HomeRemoved, engine.HomeRemovedPayload{Why: "The task can run no more."}, nil},
-		{engine.RunStarted, engine.RunStartedPayload{Reason: "initial"}, nil},
-		{engine.RunStarted, engine.RunStartedPayload{Reason: "retry"}, nil},
-		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonCIFix, Head: head}, []string{short}},
-		{engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonComments, Head: head, Requests: requests}, []string{short, strconv.Itoa(len(requests))}},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.typ, func(t *testing.T) {
-			raw, err := json.Marshal(tc.payload)
-			require.NoError(t, err)
-
-			l := eventLine(store.Event{At: at, Type: tc.typ, Payload: raw})
-
-			assert.Equal(t, []string{at.Format(time.TimeOnly), tc.typ}, strings.Fields(l)[:2])
-
-			for _, v := range tc.values {
-				assert.Contains(t, l, v)
-			}
-
-			// A type with no case prints its payload, as prepared does.
-			if tc.typ != engine.Prepared {
-				assert.NotContains(t, l, string(raw), "the line is words, not the payload")
-			}
-
-			assert.NotContains(t, l, "\n")
-			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
-		})
-	}
-
-	t.Run("a run's start tells why it started", func(t *testing.T) {
-		lines := map[string]bool{}
-
-		for _, reason := range []string{"initial", "retry", engine.ReasonCIFix, engine.ReasonComments} {
-			raw, err := json.Marshal(engine.RunStartedPayload{Reason: reason})
-			require.NoError(t, err)
-
-			lines[eventLine(store.Event{At: at, Type: engine.RunStarted, Payload: raw})] = true
-		}
-
-		assert.Len(t, lines, 4, "each reason its own line")
-	})
-
-	t.Run("a fix run's start names no request id and no whole head", func(t *testing.T) {
-		for _, p := range []engine.RunStartedPayload{{Reason: engine.ReasonCIFix, Head: head}, {Reason: engine.ReasonComments, Head: head, Requests: requests}} {
-			raw, err := json.Marshal(p)
-			require.NoError(t, err)
-
-			l := eventLine(store.Event{At: at, Type: engine.RunStarted, Payload: raw})
-
-			assert.NotContains(t, l, head, p.Reason)
-
-			for _, r := range requests {
-				assert.NotContains(t, l, r, p.Reason)
-			}
-		}
-	})
-
-	t.Run("a reviewer's request is counted, never quoted", func(t *testing.T) {
-		bodies := []string{"Rename the handler, please.", "Why is the timeout 30 seconds?"}
-		o := engine.Observation{State: engine.PROpen, Head: "fed789", Checks: engine.ChecksPassed}
-
-		for i, b := range bodies {
-			o.Comments = append(o.Comments, engine.Comment{ID: fmt.Sprintf("c%d", i), Author: "octocat", Path: "login.go", Line: 12, Body: b})
-		}
-
-		raw, err := json.Marshal(o)
+	line := func(typ string, payload any) string {
+		raw, err := json.Marshal(payload)
 		require.NoError(t, err)
 
-		l := eventLine(store.Event{At: at, Type: engine.PRObserved, Payload: raw})
+		return eventLine(store.Event{At: at, Type: typ, Payload: raw})
+	}
 
-		assert.Contains(t, l, strconv.Itoa(len(bodies)))
+	t.Run("the clock, the type and the engine's sentence", func(t *testing.T) {
+		l := line(engine.EgressDenied, engine.EgressDeniedPayload{Host: "evil.example.com"})
 
-		for _, b := range bodies {
-			for w := range strings.FieldsSeq(b) {
-				if len(w) > 4 {
-					assert.NotContains(t, l, w, "a word of a request's text")
-				}
-			}
-		}
-	})
-
-	t.Run("a review's start tells its scope", func(t *testing.T) {
-		line := func(p engine.ReviewStartedPayload) string {
-			raw, err := json.Marshal(p)
-			require.NoError(t, err)
-
-			return eventLine(store.Event{At: at, Type: engine.ReviewStarted, Payload: raw})
-		}
-
-		full := line(engine.ReviewStartedPayload{SessionID: "r1", Head: "def456", Why: "Not reviewed yet."})
-		assert.Equal(t, full, line(engine.ReviewStartedPayload{SessionID: "r2", Head: "fed789", Why: "Another reason."}), "the scope alone sets the line")
-		assert.NotEqual(t, full, line(engine.ReviewStartedPayload{SessionID: "r1", Scoped: true, Head: "def456", Why: "Not reviewed yet."}))
+		assert.Equal(t, []string{at.Format(time.TimeOnly), engine.EgressDenied}, strings.Fields(l)[:2])
+		assert.Contains(t, l, "evil.example.com")
+		assert.NotContains(t, l, "\n")
 	})
 
 	t.Run("control characters", func(t *testing.T) {
-		raw, err := json.Marshal(engine.AgentToolPayload{Name: "Bash", Summary: "printf '\x1b[2J\x1b[31mred\x1b[0m\x07\u009b'"})
-		require.NoError(t, err)
-
-		l := eventLine(store.Event{At: at, Type: engine.AgentTool, Payload: raw})
+		l := line(engine.AgentTool, engine.AgentToolPayload{Name: "Bash", Summary: "printf '\x1b[2J\x1b[31mred\x1b[0m\x07\u009b'"})
 
 		assert.False(t, strings.ContainsFunc(l, unicode.IsControl), "%q", l)
 		assert.Contains(t, l, "red")
@@ -1698,12 +1568,9 @@ func TestEventLine(t *testing.T) {
 	t.Run("a long text", func(t *testing.T) {
 		// One of the two puts a two-byte character across the cut, whatever the line's head.
 		for _, text := range []string{strings.Repeat("x", 5000), strings.Repeat("å", 2500), "x" + strings.Repeat("å", 2500)} {
-			raw, err := json.Marshal(engine.AgentTextPayload{Text: text})
-			require.NoError(t, err)
+			l := line(engine.AgentText, engine.AgentTextPayload{Text: text})
 
-			l := eventLine(store.Event{At: at, Type: engine.AgentText, Payload: raw})
-
-			assert.LessOrEqual(t, utf8.RuneCountInString(l), 200)
+			assert.LessOrEqual(t, len(l), maxLine)
 			assert.Greater(t, utf8.RuneCountInString(l), 100, "the line keeps the head of the text")
 			assert.True(t, utf8.ValidString(l), l)
 		}
@@ -1721,11 +1588,4 @@ func newest[T any](events []store.Event, typ string) (T, bool) {
 	}
 
 	return v, false
-}
-
-func TestCountedIsSingularForOne(t *testing.T) {
-	assert.Equal(t, "0 turns", counted(0, "turn"))
-	assert.Equal(t, "1 turn", counted(1, "turn"))
-	assert.Equal(t, "2 findings", counted(2, "finding"))
-	assert.Equal(t, "1 finding", counted(1, "finding"))
 }

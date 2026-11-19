@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -406,7 +405,7 @@ func printState(w io.Writer, s engine.Snapshot) engine.Status {
 			state += ", ready for your review"
 		}
 
-		fmt.Fprintf(w, "pr:      %s (%s)\nchecks:  %s\n", pr.URL, state, checksText(pr.Checks, pr.Failed))
+		fmt.Fprintf(w, "pr:      %s (%s)\nchecks:  %s\n", pr.URL, state, engine.ChecksText(pr.Checks, pr.Failed))
 	}
 
 	for _, f := range facts.Review.Open {
@@ -443,18 +442,6 @@ func printState(w io.Writer, s engine.Snapshot) engine.Status {
 	}
 
 	return status
-}
-
-// checksText is a pull request's checks, the failed ones named.
-func checksText(checks string, failed []string) string {
-	switch {
-	case checks == "":
-		return "not read yet"
-	case len(failed) == 0:
-		return checks
-	}
-
-	return checks + ": " + strings.Join(failed, ", ")
 }
 
 // findingLine is a finding's severity, where, what and why, each that is set.
@@ -494,15 +481,6 @@ func printUsage(ctx context.Context, w io.Writer, s *store.Store, taskID int64, 
 	fmt.Fprintln(w)
 
 	return nil
-}
-
-// counted returns n with noun, pluralised unless n is 1.
-func counted(n int, noun string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, noun)
-	}
-
-	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func printEvents(w io.Writer, events []store.Event) {
@@ -699,70 +677,9 @@ func waitText(act engine.Action) string {
 // maxLine bounds an event's line, in bytes.
 const maxLine = 200
 
-// eventLine is an event on one line: its time, its type and its telling field.
+// eventLine is an event on one line: its time, its type and its sentence.
 func eventLine(e store.Event) string {
-	var tell string
-
-	switch e.Type {
-	case engine.AgentText:
-		tell = decoded[engine.AgentTextPayload](e.Payload).Text
-	case engine.AgentTool:
-		p := decoded[engine.AgentToolPayload](e.Payload)
-		tell = p.Name + " " + p.Summary
-	case engine.SessionStarted:
-		tell = decoded[engine.SessionStartedPayload](e.Payload).Mode
-	case engine.SessionEnded:
-		p := decoded[engine.SessionEndedPayload](e.Payload)
-		tell = fmt.Sprintf("%s after %s", p.Outcome, counted(p.Turns, "turn"))
-	case engine.ReviewStarted:
-		tell = "the whole change"
-		if decoded[engine.ReviewStartedPayload](e.Payload).Scoped {
-			tell = "the fix and the findings it was to address"
-		}
-	case engine.ReviewEnded:
-		p := decoded[engine.ReviewEndedPayload](e.Payload)
-		tell = fmt.Sprintf("%s after %s with %s", p.Outcome, counted(p.Turns, "turn"), counted(len(p.Findings), "finding"))
-
-		if p.Scoped && p.Outcome == engine.ReviewReviewed {
-			addressed := 0
-
-			for _, a := range p.Addressed {
-				if a {
-					addressed++
-				}
-			}
-
-			tell += fmt.Sprintf("; %d of the %d open ones addressed", addressed, len(p.Addressed))
-		}
-	case engine.VerifyEnded:
-		tell = decoded[engine.VerifyEndedPayload](e.Payload).Result
-	case engine.PrepareFailed:
-		tell = decoded[engine.PrepareFailedPayload](e.Payload).Step
-	case engine.Stopped:
-		p := decoded[engine.StoppedPayload](e.Payload)
-		tell = p.Reason + ": " + p.Explanation
-	case engine.RunStarted:
-		tell = runText(decoded[engine.RunStartedPayload](e.Payload))
-	case engine.SessionCut:
-		tell = "cut after " + counted(decoded[engine.SessionCutPayload](e.Payload).Turns, "turn")
-	case engine.PublishStarted, engine.ReadyStarted, engine.ReplyStarted:
-		tell = decoded[struct{ Why string }](e.Payload).Why
-	case engine.Published:
-		p := decoded[engine.PublishedPayload](e.Payload)
-		tell = fmt.Sprintf("pull request %s on branch %s", p.URL, p.Branch)
-	case engine.PRObserved:
-		tell = observedText(decoded[engine.Observation](e.Payload))
-	case engine.PRReady:
-		tell = "the pull request is marked ready for review"
-	case engine.Replied:
-		tell = "the reviewers have CAVU's answer in a comment on the pull request"
-	case engine.HomeRemoved:
-		tell = "the task's home is removed, since the task can run no more"
-	default:
-		tell = string(e.Payload)
-	}
-
-	l := strings.Join(strings.Fields(e.At.Format(time.TimeOnly)+" "+e.Type+" "+tell), " ")
+	l := strings.Join(strings.Fields(e.At.Format(time.TimeOnly)+" "+e.Type+" "+engine.EventText(e)), " ")
 
 	// Output that is no terminal is left byte-exact, so the line shows the
 	// agent's control characters itself, as a terminal's output does.
@@ -780,51 +697,6 @@ func eventLine(e store.Event) string {
 	}
 
 	return l[:n] + "..."
-}
-
-// runText says why a run started: "retry" is a fresh run of a task that ran before.
-func runText(p engine.RunStartedPayload) string {
-	switch p.Reason {
-	case "initial":
-		return "the task's first run"
-	case "retry":
-		return "a fresh run of the task, which ran before"
-	case engine.ReasonCIFix:
-		return "a fix run on the pull request's failed checks, from " + shortCommit(p.Head)
-	case engine.ReasonComments:
-		return fmt.Sprintf("a follow-up run on %s of reviewers, from %s", counted(len(p.Requests), "request"), shortCommit(p.Head))
-	}
-
-	return p.Reason
-}
-
-// shortCommit is a commit id's first twelve characters, enough to tell it in a line.
-func shortCommit(id string) string {
-	return id[:min(12, len(id))]
-}
-
-// observedText is what a look showed of the pull request. A reviewer's
-// request is counted and never quoted.
-func observedText(o engine.Observation) string {
-	s := o.State
-	if o.Draft {
-		s += ", a draft"
-	}
-
-	if o.Conflict {
-		s += ", in conflict with its base branch"
-	}
-
-	return fmt.Sprintf("%s; checks %s; %s of reviewers", s, checksText(o.Checks, o.Failed), counted(len(o.Comments), "open request"))
-}
-
-// decoded is the payload as T, with zero values where it does not fit.
-func decoded[T any](payload []byte) T {
-	var v T
-
-	_ = json.Unmarshal(payload, &v)
-
-	return v
 }
 
 func taskAnswer(ctx context.Context, args []string, stdin io.Reader, stderr io.Writer) error {
