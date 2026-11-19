@@ -34,6 +34,26 @@ func StatusOf(f Facts) Status {
 	}
 }
 
+// NeedsYou reports whether a task waits for a person: a stop that only a person
+// clears or a fault past its retries, a ready pull request, or a change no
+// publish carried out. It reads facts and caps and chooses nothing.
+func NeedsYou(s Snapshot) bool {
+	f := s.Facts
+
+	switch StatusOf(f) {
+	case StatusBlocked:
+		return f.OpenStop.Action != ClearNone && !f.retriesFault(s.Caps)
+	case StatusInReview:
+		if f.PR == nil {
+			return s.Task.ReplayID == 0
+		}
+
+		return PullRequestOf(f, s.Watch.NoCI).Ready
+	default:
+		return false
+	}
+}
+
 // PullRequest is a task's pull request as a person sees it.
 type PullRequest struct {
 	Number            int
