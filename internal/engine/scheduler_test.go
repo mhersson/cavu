@@ -668,26 +668,88 @@ func TestSchedulerOnly(t *testing.T) {
 	assert.Empty(t, s.errs())
 }
 
-func TestSchedulerReportsAnErrorOnce(t *testing.T) {
+// A failed drive is not driven again at every pass; an event drives it before
+// its clock comes due and starts the clock again, and each failure is reported.
+// A task the clock finds resting is read again only after an event.
+func TestSchedulerReportsEachFailedDrive(t *testing.T) {
 	h := newHarness(t)
 	gone := errors.New("the container daemon is unreachable")
 	h.runner.works = []step[engine.WorkResult]{{err: gone}}
-	h.runner.releaseErr = gone
+	looks := h.logLooks()
+
+	var releases atomic.Int64
+
+	h.runner.gate = func(_ context.Context, c call) error {
+		if c.method == "release" && releases.Add(1) <= 2 {
+			return gone
+		}
+
+		return nil
+	}
 
 	s := h.schedule(nil)
 
 	h.eventually(func() bool { return len(s.errs()) == 1 })
 	s.passes(t, 3)
-	assert.Equal(t, []int64{h.task.ID}, s.errs(), "an error is reported once while nothing changes")
-	assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, h.runner.trace(), "the task is not driven again")
+	assert.Equal(t, []int64{h.task.ID}, s.errs(), "an error is reported once while the clock stands")
+	assert.Equal(t, []string{"prepare", "work/start", "release/keep"}, h.runner.trace(), "the task is not driven again before its clock")
 
 	require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
 	s.Nudge()
 
-	h.eventually(func() bool { return len(s.errs()) == 2 })
+	h.eventually(func() bool { return len(s.errs()) == 2 }, "the retry drives the task, whose run's release fails")
 	s.passes(t, 2)
 	assert.Equal(t, []int64{h.task.ID, h.task.ID}, s.errs())
-	assert.Equal(t, engine.StatusInReview, h.statusOf(h.task.ID))
+	assert.True(t, h.inReview(h.task.ID))
+
+	reads := looks.readsOf(h.task.ID)
+	h.clock.Advance(time.Minute)
+	s.passes(t, 2)
+	require.Greater(t, looks.readsOf(h.task.ID), reads, "the task is read a minute after its newest failure")
+
+	reads = looks.readsOf(h.task.ID)
+	h.clock.Advance(time.Hour)
+	s.passes(t, 2)
+	assert.Equal(t, reads, looks.readsOf(h.task.ID), "the task rests, read again only after an event")
+	assert.Len(t, s.errs(), 2)
+}
+
+// A run's release that fails as its task enters a timed wait ends the drive in
+// an error; the task is read again a minute later, and the wait's action runs.
+func TestSchedulerWaitEndsAfterAFailedRelease(t *testing.T) {
+	h := newHarness(t)
+	gone := errors.New("the container daemon is unreachable")
+	h.runner.works = []step[engine.WorkResult]{{err: gone}}
+
+	var releases atomic.Int64
+
+	h.runner.gate = func(_ context.Context, c call) error {
+		if c.method == "release" && releases.Add(1) == 1 {
+			return gone
+		}
+
+		return nil
+	}
+
+	s := h.schedule(nil)
+
+	h.eventually(func() bool { return len(s.errs()) == 1 }, "the release of the stopped run fails")
+	s.passes(t, 2)
+	require.Equal(t, engine.StopSandbox, h.lastStop().Reason)
+
+	before := h.runner.trace()
+	h.clock.Advance(time.Minute - time.Millisecond) // past the stop's wait
+	s.passes(t, 2)
+	assert.Equal(t, before, h.runner.trace(), "the task is not read before a minute")
+
+	h.clock.Advance(time.Millisecond)
+	s.Nudge()
+
+	h.eventually(func() bool { return h.inReview(h.task.ID) && slices.Contains(h.runner.trace(), "release/remove") }, "the cut action runs again")
+	assert.Equal(t, []string{
+		"prepare", "work/start", "release/keep", "work/continue", "verify", "export", "release/run", "release/remove",
+	}, h.runner.trace())
+	assert.Equal(t, []int64{h.task.ID}, s.errs())
 }
 
 // A pass reads every task before it starts a drive, so a higher task's open
@@ -1277,9 +1339,11 @@ func TestSchedulerEndWaitsForALook(t *testing.T) {
 	})
 }
 
-// A drive that fails is tried again only after an event, as on any task: the
-// clock of a task whose pull request was watched does not read it again.
-func TestSchedulerFailedDriveAfterAWatchWaitsForAnEvent(t *testing.T) {
+// A drive that keeps failing, as the clean of a merged task whose release
+// fails, is read again a minute after the first failure, then after twice the
+// last wait up to 30 minutes, and never between: the clock of its watch is
+// dropped. Each failure is reported; once the clean succeeds, the task rests.
+func TestSchedulerFailedDriveAfterAWatchBacksOff(t *testing.T) {
 	h := newHarness(t)
 	h.watching()
 
@@ -1293,15 +1357,38 @@ func TestSchedulerFailedDriveAfterAWatchWaitsForAnEvent(t *testing.T) {
 	s := h.schedule(nil)
 
 	h.eventually(func() bool { return len(s.errs()) == 1 }, "the clean of the merged task fails")
+
+	gaps := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 30 * time.Minute, 30 * time.Minute}
+	for i, gap := range gaps {
+		s.passes(t, 2)
+
+		reads := looks.readsOf(h.task.ID)
+		h.clock.Advance(gap - time.Millisecond)
+		s.passes(t, 2)
+		require.Equal(t, reads, looks.readsOf(h.task.ID), "the task is not read before %s", gap)
+
+		h.clock.Advance(time.Millisecond)
+		s.Nudge()
+		h.eventually(func() bool { return len(s.errs()) == i+2 }, "the clean fails again %s after the last failure", gap)
+	}
+
+	assert.Len(t, h.runner.callsOf("release"), releases+1+len(gaps), "one clean at each read")
+
+	h.runner.mu.Lock()
+	h.runner.releaseErr = nil
+	h.runner.mu.Unlock()
+	s.passes(t, 2)
+	h.clock.Advance(30 * time.Minute)
+	s.Nudge()
+
+	h.eventually(func() bool { return len(h.recordedOf(h.task.ID, engine.HomeRemoved)) == 1 && !s.Driving() }, "the clean succeeds")
 	s.passes(t, 2)
 
 	reads := looks.readsOf(h.task.ID)
-	h.clock.Advance(2 * time.Minute) // past the look's next
+	h.clock.Advance(time.Hour)
 	s.passes(t, 2)
-
-	assert.Equal(t, reads, looks.readsOf(h.task.ID), "the task is not read again without an event")
-	assert.Len(t, h.runner.callsOf("release"), releases+1)
-	assert.Equal(t, []int64{h.task.ID}, s.errs())
+	assert.Equal(t, reads, looks.readsOf(h.task.ID), "the task rests, read again only after an event")
+	assert.Len(t, s.errs(), 1+len(gaps))
 }
 
 // A failed check's fix run starts a container, so it waits for a free slot.
