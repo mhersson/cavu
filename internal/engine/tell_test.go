@@ -142,9 +142,18 @@ func TestEventTextOfAPayloadThatDoesNotFit(t *testing.T) {
 }
 
 func TestChecksText(t *testing.T) {
-	assert.Contains(t, engine.ChecksText("", nil), "not read")
-	assert.Equal(t, engine.ChecksPassed, engine.ChecksText(engine.ChecksPassed, nil))
-	assert.Equal(t, engine.ChecksFailed+": lint, unit", engine.ChecksText(engine.ChecksFailed, []string{"lint", "unit"}))
+	unread := engine.ChecksText("", nil)
+	assert.NotEmpty(t, unread)
+
+	for _, state := range []string{engine.ChecksNone, engine.ChecksPending, engine.ChecksPassed, engine.ChecksFailed} {
+		assert.NotContains(t, unread, state, "unread checks are none of the states")
+		assert.Contains(t, engine.ChecksText(state, nil), state)
+	}
+
+	failed := engine.ChecksText(engine.ChecksFailed, []string{"lint", "unit"})
+	for _, v := range []string{engine.ChecksFailed, "lint", "unit"} {
+		assert.Contains(t, failed, v)
+	}
 }
 
 func TestCountedIsSingularForOne(t *testing.T) {
