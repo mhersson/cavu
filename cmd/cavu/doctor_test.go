@@ -105,10 +105,15 @@ func TestDoctorVerb(t *testing.T) {
 			assert.NotNil(t, got.Driver)
 			require.NotNil(t, got.Forge)
 			require.NoError(t, got.Forge.Check(t.Context(), srvRepo, forge.Access{Token: "tok"}), "the forge client trusts the CA bundle")
-			require.NotNil(t, got.Project)
-			assert.Equal(t, "https://example.com/api.git", got.Project.RepoURL)
-			assert.Equal(t, "dev", got.Project.BaseBranch)
-			assert.True(t, got.Project.Publish, "publish is on by default")
+			require.Len(t, got.Projects, 2, "every project, in the store's order")
+			assert.Equal(t, "api", got.Projects[0].Name)
+			assert.Equal(t, "https://example.com/api.git", got.Projects[0].RepoURL)
+			assert.Equal(t, "dev", got.Projects[0].BaseBranch)
+			assert.True(t, got.Projects[0].Publish, "publish is on by default")
+			assert.Equal(t, "web", got.Projects[1].Name)
+			assert.Equal(t, repo, got.Projects[1].RepoURL)
+			assert.Equal(t, "main", got.Projects[1].BaseBranch)
+			assert.NotEqual(t, got.Projects[0].ID, got.Projects[1].ID)
 		})
 	}
 
@@ -117,8 +122,9 @@ func TestDoctorVerb(t *testing.T) {
 	got := fakeDoctor(t, nil)
 	code, _, stderr := runCavu("doctor", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
-	require.NotNil(t, got.Project)
-	assert.False(t, got.Project.Publish)
+	require.Len(t, got.Projects, 2)
+	assert.False(t, got.Projects[0].Publish)
+	assert.True(t, got.Projects[1].Publish)
 }
 
 func TestDoctorWithoutProject(t *testing.T) {
@@ -126,7 +132,7 @@ func TestDoctorWithoutProject(t *testing.T) {
 
 	code, _, stderr := runCavu("doctor", "--data-dir", t.TempDir())
 	assert.Equal(t, 0, code, stderr)
-	assert.Nil(t, got.Project)
+	assert.Empty(t, got.Projects)
 }
 
 func TestDoctorIsRefusedByLock(t *testing.T) {

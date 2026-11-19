@@ -94,10 +94,10 @@ func (a *app) doctorDeps(ctx context.Context) (doctor.Deps, error) {
 		return doctor.Deps{}, err
 	}
 
-	if len(ps) > 0 {
-		d.Project = &doctor.Project{
-			ID: ps[0].ID, RepoURL: ps[0].RepoURL, BaseBranch: ps[0].BaseBranch, Publish: engine.ProjectSwitches(ps[0])["publish"],
-		}
+	for _, p := range ps {
+		d.Projects = append(d.Projects, doctor.Project{
+			ID: p.ID, Name: p.Name, RepoURL: p.RepoURL, BaseBranch: p.BaseBranch, Publish: engine.ProjectSwitches(p)["publish"],
+		})
 	}
 
 	return d, nil
