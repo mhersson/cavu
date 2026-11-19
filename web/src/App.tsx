@@ -74,7 +74,7 @@ export default function App() {
   useEffect(() => {
     onUnauthorized(() => {
       const { pathname, search } = here.current
-      if (pathname !== '/login') navigate('/login', { state: { from: pathname + search } })
+      if (pathname !== '/login') navigate('/login', { replace: true, state: { from: pathname + search } })
     })
   }, [navigate])
 
