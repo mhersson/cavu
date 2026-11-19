@@ -208,8 +208,8 @@ func TestMCPCancelAndRead(t *testing.T) {
 	assert.Equal(t, object(t, body), list, "the list as REST shows it")
 
 	assert.Equal(t, map[string]any{"projects": []any{
-		map[string]any{"name": "site", "runnable": true},
-		map[string]any{"name": "web", "runnable": false},
+		map[string]any{"name": "site", "repo_url": "https://example.com/site.git", "base_branch": "main", "runnable": true},
+		map[string]any{"name": "web", "repo_url": "https://example.com/web.git", "base_branch": "main", "runnable": false},
 	}}, tool(t, cs, "list_projects", nil))
 }
 

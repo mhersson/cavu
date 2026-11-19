@@ -33,8 +33,10 @@ type projectList struct {
 }
 
 type projectItem struct {
-	Name     string `json:"name"`
-	Runnable bool   `json:"runnable"`
+	Name       string `json:"name"`
+	RepoURL    string `json:"repo_url"`
+	BaseBranch string `json:"base_branch"`
+	Runnable   bool   `json:"runnable"`
 }
 
 // tools returns the handler of the MCP tools. It is stateless, so it keeps no
@@ -46,7 +48,7 @@ func (s *server) tools() http.Handler {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "cavu", Version: s.Version},
 		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}})
 
-	addTool(srv, "create_task", "Create a draft task in a project; with start, start it as well.",
+	addTool(srv, "create_task", "Create a draft task in a project; with start, start it as well. The agent starts from the project's base branch, never from the caller's working tree or unpushed commits. The title and body appear in the pull request CAVU opens.",
 		func(ctx context.Context, in newTask) (taskJSON, error) {
 			id, err := s.addTask(ctx, in, "mcp")
 			if err != nil {
@@ -145,7 +147,7 @@ func (s *server) listProjects(ctx context.Context, _ struct{}) (projectList, err
 
 	l := projectList{Projects: make([]projectItem, len(ps))}
 	for i, p := range ps {
-		l.Projects[i] = projectItem{p.Name, engine.Runnable(p)}
+		l.Projects[i] = projectItem{p.Name, p.RepoURL, p.BaseBranch, engine.Runnable(p)}
 	}
 
 	return l, nil
