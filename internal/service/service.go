@@ -67,10 +67,24 @@ func (m Manager) unsupported() error {
 	return fmt.Errorf("a service runs on Linux and macOS, not on %s", m.OS)
 }
 
+// proxyVars are the proxy and certificate variables the file carries when the
+// installer's environment sets them, so the service reaches the network as the
+// person's shell does.
+var proxyVars = []string{
+	"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
+	"SSL_CERT_FILE", "SSL_CERT_DIR",
+}
+
 // environment is what the service's file carries but HOME. PATH is the
 // installer's, so the service finds the runtime the person's shell found.
 func (m Manager) environment(ctx context.Context, dataDir string) map[string]string {
 	env := map[string]string{"CAVU_DATA_DIR": dataDir, "PATH": os.Getenv("PATH")}
+
+	for _, k := range proxyVars {
+		if v := os.Getenv(k); v != "" {
+			env[k] = v
+		}
+	}
 
 	out, err := m.Run(ctx, "docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}")
 	if host := strings.TrimSpace(out); err == nil && host != "" && host != "unix:///var/run/docker.sock" {
@@ -103,7 +117,7 @@ func write(path string, data []byte) (bool, error) {
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // G306: the file carries no secret
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return false, err
 	}
 

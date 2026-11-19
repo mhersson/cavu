@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,10 @@ func host(t *testing.T, path string) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", path)
+
+	for _, k := range proxyVars {
+		t.Setenv(k, "")
+	}
 
 	return home
 }
@@ -161,6 +166,42 @@ func TestFileEscapesWhatSystemdAndXMLWouldRead(t *testing.T) {
 	agent := read(t, agentPath)
 	assert.Contains(t, agent, "\n        <string>/opt/a&amp;b/cavu</string>\n")
 	assert.Contains(t, agent, "\n        <string>/opt/my tools/bin:/opt/100%/bin:/opt/a&amp;&#34;b&#34;/bin</string>\n")
+}
+
+func TestFileCarriesProxyAndCertificateVariables(t *testing.T) {
+	host(t, "/bin")
+	t.Setenv("HTTPS_PROXY", "http://u:p%40ss@proxy:3128")
+	t.Setenv("SSL_CERT_FILE", "/etc/ssl/my ca.pem")
+	t.Setenv("NO_PROXY", "")
+
+	unitPath, _, err := Manager{OS: "linux", Run: (&fake{}).run}.Install(t.Context(), "/usr/local/bin/cavu", "/srv/cavu", false)
+	require.NoError(t, err)
+
+	unit := read(t, unitPath)
+	assert.Contains(t, unit, "\nEnvironment=\"HTTPS_PROXY=http://u:p%%40ss@proxy:3128\"\n")
+	assert.Contains(t, unit, "\nEnvironment=\"SSL_CERT_FILE=/etc/ssl/my ca.pem\"\n")
+	assert.NotContains(t, unit, "NO_PROXY")
+
+	agentPath, _, err := Manager{OS: "darwin", UID: 501, Run: (&fake{}).run}.Install(t.Context(), "/usr/local/bin/cavu", "/srv/cavu", false)
+	require.NoError(t, err)
+
+	agent := read(t, agentPath)
+	assert.Contains(t, agent, "<key>HTTPS_PROXY</key>\n        <string>http://u:p%40ss@proxy:3128</string>")
+	assert.Contains(t, agent, "<key>SSL_CERT_FILE</key>\n        <string>/etc/ssl/my ca.pem</string>")
+	assert.NotContains(t, agent, "NO_PROXY")
+}
+
+func TestFilesAreReadableByTheUserAlone(t *testing.T) {
+	host(t, "/bin")
+
+	for _, goos := range []string{"linux", "darwin"} {
+		path, _, err := Manager{OS: goos, UID: 501, Run: (&fake{}).run}.Install(t.Context(), "/usr/local/bin/cavu", "/srv/cavu", false)
+		require.NoError(t, err)
+
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
+	}
 }
 
 func TestFileEnvironment(t *testing.T) {
