@@ -18,7 +18,7 @@ import (
 
 func init() {
 	commands["project"] = command{
-		summary: "project add | set | list | show | check: add a project, change one, list them, show one, or check one's environment",
+		summary: "project add | set | list | show | check | remove: add a project, change one, list them, show one, check one's environment, or remove one",
 		run:     runProject,
 	}
 }
@@ -28,9 +28,10 @@ const (
 	projectSetUsage = "cavu project set NAME [--base BRANCH] [--setup CMD] [--verify CMD | --no-verify] [--egress HOST]... [--env K=V]...\n" +
 		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--cap KEY=VALUE]...\n" +
 		"         [--no-ci on|off] [--ignore-check NAME]... [--review-bot LOGIN]... [--data-dir DIR]"
-	projectListUsage  = "cavu project list [--data-dir DIR]"
-	projectShowUsage  = "cavu project show NAME [--data-dir DIR]"
-	projectCheckUsage = "cavu project check NAME [--data-dir DIR]"
+	projectListUsage   = "cavu project list [--data-dir DIR]"
+	projectShowUsage   = "cavu project show NAME [--data-dir DIR]"
+	projectCheckUsage  = "cavu project check NAME [--data-dir DIR]"
+	projectRemoveUsage = "cavu project remove NAME [--data-dir DIR]"
 )
 
 func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr io.Writer) error {
@@ -46,10 +47,12 @@ func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr 
 			return projectShow(ctx, args[1:], stdout, stderr)
 		case "check":
 			return projectCheck(ctx, args[1:], stdout, stderr)
+		case "remove":
+			return projectRemove(ctx, args[1:], stderr)
 		}
 	}
 
-	usage := strings.Join([]string{projectAddUsage, projectSetUsage, projectListUsage, projectShowUsage, projectCheckUsage}, "\n       ")
+	usage := strings.Join([]string{projectAddUsage, projectSetUsage, projectListUsage, projectShowUsage, projectCheckUsage, projectRemoveUsage}, "\n       ")
 
 	return newVerbFlags(usage, stderr).helpOr(args)
 }
@@ -388,6 +391,35 @@ func assignments(m map[string]string) []string {
 	}
 
 	return out
+}
+
+// projectRemove removes the project's volumes itself, with or without a
+// server: they are the project's alone, and the runtime refuses one in use.
+func projectRemove(ctx context.Context, args []string, stderr io.Writer) error {
+	f := newVerbFlags(projectRemoveUsage, stderr)
+
+	name, err := f.parse(args, 1)
+	if err != nil {
+		return err
+	}
+
+	a, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+
+	p, err := a.store.ProjectByName(ctx, name[0])
+	if err != nil {
+		return fmt.Errorf("project %q: %w", name[0], err)
+	}
+
+	rt, err := a.runtime(ctx)
+	if err != nil {
+		return err
+	}
+
+	return a.loop(rt).RemoveProject(ctx, p.ID)
 }
 
 func projectCheck(ctx context.Context, args []string, stdout, stderr io.Writer) error {

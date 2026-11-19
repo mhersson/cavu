@@ -76,6 +76,10 @@ Answers 200 with the project.
 
 Changes the fields the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `switches`, `caps` and `secrets` merge per key; every other field replaces its whole value, so `""`, `[]` or `{}` empties one that may be empty. The name cannot change, since the project's secrets are stored under it. An edit of anything a baseline rests on clears the baseline: the repository, the base branch, the setup or verify command, the waiver, the tool versions, the environment or the secret variables. Answers 200 with the project.
 
+### `DELETE /api/projects/{id}`
+
+Removes the project, as `cavu project remove` does: its cache and mirror volumes and its secrets. Its tasks, with their events and artifacts, stay, and its finished tasks still show its name. Answers 204 with no body. A removed project answers 404 on every project route, and its name can be used for a new project. Answers 400 while the project has a task that is neither done nor cancelled, with the line naming them, and 409 when the container runtime would not remove the volumes, with the runtime's error in the line; the project is then as it was. There is no undo.
+
 ### `POST /api/projects/{id}/check`
 
 Asks for an environment check, the one `cavu project check` runs, which the server starts as soon as it can. Answers 202 with the project. `check.requested_at` stays set until a check that started after the request ends; a request made while a check runs is kept, and the check runs again.

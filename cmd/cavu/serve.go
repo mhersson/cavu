@@ -95,7 +95,7 @@ func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, s
 	stopped := make(chan struct{})
 	srv := &http.Server{
 		Handler: api.New(api.Deps{
-			Store: a.store, Vault: a.vault, Auth: auth.NewService(a.store, time.Now), Loop: a.actions(),
+			Store: a.store, Vault: a.vault, Auth: auth.NewService(a.store, time.Now), Loop: a.loop(rt),
 			Nudge: s.Nudge, Waiting: s.Waiting, Version: version, Stop: stopped,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,

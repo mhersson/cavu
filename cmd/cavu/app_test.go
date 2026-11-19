@@ -100,6 +100,8 @@ type fakeRunner struct {
 	published  engine.PublishResult      // the pull request Publish opens; with no number it fails
 	duringLook func(ctx context.Context) // runs inside Observe with its context, before the look fails
 	releases   []release
+	removed    []engine.RunRef // the projects whose volumes were removed
+	removeErr  error
 }
 
 // release is one Release call, with its context's error at the call.
@@ -185,7 +187,11 @@ func (r *fakeRunner) Reply(context.Context, engine.RunConfig, int, string) error
 	return errNoPullRequest
 }
 
-func (r *fakeRunner) RemoveProject(context.Context, engine.RunRef) error { return nil }
+func (r *fakeRunner) RemoveProject(_ context.Context, ref engine.RunRef) error {
+	r.removed = append(r.removed, ref)
+
+	return r.removeErr
+}
 
 func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, remove engine.Remove) error {
 	r.releases = append(r.releases, release{ref, remove, ctx.Err()})

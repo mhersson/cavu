@@ -213,13 +213,29 @@ func (s *server) editProject(w http.ResponseWriter, r *http.Request) error {
 	return s.replyProject(w, r, http.StatusOK)
 }
 
-func (s *server) requestCheck(w http.ResponseWriter, r *http.Request) error {
+// removeProject refuses while the project has open tasks; see engine.RemoveProject.
+func (s *server) removeProject(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {
 		return err
 	}
 
-	if err := s.Loop.RequestCheck(r.Context(), id); err != nil {
+	if err := s.Loop.RemoveProject(r.Context(), id); err != nil {
+		return err
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+
+	return nil
+}
+
+func (s *server) requestCheck(w http.ResponseWriter, r *http.Request) error {
+	p, err := s.stored(r)
+	if err != nil {
+		return err
+	}
+
+	if err := s.Loop.RequestCheck(r.Context(), p.ID); err != nil {
 		return err
 	}
 
@@ -228,7 +244,7 @@ func (s *server) requestCheck(w http.ResponseWriter, r *http.Request) error {
 	return s.replyProject(w, r, http.StatusAccepted)
 }
 
-// stored reads the project the path names.
+// stored reads the live project the path names; a removed one is unknown.
 func (s *server) stored(r *http.Request) (store.Project, error) {
 	id, err := pathID(r)
 	if err != nil {
@@ -236,6 +252,10 @@ func (s *server) stored(r *http.Request) (store.Project, error) {
 	}
 
 	p, err := s.Store.Project(r.Context(), id)
+	if err == nil && p.RemovedAt != nil {
+		err = store.ErrNotFound
+	}
+
 	if err != nil {
 		return store.Project{}, fmt.Errorf("project %d: %w", id, err)
 	}
