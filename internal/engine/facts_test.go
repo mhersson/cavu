@@ -797,7 +797,7 @@ func TestAMergeClosesTheOpenStop(t *testing.T) {
 	tests := []struct {
 		name   string
 		look   engine.Observation // seen before the stop; the merge is seen on its head
-		events []store.Event      // from the stop on
+		events []store.Event      // after the look, through the stop
 	}{
 		{
 			name:   "a takeover",
