@@ -1,0 +1,59 @@
+name: Integration
+
+# The suites take longer than a pull request's run may, so they run nightly on
+# main and by hand.
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The runner's Docker; the tests pull nothing themselves, so busybox is
+  # fetched here.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: pull the test image
+        run: docker pull docker.io/library/busybox:1.37
+
+      - name: make image test-integration
+        run: make image test-integration
+
+  # No make image: the tests build every image they use on the runtime
+  # CAVU_TEST_RUNTIME names, and make image would build on Docker.
+  podman:
+    runs-on: ubuntu-latest
+    # Above the 30 minutes test-integration gives the tests.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: pull the test image
+        run: podman pull docker.io/library/busybox:1.37
+
+      # Ubuntu's AppArmor profile for pasta refuses Podman's SIGTERM, so removing
+      # the last container on a bridge network fails.
+      - name: let pasta receive Podman's SIGTERM
+        run: |
+          printf '\nsignal (receive) set=(term) peer=podman,\n' | sudo tee -a /etc/apparmor.d/abstractions/pasta
+          sudo apparmor_parser -r /etc/apparmor.d/usr.bin.pasta
+
+      - name: make test-integration
+        run: make test-integration
+        env:
+          CAVU_TEST_RUNTIME: podman
