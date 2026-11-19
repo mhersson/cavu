@@ -158,11 +158,11 @@ A setting's value is a string, null or a JSON object, which is stored as its tex
 Answers 200 with every task but a replay's shadow tasks, oldest first:
 
 ```json
-{"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "stop_reason": "question",
+{"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "needs_you": true, "stop_reason": "question",
             "waiting": "", "pull_request_ready": false, "created_at": "2030-01-02T03:04:05Z"}]}
 ```
 
-The query `project=NAME` keeps the tasks of one project, and `status=STATUS` the tasks with one status; a project that does not exist, or a status that is not one of [the task's](#the-task), is 400. `stop_reason` is the open stop's reason, else `""`; `pull_request_ready` is the `ready` of the task's `pull_request`, false for a task with none; the other fields are the task's.
+The query `project=NAME` keeps the tasks of one project, `status=STATUS` the tasks with one status, and `needs_you=true` the tasks that need a person; a project that does not exist, a status that is not one of [the task's](#the-task), or a `needs_you` that is not a boolean is 400. `stop_reason` is the open stop's reason, else `""`; `pull_request_ready` is the `ready` of the task's `pull_request`, false for a task with none; the other fields are the task's.
 
 ### `POST /api/tasks`
 
@@ -204,7 +204,8 @@ Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action
 
 ```json
 {"id": 7, "project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "requester": "api",
- "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "waiting": "", "depends_on": [3],
+ "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "needs_you": true, "waiting": "", "waiting_until": null,
+ "dependencies": [{"id": 3, "status": "done"}],
  "stop": {"reason": "question", "explanation": "Which pages should the footer link to?", "action": "answer", "resets_at": null},
  "questions": [{"question": "Which pages should the footer link to?", "suggested_answer": ""},
                {"question": "Should it show the year?", "suggested_answer": ""}],
@@ -213,7 +214,9 @@ Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action
                       "why": "A visitor cannot dismiss the banner."}],
             "minor": []},
  "pull_request": null, "change": null, "turns": 33, "duration_ms": 226000, "cost_estimate_usd": 0.325, "cost_missing_sessions": 0,
- "budget": {"turns": 33, "max_turns": 1000, "minutes": 4, "max_minutes": 300, "usd": 0.29, "max_usd": 5}}
+ "usage": [{"source": "proxy", "model": "claude-haiku-5-5", "input": 21000, "output": 18000, "cache_read": 160000,
+            "cache_write": 9000, "cost_estimate_usd": 0.325}],
+ "budget": {"turns": 33, "max_turns": 1000, "minutes": 4, "max_minutes": 300, "usd": 0.29, "max_usd": 5, "day_usd": 1.75, "max_day_usd": 20}}
 ```
 
 A list is `[]` when empty, never null.
@@ -226,8 +229,10 @@ A list is `[]` when empty, never null.
 | `requester` | What created the task: `cli` for a `cavu task add`, `api` for `POST /api/tasks`, `mcp` for the MCP tool `create_task`. |
 | `created_at` | When the task was created. |
 | `status` | Where the task stands: `cancelled` once cancelled, started or not; else `draft` until started; `done` once its change is merged; `blocked` while a stop is open; `in_review` once its change is exported, or while it has a pull request and no run is open; `queued` while no run is open; else `running`. |
+| `needs_you` | Whether the task waits for a person: it is `blocked` on a stop that only a person clears, which is any stop but a usage limit, which resets by itself, and a `sandbox` stop or a failed model endpoint while CAVU still retries it; its `pull_request` is `ready`; or it is `in_review` with an exported change and no pull request, as with the switch `publish` off, which waits for a person to take the change and record `done`. |
 | `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; for a task whose pull request CAVU watches, what the watch waits for, or the error of the last look at the pull request and when the next look comes; else `""`. |
-| `depends_on` | The ids of the tasks that must be done before this one runs. |
+| `waiting_until` | When the wait in `waiting` ends on a clock: the reset of the task's usage limit, the next try after a fault, local midnight under a spent daily cap, or the end of the time the pull request's checks are given to start or to finish; else null. |
+| `dependencies` | The tasks that must be done before this one runs, each with its `id` and its `status`. `POST` and `PATCH` take their ids as `depends_on`. |
 | `stop` | The open stop, or null: its `reason` (`question`, `environment`, `verify_failed`, `budget`, `timeout`, `no_change`, `agent_error`, `usage_limit`, `endpoint`, `sandbox`, `cancelled`, `dependency`, `push_rejected`, `ci_failed`, `ci_timeout`, `no_checks`, `conflict`, `taken_over` or `changes_requested`), a one-line `explanation`, the one `action` that clears it (`answer`, `retry`, or `none` for a stop that a clock ends or that stays), and `resets_at`, the time a usage limit resets, else null. |
 | `questions` | While the open stop is `question`, every question the agent asked, of which the explanation holds the first, each with the `suggested_answer` the agent would assume, `""` where it gave none; else `[]`. |
 | `review` | The newest run's review, or null until a review gives a verdict or fails to give one: `rounds`, the fix rounds after its findings since a person last acted; `failed`, why the newest review gave no verdict, else `""`; `open`, the critical and important findings left open; and `minor`, the minor ones, which never start a fix round. A finding has a `severity` (`critical`, `important` or `minor`), `where`, `what` and `why`. A review that a usage limit, a timeout or the like cut short shows as the stop instead. |
@@ -237,7 +242,8 @@ A list is `[]` when empty, never null.
 | `duration_ms` | The milliseconds from the task's start to its newest event other than the agent's progress, 0 before it starts. |
 | `cost_estimate_usd` | The sum of the costs recorded for the task, an estimate from list prices, not a bill. |
 | `cost_missing_sessions` | How many of the task's sessions and reviews ended without a cost, which `cost_estimate_usd` leaves out. |
-| `budget` | What the task used since a person last started, answered, retried or cancelled it, of what it may: `turns` of `max_turns`, and `minutes` of `max_minutes`, the time its sessions and reviews ran, in whole minutes. While a money cap on the task is in force, which is only in key mode, `usd` of `max_usd`, its spend at `model_prices`; else both are left out. A task the daily cap holds says so in `waiting`. |
+| `usage` | The tokens of the whole task, a row per `source` and `model`: `input`, `output`, `cache_read` and `cache_write`, and the row's `cost_estimate_usd`. The source is `proxy` for the proxy's count of every model call in key mode, else `agent` for the agent's own totals. |
+| `budget` | What the task used since a person last started, answered, retried or cancelled it, of what it may: `turns` of `max_turns`, and `minutes` of `max_minutes`, the time its sessions and reviews ran, in whole minutes. While a money cap on the task is in force, which is only in key mode, `usd` of `max_usd`, its spend at `model_prices`; else both are left out. Likewise while the daily cap is in force, `day_usd` of `max_day_usd`, what every task spent in the server's local day. A task the daily cap holds says so in `waiting`. |
 
 ### `GET /api/tasks/{id}/events`
 
@@ -293,7 +299,7 @@ A tool that does what a REST route does calls that route's code, so it refuses w
 |------|-------|--------------|
 | `create_task` | `project`, `title`, and optionally `body`, `depends_on` and `start` | Creates a task as `POST /api/tasks` does, with the requester `mcp`, and answers with the task. |
 | `get_task` | `id` | Answers with the task. |
-| `list_tasks` | optionally `project` and `status` | Answers with the list `GET /api/tasks` gives for that query. |
+| `list_tasks` | optionally `project`, `status` and `needs_you` | Answers with the list `GET /api/tasks` gives for that query. |
 | `run_task` | `id` | Records the action `start` for a task with no open stop, else the action `retry`, as `POST /api/tasks/{id}/actions` does, and answers with the task. A task stopped on a question is refused with a line saying it needs an answer, which the tool `answer_task`, the action `answer` or `cavu task answer ID` gives. |
 | `cancel_task` | `id` | Records the action `cancel` as `POST /api/tasks/{id}/actions` does, and answers with the task. |
 | `answer_task` | `id` and `answer` | Records the action `answer` with that text for a task whose open stop is a question, as `POST /api/tasks/{id}/actions` does, and answers with the task. Any other task is refused with a line naming the stop it has, or that it has none. |

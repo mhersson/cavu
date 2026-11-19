@@ -151,8 +151,9 @@ func TestTasksRoundTrip(t *testing.T) {
 
 	at := rfc3339(stored.CreatedAt)
 	assert.JSONEq(t, `{"id": 1, "project": "site", "title": "Add a footer", "body": "Below the fold.", "requester": "api",
-		"created_at": "`+at+`", "status": "draft", "waiting": "", "depends_on": [], "stop": null, "questions": [],
-		"review": null, "pull_request": null, "change": null, "turns": 0, "duration_ms": 0, "cost_estimate_usd": 0, "cost_missing_sessions": 0,
+		"created_at": "`+at+`", "status": "draft", "needs_you": false, "waiting": "", "waiting_until": null, "dependencies": [],
+		"stop": null, "questions": [], "review": null, "pull_request": null, "change": null, "turns": 0, "duration_ms": 0,
+		"cost_estimate_usd": 0, "cost_missing_sessions": 0, "usage": [],
 		"budget": {"turns": 0, "max_turns": 1000, "minutes": 0, "max_minutes": 300}}`, created)
 
 	status, body := f.call(t, "GET /api/tasks/1", "")
@@ -161,13 +162,13 @@ func TestTasksRoundTrip(t *testing.T) {
 
 	status, body = f.call(t, "GET /api/tasks", "")
 	require.Equal(t, http.StatusOK, status, body)
-	assert.JSONEq(t, `{"tasks": [{"id": 1, "project": "site", "title": "Add a footer", "status": "draft",
+	assert.JSONEq(t, `{"tasks": [{"id": 1, "project": "site", "title": "Add a footer", "status": "draft", "needs_you": false,
 		"stop_reason": "", "waiting": "", "pull_request_ready": false, "created_at": "`+at+`"}]}`, body)
 
 	t.Run("a PATCH changes only the fields it names", func(t *testing.T) {
 		second := f.task(t, `{"project": "site", "title": "Add a header", "body": "On top.", "depends_on": [1]}`)
 		want := f.view(t, second)
-		assert.Equal(t, []any{1.0}, want["depends_on"])
+		assert.Equal(t, []any{map[string]any{"id": 1.0, "status": "draft"}}, want["dependencies"])
 
 		for _, tc := range []struct {
 			patch, field string
@@ -175,7 +176,7 @@ func TestTasksRoundTrip(t *testing.T) {
 		}{
 			{`{"title": "Add a sticky header"}`, "title", "Add a sticky header"},
 			{`{"body": "It stays on top."}`, "body", "It stays on top."},
-			{`{"depends_on": []}`, "depends_on", []any{}},
+			{`{"depends_on": []}`, "dependencies", []any{}},
 		} {
 			status, body := f.call(t, fmt.Sprintf("PATCH /api/tasks/%d", second), tc.patch)
 			require.Equal(t, http.StatusOK, status, body)
@@ -365,6 +366,7 @@ func TestTaskViews(t *testing.T) {
 
 		got := f.view(t, id)
 		assert.Equal(t, "blocked", got["status"])
+		assert.Equal(t, true, got["needs_you"])
 		assert.Equal(t, map[string]any{
 			"reason": "question", "explanation": "Which colour?", "action": "answer", "resets_at": nil,
 		}, got["stop"])
@@ -392,7 +394,9 @@ func TestTaskViews(t *testing.T) {
 			"reason": "usage_limit", "explanation": "The usage limit was reached.", "action": "none", "resets_at": "2030-01-02T04:04:05Z",
 		}, got["stop"])
 		assert.Equal(t, []any{}, got["questions"])
+		assert.Equal(t, false, got["needs_you"], "the limit resets by itself")
 		assert.NotEmpty(t, got["waiting"], "the task waits for the reset")
+		assert.Equal(t, "2030-01-02T04:04:05Z", got["waiting_until"])
 	})
 
 	t.Run("a task waiting on a dependency shows the reason", func(t *testing.T) {
@@ -401,7 +405,7 @@ func TestTaskViews(t *testing.T) {
 
 		got := f.view(t, then)
 		assert.Equal(t, "queued", got["status"])
-		assert.Equal(t, []any{float64(first)}, got["depends_on"])
+		assert.Equal(t, []any{map[string]any{"id": float64(first), "status": "draft"}}, got["dependencies"])
 		assert.NotEmpty(t, got["waiting"], "with no reason from the scheduler, the wait Decide gives")
 
 		f.waiting.Store(then, engine.WaitingForSlot)
@@ -439,6 +443,10 @@ func TestTaskViews(t *testing.T) {
 		assert.EqualValues(t, 33, got["turns"])
 		assert.EqualValues(t, 226000, got["duration_ms"])
 		assert.InDelta(t, 0.325, got["cost_estimate_usd"], 1e-9)
+		assert.Equal(t, []any{
+			map[string]any{"source": "agent", "model": "sonnet", "input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0, "cost_estimate_usd": 0.025},
+			map[string]any{"source": "proxy", "model": "sonnet", "input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0, "cost_estimate_usd": 0.3},
+		}, got["usage"])
 	})
 }
 
@@ -542,18 +550,22 @@ func TestTaskViewsInFull(t *testing.T) {
 		used := map[string]any{"turns": 33.0, "max_turns": 200.0, "minutes": 4.0, "max_minutes": 60.0}
 
 		for _, tc := range []struct {
-			name, mode, budget string
-			want               map[string]any
+			name, mode, budget, day string
+			want                    map[string]any
 		}{
-			{"a task cap in key mode", "key", "5", map[string]any{
+			{"a task cap in key mode", "key", "5", "", map[string]any{
 				"turns": 33.0, "max_turns": 200.0, "minutes": 4.0, "max_minutes": 60.0, "usd": 0.41, "max_usd": 5.0,
 			}},
-			{"the same cap under a subscription", "subscription", "5", used},
-			{"no task cap", "key", "", used},
+			{"a daily cap in key mode", "key", "", "20", map[string]any{
+				"turns": 33.0, "max_turns": 200.0, "minutes": 4.0, "max_minutes": 60.0, "day_usd": 0.41, "max_day_usd": 20.0,
+			}},
+			{"the same caps under a subscription", "subscription", "5", "20", used},
+			{"no cap", "key", "", "", used},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				require.NoError(t, f.store.SetSetting(t.Context(), "endpoint_mode", tc.mode))
 				require.NoError(t, f.store.SetSetting(t.Context(), "task_budget_usd", tc.budget))
+				require.NoError(t, f.store.SetSetting(t.Context(), "daily_budget_usd", tc.day))
 
 				assert.Equal(t, tc.want, f.view(t, id)["budget"], "a key that is left out is absent, not zero")
 			})
@@ -601,6 +613,9 @@ func TestListFilters(t *testing.T) {
 		{"?status=queued", []float64{2}},
 		{"?project=api&status=blocked", []float64{4}},
 		{"?status=done", []float64{}},
+		{"?needs_you=true", []float64{4}},
+		{"?needs_you=false", []float64{1, 2, 3, 4}},
+		{"?project=site&needs_you=true", []float64{}},
 	} {
 		t.Run("filtered by "+tc.query, func(t *testing.T) {
 			ids := []float64{}
@@ -617,12 +632,12 @@ func TestListFilters(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, []any{map[string]any{
-			"id": 4.0, "project": "api", "title": "A question", "status": "blocked", "stop_reason": "question",
+			"id": 4.0, "project": "api", "title": "A question", "status": "blocked", "needs_you": true, "stop_reason": "question",
 			"waiting": "", "pull_request_ready": false, "created_at": rfc3339(stored.CreatedAt),
 		}}, list(t, "?status=blocked"))
 	})
 
-	for _, query := range []string{"?project=nope", "?status=paused"} {
+	for _, query := range []string{"?project=nope", "?status=paused", "?needs_you=maybe"} {
 		t.Run("refused: "+query, func(t *testing.T) {
 			status, body := f.call(t, "GET /api/tasks"+query, "")
 			require.Equal(t, http.StatusBadRequest, status, body)
@@ -708,6 +723,7 @@ func TestTaskShowsItsPullRequest(t *testing.T) {
 		status     string
 		want       any // pull_request
 		wantChange any
+		waits      bool // the watch's reason is given
 	}{
 		{
 			name: "before the publish", status: "draft",
@@ -718,6 +734,7 @@ func TestTaskShowsItsPullRequest(t *testing.T) {
 			set:        func(id int64) { f.published(t, id, "c1") },
 			want:       pr("open", "c1", "", false),
 			wantChange: change("c1"),
+			waits:      true,
 		},
 		{
 			name: "with failed checks", status: "in_review",
@@ -756,6 +773,7 @@ func TestTaskShowsItsPullRequest(t *testing.T) {
 			},
 			want:       pr("open", "c1", "passed", true),
 			wantChange: change("c1"),
+			waits:      true,
 		},
 		{
 			name: "merged", status: "done",
@@ -777,6 +795,7 @@ func TestTaskShowsItsPullRequest(t *testing.T) {
 			assert.Equal(t, tc.status, got["status"])
 			assert.Equal(t, tc.want, got["pull_request"])
 			assert.Equal(t, tc.wantChange, got["change"])
+			assert.Equal(t, tc.waits, got["waiting"] != "")
 		})
 	}
 }
@@ -807,12 +826,13 @@ func TestListMarksReadyPullRequests(t *testing.T) {
 	status, body := f.call(t, "GET /api/tasks", "")
 	require.Equal(t, http.StatusOK, status, body)
 
-	got := map[float64]any{}
+	got, needsYou := map[float64]any{}, map[float64]any{}
 
 	for _, row := range object(t, body)["tasks"].([]any) {
 		r := row.(map[string]any)
-		got[r["id"].(float64)] = r["pull_request_ready"]
+		got[r["id"].(float64)], needsYou[r["id"].(float64)] = r["pull_request_ready"], r["needs_you"]
 	}
 
 	assert.Equal(t, map[float64]any{float64(ready): true, float64(failing): false, float64(bare): false}, got)
+	assert.Equal(t, got, needsYou, "a ready pull request needs a person, and the others here do not")
 }
