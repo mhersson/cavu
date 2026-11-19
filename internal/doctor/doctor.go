@@ -245,7 +245,7 @@ func (r *doctor) imageCheck(ctx context.Context) Check {
 		return failed(r.err, "")
 	}
 
-	c := CheckImage(r.labels, r.found, r.Version, r.CABundle)
+	c := CheckImage(r.labels, r.found, r.Version, r.AgentVersion, r.CABundle)
 	if !c.OK {
 		return c
 	}
@@ -258,9 +258,10 @@ func (r *doctor) imageCheck(ctx context.Context) Check {
 }
 
 // CheckImage checks the labels of version's image, found or not: the image
-// must be built by that version and carry the configured CA bundle, empty for
-// none. A run starts only on an image it passes.
-func CheckImage(labels sandbox.ImageLabels, found bool, version string, caBundle []byte) Check {
+// must be built by that version, hold agentVersion of Claude Code and carry
+// the configured CA bundle, empty for none. A run starts only on an image it
+// passes.
+func CheckImage(labels sandbox.ImageLabels, found bool, version, agentVersion string, caBundle []byte) Check {
 	image := sandbox.ImageName(version)
 	fail := func(detail string) Check { return Check{Detail: detail, Fix: buildFix} }
 	bundleSum, err := sandbox.BundleSum(caBundle)
@@ -270,6 +271,8 @@ func CheckImage(labels sandbox.ImageLabels, found bool, version string, caBundle
 		return fail("image " + image + " is not built")
 	case labels.CavuVersion != version:
 		return fail(fmt.Sprintf("image %s is from cavu %s, this is %s", image, labels.CavuVersion, version))
+	case labels.AgentVersion != agentVersion:
+		return fail(fmt.Sprintf("image %s has Claude Code %s, this cavu pins %s", image, labels.AgentVersion, agentVersion))
 	case err != nil:
 		return failed(err, "set ca_bundle_path to a PEM file of CA certificates")
 	case labels.CABundle != bundleSum:

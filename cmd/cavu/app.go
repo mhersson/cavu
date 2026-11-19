@@ -333,7 +333,8 @@ func (a *app) removeOrphans(ctx context.Context, rt containerRuntime) error {
 }
 
 // checkImage stops a verb before any container starts unless this binary's
-// image is built and carries the configured CA bundle.
+// image is built, holds the Claude Code it pins and carries the configured CA
+// bundle.
 func (a *app) checkImage(ctx context.Context, rt containerRuntime) error {
 	bundle, err := a.caBundle(ctx)
 	if err != nil {
@@ -345,7 +346,7 @@ func (a *app) checkImage(ctx context.Context, rt containerRuntime) error {
 		return err
 	}
 
-	if c := doctor.CheckImage(labels, found, version, bundle); !c.OK {
+	if c := doctor.CheckImage(labels, found, version, claudecode.Version, bundle); !c.OK {
 		return fmt.Errorf("%s; fix: %s", c.Detail, c.Fix)
 	}
 
