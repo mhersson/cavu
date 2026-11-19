@@ -426,6 +426,25 @@ func TestHumanActionLosesToANewerEvent(t *testing.T) {
 	}
 }
 
+func TestHumanActionRetriesAfterANewerEvent(t *testing.T) {
+	h := newHarness(t)
+	h.spy.rival = func(claim int) (store.Event, bool) {
+		return store.Event{Type: engine.AgentText, Actor: "agent"}, claim == 1
+	}
+
+	require.NoError(t, h.loop.Cancel(t.Context(), h.task.ID))
+
+	var cancelled int
+
+	for _, e := range h.recorded(h.task.ID) {
+		if e.Type == engine.HumanCancelled {
+			cancelled++
+		}
+	}
+
+	assert.Equal(t, 1, cancelled)
+}
+
 // A task with a pull request is not marked done by hand.
 func TestDoneIsRefusedWithAPullRequest(t *testing.T) {
 	h := newHarness(t)

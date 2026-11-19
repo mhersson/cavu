@@ -27,7 +27,7 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist. |
-| 409 | The write conflicts with what is stored: another project has the name, or an event was recorded on the task between an action's read and its write. Nothing was written; send it again. |
+| 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Nothing was written; send it again. |
 | 413 | The body is larger than 1 MiB. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
 | 500 | The server failed. It logs the cause; the answer holds no detail. |
@@ -194,7 +194,7 @@ Records a person's action on the task:
 | `cancel` | Cancels the task. | The task is cancelled or done. |
 | `done` | Records that the task's change was merged. | The task is not `in_review`, or has a pull request. |
 
-Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action or one that is refused, or 409 when an event was recorded on the task between the action's read and its write, such as the server's own next step; nothing is recorded then, and the request may be sent again.
+Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action or one that is refused, or 409 when events kept being recorded on the task, such as the server's own progress, between the action's read and its write every time the server tried; nothing is recorded then, and the request may be sent again.
 
 ### The task
 
