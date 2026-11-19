@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Navigate, Outlet, Route, Routes } from 'react-router'
-import { api } from './api/client.ts'
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
+import { api, onUnauthorized } from './api/client.ts'
 import { useEvents } from './api/stream.ts'
 import type { Row } from './api/types.ts'
 import Nav from './components/Nav.tsx'
@@ -64,6 +64,20 @@ function Frame() {
 }
 
 export default function App() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const here = useRef(location)
+  useEffect(() => {
+    here.current = location
+  })
+  // A 401 anywhere opens sign-in, which returns to the page the person was on.
+  useEffect(() => {
+    onUnauthorized(() => {
+      const { pathname, search } = here.current
+      if (pathname !== '/login') navigate('/login', { state: { from: pathname + search } })
+    })
+  }, [navigate])
+
   return (
     <Routes>
       <Route path="/login" element={<Login />} />

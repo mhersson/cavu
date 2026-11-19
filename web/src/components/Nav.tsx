@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router'
+import { useSignOut } from './useSignOut.ts'
 import './Nav.css'
 
 type Props = { count: number; live: boolean; version: string }
@@ -6,6 +7,7 @@ type Props = { count: number; live: boolean; version: string }
 const item = ({ isActive }: { isActive: boolean }) => 'nav-item' + (isActive ? ' on' : '')
 
 export default function Nav({ count, live, version }: Props) {
+  const signOut = useSignOut()
   return (
     <nav className="nav">
       <span className="brand">CAVU</span>
@@ -27,6 +29,9 @@ export default function Nav({ count, live, version }: Props) {
           {live ? 'Live' : 'Offline'}
         </span>
         <span>{version}</span>
+        <button className="btn link" onClick={() => void signOut()}>
+          Sign out
+        </button>
       </div>
     </nav>
   )

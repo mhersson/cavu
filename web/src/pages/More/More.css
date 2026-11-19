@@ -1,1 +1,36 @@
-/* Rules of this page only. */
+.more-list {
+  margin-top: 14px;
+}
+
+.more-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--bg2);
+  background: transparent;
+  text-align: left;
+  padding: 11px 4px;
+  color: var(--fg);
+}
+
+.more-item:hover {
+  text-decoration: none;
+  background: var(--bg0);
+}
+
+.more-item .t1 {
+  display: block;
+  font-weight: 500;
+}
+
+.more-item .t2 {
+  display: block;
+  color: var(--grey1);
+  font-size: 12.5px;
+}
+
+.more-version {
+  margin-top: 18px;
+  color: var(--grey1);
+  font-size: 12px;
+}

@@ -1,4 +1,5 @@
 import { act, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import App from './App.tsx'
 import { FakeEventSource, fakeServer, json, narrow, rows } from './test-server.ts'
@@ -15,7 +16,9 @@ async function show(path = '/') {
       <App />
     </MemoryRouter>,
   )
-  await act(() => vi.advanceTimersByTimeAsync(0))
+  await act(async () => {
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0)
+  })
   return view
 }
 
@@ -78,4 +81,54 @@ test('a path that is no screen goes to the first one', async () => {
   await show('/no/such/page')
   expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument()
   expect(screen.getByRole('link', { name: /needs you/i })).toHaveAttribute('aria-current', 'page')
+})
+
+const password = () => document.querySelector<HTMLInputElement>('input[type=password]')
+
+test('a 401 opens sign-in and returns to the page', async () => {
+  vi.useRealTimers()
+  let signedIn = false
+  const calls = fakeServer((c) => {
+    if (c.path === '/api/auth/login') {
+      signedIn = true
+      return new Response(null, { status: 204 })
+    }
+    if (needsYou(c)) return signedIn ? json({ tasks: [] }) : json({ error: 'sign in' }, 401)
+  })
+  await show('/board?x=1')
+  expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: /board/i })).toBeNull()
+
+  const user = userEvent.setup()
+  await user.type(screen.getByRole('textbox'), 'ada')
+  await user.type(password()!, 'pw')
+  await user.click(screen.getByRole('button'))
+  expect(await screen.findByRole('link', { name: /board/i })).toHaveAttribute('aria-current', 'page')
+  expect(password()).toBeNull()
+  expect(calls.at(-1)?.path).not.toBe('/api/auth/login')
+})
+
+test('sign-out ends the session', async () => {
+  vi.useRealTimers()
+  const calls = fakeServer((c) => {
+    if (needsYou(c)) return json({ tasks: [] })
+    if (c.path === '/api/projects') return json({ projects: [] })
+    if (c.path === '/api/auth/logout') return new Response(null, { status: 204 })
+  })
+  const user = userEvent.setup()
+  const logouts = () => calls.filter((c) => c.path === '/api/auth/logout')
+
+  narrow(false)
+  const wide = await show('/board')
+  await user.click(screen.getByRole('button'))
+  expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
+  expect(logouts()).toHaveLength(1)
+  expect(logouts()[0].method).toBe('POST')
+  wide.unmount()
+
+  narrow(true)
+  await show('/more')
+  await user.click(screen.getByRole('button'))
+  expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
+  expect(logouts()).toHaveLength(2)
 })
