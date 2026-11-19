@@ -237,9 +237,16 @@ func (l *Loop) storeCheck(ctx context.Context, started store.Project, answers ti
 	return nil
 }
 
-// ErrVolumesNotRemoved is wrapped by the error of a removal whose volumes the
-// runtime would not remove; the project is left as it was.
-var ErrVolumesNotRemoved = errors.New("its volumes were not removed")
+// ErrVolumesNotRemoved matches the error of a removal whose volumes the
+// runtime would not remove; the project is left as it was. The error's text
+// is the runtime's own.
+var ErrVolumesNotRemoved = errors.New("volumes not removed")
+
+type volumesError struct{ error }
+
+func (e volumesError) Is(target error) bool { return target == ErrVolumesNotRemoved }
+
+func (e volumesError) Unwrap() error { return e.error }
 
 // RemoveProject removes a project: its cache and mirror volumes, then in one
 // write the project's mark and its secrets. The tasks it has had, their
@@ -268,7 +275,7 @@ func (l *Loop) RemoveProject(ctx context.Context, projectID int64) error {
 
 	ref := RunRef{InstanceID: set["instance_id"], Image: l.Image, ProjectID: p.ID}
 	if err := l.Runner.RemoveProject(ctx, ref); err != nil {
-		return fmt.Errorf("project %s was not removed, %w: %w; remove it again", p.Name, ErrVolumesNotRemoved, err)
+		return fmt.Errorf("project %s was not removed: %w; remove it again", p.Name, volumesError{err})
 	}
 
 	return l.Store.RemoveProject(ctx, p.ID, l.Now(), ProjectSecretName(p.Name, ""))
@@ -289,7 +296,7 @@ func (l *Loop) refuseOpenTasks(ctx context.Context, p store.Project) error {
 			continue
 		}
 
-		events, err := l.Store.Events(ctx, t.ID, 0, 0)
+		events, err := l.Store.EventsOmitting(ctx, t.ID, ProgressTypes...)
 		if err != nil {
 			return fmt.Errorf("task %d: %w", t.ID, err)
 		}
@@ -300,7 +307,7 @@ func (l *Loop) refuseOpenTasks(ctx context.Context, p store.Project) error {
 	}
 
 	if len(open) > 0 {
-		return refuse("project %s has tasks that are not over: %s; cancel them or let them finish", p.Name, strings.Join(open, ", "))
+		return refuse("project %s has open tasks: %s; cancel them with cavu task cancel ID, or let them finish", p.Name, strings.Join(open, ", "))
 	}
 
 	return nil
