@@ -31,7 +31,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    make image
    ```
 
-   The binary is `bin/cavu`, which is not on your `PATH`: copy it to a directory that is (`install bin/cavu ~/.local/bin/`), or write `bin/cavu` where the commands below say `cavu`. With a built `cavu`, `cavu image build` builds the image alone. `make build` builds the binary alone, and `make build-go` builds it with the web app as last built, or with a page that says none is built in. To have CAVU work on its own repository, add it as a project whose setup command runs `make web-install` and whose verify command adds `make web-check`.
+   The binary is `bin/cavu`, which is not on your `PATH`: copy it to a directory that is (`install bin/cavu ~/.local/bin/`), or write `bin/cavu` where the commands below say `cavu`. With a built `cavu`, `cavu image build` builds the image alone. `make build` builds the web app and the binary, without the image, and `make build-go` builds it with the web app as last built, or with a page that says none is built in. To have CAVU work on its own repository, add it as a project whose setup command runs `make web-install` and whose verify command adds `make web-check`.
 
 2. Set what a run needs. In `subscription` mode the credential is a subscription token; in `key` mode also set the endpoint.
 
