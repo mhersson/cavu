@@ -11,7 +11,7 @@ import (
 // Facts is what a task's events add up to.
 type Facts struct {
 	Started, Cancelled, Merged bool
-	OpenStop                   *StopFact // newest stop with no human action and no claim after it
+	OpenStop                   *StopFact // newest stop with no human action, claim or merge seen after it
 	RunOpen                    bool
 	LastRun                    int64    // the task's newest run, open or ended
 	Home                       bool     // the newest run ended and kept the task's home, which is still there; never while a run is open
@@ -365,10 +365,11 @@ func (f *Facts) published(p PublishedPayload, at time.Time) {
 
 // observed records what the forge showed of the pull request, and gives CAVU
 // the head it shows when a retry owes that and the head is not one of CAVU's.
+// A merge closes the open stop: a done task has nothing left to retry.
 func (f *Facts) observed(o Observation) {
 	switch o.State {
 	case PRMerged:
-		f.Merged = true
+		f.Merged, f.OpenStop = true, nil
 	case PRClosed:
 		f.Cancelled = true
 	}

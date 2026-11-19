@@ -280,17 +280,19 @@ func (s *server) tool(name string, args, out any) {
 	require.NoError(t, json.Unmarshal(b, out))
 }
 
-// project adds a project on the fixture repository over REST with env and the
-// switches at their defaults but publish, which is off since no forge is
-// behind the fixture repository, asks for its check, waits for the check to
-// end and requires its baseline passed. It returns the project's id.
-func (s *server) project(name string, env map[string]string) int64 {
+// noForge is the switches of a project on setup's repository, which no forge is behind.
+var noForge = map[string]bool{"publish": false}
+
+// project adds a project on the instance's repository over REST with env and
+// switches, the others at their defaults, asks for its check, waits for the
+// check to end and requires its baseline passed. It returns the project's id.
+func (s *server) project(name string, env map[string]string, switches map[string]bool) int64 {
 	s.in.t.Helper()
 
 	var p struct{ ID int64 }
 
 	s.call(http.MethodPost, "/api/projects", map[string]any{
-		"name": name, "repo_url": s.in.repo, "verify_command": verify, "env": env, "switches": map[string]bool{"publish": false},
+		"name": name, "repo_url": s.in.repo, "verify_command": verify, "env": env, "switches": switches,
 	}, http.StatusCreated, &p)
 	s.call(http.MethodPost, fmt.Sprintf("/api/projects/%d/check", p.ID), nil, http.StatusAccepted, nil)
 
@@ -314,33 +316,71 @@ func (s *server) project(name string, env map[string]string) int64 {
 // apiTask is what the tests read of a task as the API gives it; a null stop
 // is the zero stop.
 type apiTask struct {
-	ID        int64
-	Status    string
-	Waiting   string
-	Requester string
-	Stop      struct{ Reason, Explanation, Action string }
-	Budget    struct {
+	ID          int64
+	Status      string
+	Waiting     string
+	Requester   string
+	Stop        struct{ Reason, Explanation, Action string }
+	PullRequest *struct {
+		State, Checks, Head string
+		Ready               bool
+	} `json:"pull_request"`
+	Budget struct {
 		USD    float64
 		MaxUSD float64 `json:"max_usd"`
 	}
 }
 
-// rested polls the task over REST until it rests, in_review or blocked, and
-// returns it.
-func (s *server) rested(id int64) apiTask {
+// read reads the task over REST into got, which it zeroes first, and returns
+// the answer's body.
+func (s *server) read(id int64, got *apiTask) string {
+	s.in.t.Helper()
+
+	*got = apiTask{}
+
+	return s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, got)
+}
+
+// until polls the task over REST until ok holds of it and returns it; past
+// bound it fails the test with the task's body.
+func (s *server) until(id int64, bound time.Duration, ok func(apiTask) bool) apiTask {
 	t := s.in.t
 	t.Helper()
 
 	var got apiTask
 
-	within(t, patience, func() (bool, string) {
-		got = apiTask{}
-		b := s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, &got)
+	within(t, bound, func() (bool, string) {
+		b := s.read(id, &got)
 
-		return got.Status == "in_review" || got.Status == "blocked", b
+		return ok(got), b
 	})
 
 	return got
+}
+
+// untilEvent polls the task's events over REST until one is of type kind and
+// returns them; past bound it fails the test with the event lines.
+func (s *server) untilEvent(id int64, bound time.Duration, kind string) []apiEvent {
+	t := s.in.t
+	t.Helper()
+
+	var events []apiEvent
+
+	within(t, bound, func() (bool, string) {
+		events = s.events(id)
+
+		return slices.ContainsFunc(events, func(e apiEvent) bool { return e.Type == kind }), strings.Join(eventLines(events), "\n")
+	})
+
+	return events
+}
+
+// rested polls the task over REST until it rests, in_review or blocked, and
+// returns it.
+func (s *server) rested(id int64) apiTask {
+	s.in.t.Helper()
+
+	return s.until(id, patience, func(a apiTask) bool { return a.Status == "in_review" || a.Status == "blocked" })
 }
 
 // rest waits until each task rests and requires it in_review.
@@ -541,7 +581,7 @@ func TestSandboxCannotReachTheServer(t *testing.T) {
 	_, port, err := net.SplitHostPort(addr)
 	require.NoError(t, err)
 
-	s.project("notes", map[string]string{"E2E_SERVER": addr})
+	s.project("notes", map[string]string{"E2E_SERVER": addr}, noForge)
 
 	var task apiTask
 
@@ -563,7 +603,7 @@ func TestServeCancelInterruptsSession(t *testing.T) {
 	mock := mockapi.Start(t, nil)
 	in := setup(t, mock.HostURL())
 	s := in.serve()
-	project := s.project("notes", nil)
+	project := s.project("notes", nil, noForge)
 
 	mock.Hold()
 
@@ -622,7 +662,7 @@ func TestServeTaskEndToEnd(t *testing.T) {
 	})
 	in := setup(t, mock.HostURL())
 	s := in.serve()
-	s.project("notes", nil)
+	s.project("notes", nil, noForge)
 
 	live := s.follow()
 
@@ -729,7 +769,7 @@ func TestServeRunsTwoTasksAtOnce(t *testing.T) {
 
 	in := setup(t, mock.HostURL())
 	s := in.serve()
-	s.project("notes", nil)
+	s.project("notes", nil, noForge)
 
 	add := func(marker string) int64 {
 		var task apiTask
@@ -788,7 +828,7 @@ func TestServeRestartContinues(t *testing.T) {
 	mock := mockapi.Start(t, []mockapi.Step{ready, change, done, readDiff, passed})
 	in := setup(t, mock.HostURL())
 	s := in.serve()
-	s.project("notes", nil)
+	s.project("notes", nil, noForge)
 
 	mock.Hold()
 
@@ -825,7 +865,7 @@ func TestServeBudgetStopsKeyMode(t *testing.T) {
 	mock := mockapi.Start(t, []mockapi.Step{ready, costly, change, done, readDiff, passed})
 	in := setup(t, mock.HostURL())
 	s := in.serve()
-	s.project("notes", nil)
+	s.project("notes", nil, noForge)
 
 	// At a dollar per million tokens of each kind a token costs a
 	// micro-dollar: the costly call passes the cap of $0.01 by itself, and

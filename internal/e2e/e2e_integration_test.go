@@ -111,7 +111,9 @@ func child(t *testing.T) string {
 }
 
 func TestMain(m *testing.M) {
-	code := m.Run()
+	// Git is isolated once for the binary: a test's own isolation, through
+	// t.Setenv, would keep it from running in parallel.
+	code := gitrepo.Run(m)
 
 	if image.bin != "" {
 		name := sandbox.ImageName(sandboxtest.CavuVersion)
@@ -126,7 +128,8 @@ func TestMain(m *testing.M) {
 
 // instance is a child cavu's data directory, its instance id, the runtime it
 // drives and the fixture repository it is set up for. A path set is the
-// child's whole PATH; out keeps what every child printed.
+// child's whole PATH; env is added to every child's environment; out keeps
+// what every child printed.
 type instance struct {
 	t    *testing.T
 	rt   sandbox.Runtime
@@ -134,6 +137,7 @@ type instance struct {
 	id   string
 	repo string
 	path string
+	env  []string
 	out  strings.Builder
 }
 
@@ -156,7 +160,7 @@ func (in *instance) start(stdin string, out io.Writer, args ...string) (cmd *exe
 	var stdout, stderr bytes.Buffer
 
 	cmd = exec.CommandContext(in.t.Context(), child(in.t), args...)
-	cmd.Env = append(os.Environ(), "CAVU_DATA_DIR="+in.dir)
+	cmd.Env = append(append(os.Environ(), "CAVU_DATA_DIR="+in.dir), in.env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &stdout, &stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = time.Minute
@@ -267,8 +271,6 @@ func (in *instance) ok(args ...string) string {
 // the image.
 func setup(t *testing.T, endpoint string) *instance {
 	t.Helper()
-
-	gitrepo.Isolate(t)
 
 	rt := sandboxtest.Runtime(t)
 	bare := strings.TrimPrefix(gitrepo.Bare(t, gitrepo.New(t, map[string]string{"notes.txt": "first line\n"})), "file://")
@@ -427,6 +429,22 @@ func (in *instance) sh(container, script string, args ...string) string {
 	return in.client(append([]string{"exec", "--user=1000:1000", container, "sh", "-c", script, "sh"}, args...)...)
 }
 
+// files runs fileScan for pattern in container over /tmp and every directory
+// mounted into it.
+func (in *instance) files(container, pattern string) string {
+	in.t.Helper()
+
+	info, err := in.rt.Inspect(in.t.Context(), container)
+	require.NoError(in.t, err)
+
+	dirs := []string{"/tmp"}
+	for _, m := range info.Mounts {
+		dirs = append(dirs, m.Target)
+	}
+
+	return in.sh(container, fileScan, append([]string{pattern}, dirs...)...)
+}
+
 // procScan prints each process environment and command line that matches the
 // extended pattern $1, and fails on one it cannot read while it exists.
 const procScan = `s=0
@@ -455,9 +473,9 @@ p=$(sh -c '%[1]s' sh '%[4]s') &&
 test -n "$p"`, procScan, fileScan, found, planted)
 }
 
-// mark is a pattern for v that its own text does not match, so a scan never
-// finds its own command line.
-func mark(v string) string { return "[" + v[:1] + "]" + v[1:] }
+// mark is an extended pattern that matches v as it is written and not its own
+// text, so a scan never finds its own command line.
+func mark(v string) string { return "[" + v[:1] + "]" + regexp.QuoteMeta(v[1:]) }
 
 // values returns what follows prefix on every line of out that starts with it.
 func values(out, prefix string) []string {
@@ -633,18 +651,9 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	release, _, wait := in.runHeld(mock, id)
 
 	agent := in.container("agent")
-	info, err := in.rt.Inspect(t.Context(), agent)
-	require.NoError(t, err)
-
-	dirs := []string{"/tmp"}
-	for _, m := range info.Mounts {
-		dirs = append(dirs, m.Target)
-	}
-
-	files := func(pattern string) string { return in.sh(agent, fileScan, append([]string{pattern}, dirs...)...) }
 
 	assert.Empty(t, in.sh(agent, procScan, credentials))
-	assert.Empty(t, files(credentials))
+	assert.Empty(t, in.files(agent, credentials))
 
 	pids := strings.Fields(in.sh(agent, "pgrep -x claude"))
 	require.Len(t, pids, 1)
@@ -661,7 +670,7 @@ func TestCredentialsNeverInSandbox(t *testing.T) {
 	standIn := standIns[0]
 
 	assert.Contains(t, strings.Split(in.sh(agent, procScan, mark(standIn)), "\n"), "/proc/"+pids[0]+"/environ")
-	assert.NotEmpty(t, files(mark(title)))
+	assert.NotEmpty(t, in.files(agent, mark(title)))
 
 	for _, c := range []string{agent, in.container("sidecar")} {
 		out := in.client("container", "inspect", c)
@@ -712,6 +721,7 @@ func TestHostRunsNoGit(t *testing.T) {
 	// The first task's session, then the second's.
 	mock := mockapi.Start(t, []mockapi.Step{change, done, change, done})
 	in := setup(t, mock.HostURL())
+	fake, _ := in.forge()
 
 	in.path = t.TempDir()
 	require.NoError(t, os.Symlink(in.rt.Bin, filepath.Join(in.path, in.rt.Kind)))
@@ -721,9 +731,40 @@ func TestHostRunsNoGit(t *testing.T) {
 		require.NoError(t, os.Symlink(pasta, filepath.Join(in.path, "pasta")))
 	}
 
-	id, run := in.pipeline("notes")
+	// Each task's run pushes its branch and opens its pull request, and no server runs.
+	in.ok("project", "add", "notes", "--repo", in.repo, "--verify", verify)
+	in.ok("project", "set", "notes", "--switch", "readiness=off", "--switch", "review=off")
+	in.ok("project", "check", "notes")
+
+	// pr reads the pull request's address from the task's state, which r ends with.
+	pr := func(r result) []string {
+		var urls []string
+		for _, v := range values(r.stdout, "pr:") {
+			urls = append(urls, strings.Fields(v)[0])
+		}
+
+		return urls
+	}
+
+	id := in.task("notes")
+	run := in.cavu("", "task", "run", id)
 	require.Zero(t, run.code, run)
 	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+
+	pulls := fake.Pulls()
+	require.Len(t, pulls, 1, run)
+
+	// The address the fake gives a pull request of the repository.
+	url := fmt.Sprintf("%s/pull/%d", strings.TrimSuffix(in.repo, ".git"), pulls[0].Number)
+	assert.Equal(t, []string{url}, pr(run))
+
+	// On a task whose pull request is watched, task run returns at once.
+	events, answered := shown(in.ok("task", "show", id, "--events")), len(modelCalls(mock))
+	again := in.cavu("", "task", "run", id)
+	require.Zero(t, again.code, again)
+	assert.Equal(t, []string{url}, pr(again))
+	assert.Equal(t, events, shown(in.ok("task", "show", id, "--events")), "the second run recorded nothing")
+	assert.Len(t, modelCalls(mock), answered)
 
 	// A git first on the inherited PATH records each call and fails it.
 	rec := t.TempDir()

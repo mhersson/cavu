@@ -19,7 +19,11 @@ import (
 // Main isolates a test binary's git from the machine's configuration and from
 // any repository a hook or `rebase --exec` names, then runs its tests. Call it
 // from TestMain.
-func Main(m *testing.M) {
+func Main(m *testing.M) { os.Exit(Run(m)) }
+
+// Run is Main without the exit: it returns the tests' exit code, for a
+// TestMain that has more to do after the tests.
+func Run(m *testing.M) int {
 	names, err := inheritedRepoVars()
 	if err != nil {
 		panic(err)
@@ -51,7 +55,7 @@ func Main(m *testing.M) {
 
 	_ = os.RemoveAll(dir)
 
-	os.Exit(code)
+	return code
 }
 
 // Isolate is Main's isolation for one test of a package whose TestMain does
