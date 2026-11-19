@@ -36,7 +36,7 @@ func EventText(e store.Event) string {
 
 		return fmt.Sprintf("exported %s, head %s", counted(p.FilesChanged, "changed file"), shortCommit(p.HeadCommit))
 	case Merged:
-		return "the pull request is merged"
+		return "a person marked the task's change as merged"
 	case RunEnded:
 		p := decode[RunEndedPayload](e.Payload)
 		if p.Why == "" {
@@ -49,7 +49,7 @@ func EventText(e store.Event) string {
 		s := fmt.Sprintf("the %s usage window is %s", p.Window, p.Status)
 
 		if !p.ResetsAt.IsZero() {
-			s += ", resetting " + p.ResetsAt.Local().Format(time.DateTime)
+			s += ", resetting " + p.ResetsAt.UTC().Format(time.RFC3339)
 		}
 
 		return s

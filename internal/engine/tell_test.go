@@ -57,7 +57,7 @@ func TestEventText(t *testing.T) {
 		{
 			engine.RateLimit,
 			engine.RateLimitPayload{Window: "five_hour", Status: "rejected", ResetsAt: resets},
-			[]string{"five_hour", "rejected", resets.Local().Format(time.DateTime)},
+			[]string{"five_hour", "rejected", resets.UTC().Format(time.RFC3339)},
 		},
 		{engine.EgressDenied, engine.EgressDeniedPayload{Host: "evil.example.com"}, []string{"evil.example.com"}},
 		{engine.AgentText, engine.AgentTextPayload{Text: "Reading the handler.\nThen the tests."}, []string{"Reading the handler.", "Then the tests."}},
