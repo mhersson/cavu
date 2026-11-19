@@ -51,6 +51,22 @@ test('the navigation shows the count of tasks that need you', async () => {
   expect(link().querySelector('.count')).toBeNull()
 })
 
+test('the navigation reads the count again when the stream reconnects', async () => {
+  let n = 1
+  const calls = fakeServer((c) => (needsYou(c) ? json({ tasks: rows(n) }) : undefined))
+  await show()
+  const es = FakeEventSource.all[0]
+  act(() => es.open())
+  expect(calls.filter(needsYou)).toHaveLength(1)
+
+  n = 4
+  act(() => es.fail())
+  act(() => es.open())
+  await act(() => vi.advanceTimersByTimeAsync(0))
+  expect(calls.filter(needsYou)).toHaveLength(2)
+  expect(screen.getByRole('link', { name: /needs you/i })).toHaveTextContent('4')
+})
+
 test('the navigation says when the stream is down', async () => {
   fakeServer((c) => (needsYou(c) ? json({ tasks: [] }) : undefined))
   await show()
@@ -74,6 +90,18 @@ test('a narrow window shows the four tabs, a wide one the navigation', async () 
   narrow(false)
   await show()
   expect(links()).toEqual(['/', '/board', '/projects', '/settings'])
+})
+
+test('a page reached through More keeps the More tab current', async () => {
+  fakeServer((c) => (needsYou(c) ? json({ tasks: [] }) : undefined))
+  narrow(true)
+  const current = () =>
+    screen.getAllByRole('link').filter((a) => a.classList.contains('on')).map((a) => a.getAttribute('href'))
+  const view = await show('/projects/cavu')
+  expect(current()).toEqual(['/more'])
+  view.unmount()
+  await show('/status')
+  expect(current()).toEqual(['/status'])
 })
 
 test('a path that is no screen goes to the first one', async () => {

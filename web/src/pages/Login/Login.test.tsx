@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { fakeServer, json } from '../../test-server.ts'
@@ -8,7 +8,8 @@ afterEach(() => vi.unstubAllGlobals())
 
 test('sign-in sends name and password and shows a refusal', async () => {
   const calls = fakeServer((c) => {
-    if (c.path === '/api/auth/login') return json({ error: 'refused here' }, c.body && (c.body as { name: string }).name === 'slow' ? 429 : 401)
+    if (c.path !== '/api/auth/login') return
+    return (c.body as { name: string }).name === 'slow' ? json({ error: 'wait a while' }, 429) : json({ error: 'refused here' }, 401)
   })
   render(
     <MemoryRouter>
@@ -32,6 +33,6 @@ test('sign-in sends name and password and shows a refusal', async () => {
   await user.clear(name)
   await user.type(name, 'slow')
   await user.click(screen.getByRole('button'))
-  await screen.findByRole('alert')
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('wait a while'))
   expect(calls.filter((c) => c.path === '/api/auth/login')).toHaveLength(2)
 })
