@@ -60,11 +60,21 @@ func Run(ctx context.Context, s *store.Store, l *engine.Loop, c Config, drive fu
 		return store.Replay{}, fmt.Errorf("replay: %w", err)
 	}
 
+	projects, err := s.Projects(ctx)
+	if err != nil {
+		return store.Replay{}, fmt.Errorf("replay: %w", err)
+	}
+
+	live := make(map[int64]bool, len(projects))
+	for _, p := range projects {
+		live[p.ID] = true
+	}
+
 	var sources, shadows []store.Task
 
 	for _, t := range all {
 		switch {
-		case t.Reference && t.BaseCommit != "":
+		case t.Reference && t.BaseCommit != "" && live[t.ProjectID]:
 			sources = append(sources, t)
 		case t.ReplayID != 0:
 			shadows = append(shadows, t)
