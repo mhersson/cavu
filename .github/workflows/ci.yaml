@@ -87,21 +87,12 @@ jobs:
       - name: pull the test image
         run: podman pull docker.io/library/busybox:1.37
 
-      # A probe, removed once read: why removing a container fails with
-      # "rootless netns: kill network process: permission denied". It stops the job.
-      - name: probe the rootless network teardown
+      # Ubuntu's AppArmor profile for pasta refuses Podman's SIGTERM, so removing
+      # the last container on a bridge network fails.
+      - name: let pasta receive Podman's SIGTERM
         run: |
-          set -x
-          ls /etc/apparmor.d
-          cat /etc/apparmor.d/podman || true
-          grep -rn -E 'signal|peer' /etc/apparmor.d/usr.bin.pasta /etc/apparmor.d/abstractions/pasta /etc/apparmor.d/abstractions/passt || true
-          sudo aa-status || true
-          podman run -d --name cavu-probe --label cavu.test=probe --network=bridge docker.io/library/busybox:1.37 sleep 60
-          ps -eo pid,user,label,args | grep -E '[p]asta|[c]onmon' || true
-          podman rm -f -t 0 cavu-probe || echo "podman rm exited $?"
-          ps -eo pid,user,label,args | grep -E '[p]asta' || echo "no pasta left"
-          sudo dmesg | grep -i apparmor | tail -n 20 || true
-          exit 1
+          printf '\nsignal (receive) set=(term) peer=podman,\n' | sudo tee -a /etc/apparmor.d/abstractions/pasta
+          sudo apparmor_parser -r /etc/apparmor.d/usr.bin.pasta
 
       - name: make test-integration
         run: make test-integration
