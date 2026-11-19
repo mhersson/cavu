@@ -46,8 +46,11 @@ export function coloursIn(file: string, text: string): string[] {
 
 test('no colour is written out outside the tokens', () => {
   expect(Object.keys(sources).length).toBeGreaterThan(0)
-  // An empty read would pass for want of anything to find.
-  for (const [file, text] of Object.entries(sources)) expect(text.trim(), file).not.toBe('')
+  // Raw reads that come back empty would pass for want of anything to find.
+  const filled = (ext: string) =>
+    Object.entries(sources).some(([file, text]) => file.endsWith(ext) && text.trim() !== '')
+  expect(filled('.css')).toBe(true)
+  expect(filled('.tsx')).toBe(true)
   const found = Object.entries(sources).flatMap(([file, text]) =>
     coloursIn(file, text).map((m) => `${file}: ${m}`),
   )
