@@ -84,11 +84,24 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: podman info
-        run: podman info
-
       - name: pull the test image
         run: podman pull docker.io/library/busybox:1.37
+
+      # A probe, removed once read: why removing a container fails with
+      # "rootless netns: kill network process: permission denied". It stops the job.
+      - name: probe the rootless network teardown
+        run: |
+          set -x
+          ls /etc/apparmor.d
+          cat /etc/apparmor.d/podman || true
+          grep -rn -E 'signal|peer' /etc/apparmor.d/usr.bin.pasta /etc/apparmor.d/abstractions/pasta /etc/apparmor.d/abstractions/passt || true
+          sudo aa-status || true
+          podman run -d --name cavu-probe --label cavu.test=probe --network=bridge docker.io/library/busybox:1.37 sleep 60
+          ps -eo pid,user,label,args | grep -E '[p]asta|[c]onmon' || true
+          podman rm -f -t 0 cavu-probe || echo "podman rm exited $?"
+          ps -eo pid,user,label,args | grep -E '[p]asta' || echo "no pasta left"
+          sudo dmesg | grep -i apparmor | tail -n 20 || true
+          exit 1
 
       - name: make test-integration
         run: make test-integration
