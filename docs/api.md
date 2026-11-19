@@ -181,7 +181,7 @@ Answers 200 with the task.
 
 ### `PATCH /api/tasks/{id}`
 
-Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts. An edit after that is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
+Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts, unless it is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
 
 ### `POST /api/tasks/{id}/actions`
 

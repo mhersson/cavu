@@ -16,7 +16,7 @@ Pre-release. The verbs today:
 - `cavu image build` builds the sandbox image on Docker or Podman.
 - `cavu doctor` checks the runtime, the image, the settings, the endpoint and the access to GitHub.
 - `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
-- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts, lists them, each with whether it needs you (`--needs-you` keeps those that do), shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
+- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts and while it is not cancelled, lists them, each with whether it needs you (`--needs-you` keeps those that do), shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 - `cavu serve` drives every started task, watches the pull requests CAVU opened, and serves the HTTP API until interrupted.
 - `cavu service` runs `cavu serve` as a service of your login, a systemd user unit on Linux or a launchd agent on macOS, and removes it.
@@ -116,7 +116,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu task add web --title "Test the login redirect" --depends-on ID --start
    ```
 
-   `cavu task edit ID` changes only the title, body or dependencies it is given, until the task's first run starts; `--depends-on ""` removes every dependency.
+   `cavu task edit ID` changes only the title, body or dependencies it is given, until the task's first run starts and while it is not cancelled; `--depends-on ""` removes every dependency.
 
    ```
    cavu task edit ID --depends-on 3,4
