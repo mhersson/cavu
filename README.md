@@ -19,10 +19,11 @@ Pre-release. The verbs today:
 - `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts, lists and shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 - `cavu serve` drives every started task, watches the pull requests CAVU opened, and serves the HTTP API until interrupted.
+- `cavu service` runs `cavu serve` as a service of your login, a systemd user unit on Linux or a launchd agent on macOS, and removes it.
 
 ## Try it
 
-CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and with Podman is tested; on macOS only the unit tests run, in CI, and nothing has run there with a container runtime. The commands below keep their data in one directory: the default is created on first use, and `CAVU_DATA_DIR` puts it elsewhere. Every `cavu` verb also takes `--data-dir DIR`; `make image` takes only the variable.
+CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and with Podman is tested; on macOS only the unit tests run, in CI, and nothing has run there with a container runtime. The commands below keep their data in one directory: the default is created on first use, and `CAVU_DATA_DIR` puts it elsewhere. Every `cavu` verb but `cavu service uninstall` also takes `--data-dir DIR`; `make image` takes only the variable.
 
 1. Build the binary and the sandbox image. The build opens the data directory and uses its `runtime` and `ca_bundle_path` settings.
 
