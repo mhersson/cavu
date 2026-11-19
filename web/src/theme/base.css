@@ -154,3 +154,106 @@ code,
 ::-webkit-scrollbar-thumb:hover {
   background: var(--bg4);
 }
+
+.brand {
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  font-size: 13px;
+}
+
+.btn {
+  border: 1px solid var(--bg4);
+  background: var(--bg1);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  display: inline-block;
+}
+
+.btn:hover {
+  background: var(--bg2);
+  text-decoration: none;
+}
+
+.btn.primary {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--bg0);
+  font-weight: 600;
+}
+
+.btn.primary:hover {
+  background: color-mix(in oklab, var(--green) 88%, var(--fg));
+}
+
+.btn.danger {
+  background: transparent;
+  border-color: color-mix(in oklab, var(--red) 50%, transparent);
+  color: var(--fg);
+}
+
+.btn.link {
+  background: transparent;
+  border-color: transparent;
+  color: var(--aqua);
+  padding-left: 2px;
+  padding-right: 2px;
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+.field label {
+  display: block;
+  font-size: 12.5px;
+  color: var(--grey2);
+  margin-bottom: 4px;
+}
+
+.field input,
+.field select,
+.field textarea {
+  background: var(--bg0);
+  color: var(--fg);
+  border: 1px solid var(--bg3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: var(--grey0);
+}
+
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.seg button {
+  border: 1px solid var(--bg3);
+  background: var(--bg1);
+  color: var(--grey2);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 12.5px;
+}
+
+.seg button.on {
+  background: var(--bg-blue);
+  border-color: var(--blue);
+  color: var(--fg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .btn,
+  .seg button {
+    transition: background-color 0.12s;
+  }
+}
