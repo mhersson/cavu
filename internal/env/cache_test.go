@@ -181,6 +181,22 @@ func TestAgentSeedsGoCaches(t *testing.T) {
 	assert.Equal(t, want, AgentSeeds(allEcosystems, "/home/agent"), "a project of both gets both")
 }
 
+// A check of a Go project copies the home's build cache to where every home's
+// build cache is seeded from; a project without Go copies nothing.
+func TestGoBuildCopy(t *testing.T) {
+	t.Parallel()
+
+	from, to := GoBuildCopy([]string{"node", "go"}, "/home/agent")
+	assert.Equal(t, envMap(t, AgentEnv([]string{"go"}, "/home/agent"))["GOCACHE"], from)
+	assert.Equal(t, AgentSeeds([]string{"go"}, "/home/agent")[from], to)
+
+	for _, ecosystems := range [][]string{nil, {"node", "python", "rust"}} {
+		from, to := GoBuildCopy(ecosystems, "/home/agent")
+		assert.Empty(t, from, ecosystems)
+		assert.Empty(t, to, ecosystems)
+	}
+}
+
 // The scripts of what the agent installs for its user, such as pip's console
 // scripts, come after every other directory on its PATH, so none shadows a
 // tool the verify gate runs.

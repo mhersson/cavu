@@ -67,7 +67,7 @@ func goModCache(root string) string { return path.Join(root, "go/mod") }
 func goBuildCache(root string) string { return path.Join(root, "go/build") }
 
 // goCheckBuild is where the project cache holds a copy of a Go build cache,
-// which seeds a home's.
+// which seeds a task's home.
 const goCheckBuild = cacheDir + "/go/check-build"
 
 // agentRoot holds the agent phase's caches, in its writable home.
@@ -150,6 +150,17 @@ func AgentSeeds(ecosystems []string, home string) map[string]string {
 	}
 
 	return seeds
+}
+
+// GoBuildCopy is the copy a passed check of a Go project leaves for its tasks:
+// from the home's build cache to goCheckBuild. It is "", "" for a project
+// without Go.
+func GoBuildCopy(ecosystems []string, home string) (from, to string) {
+	if !slices.Contains(ecosystems, "go") {
+		return "", ""
+	}
+
+	return goBuildCache(agentRoot(home)), goCheckBuild
 }
 
 // SetupEnv returns the environment of the setup phase: caches under /cache, writable.

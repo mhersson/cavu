@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"strings"
 	"time"
@@ -159,7 +160,47 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		}
 	}
 
-	return p.baseline(ctx, res, base)
+	res, err = p.baseline(ctx, res, base)
+	if err == nil && p.check && res.Baseline == engine.ResultPassed {
+		// A fill that fails changes nothing of the check.
+		if fillErr := p.fill(ctx); fillErr != nil {
+			slog.WarnContext(ctx, "the check's build cache was not kept", "project", p.c.ProjectID, "err", maskErr(fillErr, masker(p.c, p.token)))
+		}
+	}
+
+	return res, err
+}
+
+// fill copies a Go project's build cache from the check's home into the
+// project's cache, where every task's home is seeded from. It writes the
+// cache in the project's setup turn, as a setup does.
+func (p *preparation) fill(ctx context.Context) error {
+	from, to := env.GoBuildCopy(p.st.ecosystems, home)
+	if to == "" {
+		return nil
+	}
+
+	release, err := p.r.takeTurn(ctx, p.c.ProjectID, setupTurn)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	fc, err := p.st.sb.Filler(ctx)
+	if err != nil {
+		return err
+	}
+
+	res, err := fc.Run(ctx, proc.Command{Argv: scriptArgv(fillScript, to, from)}, homeTimeout)
+	if err != nil {
+		return err
+	}
+
+	if res.ExitCode != 0 || res.TimedOut {
+		return fmt.Errorf("runner: fill the build cache: %s", strings.TrimSpace(output(res, homeTimeout)))
+	}
+
+	return nil
 }
 
 func (p *preparation) clone(ctx context.Context) (string, error) {
@@ -369,6 +410,16 @@ func (p *preparation) cleanTree(ctx context.Context, step string) (*stepFailure,
 // headScript points the task branch $1 at the commit $2 and checks it out,
 // replacing the workspace's tracked files.
 var headScript = proc.SandboxOnly(gitFunc + `g checkout -B "$1" "$2"`)
+
+// fillScript replaces the copy $1 in the project's cache with the directory $2
+// of the home. It renames the new copy into place, so a home seeded meanwhile
+// never copies half a copy, and removes the copy it replaces.
+var fillScript = proc.SandboxOnly(`[ -d "$2" ] || exit 0
+mkdir -p -- "${1%/*}" && cd -- "${1%/*}" || exit 1
+n=${1##*/}
+rm -rf -- "$n.new" "$n.old" && cp -R -- "$2" "$n.new" || exit 1
+if [ -d "$n" ]; then mv -- "$n" "$n.old" || exit 1; fi
+mv -- "$n.new" "$n" && rm -rf -- "$n.old"`)
 
 // checkout moves the workspace to the run's head. Its failure is the clone
 // step's: both get the commit the run starts at into the workspace.
