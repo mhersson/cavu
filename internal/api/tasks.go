@@ -233,20 +233,26 @@ func (s *server) tasks(w http.ResponseWriter, r *http.Request) error {
 }
 
 // listTasks lists every task but a replay's shadows, oldest first, of the
-// project and with the status, when they are given.
+// live project and with the status, when they are given.
 func (s *server) listTasks(ctx context.Context, project string, status engine.Status) (taskList, error) {
-	ps, err := s.Store.Projects(ctx)
+	names, err := s.Store.ProjectNames(ctx)
 	if err != nil {
 		return taskList{}, err
 	}
 
-	names := make(map[int64]string, len(ps))
-	for _, p := range ps {
-		names[p.ID] = p.Name
-	}
+	var projectID int64
 
-	if project != "" && !slices.ContainsFunc(ps, func(p store.Project) bool { return p.Name == project }) {
-		return taskList{}, &apiError{http.StatusBadRequest, fmt.Sprintf("project %q does not exist", project)}
+	if project != "" {
+		p, err := s.Store.ProjectByName(ctx, project)
+		if errors.Is(err, store.ErrNotFound) {
+			return taskList{}, &apiError{http.StatusBadRequest, fmt.Sprintf("project %q does not exist", project)}
+		}
+
+		if err != nil {
+			return taskList{}, err
+		}
+
+		projectID = p.ID
 	}
 
 	if status != "" && !slices.Contains(statuses, status) {
@@ -261,7 +267,7 @@ func (s *server) listTasks(ctx context.Context, project string, status engine.St
 	l := taskList{Tasks: []taskItemJSON{}}
 
 	for _, t := range ts {
-		if project != "" && names[t.ProjectID] != project {
+		if projectID != 0 && t.ProjectID != projectID {
 			continue
 		}
 
