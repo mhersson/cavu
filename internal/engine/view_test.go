@@ -331,3 +331,49 @@ func TestRowCarriesTheWait(t *testing.T) {
 	require.NotNil(t, v.WaitingUntil)
 	assert.Equal(t, v.WaitingUntil, rows[0].WaitingUntil)
 }
+
+func TestListReadsAFinishedTaskOnce(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+
+	done, cancelled, told, halting := h.draft(), h.draft(), h.draft(), h.draft()
+
+	for _, id := range []int64{done.ID, told.ID} {
+		h.addTo(id, now, engine.TaskStarted, struct{}{})
+		h.addTo(id, now, engine.Exported, engine.ExportedPayload{})
+		h.addTo(id, now, engine.Merged, struct{}{})
+	}
+
+	require.NoError(t, h.loop.Cancel(ctx, cancelled.ID))
+	h.addTo(halting.ID, now, engine.TaskStarted, struct{}{})
+	h.addTo(halting.ID, now, engine.HumanCancelled, struct{}{}) // its cancelled stop is not recorded yet
+
+	s := &readsStore{Store: h.store}
+	l := &engine.Loop{Store: s, Now: h.clock.Now}
+
+	list := func(waiting func(int64) string) []engine.Row {
+		t.Helper()
+
+		rows, err := l.List(ctx, engine.ListQuery{}, waiting)
+		require.NoError(t, err)
+
+		return rows
+	}
+
+	first := list(func(id int64) string {
+		if id == told.ID {
+			return engine.WaitingForSlot
+		}
+
+		return ""
+	})
+
+	assert.Equal(t, []int64{h.task.ID, done.ID, cancelled.ID, told.ID, halting.ID}, s.reads, "the first list reads every task")
+
+	s.reads = nil
+	second := list(nil)
+
+	assert.Equal(t, []int64{h.task.ID, told.ID, halting.ID}, s.reads,
+		"a finished task is read once; an open one, one with a reason to wait and one the engine has yet to stop, every time")
+	assert.Equal(t, first[1:3], second[1:3], "a kept row is the row the task had")
+}

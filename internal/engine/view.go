@@ -6,6 +6,8 @@ import (
 	"math"
 	"slices"
 	"time"
+
+	"github.com/mhersson/cavu/internal/store"
 )
 
 // View is what a person reads about a task, which the API and MCP serve as it
@@ -235,24 +237,9 @@ func (l *Loop) List(ctx context.Context, q ListQuery, waiting func(int64) string
 			continue
 		}
 
-		s, err := l.Snapshot(ctx, t.ID)
+		r, err := l.row(ctx, t, names[t.ProjectID], waiting)
 		if err != nil {
 			return nil, err
-		}
-
-		r := Row{
-			ID: t.ID, Project: names[t.ProjectID], Title: t.Title, Status: StatusOf(s.Facts), CreatedAt: t.CreatedAt.UTC(),
-		}
-		r.Needs, r.NeedsYouSince = needsOf(s)
-		r.NeedsYou = r.Needs != ""
-		r.Waiting, r.WaitingUntil = waitingOf(s, waiting)
-
-		if st := s.Facts.OpenStop; st != nil {
-			r.StopReason = st.Reason
-		}
-
-		if pr := PullRequestOf(s.Facts, s.Watch.NoCI); pr != nil {
-			r.PullRequestReady = pr.Ready
 		}
 
 		if len(q.Statuses) > 0 && !slices.Contains(q.Statuses, r.Status) || q.NeedsYou && !r.NeedsYou {
@@ -263,6 +250,39 @@ func (l *Loop) List(ctx context.Context, q ListQuery, waiting func(int64) string
 	}
 
 	return rows, nil
+}
+
+// row is the task's row. That of a done or cancelled task the engine leaves
+// alone and the scheduler gives no reason to wait is kept: no action of the
+// engine or of a person changes it any more.
+func (l *Loop) row(ctx context.Context, t store.Task, project string, waiting func(int64) string) (Row, error) {
+	if kept, ok := l.finished.Load(t.ID); ok {
+		return kept.(Row), nil
+	}
+
+	s, err := l.Snapshot(ctx, t.ID)
+	if err != nil {
+		return Row{}, err
+	}
+
+	r := Row{ID: t.ID, Project: project, Title: t.Title, Status: StatusOf(s.Facts), CreatedAt: t.CreatedAt.UTC()}
+	r.Needs, r.NeedsYouSince = needsOf(s)
+	r.NeedsYou = r.Needs != ""
+	r.Waiting, r.WaitingUntil = waitingOf(s, waiting)
+
+	if st := s.Facts.OpenStop; st != nil {
+		r.StopReason = st.Reason
+	}
+
+	if pr := PullRequestOf(s.Facts, s.Watch.NoCI); pr != nil {
+		r.PullRequestReady = pr.Ready
+	}
+
+	if (r.Status == StatusDone || r.Status == StatusCancelled) && r.Waiting == "" && Decide(s).Kind == KindNone {
+		l.finished.Store(t.ID, r)
+	}
+
+	return r, nil
 }
 
 // needsOf is Needs with its time as a view carries it: UTC, nil for no need.
