@@ -229,6 +229,8 @@ A replayed task starts as a new task does, so its project needs a passed baselin
 
 Download the modules in the setup command (`go mod download`): the setup phase reaches `storage.googleapis.com`, where the module proxy sends large modules, and the agent phase reads the modules from the project's cache. A task that needs a large module the setup did not fetch is refused with the denied-host line; `cavu project set NAME --egress storage.googleapis.com` allows that host for the project; `--egress` sets the whole list, so repeat it for every host the project already allows.
 
+A task's first build starts from the build cache of the project's newest passed check. Go's test results travel with that cache, so a verify command that must rerun every test says `-count=1` (`go test -count=1 ./...`).
+
 ### Python projects
 
 A `uv.lock` at the repository's root installs uv. Use `uv sync --frozen` as the setup command and `uv run` in the verify command (`uv run pytest -q`): every run then has its own `.venv`, which uv keeps out of git. uv runs on the Python that mise installs and never downloads its own.
