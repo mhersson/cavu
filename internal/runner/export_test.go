@@ -71,15 +71,15 @@ func TestExportImportsTheBundle(t *testing.T) {
 	}, res)
 
 	assert.Equal(t, []string{
-		"volumes", "up/agent", "run/" + exportName(c, headCommit), "copyout " + bundleFile,
+		"volumes", "up/agent", goSeed, "run/" + exportName(c, headCommit), "copyout " + bundleFile,
 		"importer", "import/copy", "import/run/" + importName(c, headCommit), "import/run/" + changeName(c, headCommit),
 		"import/copyout " + changeFiles, "import/copyout " + changeDiff, "importer removed",
 	}, f.calls())
 
 	agent := f.runsIn(sandbox.PhaseAgent)
-	require.Len(t, agent, 1, "the agent container computes no diff")
-	assert.Equal(t, workspace, agent[0].cmd.Dir)
-	assert.Equal(t, []string{baseCommit, headCommit, "cavu/fix-login", bundleFile}, agent[0].cmd.Argv[4:])
+	require.Len(t, agent, 2, "the agent container seeds its home, then computes no diff")
+	assert.Equal(t, workspace, agent[1].cmd.Dir)
+	assert.Equal(t, []string{baseCommit, headCommit, "cavu/fix-login", bundleFile}, agent[1].cmd.Argv[4:])
 	assert.Equal(t, map[string][]byte{tmpfsBundle: []byte(exportedBundle)}, f.imported, "the import takes the bundle the agent container made")
 
 	for _, r := range slices.Concat(agent, f.runsIn(phaseImport)) {

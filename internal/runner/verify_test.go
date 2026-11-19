@@ -42,7 +42,7 @@ func TestVerifyRunsOutsideTheSession(t *testing.T) {
 	assert.Equal(t, "FAIL\n", res.Output)
 	assert.Equal(t, "make test", res.Command)
 
-	assert.Equal(t, []string{"volumes", "up/agent", "run/make test"}, f.calls())
+	assert.Equal(t, []string{"volumes", "up/agent", goSeed, "run/make test"}, f.calls())
 	assert.Empty(t, d.specs, "the driver runs nothing")
 
 	run := f.run(t, "make test")
@@ -136,7 +136,7 @@ func TestVerifyAndExportStartTheAgentPhaseOnce(t *testing.T) {
 					require.NoError(t, err)
 					f.fail("sandbox: the sidecar does not answer: it exited: killed")
 				},
-				want: []string{"up/agent", "restart", a.ran},
+				want: []string{"up/agent", goSeed, "restart", a.ran},
 			},
 			{
 				name: "after a review",
@@ -144,9 +144,9 @@ func TestVerifyAndExportStartTheAgentPhaseOnce(t *testing.T) {
 					_, err := r.Review(t.Context(), c, fullReview(), noProgress)
 					require.NoError(t, err)
 				},
-				want: []string{"up/agent", a.ran},
+				want: []string{"up/agent", goSeed, a.ran},
 			},
-			{name: "with nothing up", before: func(*testing.T, *fakeSandbox, *Runner) {}, want: []string{"volumes", "up/agent", a.ran}},
+			{name: "with nothing up", before: func(*testing.T, *fakeSandbox, *Runner) {}, want: []string{"volumes", "up/agent", goSeed, a.ran}},
 		} {
 			t.Run(a.name+" "+tt.name, func(t *testing.T) {
 				f := newFake()

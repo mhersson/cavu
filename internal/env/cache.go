@@ -43,8 +43,8 @@ func cacheVars(m map[string]string, ecosystems []string, root string) {
 	for _, e := range ecosystems {
 		switch e {
 		case "go":
-			m["GOMODCACHE"] = path.Join(root, "go/mod")
-			m["GOCACHE"] = path.Join(root, "go/build")
+			m["GOMODCACHE"] = goModCache(root)
+			m["GOCACHE"] = goBuildCache(root)
 		case "node":
 			m["npm_config_cache"] = path.Join(root, "npm")
 		case "python":
@@ -61,6 +61,14 @@ func cacheVars(m map[string]string, ecosystems []string, root string) {
 }
 
 func cargoHome(root string) string { return path.Join(root, "cargo") }
+
+func goModCache(root string) string { return path.Join(root, "go/mod") }
+
+func goBuildCache(root string) string { return path.Join(root, "go/build") }
+
+// goCheckBuild is where the project cache holds a copy of a Go build cache,
+// which seeds a home's.
+const goCheckBuild = cacheDir + "/go/check-build"
 
 // agentRoot holds the agent phase's caches, in its writable home.
 func agentRoot(home string) string { return path.Join(home, ".cache") }
@@ -85,6 +93,8 @@ func render(m map[string]string) []string {
 //     a project that wants its own makes a virtual environment in the setup
 //     command, as uv sync does, in a directory git ignores so no commit
 //     takes it.
+//   - Go: the setup phase's modules and the cache's copy of a build cache
+//     come through AgentSeeds.
 //   - Rust: Cargo's binaries come through AgentLinks and its downloads through
 //     AgentSeeds.
 func AgentEnv(ecosystems []string, home string) []string {
@@ -120,18 +130,23 @@ func AgentLinks(ecosystems []string, home string) map[string]string {
 }
 
 // AgentSeeds are the directories, path to source, that the agent phase needs
-// filled in home from the read-only cache each time it comes up: Cargo's
-// registry index, crate archives and git databases. A build there then needs
-// neither the network nor a credential only the setup phase had, and a crate
-// the agent adds still lands in its writable Cargo home.
+// filled in home from the read-only cache each time it comes up: Go's module
+// cache and Cargo's registry index, crate archives and git databases, so a
+// build there needs neither the network nor a credential only the setup phase
+// had, and Go's build cache from the copy at goCheckBuild. What the agent adds
+// still lands in its writable home.
 func AgentSeeds(ecosystems []string, home string) map[string]string {
-	if !slices.Contains(ecosystems, "rust") {
-		return nil
+	agent, seeds := agentRoot(home), map[string]string{}
+
+	if slices.Contains(ecosystems, "go") {
+		seeds[goModCache(agent)] = goModCache(cacheDir)
+		seeds[goBuildCache(agent)] = goCheckBuild
 	}
 
-	seeds := map[string]string{}
-	for _, dir := range []string{"registry/index", "registry/cache", "git/db"} {
-		seeds[path.Join(cargoHome(agentRoot(home)), dir)] = path.Join(cargoHome(cacheDir), dir)
+	if slices.Contains(ecosystems, "rust") {
+		for _, dir := range []string{"registry/index", "registry/cache", "git/db"} {
+			seeds[path.Join(cargoHome(agent), dir)] = path.Join(cargoHome(cacheDir), dir)
+		}
 	}
 
 	return seeds

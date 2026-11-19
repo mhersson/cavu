@@ -31,7 +31,7 @@ const (
 	workspace = "/workspace"
 	modeKey   = "key"
 
-	// homeTimeout leaves room to copy a large project's crates on a slow volume.
+	// homeTimeout leaves room to copy a large project's crates, modules or build cache on a slow volume.
 	homeTimeout = 10 * time.Minute
 )
 

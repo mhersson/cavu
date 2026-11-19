@@ -100,7 +100,7 @@ func TestEnsureUpIsIdempotent(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		assert.Equal(t, append(fullOrder, "up/agent"), f.calls(), "the phase comes up again, once")
+		assert.Equal(t, append(fullOrder, "up/agent", goSeed), f.calls(), "the phase comes up again, once")
 
 		second := f.requests(sandbox.PhaseAgent)[1].Model.StandIn
 		assert.NotEqual(t, first, second, "each start of the agent phase has its own stand-in")
@@ -158,7 +158,7 @@ func TestSidecarFollowsTheBudget(t *testing.T) {
 		f := newFake()
 
 		reqs := upAll(t, f, f.runner(), cappedConfig(5_000_000), agent, agent, readOnly, agent)
-		assert.Equal(t, []string{"volumes", "up/agent", "up/readonly", "up/agent"}, f.calls())
+		assert.Equal(t, []string{"volumes", "up/agent", goSeed, "up/readonly", goSeed, "up/agent", goSeed}, f.calls())
 		require.Len(t, reqs, 3)
 		assert.Equal(t, reqs[0], reqs[1])
 		assert.Equal(t, reqs[0], reqs[2])
@@ -171,7 +171,7 @@ func TestSidecarFollowsTheBudget(t *testing.T) {
 		upAll(t, f, r, cappedConfig(5_000_000), agent)
 
 		reqs := upAll(t, f, r, cappedConfig(4_000_000), agent)
-		assert.Equal(t, []string{"volumes", "up/agent", "up/agent"}, f.calls())
+		assert.Equal(t, []string{"volumes", "up/agent", goSeed, "up/agent", goSeed}, f.calls())
 		require.Len(t, reqs, 2)
 		assert.NotEqual(t, reqs[0].Model.StandIn, reqs[1].Model.StandIn, "a fresh stand-in starts a fresh sidecar")
 		assert.Equal(t, int64(4_000_000), reqs[1].Budget.CapMicroUSD)
@@ -247,7 +247,7 @@ func TestRelease(t *testing.T) {
 		require.NoError(t, r.Release(t.Context(), ref, engine.KeepVolumes))
 
 		require.NoError(t, r.ensureUp(t.Context(), testConfig(), sandbox.PhaseAgent))
-		assert.Equal(t, append(fullOrder, "down", "up/agent"), f.calls())
+		assert.Equal(t, append(fullOrder, "down", "up/agent", goSeed), f.calls())
 		assert.Len(t, f.opened, 1)
 		assert.Equal(t, f.requests(sandbox.PhaseAgent)[0].AllowHosts, f.requests(sandbox.PhaseAgent)[1].AllowHosts,
 			"a release that keeps the volumes keeps what detection found")
@@ -347,7 +347,7 @@ func TestAgentPhaseLinksTheHome(t *testing.T) {
 		c.Ecosystems = []string{"go", "node", "python"}
 
 		require.NoError(t, r.ensureUp(t.Context(), c, sandbox.PhaseAgent))
-		assert.Equal(t, []string{"volumes", "up/agent"}, f.calls())
+		assert.Equal(t, []string{"volumes", "up/agent", goSeed}, f.calls(), "no link is made")
 	})
 }
 

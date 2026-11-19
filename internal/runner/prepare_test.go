@@ -34,9 +34,12 @@ var treeName = stepName([]string{"sh", "-c", treeScript})
 
 var treeCheck = "run/" + treeName
 
+// goSeed is how the fake records the step that seeds a Go project's home.
+var goSeed = "run/" + stepName(homeArgv(seedScript, env.AgentSeeds([]string{"go"}, home)))
+
 var fullOrder = []string{
 	"destroy", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
-	"run/mise install", "run/make setup", "run/" + reshimName, "down", "up/agent", treeCheck, "run/make test", treeCheck,
+	"run/mise install", "run/make setup", "run/" + reshimName, "down", "up/agent", goSeed, treeCheck, "run/make test", treeCheck,
 }
 
 // without is fullOrder without the given calls.
@@ -353,7 +356,7 @@ func TestPrepareSkipsWhatIsNotThere(t *testing.T) {
 		res, err := f.runner().Prepare(t.Context(), testConfig())
 		require.NoError(t, err)
 		assert.Empty(t, res.Tools)
-		assert.Equal(t, without("run/mise install", "run/"+reshimName), f.calls(), "no tool has shims")
+		assert.Equal(t, without("run/mise install", "run/"+reshimName, goSeed), f.calls(), "no tool has shims, and no Go cache seeds the home")
 		assert.Equal(t, env.MiseConfig(nil), f.copied[env.MiseConfigFile], "a stale configuration is replaced")
 	})
 }
