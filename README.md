@@ -212,6 +212,15 @@ cavu serve
 
 It prints the address it listens on. Log in with `POST /api/auth/login`, or send an API token from `cavu token add NAME`. An MCP client gets the tools that create, show, list, run, answer and cancel tasks and list the projects at `http://HOST:PORT/mcp` over the streamable HTTP transport, with the header `Authorization: Bearer TOKEN` and a token from `cavu token add NAME`. While it runs, `task run`, `project check` and `replay` leave the driving to it, and `doctor` is refused. Ctrl-C stops it, and the next `cavu serve` carries on with the tasks it was running.
 
+To keep it running without a terminal, install it as a service of your login with `cavu service install`. It writes `~/.config/systemd/user/cavu.service` on Linux, a systemd user unit, or `~/Library/LaunchAgents/com.github.mhersson.cavu.plist` on macOS, a launchd agent, and starts the service from it at once and again when it fails. The file names the `cavu` binary that installed it by its absolute path and sets your `PATH`, so the service finds the `docker` or `podman` your shell finds; `CAVU_DATA_DIR`, the absolute path of the data directory chosen as for every verb (`--data-dir`, else `CAVU_DATA_DIR`, else `$XDG_DATA_HOME/cavu`, else `~/.local/share/cavu`); and `DOCKER_HOST`, only when your Docker context's endpoint is not `unix:///var/run/docker.sock`. The macOS agent also sets `HOME`. It holds no secrets: they stay in the data directory, where `cavu secret set` stored them. As in a terminal, set the user and build the image first. On Linux, `--linger` also runs `loginctl enable-linger`, for a host nobody stays logged in to.
+
+```
+cavu service install
+cavu service uninstall
+```
+
+Read the log with `journalctl --user -u cavu` on Linux, or in `~/Library/Logs/cavu.log` on macOS. Running `cavu service install` again rewrites the file when it changed and restarts the service, so after you replace the binary it is how the service picks up the new one. `cavu service uninstall` stops the service and removes its file, and keeps the data directory.
+
 ### Replaying tasks
 
 A replay re-runs tasks that have already run, under a configuration you name, and shows each beside the same task in the previous replay. Mark the tasks to replay (each needs a base commit, which a run gives it), then replay them:
