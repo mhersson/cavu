@@ -714,6 +714,7 @@ func TestHostRunsNoGit(t *testing.T) {
 	// The first task's session, then the second's.
 	mock := mockapi.Start(t, []mockapi.Step{change, done, change, done})
 	in := setup(t, mock.HostURL())
+	fake, _ := in.forge()
 
 	in.path = t.TempDir()
 	require.NoError(t, os.Symlink(in.rt.Bin, filepath.Join(in.path, in.rt.Kind)))
@@ -723,9 +724,40 @@ func TestHostRunsNoGit(t *testing.T) {
 		require.NoError(t, os.Symlink(pasta, filepath.Join(in.path, "pasta")))
 	}
 
-	id, run := in.pipeline("notes")
+	// Each task's run pushes its branch and opens its pull request, and no server runs.
+	in.ok("project", "add", "notes", "--repo", in.repo, "--verify", verify)
+	in.ok("project", "set", "notes", "--switch", "readiness=off", "--switch", "review=off")
+	in.ok("project", "check", "notes")
+
+	// pr reads the pull request's address from the task's state, which r ends with.
+	pr := func(r result) []string {
+		var urls []string
+		for _, v := range values(r.stdout, "pr:") {
+			urls = append(urls, strings.Fields(v)[0])
+		}
+
+		return urls
+	}
+
+	id := in.task("notes")
+	run := in.cavu("", "task", "run", id)
 	require.Zero(t, run.code, run)
 	assert.Equal(t, []string{"in_review"}, values(in.ok("task", "show", id), "status:"))
+
+	pulls := fake.Pulls()
+	require.Len(t, pulls, 1, run)
+
+	// The address the fake gives a pull request of the repository.
+	url := fmt.Sprintf("%s/pull/%d", strings.TrimSuffix(in.repo, ".git"), pulls[0].Number)
+	assert.Equal(t, []string{url}, pr(run))
+
+	// On a task whose pull request is watched, task run returns at once.
+	events, answered := shown(in.ok("task", "show", id, "--events")), len(modelCalls(mock))
+	again := in.cavu("", "task", "run", id)
+	require.Zero(t, again.code, again)
+	assert.Equal(t, []string{url}, pr(again))
+	assert.Equal(t, events, shown(in.ok("task", "show", id, "--events")), "the second run recorded nothing")
+	assert.Len(t, modelCalls(mock), answered)
 
 	// A git first on the inherited PATH records each call and fails it.
 	rec := t.TempDir()

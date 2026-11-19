@@ -547,3 +547,101 @@ func TestForgeResolvedConflictTakesOneRetry(t *testing.T) {
 	require.Len(t, stops, 1)
 	assert.Equal(t, "conflict", stops[0].Reason)
 }
+
+func TestForgeChecksReadAsJobs(t *testing.T) {
+	t.Parallel()
+
+	// Each doctor's endpoint check: a session's tool call and its result, then
+	// the resumed session's result. Then the task's work.
+	health := []mockapi.Step{
+		{Tool: "Bash", Input: map[string]any{"command": "echo cavu"}},
+		{Tool: mockapi.Structured, Input: map[string]any{"status": "done"}},
+		{Tool: mockapi.Structured, Input: map[string]any{"status": "done"}},
+	}
+	mock := mockapi.Start(t, slices.Concat(health, health, []mockapi.Step{change, done}))
+	in := setup(t, mock.HostURL())
+	fake, bare := in.forge()
+
+	// The doctor's forge check needs a project, and the doctor runs only while no server does.
+	in.ok("project", "add", "notes", "--repo", in.repo, "--verify", verify)
+	in.ok("project", "set", "notes", "--switch", "readiness=off", "--switch", "review=off")
+
+	// doctor runs cavu doctor, requires its exit code, and returns each check's
+	// status by name and the requests the fake was sent meanwhile.
+	doctor := func(code int) (map[string]string, []string) {
+		n := len(fake.Requests())
+		r := in.cavu("", "doctor")
+		require.Equal(t, code, r.code, r)
+
+		status := map[string]string{}
+
+		for line := range strings.Lines(r.stdout) {
+			// A fix line has no name and no status of its own.
+			if f := strings.Fields(line); len(f) > 1 && !strings.HasPrefix(line, " ") {
+				status[f[0]] = f[1]
+			}
+		}
+
+		var sent []string
+		for _, q := range fake.Requests()[n:] {
+			sent = append(sent, q.Method+" "+q.Path)
+		}
+
+		return status, sent
+	}
+
+	// Refused the check runs, the doctor reads the base head's checks as the jobs of its workflow runs.
+	fake.Deny(forgeToken, "checks")
+
+	status, sent := doctor(0)
+	assert.Equal(t, "ok", status["forge"], status)
+
+	base := tip(t, bare, "main")
+	runs := slices.IndexFunc(sent, func(s string) bool { return strings.Contains(s, "/commits/"+base+"/check-runs") })
+	jobs := slices.IndexFunc(sent, func(s string) bool { return strings.Contains(s, "/actions/runs?head_sha="+base) })
+	require.GreaterOrEqual(t, runs, 0, sent)
+	assert.Greater(t, jobs, runs, sent)
+
+	// Refused the jobs too, the forge check alone fails.
+	fake.Deny(forgeToken, "checks", "actions")
+
+	status, _ = doctor(1)
+
+	var failed []string
+
+	for name, v := range status {
+		if v == "FAIL" {
+			failed = append(failed, name)
+		}
+	}
+
+	assert.Equal(t, []string{"forge"}, failed, status)
+
+	// The watch, refused the check runs, finds the head's job passed and marks the draft ready.
+	fake.Deny(forgeToken, "checks")
+	in.ok("project", "check", "notes")
+
+	s := in.serve()
+
+	defer s.stop()
+
+	var task, got apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+
+	pull := s.pulled(fake, task.ID)
+	fake.SetChecks(tip(t, bare, pull.Head), forgefake.CheckRun{ID: 1, App: "github-actions", Run: 1, Name: "test", Status: "completed", Conclusion: "success"})
+
+	// The look that finds the job passed marks the draft ready, and the next, a
+	// minute later, shows it ready.
+	within(t, 3*time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.PullRequest != nil && got.PullRequest.Ready, b
+	})
+	assert.False(t, fake.Pulls()[0].Draft)
+	assert.Equal(t, "passed", got.PullRequest.Checks)
+	assert.True(t, slices.ContainsFunc(fake.Requests(), func(q forgefake.Request) bool {
+		return strings.Contains(q.Path, "/actions/runs/1/jobs")
+	}), "the watch read the jobs of the head's workflow run")
+}
