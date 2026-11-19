@@ -15,11 +15,12 @@ import (
 	"github.com/mhersson/cavu/internal/api"
 	"github.com/mhersson/cavu/internal/auth"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/web"
 )
 
 func init() {
 	commands["serve"] = command{
-		summary: "serve: drive the tasks and serve the HTTP API until interrupted",
+		summary: "serve: drive the tasks and serve the web app and the HTTP API until interrupted",
 		run:     runServe,
 	}
 }
@@ -96,10 +97,10 @@ func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, s
 	l.Paused = s.Paused
 	stopped := make(chan struct{})
 	srv := &http.Server{
-		Handler: api.New(api.Deps{
+		Handler: web.Handler(api.New(api.Deps{
 			Store: a.store, Vault: a.vault, Auth: auth.NewService(a.store, time.Now), Loop: l,
 			Nudge: s.Nudge, Waiting: s.Waiting, Version: version, Stop: stopped,
-		}),
+		})),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// Shutdown waits for the open requests, and a stream ends only when told.

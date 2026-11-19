@@ -18,20 +18,20 @@ Pre-release. The verbs today:
 - `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
 - `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts, lists them, each with whether it needs you (`--needs-you` keeps those that do), shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
-- `cavu serve` drives every started task, watches the pull requests CAVU opened, and serves the HTTP API until interrupted.
+- `cavu serve` drives every started task, watches the pull requests CAVU opened, and serves the web app and the HTTP API until interrupted.
 - `cavu service` runs `cavu serve` as a service of your login, a systemd user unit on Linux or a launchd agent on macOS, and removes it.
 
 ## Try it
 
 CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and with Podman is tested; on macOS only the unit tests run, in CI, and nothing has run there with a container runtime. The commands below keep their data in one directory: the default is created on first use, and `CAVU_DATA_DIR` puts it elsewhere. Every `cavu` verb but `cavu service uninstall` also takes `--data-dir DIR`; `make image` takes only the variable.
 
-1. Build the binary and the sandbox image. The build opens the data directory and uses its `runtime` and `ca_bundle_path` settings.
+1. Build the binary and the sandbox image. Building from source needs Go and Node (the version in `.nvmrc`, 26); run `make web-install` once to install the web app's npm packages. Installing and running `cavu` need only the binary and a container runtime. The build opens the data directory and uses its `runtime` and `ca_bundle_path` settings.
 
    ```
    make image
    ```
 
-   The binary is `bin/cavu`, which is not on your `PATH`: copy it to a directory that is (`install bin/cavu ~/.local/bin/`), or write `bin/cavu` where the commands below say `cavu`. With a built `cavu`, `cavu image build` builds the image alone.
+   The binary is `bin/cavu`, which is not on your `PATH`: copy it to a directory that is (`install bin/cavu ~/.local/bin/`), or write `bin/cavu` where the commands below say `cavu`. With a built `cavu`, `cavu image build` builds the image alone. `make build` builds the binary alone, and `make build-go` builds it with the web app as last built, or with a page that says none is built in. To have CAVU work on its own repository, add it as a project whose setup command runs `make web-install` and whose verify command adds `make web-check`.
 
 2. Set what a run needs. In `subscription` mode the credential is a subscription token; in `key` mode also set the endpoint.
 
@@ -205,7 +205,7 @@ Both are read on the machine `cavu` runs on, again at each step of a run, so a c
 
 ### Running the server
 
-`cavu serve` drives every started task, as `task run` drives one, watches each task's pull request until the task is done or cancelled ([The pull request](#the-pull-request)), and serves the HTTP API of [docs/api.md](docs/api.md) on the `listen_address` setting (default `127.0.0.1:7117`). Set the user first, with the password in a file, then start it:
+`cavu serve` drives every started task, as `task run` drives one, watches each task's pull request until the task is done or cancelled ([The pull request](#the-pull-request)), and serves the web app and the HTTP API of [docs/api.md](docs/api.md) on the `listen_address` setting (default `127.0.0.1:7117`): open `http://127.0.0.1:7117/` in a browser. Set the user first, with the password in a file, then start it:
 
 ```
 cavu user set NAME < password.txt

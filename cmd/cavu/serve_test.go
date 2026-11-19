@@ -202,3 +202,50 @@ func TestServeRefusedWhenLocked(t *testing.T) {
 		})
 	}
 }
+
+func TestServeServesThePage(t *testing.T) {
+	dir, _, _ := runSetup(t)
+	cavuIn(t, dir, "settings", "set", "listen_address", "127.0.0.1:0")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	out, done := &syncBuffer{}, make(chan error, 1)
+
+	go func() { done <- runServe(ctx, []string{"--data-dir", dir}, nil, out, &syncBuffer{}) }()
+
+	require.Eventually(t, func() bool { return serveURL(out.String()) != "" }, within, time.Millisecond)
+
+	get := func(path string) *http.Response {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, serveURL(out.String())+path, nil)
+		require.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = resp.Body.Close() })
+
+		return resp
+	}
+
+	page := get("/")
+	assert.Equal(t, http.StatusOK, page.StatusCode)
+	assert.Contains(t, page.Header.Get("Content-Type"), "text/html")
+	assert.Contains(t, page.Header.Get("Content-Security-Policy"), "default-src 'self'")
+
+	health := get("/api/health")
+	assert.Equal(t, http.StatusOK, health.StatusCode)
+	assert.Contains(t, health.Header.Get("Content-Type"), "application/json")
+	assert.Empty(t, health.Header.Get("Content-Security-Policy"))
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(health.Body).Decode(&body))
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(within):
+		require.FailNow(t, "the verb did not end")
+	}
+}

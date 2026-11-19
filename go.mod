@@ -2,6 +2,8 @@ module github.com/mhersson/cavu
 
 go 1.27.4
 
+ignore ./web/node_modules
+
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0

@@ -1,0 +1,143 @@
+package web
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"testing/fstest"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	appPage     = "<html>the app</html>"
+	placeholder = "<html>no app</html>"
+)
+
+func withApp() fstest.MapFS {
+	return fstest.MapFS{
+		"app/index.html":   {Data: []byte(appPage)},
+		"app/assets/x.js":  {Data: []byte("export {}")},
+		"app/favicon.svg":  {Data: []byte("<svg/>")},
+		"placeholder.html": {Data: []byte(placeholder)},
+	}
+}
+
+func withoutApp() fstest.MapFS {
+	return fstest.MapFS{"placeholder.html": {Data: []byte(placeholder)}}
+}
+
+// fakeAPI answers with a status, header and body of its own.
+var fakeAPI = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Api", r.Method+" "+r.URL.Path)
+	w.WriteHeader(http.StatusTeapot)
+	_, _ = io.WriteString(w, "api says "+r.URL.Path)
+})
+
+func do(h http.Handler, method, path string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+
+	return rec
+}
+
+func TestHandlerServesTheAPIUntouched(t *testing.T) {
+	h := newHandler(fakeAPI, withApp())
+
+	for _, c := range []struct{ method, path string }{
+		{http.MethodGet, "/api/health"},
+		{http.MethodGet, "/mcp"},
+		{http.MethodPost, "/board"},
+		{http.MethodPost, "/mcp"},
+		{http.MethodDelete, "/assets/x.js"},
+	} {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			rec := do(h, c.method, c.path)
+
+			assert.Equal(t, http.StatusTeapot, rec.Code)
+			assert.Equal(t, "api says "+c.path, rec.Body.String())
+			assert.Equal(t, c.method+" "+c.path, rec.Header().Get("X-Api"))
+			assert.Empty(t, rec.Header().Get("Content-Security-Policy"))
+			assert.Empty(t, rec.Header().Get("Cache-Control"))
+		})
+	}
+}
+
+func TestHandlerServesAFile(t *testing.T) {
+	h := newHandler(fakeAPI, withApp())
+
+	for path, body := range map[string]string{"/assets/x.js": "export {}", "/favicon.svg": "<svg/>"} {
+		rec := do(h, http.MethodGet, path)
+
+		assert.Equal(t, http.StatusOK, rec.Code, path)
+		assert.Equal(t, body, rec.Body.String(), path)
+	}
+
+	head := do(h, http.MethodHead, "/assets/x.js")
+	assert.Equal(t, http.StatusOK, head.Code)
+	assert.Empty(t, head.Body.String())
+}
+
+func TestHandlerFallsBackToThePage(t *testing.T) {
+	h := newHandler(fakeAPI, withApp())
+
+	for _, path := range []string{"/", "/board", "/tasks/7", "/index.html"} {
+		rec := do(h, http.MethodGet, path)
+
+		assert.Equal(t, http.StatusOK, rec.Code, path)
+		assert.Equal(t, appPage, rec.Body.String(), path)
+		assert.Equal(t, "text/html; charset=utf-8", rec.Header().Get("Content-Type"), path)
+	}
+
+	for _, path := range []string{"/assets/missing.js", "/assets/"} {
+		rec := do(h, http.MethodGet, path)
+
+		assert.Equal(t, http.StatusNotFound, rec.Code, path)
+		assert.NotContains(t, rec.Body.String(), appPage, path)
+	}
+}
+
+func TestHandlerSendsThePolicy(t *testing.T) {
+	h := newHandler(fakeAPI, withApp())
+
+	for _, path := range []string{"/", "/board", "/assets/x.js", "/favicon.svg", "/assets/missing.js"} {
+		rec := do(h, http.MethodGet, path)
+		csp := rec.Header().Get("Content-Security-Policy")
+
+		assert.Contains(t, csp, "default-src 'self'", path)
+		assert.Contains(t, csp, "frame-ancestors 'none'", path)
+		assert.NotContains(t, csp, "unsafe-inline", path)
+		assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"), path)
+		assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"), path)
+	}
+
+	assert.Equal(t, "public, max-age=31536000, immutable", do(h, http.MethodGet, "/assets/x.js").Header().Get("Cache-Control"))
+
+	for _, path := range []string{"/", "/board", "/favicon.svg"} {
+		assert.Equal(t, "no-cache", do(h, http.MethodGet, path).Header().Get("Cache-Control"), path)
+	}
+}
+
+func TestHandlerWithoutAnApp(t *testing.T) {
+	h := newHandler(fakeAPI, withoutApp())
+
+	for _, path := range []string{"/", "/board"} {
+		rec := do(h, http.MethodGet, path)
+
+		assert.Equal(t, http.StatusOK, rec.Code, path)
+		assert.Equal(t, placeholder, rec.Body.String(), path)
+		assert.NotEmpty(t, rec.Header().Get("Content-Security-Policy"), path)
+	}
+
+	assert.Equal(t, http.StatusNotFound, do(h, http.MethodGet, "/assets/x.js").Code)
+	assert.Equal(t, "api says /api/health", do(h, http.MethodGet, "/api/health").Body.String())
+}
+
+func TestHandlerEmbedsAPlaceholder(t *testing.T) {
+	rec := do(Handler(fakeAPI), http.MethodGet, "/nowhere")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "<title>CAVU</title>")
+}

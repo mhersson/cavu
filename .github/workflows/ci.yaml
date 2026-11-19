@@ -35,7 +35,7 @@ jobs:
           version: v2.15.0
 
       - name: make gates
-        run: make build build-darwin fmt-check vet test-race tidy-check scan size
+        run: make build-go build-darwin fmt-check vet test-race tidy-check scan size
 
   # Native macOS catches what a Linux build and a cross-compile cannot.
   macos:
@@ -48,8 +48,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: make build vet test
-        run: make build vet test
+      - name: make build-go vet test
+        run: make build-go vet test
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -63,6 +63,25 @@ jobs:
 
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: make web-install
+
+      - run: make web-check
+
+      - name: npm audit
+        run: npm audit --audit-level=high
+        working-directory: web
 
   commits:
     if: github.event_name == 'pull_request'
