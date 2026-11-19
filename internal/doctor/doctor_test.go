@@ -676,7 +676,7 @@ func TestDoctorChecksTheForgeOfEveryProject(t *testing.T) {
 		withSecondProject(&d)
 
 		h.cloneErr = func(r sidecar.CloneRequest) error {
-			if strings.HasSuffix(r.URL, "/api.git") {
+			if strings.HasSuffix(r.URL, "/repo.git") {
 				return errors.New("repository not found")
 			}
 
@@ -686,10 +686,10 @@ func TestDoctorChecksTheForgeOfEveryProject(t *testing.T) {
 		checks := Run(t.Context(), d)
 		lines := forgeLines(checks)
 		require.Len(t, lines, 2)
-		assert.True(t, lines[0].OK, "%+v", lines[0])
-		assert.False(t, lines[1].OK || lines[1].Skipped, "%+v", lines[1])
-		assert.Contains(t, lines[1].Detail, "api")
-		assert.Contains(t, lines[1].Detail, "repository not found")
+		assert.False(t, lines[0].OK || lines[0].Skipped, "%+v", lines[0])
+		assert.Contains(t, lines[0].Detail, "web")
+		assert.Contains(t, lines[0].Detail, "repository not found")
+		assert.True(t, lines[1].OK && !lines[1].Skipped, "%+v", lines[1])
 		assert.Equal(t, 1, ExitCode(checks))
 	})
 
