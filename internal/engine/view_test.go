@@ -336,7 +336,7 @@ func TestListReadsAFinishedTaskOnce(t *testing.T) {
 	h := newHarness(t)
 	ctx := t.Context()
 
-	done, cancelled, told, halting := h.draft(), h.draft(), h.draft(), h.draft()
+	done, cancelled, told, halting, drafted, asked := h.draft(), h.draft(), h.draft(), h.draft(), h.draft(), h.draft()
 
 	for _, id := range []int64{done.ID, told.ID} {
 		h.addTo(id, now, engine.TaskStarted, struct{}{})
@@ -347,6 +347,8 @@ func TestListReadsAFinishedTaskOnce(t *testing.T) {
 	require.NoError(t, h.loop.Cancel(ctx, cancelled.ID))
 	h.addTo(halting.ID, now, engine.TaskStarted, struct{}{})
 	h.addTo(halting.ID, now, engine.HumanCancelled, struct{}{}) // its cancelled stop is not recorded yet
+	h.addTo(asked.ID, now, engine.TaskStarted, struct{}{})
+	h.stopTask(asked.ID, engine.StoppedPayload{Reason: engine.StopQuestion, Explanation: "Which colour?", Action: engine.ClearAnswer})
 
 	s := &readsStore{Store: h.store}
 	l := &engine.Loop{Store: s, Now: h.clock.Now}
@@ -368,12 +370,12 @@ func TestListReadsAFinishedTaskOnce(t *testing.T) {
 		return ""
 	})
 
-	assert.Equal(t, []int64{h.task.ID, done.ID, cancelled.ID, told.ID, halting.ID}, s.reads, "the first list reads every task")
+	assert.Equal(t, []int64{h.task.ID, done.ID, cancelled.ID, told.ID, halting.ID, drafted.ID, asked.ID}, s.reads, "the first list reads every task")
 
 	s.reads = nil
 	second := list(nil)
 
-	assert.Equal(t, []int64{h.task.ID, told.ID, halting.ID}, s.reads,
-		"a finished task is read once; an open one, one with a reason to wait and one the engine has yet to stop, every time")
+	assert.Equal(t, []int64{h.task.ID, told.ID, halting.ID, drafted.ID, asked.ID}, s.reads,
+		"a finished task is read once; an open one, one with a reason to wait, one the engine has yet to stop, a draft and a stopped one, every time")
 	assert.Equal(t, first[1:3], second[1:3], "a kept row is the row the task had")
 }
