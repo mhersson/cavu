@@ -9,7 +9,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 3. Upgrades, and removals of model-weakness parts, rest on a replay tool's comparison of outcomes.
 4. Everything vendor-specific lives in one thin adapter, the Claude Code version is pinned, and an upgrade ships only after tests against the real binary pass.
 5. Know-how lives in files the agent reads (`AGENTS.md`, skills), and CAVU's own prompts are few, plain, and kept as files.
-6. Small on purpose, with at most 25 REST routes, 6 MCP tools, 30 config keys and 30 concepts a user must learn, and the Go and web line counts reported, not capped. The limits are not hard: when one would make CAVU a worse tool, the case is made to the project's owner, and the number changes with their word.
+6. Small on purpose, with at most 25 REST routes, 7 MCP tools, 30 config keys and 30 concepts a user must learn, and the Go and web line counts reported, not capped. The limits are not hard: when one would make CAVU a worse tool, the case is made to the project's owner, and the number changes with their word.
 
 ## Constraints
 
