@@ -236,3 +236,79 @@ func (l *Loop) storeCheck(ctx context.Context, started store.Project, answers ti
 
 	return nil
 }
+
+// ErrVolumesNotRemoved matches the error of a removal whose volumes the
+// runtime would not remove; the project is left as it was. The error's text
+// is the runtime's own.
+var ErrVolumesNotRemoved = errors.New("volumes not removed")
+
+type volumesError struct{ error }
+
+func (e volumesError) Is(target error) bool { return target == ErrVolumesNotRemoved }
+
+func (e volumesError) Unwrap() error { return e.error }
+
+// RemoveProject removes a project: its cache and mirror volumes, then in one
+// write the project's mark and its secrets. The tasks it has had, their
+// events and artifacts stay. A removed or unknown project returns an error
+// wrapping store.ErrNotFound; a task that is not done or cancelled, a replay's
+// shadow included, is a refusal; a volume that cannot be removed leaves the
+// project untouched and returns an error wrapping ErrVolumesNotRemoved.
+func (l *Loop) RemoveProject(ctx context.Context, projectID int64) error {
+	p, err := l.Store.Project(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("project %d: %w", projectID, err)
+	}
+
+	if p.RemovedAt != nil {
+		return fmt.Errorf("project %d: %w", projectID, store.ErrNotFound)
+	}
+
+	if err := l.refuseOpenTasks(ctx, p); err != nil {
+		return err
+	}
+
+	set, err := l.Store.Settings(ctx)
+	if err != nil {
+		return fmt.Errorf("project %s: %w", p.Name, err)
+	}
+
+	ref := RunRef{InstanceID: set["instance_id"], Image: l.Image, ProjectID: p.ID}
+	if err := l.Runner.RemoveProject(ctx, ref); err != nil {
+		return fmt.Errorf("project %s was not removed: %w; remove it again", p.Name, volumesError{err})
+	}
+
+	return l.Store.RemoveProject(ctx, p.ID, l.Now(), ProjectSecretName(p.Name, ""))
+}
+
+// refuseOpenTasks refuses while a task of p, a replay's shadow included, is
+// neither done nor cancelled.
+func (l *Loop) refuseOpenTasks(ctx context.Context, p store.Project) error {
+	tasks, err := l.Store.Tasks(ctx, true)
+	if err != nil {
+		return fmt.Errorf("project %s: %w", p.Name, err)
+	}
+
+	var open []string
+
+	for _, t := range tasks {
+		if t.ProjectID != p.ID {
+			continue
+		}
+
+		events, err := l.Store.EventsOmitting(ctx, t.ID, ProgressTypes...)
+		if err != nil {
+			return fmt.Errorf("task %d: %w", t.ID, err)
+		}
+
+		if s := StatusOf(Reduce(events)); s != StatusDone && s != StatusCancelled {
+			open = append(open, fmt.Sprintf("%d (%s)", t.ID, s))
+		}
+	}
+
+	if len(open) > 0 {
+		return refuse("project %s has open tasks: %s; cancel them with cavu task cancel ID, or let them finish", p.Name, strings.Join(open, ", "))
+	}
+
+	return nil
+}

@@ -103,6 +103,7 @@ type fakeSandbox struct {
 	onRun    func(name string) // runs as a command starts, before its answer
 	downErr  error
 	volErr   error
+	rmErr    error             // RemoveProjectVolumes's
 	out      map[string][]byte // what CopyOut copies, by path, from any container
 }
 
@@ -349,6 +350,12 @@ func (f *fakeSandbox) Destroy(_ context.Context, keepHome bool) error {
 	}
 
 	return f.downErr
+}
+
+func (f *fakeSandbox) RemoveProjectVolumes(context.Context) error {
+	f.record("remove-project-volumes")
+
+	return f.rmErr
 }
 
 // fail sends the sidecar error line the sandbox sends when its sidecar ends.

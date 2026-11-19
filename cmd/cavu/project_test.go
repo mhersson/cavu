@@ -547,7 +547,8 @@ func TestProjectUsageErrors(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"project"},
-		{"project", "remove", "web"},
+		{"project", "remove"},
+		{"project", "remove", "web", "extra"},
 		{"project", "add"},
 		{"project", "set"},
 		{"project", "check"},
@@ -637,4 +638,59 @@ func TestProjectSetForgePolicy(t *testing.T) {
 	}
 
 	assert.Equal(t, before, storedProject(t, dir, "web"), "nothing is changed")
+}
+
+func TestProjectRemove(t *testing.T) {
+	t.Run("a removal frees the name and looks up no image", func(t *testing.T) {
+		dir, fake := checkSetup(t, "--verify", "make test")
+		id := storedProject(t, dir, "web").ID
+
+		code, _, stderr := runCavu("project", "remove", "web", "--data-dir", dir)
+
+		require.Equal(t, 0, code, stderr)
+		require.Len(t, fake.runner.removed, 1)
+		assert.Equal(t, id, fake.runner.removed[0].ProjectID)
+		assert.Empty(t, storedProjects(t, dir))
+		assert.Empty(t, fake.image, "no image is looked up")
+
+		cavuIn(t, dir, "project", "add", "web", "--repo", repo)
+
+		code, _, stderr = runCavu("project", "remove", "web", "--data-dir", dir)
+		require.Equal(t, 0, code, stderr)
+		assert.Len(t, fake.runner.removed, 2)
+	})
+
+	t.Run("an unknown project", func(t *testing.T) {
+		dir, fake := checkSetup(t)
+
+		code, _, stderr := runCavu("project", "remove", "api", "--data-dir", dir)
+
+		assert.Equal(t, 1, code)
+		assert.Contains(t, stderr, strconv.Quote("api"))
+		assert.Empty(t, fake.runner.removed)
+	})
+
+	t.Run("an open task is a refusal", func(t *testing.T) {
+		dir, fake := checkSetup(t)
+		cavuIn(t, dir, "task", "add", "web", "--title", "Add a footer")
+
+		code, stdout, stderr := runCavu("project", "remove", "web", "--data-dir", dir)
+
+		t.Logf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+		assert.Equal(t, 1, code)
+		assert.Empty(t, fake.runner.removed)
+		assert.Len(t, storedProjects(t, dir), 1)
+	})
+
+	t.Run("volumes the runtime will not remove leave the project", func(t *testing.T) {
+		dir, fake := checkSetup(t)
+		fake.runner.removeErr = errors.New("volume is in use")
+
+		code, stdout, stderr := runCavu("project", "remove", "web", "--data-dir", dir)
+
+		t.Logf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+		assert.Equal(t, 1, code)
+		assert.Contains(t, stderr, "volume is in use")
+		assert.Len(t, storedProjects(t, dir), 1)
+	})
 }

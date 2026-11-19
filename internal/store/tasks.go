@@ -44,6 +44,7 @@ func scanTask(sc scanner) (Task, error) {
 }
 
 // CreateTask inserts t and returns it with its id; a zero CreatedAt becomes now.
+// A removed or unknown project returns ErrNotFound.
 func (s *Store) CreateTask(ctx context.Context, t Task) (Task, error) {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now()
@@ -55,11 +56,16 @@ func (s *Store) CreateTask(ctx context.Context, t Task) (Task, error) {
 	}
 
 	res, err := s.db.ExecContext(ctx, `INSERT INTO tasks (project_id, title, body, requester,
-		base_commit, reference, replay_id, overrides, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ProjectID, t.Title, t.Body, t.Requester, t.BaseCommit, t.Reference, t.ReplayID,
-		string(overrides), t.CreatedAt.UnixMilli())
+		base_commit, reference, replay_id, overrides, created_at)
+		SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM projects WHERE id = ? AND removed_at IS NULL`,
+		t.Title, t.Body, t.Requester, t.BaseCommit, t.Reference, t.ReplayID,
+		string(overrides), t.CreatedAt.UnixMilli(), t.ProjectID)
 	if err != nil {
 		return Task{}, fmt.Errorf("create task: %w", err)
+	}
+
+	if err := rowsAffectedOrNotFound(res); err != nil {
+		return Task{}, fmt.Errorf("create task: project %d: %w", t.ProjectID, err)
 	}
 
 	t.ID, err = res.LastInsertId()

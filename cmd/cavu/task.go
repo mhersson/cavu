@@ -247,14 +247,9 @@ func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	defer a.close()
 
-	ps, err := a.store.Projects(ctx)
+	names, err := a.store.ProjectNames(ctx)
 	if err != nil {
 		return err
-	}
-
-	names := map[int64]string{}
-	for _, p := range ps {
-		names[p.ID] = p.Name
 	}
 
 	tasks, err := a.store.Tasks(ctx, false)

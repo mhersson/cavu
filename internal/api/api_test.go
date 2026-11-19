@@ -72,6 +72,13 @@ type fixture struct {
 func newServer(t *testing.T, wrap ...func(*store.Store) engine.Store) *fixture {
 	t.Helper()
 
+	return newServerRunning(t, nil, wrap...)
+}
+
+// newServerRunning is newServer with runner as the Loop's.
+func newServerRunning(t *testing.T, runner engine.Runner, wrap ...func(*store.Store) engine.Store) *fixture {
+	t.Helper()
+
 	db := filepath.Join(t.TempDir(), "cavu.db")
 
 	s, err := store.Open(t.Context(), db)
@@ -96,7 +103,7 @@ func newServer(t *testing.T, wrap ...func(*store.Store) engine.Store) *fixture {
 	f := &fixture{db: db, store: s, vault: vault, auth: svc, clock: c, token: token}
 	stop := make(chan struct{})
 	f.srv = httptest.NewUnstartedServer(api.New(api.Deps{
-		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: records, Vault: vault, Now: c.Now},
+		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: records, Vault: vault, Now: c.Now, Runner: runner},
 		Nudge: func() { f.nudges.Add(1) }, Waiting: f.why, Version: "1.2.3", Stop: stop, Poll: 10 * time.Millisecond,
 	}))
 	// As cavu serve does, so that Shutdown ends the open streams.

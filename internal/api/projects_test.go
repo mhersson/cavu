@@ -1,7 +1,9 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -312,4 +314,85 @@ func TestProjectForgePolicyOverREST(t *testing.T) {
 			assert.ElementsMatch(t, tc.want.ReviewBots, shown["review_bots"])
 		})
 	}
+}
+
+// volumeRunner is the API loop's runner: it removes a project's volumes and
+// does nothing else.
+type volumeRunner struct {
+	engine.Runner
+
+	err     error
+	removed []engine.RunRef
+}
+
+func (r *volumeRunner) RemoveProject(_ context.Context, ref engine.RunRef) error {
+	r.removed = append(r.removed, ref)
+
+	return r.err
+}
+
+func TestRemoveProject(t *testing.T) {
+	t.Run("a removal answers 204 and the project is gone from every route", func(t *testing.T) {
+		runner := &volumeRunner{}
+		f := newServerRunning(t, runner)
+		f.addProject(t, web)
+
+		status, body := f.call(t, "DELETE /api/projects/1", "")
+		require.Equal(t, http.StatusNoContent, status, body)
+		assert.Empty(t, body)
+		require.Len(t, runner.removed, 1)
+		assert.EqualValues(t, 1, runner.removed[0].ProjectID)
+
+		_, body = f.call(t, "GET /api/projects", "")
+		assert.JSONEq(t, `{"projects": []}`, body)
+
+		for _, route := range []string{"GET /api/projects/1", "PATCH /api/projects/1", "POST /api/projects/1/check", "DELETE /api/projects/1"} {
+			status, body := f.call(t, route, "{}")
+			assert.Equal(t, http.StatusNotFound, status, route)
+			assertError(t, body)
+		}
+
+		p, err := f.store.Project(t.Context(), 1)
+		require.NoError(t, err)
+		assert.Nil(t, p.CheckRequestedAt, "a check asked of a removed project is not recorded")
+		assert.Len(t, runner.removed, 1, "the second removal reaches no runner")
+
+		f.addProject(t, web)
+	})
+
+	t.Run("an unknown id is 404", func(t *testing.T) {
+		f := newServerRunning(t, &volumeRunner{})
+
+		status, body := f.call(t, "DELETE /api/projects/99", "")
+		assert.Equal(t, http.StatusNotFound, status)
+		assertError(t, body)
+	})
+
+	t.Run("an open task is a 400 and nothing is removed", func(t *testing.T) {
+		runner := &volumeRunner{}
+		f := newServerRunning(t, runner)
+		f.addProject(t, web)
+		f.task(t, `{"project": "web", "title": "Add a footer"}`)
+
+		status, body := f.call(t, "DELETE /api/projects/1", "")
+		require.Equal(t, http.StatusBadRequest, status, body)
+		assertError(t, body)
+		assert.Empty(t, runner.removed)
+		assert.Equal(t, 1, f.projects(t))
+	})
+
+	t.Run("volumes the runtime will not remove are a 409 with the line", func(t *testing.T) {
+		runner := &volumeRunner{err: errors.New("volume is in use")}
+		f := newServerRunning(t, runner)
+		f.addProject(t, web)
+
+		status, body := f.call(t, "DELETE /api/projects/1", "")
+		require.Equal(t, http.StatusConflict, status, body)
+		assertError(t, body)
+		assert.Contains(t, object(t, body)["error"], "volume is in use", "the line carries the runtime's error")
+		assert.Equal(t, 1, f.projects(t), "the project is still there")
+
+		status, _ = f.call(t, "GET /api/projects/1", "")
+		assert.Equal(t, http.StatusOK, status)
+	})
 }

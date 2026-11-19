@@ -33,6 +33,7 @@ type Project struct {
 	CheckRequestedAt            *time.Time        // set while a check is asked for or running
 	CheckResult                 CheckResult
 	Forge                       ForgePolicy
+	RemovedAt                   *time.Time // set by RemoveProject only, never by a write of the project
 }
 
 // ForgePolicy is a project's forge policy: whether it has no CI, the check
@@ -52,7 +53,7 @@ type CheckResult struct {
 const projectColumns = `id, name, repo_url, base_branch, setup_command, verify_command,
 	verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches,
 	baseline_commit, baseline_passed, baseline_at, baseline_output,
-	check_requested_at, check_result, caps, forge`
+	check_requested_at, check_result, caps, forge, removed_at`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -65,12 +66,12 @@ func scanProject(sc scanner) (Project, error) {
 		checkResult, caps, forge           string
 		bCommit, bOutput                   sql.NullString
 		bPassed                            sql.NullBool
-		bAt, checkAt                       sql.NullInt64
+		bAt, checkAt, removedAt            sql.NullInt64
 	)
 
 	if err := sc.Scan(&p.ID, &p.Name, &p.RepoURL, &p.BaseBranch, &p.SetupCommand, &p.VerifyCommand,
 		&p.VerifyWaived, &tools, &egress, &env, &secretVars, &sw,
-		&bCommit, &bPassed, &bAt, &bOutput, &checkAt, &checkResult, &caps, &forge); err != nil {
+		&bCommit, &bPassed, &bAt, &bOutput, &checkAt, &checkResult, &caps, &forge, &removedAt); err != nil {
 		return Project{}, err
 	}
 
@@ -104,6 +105,11 @@ func scanProject(sc scanner) (Project, error) {
 	if checkAt.Valid {
 		at := time.UnixMilli(checkAt.Int64)
 		p.CheckRequestedAt = &at
+	}
+
+	if removedAt.Valid {
+		at := time.UnixMilli(removedAt.Int64)
+		p.RemovedAt = &at
 	}
 
 	return p, nil
@@ -191,8 +197,8 @@ func (s *Store) UpdateProject(ctx context.Context, p Project) error {
 	return rowsAffectedOrNotFound(res)
 }
 
-func (s *Store) projectWhere(ctx context.Context, where string, arg any) (Project, error) {
-	p, err := scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE `+where+` = ?`, arg))
+func (s *Store) projectWhere(ctx context.Context, where, live string, arg any) (Project, error) {
+	p, err := scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE `+where+` = ?`+live, arg))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -200,19 +206,19 @@ func (s *Store) projectWhere(ctx context.Context, where string, arg any) (Projec
 	return p, err
 }
 
-// Project returns the project with id, or ErrNotFound.
+// Project returns the project with id, a removed one too, or ErrNotFound.
 func (s *Store) Project(ctx context.Context, id int64) (Project, error) {
-	return s.projectWhere(ctx, "id", id)
+	return s.projectWhere(ctx, "id", "", id)
 }
 
-// ProjectByName returns the project called name, or ErrNotFound.
+// ProjectByName returns the live project called name, or ErrNotFound.
 func (s *Store) ProjectByName(ctx context.Context, name string) (Project, error) {
-	return s.projectWhere(ctx, "name", name)
+	return s.projectWhere(ctx, "name", " AND removed_at IS NULL", name)
 }
 
-// Projects returns every project ordered by name.
+// Projects returns every live project ordered by name.
 func (s *Store) Projects(ctx context.Context) ([]Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+projectColumns+` FROM projects ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE removed_at IS NULL ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
@@ -230,4 +236,61 @@ func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 	}
 
 	return out, rows.Err()
+}
+
+// ProjectNames returns every project's name by id, removed ones included, so
+// a removed project's finished tasks still show it.
+func (s *Store) ProjectNames(ctx context.Context) (map[int64]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name FROM projects`)
+	if err != nil {
+		return nil, fmt.Errorf("project names: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]string{}
+
+	for rows.Next() {
+		var (
+			id   int64
+			name string
+		)
+
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("project names: %w", err)
+		}
+
+		out[id] = name
+	}
+
+	return out, rows.Err()
+}
+
+// RemoveProject marks the live project id removed at the given time and deletes
+// every secret whose name starts with secretPrefix, in one transaction. A
+// removed or unknown id returns ErrNotFound.
+func (s *Store) RemoveProject(ctx context.Context, id int64, at time.Time, secretPrefix string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("remove project: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `UPDATE projects SET removed_at = ? WHERE id = ? AND removed_at IS NULL`, at.UnixMilli(), id)
+	if err != nil {
+		return fmt.Errorf("remove project: %w", err)
+	}
+
+	if err := rowsAffectedOrNotFound(res); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM secrets WHERE substr(name, 1, length(?1)) = ?1`, secretPrefix); err != nil {
+		return fmt.Errorf("remove project secrets: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("remove project: %w", err)
+	}
+
+	return nil
 }

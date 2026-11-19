@@ -156,4 +156,39 @@ ALTER TABLE projects ADD COLUMN forge TEXT NOT NULL DEFAULT '{}';
 CREATE INDEX events_at ON events (at);
 CREATE INDEX usage_event_id ON usage (event_id);
 `},
+	{Version: 7, SQL: `
+-- Dropping the name's UNIQUE needs a rebuild. Creating the new table and
+-- renaming it over the old one failed at commit on tasks.project_id, so the
+-- rows go through a holding table and the foreign key check waits for commit.
+PRAGMA defer_foreign_keys = ON;
+CREATE TABLE projects_old AS SELECT * FROM projects;
+DROP TABLE projects;
+CREATE TABLE projects (
+	id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	name            TEXT NOT NULL,
+	repo_url        TEXT NOT NULL,
+	base_branch     TEXT NOT NULL,
+	setup_command   TEXT NOT NULL,
+	verify_command  TEXT NOT NULL,
+	verify_waived   INTEGER NOT NULL,
+	tool_overrides  TEXT NOT NULL,
+	egress_hosts    TEXT NOT NULL,
+	env             TEXT NOT NULL,
+	secret_vars     TEXT NOT NULL,
+	switches        TEXT NOT NULL,
+	baseline_commit TEXT,
+	baseline_passed INTEGER,
+	baseline_at     INTEGER,
+	baseline_output TEXT,
+	check_requested_at INTEGER,
+	check_result    TEXT NOT NULL DEFAULT '{}',
+	caps            TEXT NOT NULL DEFAULT '{}',
+	forge           TEXT NOT NULL DEFAULT '{}',
+	removed_at      INTEGER
+);
+INSERT INTO projects (id, name, repo_url, base_branch, setup_command, verify_command, verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches, baseline_commit, baseline_passed, baseline_at, baseline_output, check_requested_at, check_result, caps, forge)
+SELECT id, name, repo_url, base_branch, setup_command, verify_command, verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches, baseline_commit, baseline_passed, baseline_at, baseline_output, check_requested_at, check_result, caps, forge FROM projects_old;
+DROP TABLE projects_old;
+CREATE UNIQUE INDEX projects_name ON projects (name) WHERE removed_at IS NULL;
+`},
 }

@@ -113,6 +113,8 @@ func (r *fakeRunner) Reply(context.Context, engine.RunConfig, int, string) error
 	return errNoPullRequest
 }
 
+func (r *fakeRunner) RemoveProject(context.Context, engine.RunRef) error { return nil }
+
 func (r *fakeRunner) Release(_ context.Context, ref engine.RunRef, remove engine.Remove) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -541,6 +543,39 @@ func TestReplayDoesNotTouchSourceTask(t *testing.T) {
 	got, err := e.store.Task(t.Context(), src.ID)
 	require.NoError(t, err)
 	assert.Equal(t, src, got)
+}
+
+func TestReplayLeavesOutMarkedTasksOfARemovedProject(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	live := e.task(t, "live", true, "aaa")
+
+	gone, err := e.store.CreateProject(t.Context(), store.Project{
+		Name: "old", RepoURL: "https://example.com/old.git", BaseBranch: "main",
+		Baseline: &store.Baseline{Commit: "tip", Passed: true},
+	})
+	require.NoError(t, err)
+
+	orphan, err := e.store.CreateTask(t.Context(), store.Task{ProjectID: gone.ID, Title: "orphan", BaseCommit: "bbb", Reference: true})
+	require.NoError(t, err)
+	require.NoError(t, e.loop.Cancel(t.Context(), orphan.ID))
+	require.NoError(t, e.loop.RemoveProject(t.Context(), gone.ID))
+
+	_, items, _ := e.run(t, replay.Config{Name: "baseline"})
+	require.Len(t, items, 1)
+	assert.Equal(t, live.ID, items[0].SourceTaskID)
+
+	t.Run("none of a live project", func(t *testing.T) {
+		task, err := e.store.Task(t.Context(), live.ID)
+		require.NoError(t, err)
+
+		task.Reference = false
+		require.NoError(t, e.store.UpdateTask(t.Context(), task))
+
+		_, err = replay.Run(t.Context(), e.store, e.loop, replay.Config{Name: "x"}, e.drive, &bytes.Buffer{})
+		require.ErrorIs(t, err, replay.ErrNoReferenceTasks)
+	})
 }
 
 func TestReplayEmptySet(t *testing.T) {

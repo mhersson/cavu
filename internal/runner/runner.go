@@ -112,6 +112,7 @@ type sandboxer interface {
 	Restart(ctx context.Context) (container, error)
 	Down(ctx context.Context) error
 	Destroy(ctx context.Context, keepHome bool) error
+	RemoveProjectVolumes(ctx context.Context) error
 }
 
 // container is what the runner does in a running phase container.
@@ -510,6 +511,16 @@ func (r *Runner) Release(ctx context.Context, ref engine.RunRef, remove engine.R
 	r.setState(ref.RunID, nil)
 
 	return st.sb.Destroy(ctx, remove == engine.RemoveRun)
+}
+
+// RemoveProject removes the project's cache and mirror volumes.
+func (r *Runner) RemoveProject(ctx context.Context, ref engine.RunRef) error {
+	sb, err := r.sandbox(ref)
+	if err != nil {
+		return err
+	}
+
+	return sb.RemoveProjectVolumes(ctx)
 }
 
 // agentEnv is the environment of the commands the runner runs in the agent

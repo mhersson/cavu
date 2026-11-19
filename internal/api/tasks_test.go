@@ -631,6 +631,37 @@ func TestListFilters(t *testing.T) {
 	}
 }
 
+func TestListShowsARemovedProjectsTasksAndFiltersByLiveName(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	old := f.task(t, `{"project": "site", "title": "Old work"}`)
+
+	p, err := f.store.ProjectByName(t.Context(), "site")
+	require.NoError(t, err)
+	require.NoError(t, f.store.RemoveProject(t.Context(), p.ID, time.Now(), "project.site."))
+
+	f.addProject(t, site)
+	fresh := f.task(t, `{"project": "site", "title": "New work"}`)
+
+	list := func(query string) map[int64]string {
+		status, body := f.call(t, "GET /api/tasks"+query, "")
+		require.Equal(t, http.StatusOK, status, body)
+
+		got := map[int64]string{}
+
+		for _, task := range object(t, body)["tasks"].([]any) {
+			item := task.(map[string]any)
+			got[int64(item["id"].(float64))] = item["project"].(string)
+		}
+
+		return got
+	}
+
+	assert.Equal(t, map[int64]string{old: "site", fresh: "site"}, list(""), "a removed project's tasks still show its name")
+	assert.Equal(t, map[int64]string{fresh: "site"}, list("?project=site"), "the name filters the live project's tasks only")
+}
+
 const prURL = "https://github.com/acme/site/pull/12"
 
 // published makes the task one that exported a change at head and published it

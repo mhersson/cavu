@@ -30,7 +30,7 @@ type Deps struct {
 	Store   *store.Store
 	Vault   *auth.Vault
 	Auth    *auth.Service
-	Loop    *engine.Loop              // records a person's actions; it needs no runner
+	Loop    *engine.Loop              // records a person's actions; its runner removes a project's volumes and does nothing else
 	Nudge   func()                    // the scheduler's
 	Waiting func(taskID int64) string // the scheduler's
 	Version string
@@ -53,6 +53,7 @@ var routes = []route{
 	{"POST /api/projects", false, (*server).createProject},
 	{"GET /api/projects/{id}", false, (*server).project},
 	{"PATCH /api/projects/{id}", false, (*server).editProject},
+	{"DELETE /api/projects/{id}", false, (*server).removeProject},
 	{"POST /api/projects/{id}/check", false, (*server).requestCheck},
 	{"GET /api/settings", false, (*server).settings},
 	{"PATCH /api/settings", false, (*server).setSettings},
@@ -137,16 +138,17 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // classify gives err's status and the one line the caller sees: content the
-// engine refuses is a 400, a write that conflicts with what is stored a 409,
-// and a row that does not exist a 404. An error that is not the caller's is
-// logged with the route and given without detail.
+// engine refuses is a 400, a write that conflicts with what is stored or a
+// removal the runtime would not do a 409, and a row that does not exist a 404.
+// An error that is not the caller's is logged with the route and given
+// without detail.
 func classify(ctx context.Context, route string, err error) (int, string) {
 	switch e, ok := errors.AsType[*apiError](err); {
 	case ok:
 		return e.status, e.text
 	case errors.Is(err, engine.ErrRefused):
 		return http.StatusBadRequest, err.Error()
-	case errors.Is(err, store.ErrConflict):
+	case errors.Is(err, store.ErrConflict), errors.Is(err, engine.ErrVolumesNotRemoved):
 		return http.StatusConflict, err.Error()
 	case errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, err.Error()

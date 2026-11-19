@@ -763,6 +763,25 @@ func TestTaskListHidesReplayShadows(t *testing.T) {
 	assert.Equal(t, []string{second, "web", string(engine.StatusCancelled)}, strings.Fields(lines[2])[:3])
 }
 
+func TestTaskListShowsARemovedProjectsName(t *testing.T) {
+	dir := webData(t)
+	id := addTask(t, dir, "Old work")
+	cavuIn(t, dir, "task", "cancel", id)
+
+	a, err := openApp(t.Context(), dir)
+	require.NoError(t, err)
+
+	p, err := a.store.ProjectByName(t.Context(), "web")
+	require.NoError(t, err)
+	require.NoError(t, a.store.RemoveProject(t.Context(), p.ID, time.Now(), "project.web."))
+	a.close()
+
+	lines := strings.Split(strings.TrimSpace(cavuIn(t, dir, "task", "list")), "\n")
+
+	require.Len(t, lines, 2)
+	assert.Equal(t, []string{id, "web", string(engine.StatusCancelled)}, strings.Fields(lines[1])[:3])
+}
+
 func TestTaskMark(t *testing.T) {
 	dir := webData(t)
 	id := addTask(t, dir, "Fix")
