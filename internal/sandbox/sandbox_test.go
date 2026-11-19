@@ -575,6 +575,40 @@ func TestImporter(t *testing.T) {
 	assert.Contains(t, removedAfter(f.calls(t), n-1), s.name("import"))
 }
 
+// The fill container is the scratch container with the task's home, read-only,
+// and the project's cache, writable, and no other volume. Down removes it.
+func TestFiller(t *testing.T) {
+	t.Run("before EnsureVolumes", func(t *testing.T) {
+		s, f := fakeSandbox(t)
+
+		_, err := s.Filler(t.Context())
+		require.ErrorIs(t, err, errNoVolumes)
+		assert.Empty(t, runsOf(f.calls(t), s.name("fill")))
+	})
+
+	s, f := ensured(t)
+
+	c, err := s.Filler(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, s.name("fill"), c.name)
+
+	run := onlyRun(t, f, s.name("fill"))
+	assert.Subset(t, run.argv, []string{
+		"--detach", "--network=none", "--cap-drop=ALL", "--user=1000:1000", "--memory=1024m",
+		"--label=cavu.instance=" + instanceA, "--label=cavu.run=7",
+	})
+	assert.ElementsMatch(t, []string{
+		volumeMount(s.name("home"), "/home/agent") + ",readonly",
+		volumeMount(s.name("cache"), "/cache"),
+	}, mountFlags(run.argv))
+	assert.Equal(t, []string{"--tmpfs=/run/cavu"}, tmpfsFlags(run.argv))
+	assert.Equal(t, []string{"cavu-sandbox:test", "sleep", "infinity"}, run.argv[len(run.argv)-3:])
+
+	n := len(f.calls(t))
+	require.NoError(t, s.Down(t.Context()))
+	assert.Contains(t, removedAfter(f.calls(t), n-1), s.name("fill"))
+}
+
 func TestSetupPhaseHasNoHomeMount(t *testing.T) {
 	s, f := ensured(t)
 
@@ -1327,7 +1361,7 @@ func TestDownAndDestroyOutliveACancelledContext(t *testing.T) {
 		require.NoError(t, s.Down(cancelled(t)))
 
 		removed := removedAfter(f.calls(t), n-1)
-		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone", "push", "import"} {
+		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone", "push", "import", "fill"} {
 			assert.Contains(t, removed, s.name(k))
 		}
 	})
@@ -1360,7 +1394,7 @@ func TestDownAndDestroy(t *testing.T) {
 		calls := f.calls(t)
 		removed := removedAfter(calls, n-1)
 
-		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone", "push", "import"} {
+		for _, k := range []string{"agent", "setup", "readonly", "sidecar", "clone", "push", "import", "fill"} {
 			assert.Contains(t, removed, s.name(k))
 		}
 

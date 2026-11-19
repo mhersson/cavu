@@ -473,7 +473,7 @@ func TestReadinessSpec(t *testing.T) {
 	res, err := f.workRunner(d).Work(t.Context(), c, readinessWork, noProgress)
 	require.NoError(t, err)
 	assert.Equal(t, engine.OutcomeReady, res.Outcome)
-	assert.Equal(t, []string{"volumes", "up/readonly"}, f.calls(), "a ready result runs no command in the container")
+	assert.Equal(t, []string{"volumes", "up/readonly", goSeed}, f.calls(), "a ready result runs no command in the container but the home's seed")
 	require.Len(t, d.specs, 1)
 
 	assert.Equal(t, driver.Spec{
@@ -507,7 +507,7 @@ func TestPhasesSwitch(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, headCommit, res.HeadCommit)
 
-		assert.Equal(t, []string{"volumes", "up/readonly", "up/agent", "run/" + freeze}, f.calls())
+		assert.Equal(t, []string{"volumes", "up/readonly", goSeed, "up/agent", goSeed, "run/" + freeze}, f.calls())
 		assert.Equal(t, sandbox.PhaseAgent, f.run(t, freeze).phase)
 
 		readOnly, agent := f.requests(sandbox.PhaseReadOnly), f.requests(sandbox.PhaseAgent)
@@ -529,7 +529,7 @@ func TestPhasesSwitch(t *testing.T) {
 		_, err = r.Verify(t.Context(), c)
 		require.NoError(t, err)
 
-		assert.Equal(t, []string{"volumes", "up/readonly", "up/agent", "run/make test"}, f.calls(), "the agent phase starts once")
+		assert.Equal(t, []string{"volumes", "up/readonly", goSeed, "up/agent", goSeed, "run/make test"}, f.calls(), "the agent phase starts once")
 		assert.Equal(t, sandbox.PhaseAgent, f.run(t, "make test").phase, "the verify runs in the agent phase, never the read-only one")
 		assert.Equal(t, f.requests(sandbox.PhaseReadOnly), f.requests(sandbox.PhaseAgent))
 	})
@@ -576,7 +576,10 @@ func TestReadinessResultMapping(t *testing.T) {
 			res, err := f.workRunner(d).Work(t.Context(), workConfig(), readinessWork, noProgress)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, res)
-			assert.Empty(t, f.runsIn(sandbox.PhaseReadOnly), "a readiness turn is never frozen")
+
+			readOnly := f.runsIn(sandbox.PhaseReadOnly)
+			require.Len(t, readOnly, 1, "a readiness turn is never frozen")
+			assert.Equal(t, goSeed, "run/"+readOnly[0].name, "only the home's seed runs")
 		})
 	}
 }

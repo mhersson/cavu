@@ -1,6 +1,7 @@
 package env
 
 import (
+	"maps"
 	"strings"
 	"testing"
 
@@ -157,8 +158,42 @@ func TestAgentSeedsCargoDownloads(t *testing.T) {
 
 	assert.Equal(t, want, AgentSeeds([]string{"rust"}, "/home/agent"))
 
-	for _, ecosystems := range [][]string{nil, {"go", "node", "python"}} {
+	for _, ecosystems := range [][]string{nil, {"node", "python"}} {
 		assert.Empty(t, AgentSeeds(ecosystems, "/home/agent"), ecosystems)
+	}
+}
+
+// The agent's Go module cache gets the setup phase's, and its build cache gets
+// the copy the project cache holds at /cache/go/check-build.
+func TestAgentSeedsGoCaches(t *testing.T) {
+	t.Parallel()
+
+	agent := envMap(t, AgentEnv([]string{"go"}, "/home/agent"))
+	setup := envMap(t, SetupEnv([]string{"go"}))
+
+	want := map[string]string{
+		agent["GOMODCACHE"]: setup["GOMODCACHE"],
+		agent["GOCACHE"]:    "/cache/go/check-build",
+	}
+	assert.Equal(t, want, AgentSeeds([]string{"go"}, "/home/agent"))
+
+	maps.Copy(want, AgentSeeds([]string{"rust"}, "/home/agent"))
+	assert.Equal(t, want, AgentSeeds(allEcosystems, "/home/agent"), "a project of both gets both")
+}
+
+// A check of a Go project copies the home's build cache to where every home's
+// build cache is seeded from; a project without Go copies nothing.
+func TestGoBuildCopy(t *testing.T) {
+	t.Parallel()
+
+	from, to := GoBuildCopy([]string{"node", "go"}, "/home/agent")
+	assert.Equal(t, envMap(t, AgentEnv([]string{"go"}, "/home/agent"))["GOCACHE"], from)
+	assert.Equal(t, AgentSeeds([]string{"go"}, "/home/agent")[from], to)
+
+	for _, ecosystems := range [][]string{nil, {"node", "python", "rust"}} {
+		from, to := GoBuildCopy(ecosystems, "/home/agent")
+		assert.Empty(t, from, ecosystems)
+		assert.Empty(t, to, ecosystems)
 	}
 }
 

@@ -78,7 +78,7 @@ func reviewBundleName(c engine.RunConfig) string {
 // reviewCalls are the calls of a review, with the diffs args name, up to its session.
 func reviewCalls(c engine.RunConfig, args ...string) []string {
 	calls := []string{
-		"volumes", "up/readonly", "run/" + reviewBundleName(c), "copyout " + tmpfsBundle,
+		"volumes", "up/readonly", goSeed, "run/" + reviewBundleName(c), "copyout " + tmpfsBundle,
 		"importer", "import/copy", "import/run/" + importName(c, headCommit), "import/run/" + diffName(args...),
 	}
 
@@ -132,9 +132,9 @@ func TestReviewReadsTheImportedDiffs(t *testing.T) {
 			assert.Equal(t, reviewCalls(c, tt.args...), before, "the diffs are in place before the session")
 
 			readOnly := f.runsIn(sandbox.PhaseReadOnly)
-			require.Len(t, readOnly, 1, "the read-only container computes no diff")
-			assert.Equal(t, workspace, readOnly[0].cmd.Dir)
-			assert.Equal(t, agentEnv([]string{"go"}, baseCommit), readOnly[0].cmd.Env)
+			require.Len(t, readOnly, 2, "the read-only container seeds its home, then computes no diff")
+			assert.Equal(t, workspace, readOnly[1].cmd.Dir)
+			assert.Equal(t, agentEnv([]string{"go"}, baseCommit), readOnly[1].cmd.Env)
 			assert.Equal(t, map[string][]byte{tmpfsBundle: []byte(exportedBundle)}, f.imported, "the import takes the bundle the read-only container made")
 
 			read := f.run(t, diffName(tt.args...))
@@ -400,12 +400,12 @@ func TestReviewChangesNothing(t *testing.T) {
 		require.NoError(t, err)
 
 		runs := f.runsIn(sandbox.PhaseReadOnly)
-		require.Len(t, runs, 1, "the bundle is the one command")
+		require.Len(t, runs, 2, "the home's seed, then the bundle, are the commands")
 		assert.Empty(t, f.runsIn(sandbox.PhaseAgent), "no freeze, and nothing in the agent phase")
 		assert.NotContains(t, f.calls(), "restart")
 
 		// The bundle goes to the tmpfs, never to a volume.
-		assert.True(t, strings.HasPrefix(runs[0].cmd.Argv[len(runs[0].cmd.Argv)-1], "/run/cavu/"))
+		assert.True(t, strings.HasPrefix(runs[1].cmd.Argv[len(runs[1].cmd.Argv)-1], "/run/cavu/"))
 	}
 }
 
@@ -445,7 +445,10 @@ func TestFixReviewSessions(t *testing.T) {
 		assert.Equal(t, []string{"claude-test", "high"}, []string{spec.Model, spec.Effort})
 		assert.Equal(t, render(t, prompts.FixReview, prompts.FixReviewData{Findings: numbered(trimmed, untried)}), spec.Prompt)
 		assert.Equal(t, render(t, prompts.Instructions, nil), spec.Instructions)
-		assert.Empty(t, f.runsIn(sandbox.PhaseAgent), "the resumed session has the diff in its history")
+
+		agent := f.runsIn(sandbox.PhaseAgent)
+		require.Len(t, agent, 1, "the resumed session has the diff in its history")
+		assert.Equal(t, goSeed, "run/"+agent[0].name, "only the home's seed runs")
 
 		for _, x := range findings {
 			for _, v := range []string{x.Where, x.What, x.Why} {
@@ -468,7 +471,7 @@ func TestFixReviewSessions(t *testing.T) {
 		_, err := f.workRunner(d).Work(t.Context(), c, w, noProgress)
 		require.NoError(t, err)
 		require.Len(t, d.specs, 1)
-		assert.Equal(t, []string{"volumes", "up/agent", "run/" + diff}, before, "the diff of the task branch is written before the session")
+		assert.Equal(t, []string{"volumes", "up/agent", goSeed, "run/" + diff}, before, "the diff of the task branch is written before the session")
 
 		run := f.run(t, diff)
 		assert.Equal(t, sandbox.PhaseAgent, run.phase)

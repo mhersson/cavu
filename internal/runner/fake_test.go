@@ -56,8 +56,11 @@ func rootFiles() map[string]string {
 	}
 }
 
-// phaseImport stands for the import container in the fake's records.
-const phaseImport sandbox.Phase = "import"
+// phaseImport and phaseFill stand for the import and fill containers in the fake's records.
+const (
+	phaseImport sandbox.Phase = "import"
+	phaseFill   sandbox.Phase = "fill"
+)
 
 type upCall struct {
 	phase sandbox.Phase
@@ -92,6 +95,7 @@ type fakeSandbox struct {
 	onClone  func(sidecar.CloneRequest) error                               // runs as the clone starts; an error it makes from the request fails the clone
 	onPush   func(sidecar.PushRequest) (branch, rejected string, err error) // else the push takes the branch asked for
 	upErr    error
+	fillErr  error
 	readCode int
 	results  map[string]sandbox.Result // by step name
 	runErrs  map[string]error
@@ -302,6 +306,16 @@ func (f *fakeSandbox) Importer(context.Context) (container, error) {
 	return fakeContainer{f: f, phase: phaseImport}, nil
 }
 
+func (f *fakeSandbox) Filler(context.Context) (container, error) {
+	f.record("filler")
+
+	if f.fillErr != nil {
+		return nil, f.fillErr
+	}
+
+	return fakeContainer{f: f, phase: phaseFill}, nil
+}
+
 func (f *fakeSandbox) RemoveImporter(context.Context) error {
 	f.record("importer removed")
 
@@ -369,10 +383,10 @@ type fakeContainer struct {
 	phase sandbox.Phase
 }
 
-// at names a record of what c did: the import container's are marked.
+// at names a record of what c did: the import and fill containers' are marked.
 func (c fakeContainer) at(entry string) string {
-	if c.phase == phaseImport {
-		return "import/" + entry
+	if c.phase == phaseImport || c.phase == phaseFill {
+		return string(c.phase) + "/" + entry
 	}
 
 	return entry

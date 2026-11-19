@@ -459,6 +459,18 @@ func (s *Sandbox) RemoveImporter(ctx context.Context) error {
 	return nil
 }
 
+// Filler starts the fill container beside the sandbox, for a copy from the
+// task's home into the project's cache: Scratch's container with the home at
+// /home/agent, read-only, the cache at /cache, writable, and no other volume.
+// Down removes it.
+func (s *Sandbox) Filler(ctx context.Context) (Container, error) {
+	if !s.volumes {
+		return Container{}, errNoVolumes
+	}
+
+	return s.idle(ctx, "fill", sidecarMemoryMB, s.mount("home", "/home/agent", true), s.mount("cache", "/cache", false))
+}
+
 // idle starts a container named for kind that runs nothing of its own, with
 // mounts, network none, hardened, and the tmpfs a command runs with.
 func (s *Sandbox) idle(ctx context.Context, kind string, memoryMB int, mounts ...Mount) (Container, error) {
@@ -558,8 +570,8 @@ func (s *Sandbox) restart(ctx context.Context, phase Phase) (Container, error) {
 	return s.check(ctx)
 }
 
-// Down removes the containers, the scratch and import ones too, and keeps the
-// volumes. It does so on a cancelled ctx too, so a cancelled run leaves no
+// Down removes the containers, the scratch, import and fill ones too, and keeps
+// the volumes. It does so on a cancelled ctx too, so a cancelled run leaves no
 // container running.
 func (s *Sandbox) Down(ctx context.Context) error {
 	s.stopSidecar()
@@ -568,7 +580,7 @@ func (s *Sandbox) Down(ctx context.Context) error {
 	cleanup, cancel := cleanupContext(ctx)
 	defer cancel()
 
-	if err := s.o.Runtime.Remove(cleanup, append(s.phaseNames(), s.name("sidecar"), s.name("clone"), s.name("push"), s.name("scratch"), s.name("import"))...); err != nil {
+	if err := s.o.Runtime.Remove(cleanup, append(s.phaseNames(), s.name("sidecar"), s.name("clone"), s.name("push"), s.name("scratch"), s.name("import"), s.name("fill"))...); err != nil {
 		return fmt.Errorf("sandbox: %w", err)
 	}
 

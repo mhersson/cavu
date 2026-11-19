@@ -1,9 +1,13 @@
 package runner
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"log/slog"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -34,9 +38,12 @@ var treeName = stepName([]string{"sh", "-c", treeScript})
 
 var treeCheck = "run/" + treeName
 
+// goSeed is how the fake records the step that seeds a Go project's home.
+var goSeed = "run/" + stepName(homeArgv(seedScript, env.AgentSeeds([]string{"go"}, home)))
+
 var fullOrder = []string{
 	"destroy", "volumes", "clone", "up/setup", "read", "up/setup", "copy",
-	"run/mise install", "run/make setup", "run/" + reshimName, "down", "up/agent", treeCheck, "run/make test", treeCheck,
+	"run/mise install", "run/make setup", "run/" + reshimName, "down", "up/agent", goSeed, treeCheck, "run/make test", treeCheck,
 }
 
 // without is fullOrder without the given calls.
@@ -353,7 +360,7 @@ func TestPrepareSkipsWhatIsNotThere(t *testing.T) {
 		res, err := f.runner().Prepare(t.Context(), testConfig())
 		require.NoError(t, err)
 		assert.Empty(t, res.Tools)
-		assert.Equal(t, without("run/mise install", "run/"+reshimName), f.calls(), "no tool has shims")
+		assert.Equal(t, without("run/mise install", "run/"+reshimName, goSeed), f.calls(), "no tool has shims, and no Go cache seeds the home")
 		assert.Equal(t, env.MiseConfig(nil), f.copied[env.MiseConfigFile], "a stale configuration is replaced")
 	})
 }
@@ -841,6 +848,201 @@ func TestCheckEnvironmentWithoutAVerifyCommandReportsTheWorkspace(t *testing.T) 
 
 	_, err = f.runner().Prepare(t.Context(), c)
 	require.Error(t, err, "a task cannot start without a verify command")
+}
+
+// fillName is how the fake names the copy of a Go check's build cache.
+var fillName = stepName(scriptArgv(fillScript, "/cache/go/check-build", "/home/agent/.cache/go/build"))
+
+// A check of a Go project whose baseline passed copies its home's build cache
+// into the project's cache, after the baseline and before the release removes
+// the home.
+func TestCheckKeepsItsGoBuildCache(t *testing.T) {
+	f := newFake()
+
+	res, _, err := f.runner().CheckEnvironment(t.Context(), testConfig())
+	require.NoError(t, err)
+	assert.Equal(t, engine.ResultPassed, res.Baseline)
+
+	order := slices.Clone(fullOrder)
+	order[slices.Index(order, goSeed)] = "run/" + stepName(scriptArgv(seedScript, "/home/agent/.cache/go/mod", "/cache/go/mod"))
+	assert.Equal(t, slices.Concat(order, []string{"filler", "fill/run/" + fillName, "destroy"}), f.calls(), "the check's home seeds no build cache")
+
+	run := f.run(t, fillName)
+	assert.Equal(t, phaseFill, run.phase)
+	assert.Equal(t, []string{"/cache/go/check-build", "/home/agent/.cache/go/build"}, run.cmd.Argv[4:], "the copy's path, then its source")
+	assert.True(t, strings.HasPrefix(run.cmd.Argv[2], proc.SandboxOnly("")), "the script runs only in a sandbox")
+	assert.Equal(t, homeTimeout, run.timeout)
+}
+
+// A check seeds its home from the cache but for the build cache, so its copy
+// holds only what the base commit builds; a task's prepare seeds both.
+func TestOnlyATaskSeedsTheBuildCache(t *testing.T) {
+	seeds := func(f *fakeSandbox) [][]string {
+		var out [][]string
+
+		for _, r := range f.runsIn(sandbox.PhaseAgent) {
+			if r.cmd.Argv[2] == seedScript {
+				out = append(out, r.cmd.Argv[4:])
+			}
+		}
+
+		return out
+	}
+
+	f := newFake()
+	_, _, err := f.runner().CheckEnvironment(t.Context(), testConfig())
+	require.NoError(t, err)
+	assert.Equal(t, [][]string{{"/home/agent/.cache/go/mod", "/cache/go/mod"}}, seeds(f), "a check")
+
+	f = newFake()
+	_, err = f.runner().Prepare(t.Context(), testConfig())
+	require.NoError(t, err)
+	assert.Equal(t, [][]string{{
+		"/home/agent/.cache/go/build", "/cache/go/check-build", "/home/agent/.cache/go/mod", "/cache/go/mod",
+	}}, seeds(f), "a task")
+}
+
+// The fill writes the project's cache in the project's setup turn, so no setup
+// of the project runs meanwhile, and gives the turn back.
+func TestCheckFillsInTheSetupTurn(t *testing.T) {
+	f := newFake()
+	r := f.runner()
+	c := testConfig()
+
+	taken := func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		return len(r.turns[turnKey{c.ProjectID, setupTurn}]) == 1
+	}
+
+	var whileFilling bool
+
+	f.onRun = func(name string) {
+		if name == fillName {
+			whileFilling = taken()
+		}
+	}
+
+	_, _, err := r.CheckEnvironment(t.Context(), c)
+	require.NoError(t, err)
+	assert.True(t, whileFilling, "the fill ran outside the project's setup turn")
+	assert.False(t, taken(), "the fill kept the turn")
+}
+
+// Only a check whose baseline passed fills, and only for a Go project.
+func TestNoFillWithoutAPassedGoCheck(t *testing.T) {
+	for name, tt := range map[string]struct {
+		check  bool
+		script func(*fakeSandbox, *engine.RunConfig)
+	}{
+		"a task's prepare": {script: func(*fakeSandbox, *engine.RunConfig) {}},
+		"a check whose baseline failed": {check: true, script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.results["make test"] = sandbox.Result{ExitCode: 1, Output: "FAIL\n"}
+		}},
+		"a check of a project without Go": {check: true, script: func(f *fakeSandbox, _ *engine.RunConfig) {
+			f.files = map[string]string{"package.json": "{}"}
+		}},
+		"a check with verify waived": {check: true, script: func(_ *fakeSandbox, c *engine.RunConfig) {
+			c.Verify.Waived, c.Verify.Command = true, ""
+		}},
+		"a check without a verify command": {check: true, script: func(_ *fakeSandbox, c *engine.RunConfig) {
+			c.Verify.Command = " "
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			c := testConfig()
+			tt.script(f, &c)
+
+			var err error
+			if tt.check {
+				_, _, err = f.runner().CheckEnvironment(t.Context(), c)
+			} else {
+				_, err = f.runner().Prepare(t.Context(), c)
+			}
+
+			require.NoError(t, err)
+			assert.NotContains(t, f.calls(), "filler", "the fill container started")
+		})
+	}
+}
+
+// A fill that fails changes nothing of the check: its result and error are
+// those of a check whose fill passed, the release still runs, and one warning
+// names the project and the error, masked.
+func TestCheckWithAFailedFill(t *testing.T) {
+	want, wantSuggestion, err := newFake().runner().CheckEnvironment(t.Context(), testConfig())
+	require.NoError(t, err)
+
+	for name, script := range map[string]func(*fakeSandbox){
+		"the script exits 1": func(f *fakeSandbox) {
+			f.results[fillName] = sandbox.Result{ExitCode: 1, Output: "cp: write error: No space left on device " + plantedForge + "\n"}
+		},
+		"the script times out": func(f *fakeSandbox) {
+			f.results[fillName] = sandbox.Result{ExitCode: 137, Output: plantedForge, TimedOut: true}
+		},
+		"the container cannot start": func(f *fakeSandbox) {
+			f.fillErr = errors.New("sandbox: start the fill container: " + plantedForge)
+		},
+		"the script cannot run": func(f *fakeSandbox) {
+			f.runErrs[fillName] = errors.New("exec in the fill container: " + plantedForge)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logged := captureLog(t)
+			f := newFake()
+			script(f)
+
+			res, suggestion, err := f.runner().CheckEnvironment(t.Context(), testConfig())
+			require.NoError(t, err)
+			assert.Equal(t, want, res)
+			assert.Equal(t, wantSuggestion, suggestion)
+			assert.Equal(t, "destroy", f.calls()[len(f.calls())-1], "the check is released")
+
+			records := logRecords(t, logged)
+			require.Len(t, records, 1)
+			assert.Equal(t, "WARN", records[0]["level"])
+			assert.InDelta(t, 3, records[0]["project"], 0)
+			assert.NotEmpty(t, records[0]["err"])
+			assert.NotContains(t, fmt.Sprint(records[0]), plantedForge)
+		})
+	}
+}
+
+// captureLog sends the default logger's records to a buffer as JSON until the
+// test ends. SetDefault also redirects the log package, so its output and
+// flags are restored too.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+
+	prev, out, flags := slog.Default(), log.Writer(), log.Flags()
+
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		log.SetOutput(out)
+		log.SetFlags(flags)
+	})
+
+	return &buf
+}
+
+func logRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+
+	var records []map[string]any
+
+	for line := range strings.Lines(buf.String()) {
+		var r map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &r))
+
+		records = append(records, r)
+	}
+
+	return records
 }
 
 func TestSetupsOfOneProjectTakeTurns(t *testing.T) {

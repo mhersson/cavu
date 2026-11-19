@@ -31,7 +31,7 @@ const (
 	workspace = "/workspace"
 	modeKey   = "key"
 
-	// homeTimeout leaves room to copy a large project's crates on a slow volume.
+	// homeTimeout leaves room to copy a large project's crates, modules or build cache on a slow volume.
 	homeTimeout = 10 * time.Minute
 )
 
@@ -107,6 +107,7 @@ type sandboxer interface {
 	Push(ctx context.Context, r sidecar.PushRequest) (branch, rejected string, err error)
 	Importer(ctx context.Context) (container, error)
 	RemoveImporter(ctx context.Context) error
+	Filler(ctx context.Context) (container, error)
 	Up(ctx context.Context, phase sandbox.Phase, p sidecar.ProxyRequest, lines func(sidecar.Line)) (container, error)
 	Restart(ctx context.Context) (container, error)
 	Down(ctx context.Context) error
@@ -121,11 +122,20 @@ type container interface {
 	CopyOut(ctx context.Context, p string, w io.Writer) error
 }
 
-// realSandbox returns Up's, Restart's and Importer's container as a container.
+// realSandbox returns Up's, Restart's, Importer's and Filler's container as a container.
 type realSandbox struct{ *sandbox.Sandbox }
 
 func (s realSandbox) Importer(ctx context.Context) (container, error) {
 	c, err := s.Sandbox.Importer(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
+}
+
+func (s realSandbox) Filler(ctx context.Context) (container, error) {
+	c, err := s.Sandbox.Filler(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -432,7 +442,15 @@ func (r *Runner) ensureUp(ctx context.Context, c engine.RunConfig, phase sandbox
 		return err
 	}
 
-	if err := homeStep(ctx, a, seedScript, env.AgentSeeds(st.ecosystems, home)); err != nil {
+	seeds := env.AgentSeeds(st.ecosystems, home)
+	if c.TaskID == 0 {
+		// A check builds from an empty build cache, so the copy it fills holds
+		// only what the base commit builds.
+		from, _ := env.GoBuildCopy(st.ecosystems, home)
+		delete(seeds, from)
+	}
+
+	if err := homeStep(ctx, a, seedScript, seeds); err != nil {
 		return err
 	}
 
