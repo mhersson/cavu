@@ -446,9 +446,7 @@ func (r *doctor) forge(ctx context.Context, p Project, a engine.ForgeAccess) Che
 		"a GitHub App must be granted Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read"
 
 	token, err := runner.CloneToken(ctx, r.Forge, p.RepoURL, a)
-	if token != "" {
-		r.tokens = append(r.tokens, token)
-	}
+	r.tokens = append(r.tokens, token)
 
 	if err != nil {
 		return failed(err, fix)
