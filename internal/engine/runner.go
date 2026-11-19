@@ -134,6 +134,10 @@ type Runner interface {
 	Publish(ctx context.Context, c RunConfig, p PublishRequest) (PublishResult, error)
 	// Release is safe to repeat, and succeeds when nothing exists to release.
 	Release(ctx context.Context, ref RunRef, remove Remove) error
+	// RemoveProject removes the project's cache and mirror volumes under ref's
+	// instance, image and project id, with run and task id 0; a volume that
+	// does not exist is no error, one a container holds is.
+	RemoveProject(ctx context.Context, ref RunRef) error
 	// Observe reads pull request number from the forge. Observe,
 	// Ready and Reply start no container, and return a *RateLimited while the
 	// forge limits their requests.

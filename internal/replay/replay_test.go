@@ -113,6 +113,8 @@ func (r *fakeRunner) Reply(context.Context, engine.RunConfig, int, string) error
 	return errNoPullRequest
 }
 
+func (r *fakeRunner) RemoveProject(context.Context, engine.RunRef) error { return nil }
+
 func (r *fakeRunner) Release(_ context.Context, ref engine.RunRef, remove engine.Remove) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

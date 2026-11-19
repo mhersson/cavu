@@ -1426,6 +1426,16 @@ func TestDownAndDestroy(t *testing.T) {
 	}
 }
 
+func TestRemoveProjectVolumes(t *testing.T) {
+	s, f := fakeSandbox(t, func(o *Options) { o.RunID, o.TaskID, o.ProjectID = 0, 0, 12 })
+
+	require.NoError(t, s.RemoveProjectVolumes(t.Context()))
+
+	calls := f.calls(t)
+	require.Len(t, calls, 1, "no call but the volume removal")
+	assert.Equal(t, []string{"volume", "rm", "--force", "cavu-01234567-cache-12", "cavu-01234567-mirror-12"}, calls[0].argv)
+}
+
 func TestRemoveOrphansKeepsRunsAndSharedVolumes(t *testing.T) {
 	r, f := fakeRuntime(t, "docker")
 	filter := "--filter=label=cavu.instance=" + instanceA

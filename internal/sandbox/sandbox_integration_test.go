@@ -3,6 +3,7 @@
 package sandbox_test
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -243,6 +244,49 @@ func containerID(t *testing.T, r sandbox.Runtime, name string) string {
 	require.NotEmpty(t, got[0].ID)
 
 	return got[0].ID
+}
+
+// TestRemoveHeldProjectVolumes: a container that mounts the project's cache keeps
+// the removal from succeeding; once it is gone the cache and the mirror are
+// gone and the run's and the task's volumes stay.
+func TestRemoveHeldProjectVolumes(t *testing.T) {
+	t.Parallel()
+
+	r := sandboxtest.Runtime(t)
+	instance, project := randomInstance(t), randomID(t)
+	sandboxtest.RemoveInstanceAfter(t, r, instance)
+
+	s := openSandbox(t, r, "cavu-sandbox:unused", instance, 0, 0, project)
+	require.NoError(t, s.EnsureVolumes(t.Context()))
+
+	cache, mirror := schemeName(instance, "cache", project), schemeName(instance, "mirror", project)
+	others := []string{schemeName(instance, "workspace", 0), schemeName(instance, "handoff", 0), schemeName(instance, "home", 0)}
+
+	volumes := func() []string {
+		_, v, err := r.List(t.Context(), "cavu.instance="+instance)
+		require.NoError(t, err)
+
+		return v
+	}
+
+	require.ElementsMatch(t, append([]string{cache, mirror}, others...), volumes())
+
+	holder := sandboxtest.UniqueName()
+
+	removeAfter(t, func(ctx context.Context) error { return r.Remove(ctx, holder) })
+	require.NoError(t, r.Start(t.Context(), sandbox.ContainerSpec{
+		Name: holder, Image: "docker.io/library/busybox:1.37", Argv: []string{"sleep", "3600"},
+		Labels: sandboxtest.Labels(), Network: "none", Mounts: []sandbox.Mount{{Volume: cache, Path: "/cache"}},
+	}))
+
+	err := s.RemoveProjectVolumes(t.Context())
+	require.Error(t, err, "a volume a container holds is not removed")
+	t.Log(err)
+	assert.Contains(t, volumes(), cache)
+
+	require.NoError(t, r.Remove(t.Context(), holder))
+	require.NoError(t, s.RemoveProjectVolumes(t.Context()))
+	assert.ElementsMatch(t, others, volumes())
 }
 
 // TestReadOnlyPhase: the read-only phase refuses a write to the workspace and

@@ -206,6 +206,22 @@ func TestSidecarFollowsTheBudget(t *testing.T) {
 	})
 }
 
+func TestRemoveProject(t *testing.T) {
+	ref := engine.RunRef{InstanceID: "0123456789abcdef", Image: "cavu-sandbox:test", ProjectID: 3}
+
+	f := newFake()
+
+	require.NoError(t, f.runner().RemoveProject(t.Context(), ref))
+	assert.Equal(t, []string{"remove-project-volumes"}, f.calls(), "no volume is ensured first")
+	assert.Equal(t, []sandbox.Options{{
+		Runtime: sandbox.Runtime{Bin: "docker", Kind: "docker"}, Image: ref.Image, InstanceID: ref.InstanceID, ProjectID: 3,
+	}}, f.opened)
+
+	boom := errors.New("volume in use")
+	f.rmErr = boom
+	require.ErrorIs(t, f.runner().RemoveProject(t.Context(), ref), boom)
+}
+
 func TestRelease(t *testing.T) {
 	ref := engine.RunRef{InstanceID: "0123456789abcdef", Image: "cavu-sandbox:test", TaskID: 5, RunID: 7, ProjectID: 3}
 

@@ -612,6 +612,16 @@ func (s *Sandbox) Destroy(ctx context.Context, keepHome bool) error {
 	return nil
 }
 
+// RemoveProjectVolumes removes the project's cache and mirror volumes by their
+// names; an absent one is no error, one a container holds is.
+func (s *Sandbox) RemoveProjectVolumes(ctx context.Context) error {
+	if err := s.o.Runtime.VolumeRemove(ctx, s.name("cache"), s.name("mirror")); err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+
+	return nil
+}
+
 // cleanupContext outlives ctx's cancellation, bounded on its own.
 func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)

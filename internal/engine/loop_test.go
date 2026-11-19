@@ -106,6 +106,7 @@ type fakeRunner struct {
 	readies    []step[struct{}]
 	replies    []step[struct{}]
 	releaseErr error
+	removeErr  error                                   // RemoveProject's
 	suggestion string                                  // every check's verify suggestion
 	progress   []engine.Progress                       // sent during every Work, each from its own goroutine
 	onCall     func(c call)                            // runs as a call starts
@@ -280,6 +281,17 @@ func (r *fakeRunner) Release(ctx context.Context, ref engine.RunRef, remove engi
 	defer r.mu.Unlock()
 
 	return r.releaseErr
+}
+
+func (r *fakeRunner) RemoveProject(ctx context.Context, ref engine.RunRef) error {
+	if err := r.begin(ctx, call{method: "remove-project", ref: ref}); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.removeErr
 }
 
 func (r *fakeRunner) trace() []string {
