@@ -437,7 +437,7 @@ func watch(s Snapshot, pr *PRFact) Action {
 	f, seen := s.Facts, pr.Seen
 
 	if !pr.Looked {
-		return Action{Kind: KindWatch, Why: "CAVU has not read the pull request on GitHub since its last push, ready-marking or a person's action."}
+		return Action{Kind: KindWatch, Why: "CAVU waits for its next look at the pull request on GitHub: it acts only on a look taken after its own last push or ready-marking and after a person's last action."}
 	}
 
 	// An earlier head of CAVU's own is what GitHub showed before the newest push.
@@ -554,7 +554,8 @@ func cancelled(pr *PRFact) string {
 
 // takenOver explains a branch that holds a head CAVU did not push.
 func takenOver(pr *PRFact, runOpen bool) string {
-	text := fmt.Sprintf("The branch of pull request %s holds a commit CAVU did not push; a retry gives the branch back to CAVU as it then is, the head CAVU's next look shows.", pr.URL)
+	text := fmt.Sprintf("The branch of pull request %s holds commit %s, which CAVU did not push; a retry lets CAVU go on from the commit the branch then holds.",
+		pr.URL, pr.Seen.Head[:min(12, len(pr.Seen.Head))])
 	if runOpen {
 		text += " The open run's commits that were not pushed are dropped."
 	}
