@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mhersson/cavu/internal/driver/claudecode"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
@@ -312,7 +313,7 @@ func checkSetup(t *testing.T, addArgs ...string) (string, *fakeRuntime) {
 	dir := runData(t)
 	cavuIn(t, dir, append([]string{"project", "add", "web", "--repo", repo}, addArgs...)...)
 
-	fake := &fakeRuntime{labels: sandbox.ImageLabels{CavuVersion: version}, found: true, runner: &fakeRunner{}}
+	fake := &fakeRuntime{labels: sandbox.ImageLabels{CavuVersion: version, AgentVersion: claudecode.Version}, found: true, runner: &fakeRunner{}}
 	useFakeRuntime(t, fake)
 
 	return dir, fake
@@ -405,6 +406,7 @@ func TestProjectCheckRefusesBeforeTheRunner(t *testing.T) {
 	}{
 		{"an image not built", func(_ *testing.T, _ string, fake *fakeRuntime) { fake.found = false }, "cavu image build"},
 		{"an image of another version", func(_ *testing.T, _ string, fake *fakeRuntime) { fake.labels.CavuVersion = "0.0.1" }, "cavu image build"},
+		{"an image of another Claude Code", func(_ *testing.T, _ string, fake *fakeRuntime) { fake.labels.AgentVersion = "0.0.1" }, "0.0.1"},
 		{"an image with another CA bundle", func(_ *testing.T, _ string, fake *fakeRuntime) { fake.labels.CABundle = "sum-of-a-bundle" }, "cavu image build"},
 		{"the lock held", func(t *testing.T, dir string, _ *fakeRuntime) {
 			a, err := openApp(t.Context(), dir)

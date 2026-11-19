@@ -263,22 +263,39 @@ func TestDoctorCABundleChanged(t *testing.T) {
 }
 
 func TestDoctorImageVersionMismatch(t *testing.T) {
-	d, h, drv := green(t, "key")
-	h.labels.CavuVersion = "1.3.0"
-
-	checks := Run(t.Context(), d)
-	m := byName(t, checks)
-	assert.False(t, m["image"].OK)
-	assert.Contains(t, m["image"].Fix, "cavu image build")
-
-	for _, name := range []string{"claude_code", "sandbox", "endpoint"} {
-		assert.True(t, m[name].Skipped, name)
-		assert.NotEmpty(t, m[name].Detail, "a skip gives its reason")
+	tests := []struct {
+		name   string
+		change func(l *sandbox.ImageLabels)
+		names  []string // what the detail names
+	}{
+		{"another cavu", func(l *sandbox.ImageLabels) { l.CavuVersion = "1.3.0" }, []string{"1.3.0", version}},
+		{"another Claude Code", func(l *sandbox.ImageLabels) { l.AgentVersion = "0.0.1" }, []string{"0.0.1", pinned}},
 	}
 
-	assert.Empty(t, h.ups)
-	assert.Empty(t, drv.specs)
-	assert.Equal(t, 1, ExitCode(checks))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, h, drv := green(t, "key")
+			tc.change(&h.labels)
+
+			checks := Run(t.Context(), d)
+			m := byName(t, checks)
+			assert.False(t, m["image"].OK)
+			assert.Contains(t, m["image"].Fix, "cavu image build")
+
+			for _, v := range tc.names {
+				assert.Contains(t, m["image"].Detail, v)
+			}
+
+			for _, name := range []string{"claude_code", "sandbox", "endpoint"} {
+				assert.True(t, m[name].Skipped, name)
+				assert.NotEmpty(t, m[name].Detail, "a skip gives its reason")
+			}
+
+			assert.Empty(t, h.ups)
+			assert.Empty(t, drv.specs)
+			assert.Equal(t, 1, ExitCode(checks))
+		})
+	}
 }
 
 // The image's other faults: absent, without the sandbox marker, or a runtime
