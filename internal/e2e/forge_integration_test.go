@@ -340,3 +340,105 @@ func TestForgeCIFixRound(t *testing.T) {
 	require.Len(t, calls, 4)
 	assert.True(t, bytes.Contains(calls[2].Body, []byte(planted)), "the fix session's first call holds the failed job's log")
 }
+
+func TestForgeReviewCommentRun(t *testing.T) {
+	t.Parallel()
+
+	// The first run's work, then two follow-up sessions, each ending with a
+	// summary that holds a token of its own; the second changes nothing.
+	const answer1, answer2 = "E2E-ANSWER-ONE-0123456789", "E2E-ANSWER-TWO-0123456789"
+
+	answer := func(token string) mockapi.Step {
+		return mockapi.Step{Tool: mockapi.Structured, Input: map[string]any{"status": "done", "summary": "Did what the reviewer asked. " + token}}
+	}
+
+	mock := mockapi.Start(t, []mockapi.Step{change, done, change, answer(answer1), answer(answer2)})
+	in := setup(t, mock.HostURL())
+	fake, bare := in.forge()
+	s := in.serve()
+
+	defer s.stop()
+
+	s.project("notes", nil, map[string]bool{"readiness": false, "review": false})
+
+	var task, got apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+
+	pull := s.pulled(fake, task.ID)
+	head := tip(t, bare, pull.Head)
+
+	// An account that may only read asks for changes before the first look and
+	// stands to the end. The checks pass at once.
+	fake.SetPermission("visitor", "read")
+	fake.Review(pull.Number, "visitor", "CHANGES_REQUESTED", "Rename notes.txt.")
+	fake.SetChecks(head, forgefake.CheckRun{ID: 1, App: "github-actions", Name: "test", Status: "completed", Conclusion: "success"})
+
+	// The look that finds the checks passed marks the draft ready, which CAVU does
+	// only when no request waits for a run: the visitor's starts none.
+	within(t, 2*time.Minute, func() (bool, string) {
+		return !fake.Pulls()[0].Draft, s.read(task.ID, &got)
+	})
+
+	const asked, threaded = "E2E-REVIEW-0123456789", "E2E-THREAD-0123456789"
+
+	fake.SetPermission("maintainer", "write")
+	review := fake.Review(pull.Number, "maintainer", "CHANGES_REQUESTED", "Add one more line. "+asked)
+
+	var moved string
+
+	within(t, patience, func() (bool, string) {
+		b := s.read(task.ID, &got)
+		moved = tip(t, bare, pull.Head)
+
+		return moved != head || got.Status == "blocked", b
+	})
+	require.NotEqual(t, head, moved, "%+v", got)
+
+	fake.SetChecks(moved, forgefake.CheckRun{ID: 2, App: "github-actions", Name: "test", Status: "completed", Conclusion: "success"})
+	assert.Equal(t, head, gitrepo.Git(t, bare, "rev-parse", moved+"^"), "the follow-up's commit is on top of the head CAVU published")
+
+	// replies waits until the pull request holds n comments, or the task is
+	// blocked, and requires that it holds n.
+	replies := func(n int) []string {
+		var comments []string
+
+		within(t, patience, func() (bool, string) {
+			b := s.read(task.ID, &got)
+			comments = fake.Comments(pull.Number)
+
+			return len(comments) >= n || got.Status == "blocked", b
+		})
+		require.Len(t, comments, n, "%+v", got)
+
+		return comments
+	}
+
+	assert.Contains(t, replies(1)[0], answer1, "the reply carries the follow-up session's summary")
+
+	// The reviewer asks once more, in a thread on the line the follow-up added.
+	thread := fake.Thread(pull.Number, "maintainer", "notes.txt", 3, "Is this line needed? "+threaded)
+
+	assert.Contains(t, replies(2)[1], answer2, "the second reply carries the second session's summary")
+
+	within(t, time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.Status == "in_review" && got.Waiting != "", b
+	})
+	assert.Zero(t, got.Stop)
+	assert.True(t, got.PullRequest.Ready, "no reviewer's request waits for a follow-up run")
+	assert.Equal(t, moved, tip(t, bare, pull.Head), "the second follow-up pushed nothing")
+
+	// Each follow-up run is given the write account's newest request alone.
+	assert.Equal(t, []engine.RunStartedPayload{
+		{Reason: "initial"},
+		{Reason: "comments", Head: head, Requests: []string{review}},
+		{Reason: "comments", Head: moved, Requests: []string{thread.ID}},
+	}, payloads[engine.RunStartedPayload](t, s.events(task.ID), "run_started"))
+
+	calls := modelCalls(mock)
+	require.Len(t, calls, 5)
+	assert.True(t, bytes.Contains(calls[2].Body, []byte(asked)), "the first follow-up session gets the review")
+	assert.True(t, bytes.Contains(calls[4].Body, []byte(threaded)), "the second gets the thread")
+}
