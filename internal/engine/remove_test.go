@@ -44,7 +44,7 @@ func (h *harness) listed() []string {
 
 func TestRemoveProjectIsRefusedWhileATaskIsOpen(t *testing.T) {
 	// shadow starts a replay's shadow task of web, which Cancel clears like any other.
-	shadow := func(h *harness) int64 {
+	shadow := func(t *testing.T, h *harness) int64 {
 		t.Helper()
 
 		s, err := h.store.CreateTask(t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: "shadow", ReplayID: 1})
@@ -74,7 +74,7 @@ func TestRemoveProjectIsRefusedWhileATaskIsOpen(t *testing.T) {
 		h.secrets()
 		require.NoError(t, h.loop.Cancel(t.Context(), h.task.ID))
 
-		id := shadow(h)
+		id := shadow(t, h)
 
 		require.ErrorIs(t, h.loop.RemoveProject(t.Context(), h.task.ProjectID), engine.ErrRefused)
 		assert.Empty(t, h.runner.callsOf("remove-project"))
