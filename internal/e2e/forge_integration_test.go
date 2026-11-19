@@ -91,14 +91,16 @@ func (in *instance) forge() (*forgefake.Fake, string) {
 
 		w.WriteHeader(http.StatusOK)
 
-		down, _, err := http.NewResponseController(w).Hijack()
+		down, buffered, err := http.NewResponseController(w).Hijack()
 		if err != nil {
 			_ = up.Close()
 
 			return
 		}
 
-		go func() { _, _ = io.Copy(up, down); _ = up.Close() }()
+		// Hijack sends the 200 before it stops the server's read of the connection,
+		// so the client's first bytes may sit in the returned reader.
+		go func() { _, _ = io.Copy(up, buffered); _ = up.Close() }()
 		go func() { _, _ = io.Copy(down, up); _ = down.Close() }()
 	})}
 
