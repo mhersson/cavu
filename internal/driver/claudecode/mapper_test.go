@@ -518,9 +518,8 @@ func TestMapperEndpointFailures(t *testing.T) {
 	})
 }
 
-// TestMapperEndpointResults maps the result lines the pinned version wrote
-// against a mock endpoint, cut to the fields the mapper reads: an endpoint that
-// failed is told from one that refused.
+// TestMapperEndpointResults maps result lines in the shape the pinned version wrote against a mock
+// endpoint, cut to the fields the mapper reads. The 429 was not probed; the 403's whole stream maps to auth.
 func TestMapperEndpointResults(t *testing.T) {
 	for _, tc := range []struct{ name, fields, reason string }{
 		{"529", `"api_error_status":529,"result":"API Error: 529 mockapi: scripted 529."`, driver.ReasonEndpointFailed},

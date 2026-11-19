@@ -2000,14 +2000,14 @@ func TestLoopRetriesAFault(t *testing.T) {
 func TestLoopRetriesAFailedEndpoint(t *testing.T) {
 	// after moves h's clock by d, runs the task and returns the runner calls the run made.
 	after := func(h *harness, d time.Duration, want engine.Status) []string {
-		t.Helper()
+		h.t.Helper()
 		h.clock.Advance(d)
 
 		before := len(h.runner.calls)
 
-		status, err := h.run(t.Context())
-		require.NoError(t, err)
-		assert.Equal(t, want, status)
+		status, err := h.run(h.t.Context())
+		require.NoError(h.t, err)
+		assert.Equal(h.t, want, status)
 
 		return h.runner.trace()[before:]
 	}
