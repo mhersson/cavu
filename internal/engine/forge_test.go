@@ -341,6 +341,7 @@ func TestATakeoverEndsTheOpenRun(t *testing.T) {
 	stop := h.lastStop()
 	assert.Equal(t, engine.StopTakenOver, stop.Reason)
 	assert.Contains(t, stop.Explanation, "https://example.com/web/pull/7")
+	assert.Contains(t, stop.Explanation, "theirs", "the commit the look found")
 
 	ends := h.eventsOf(engine.RunEnded)
 	require.NotEmpty(t, ends)

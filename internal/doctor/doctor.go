@@ -49,7 +49,7 @@ type Deps struct {
 	ForgeToken   string
 	ForgeAppKey  string        // the secret forge_app_key
 	Forge        *forge.Client // the client the forge check mints and reads with
-	Project      *Project      // the project the forge check fetches; nil for none
+	Projects     []Project     // the projects the forge check fetches, in the store's order
 	Driver       driver.Driver
 
 	host host // nil drives the runtime; the unit tests set a fake
@@ -58,6 +58,7 @@ type Deps struct {
 // Project is what the forge check needs of one project.
 type Project struct {
 	ID                  int64
+	Name                string
 	RepoURL, BaseBranch string
 	Publish             bool // the switch publish
 }
@@ -96,7 +97,7 @@ type doctor struct {
 	scratch target           // its scratch container, when the image is there
 	err     error            // of reading the image or starting the box
 	config  engine.RunConfig // the settings and the credential, read as a run reads them
-	token   string           // the forge check's clone token, which an App mints
+	tokens  []string         // the forge checks' clone tokens, which an App mints
 	agent   proc.Target
 	spec    driver.Spec // a session in the agent phase, but its prompt and id
 	checks  []Check
@@ -132,11 +133,11 @@ func Run(ctx context.Context, d Deps) []Check {
 		_ = r.box.Destroy(ctx, false)
 	}
 
-	r.step(ctx, "forge", r.forge, "image", "settings")
+	r.forges(ctx)
 
 	// In key mode the session's token is a stand-in only this mask knows, and
-	// an App's token is the forge check's own.
-	mask := redact.New(d.Credential, d.ForgeToken, d.ForgeAppKey, r.spec.Auth.Token, r.token)
+	// an App's tokens are the forge checks' own.
+	mask := redact.New(append([]string{d.Credential, d.ForgeToken, d.ForgeAppKey, r.spec.Auth.Token}, r.tokens...)...)
 	for i := range r.checks {
 		r.checks[i].Detail, r.checks[i].Fix = mask(r.checks[i].Detail), mask(r.checks[i].Fix)
 	}
@@ -155,14 +156,25 @@ func ExitCode(checks []Check) int {
 }
 
 func (r *doctor) step(ctx context.Context, name string, check func(context.Context) Check, needs ...string) {
-	c := Check{Skipped: true}
-
-	if i := slices.IndexFunc(needs, func(n string) bool { return r.failed[n] }); i >= 0 {
-		c.Detail = "skipped: the " + needs[i] + " check did not pass"
-	} else {
+	c := r.skip(needs)
+	if !c.Skipped {
 		c = check(ctx)
 	}
 
+	r.add(name, c)
+}
+
+// skip is a skipped check naming the first of needs that did not pass, or the
+// zero Check when all passed.
+func (r *doctor) skip(needs []string) Check {
+	if i := slices.IndexFunc(needs, func(n string) bool { return r.failed[n] }); i >= 0 {
+		return Check{Skipped: true, Detail: "the " + needs[i] + " check did not pass"}
+	}
+
+	return Check{}
+}
+
+func (r *doctor) add(name string, c Check) {
 	c.Name = name
 	r.failed[name] = !c.OK
 	r.checks = append(r.checks, c)
@@ -213,7 +225,7 @@ func (r *doctor) run(ctx context.Context, argv ...string) (string, error) {
 // that it reaches nothing without sending a packet.
 func (r *doctor) noNetwork(ctx context.Context) Check {
 	if r.err == nil && !r.found {
-		return Check{Skipped: true, Detail: "skipped: the image is not built"}
+		return Check{Skipped: true, Detail: "the image is not built"}
 	}
 
 	out, err := r.run(ctx, "cat", "/proc/net/route")
@@ -397,35 +409,59 @@ func (r *doctor) endpointFix() string {
 	return "check endpoint_mode, endpoint_url, endpoint_auth_header, model_work and the secret endpoint_credential"
 }
 
-// forge fetches the project into its own mirror, with run and task id 0 and
-// the token a run's clone gets, then, when the project publishes, reads the
-// repository and the checks of the base head it fetched as the watch does.
-func (r *doctor) forge(ctx context.Context) Check {
+// forges runs the forge check once for each project, a line each.
+func (r *doctor) forges(ctx context.Context) {
 	a := r.config.Repo.Access
 	a.Token, a.AppKey = r.ForgeToken, r.ForgeAppKey
 
-	if a.Token == "" && a.AppID == 0 || r.Project == nil {
-		return Check{Skipped: true, Detail: "skipped: no forge credential or no project"}
+	if c := r.skip([]string{"image", "settings"}); c.Skipped {
+		r.add("forge", c)
+
+		return
 	}
 
+	if a.Token == "" && a.AppID == 0 || len(r.Projects) == 0 {
+		r.add("forge", Check{Skipped: true, Detail: "no credential for GitHub, or no project"})
+
+		return
+	}
+
+	for _, p := range r.Projects {
+		c := r.forge(ctx, p, a)
+		if c.Detail == "" {
+			c.Detail = p.Name
+		} else {
+			c.Detail = p.Name + ": " + c.Detail
+		}
+
+		r.add("forge", c)
+	}
+}
+
+// forge fetches the project into its own mirror, with run and task id 0 and
+// the token a run's clone gets, then, when the project publishes, reads the
+// repository and the checks of the base head it fetched as the watch does.
+func (r *doctor) forge(ctx context.Context, p Project, a engine.ForgeAccess) Check {
 	const fix = "check the secret forge_token, or the setting forge_app_id and the secret forge_app_key, and the project's repository address; " +
 		"a GitHub App must be granted Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read"
 
-	var err error
-	if r.token, err = runner.CloneToken(ctx, r.Forge, r.Project.RepoURL, a); err != nil {
-		return failed(err, fix)
-	}
+	token, err := runner.CloneToken(ctx, r.Forge, p.RepoURL, a)
+	r.tokens = append(r.tokens, token)
 
-	head, err := r.clone(ctx)
 	if err != nil {
 		return failed(err, fix)
 	}
 
-	if !r.Project.Publish {
+	head, err := r.clone(ctx, p, token)
+	if err != nil {
+		return failed(err, fix)
+	}
+
+	if !p.Publish {
 		return Check{OK: true}
 	}
 
-	repo, err := forge.ParseRepo(r.Project.RepoURL)
+	repo, err := forge.ParseRepo(p.RepoURL)
 	if err == nil {
 		err = r.Forge.Check(ctx, repo, forge.Access(a))
 	}
@@ -438,20 +474,28 @@ func (r *doctor) forge(ctx context.Context) Check {
 
 	switch {
 	case err != nil:
-		return failed(err, "grant a fine-grained personal access token read access to Actions and Commit statuses, "+
-			"or a GitHub App read access to Checks, Actions and Commit statuses; or turn the project's switch publish off")
+		return failed(err, grantRead(a)+"; or turn the project's switch publish off")
 	case jobs:
 		return Check{OK: true, Detail: "with this credential CAVU reads the jobs of GitHub Actions workflow runs and the commit " +
-			"statuses: a check reported only as a check run, by another app or by a workflow step, is not seen"}
+			"statuses: a check reported only as a check run, by another app or by a workflow step, is not seen; with a GitHub App, CAVU sees it"}
 	}
 
 	return Check{OK: true}
 }
 
-// clone clones the project in a sandbox of its own, which it destroys, and
+// grantRead is what the credential the instance holds needs to read checks.
+func grantRead(a engine.ForgeAccess) string {
+	if a.AppID == 0 {
+		return "grant the personal access token in the secret forge_token read access to Actions and Commit statuses"
+	}
+
+	return "grant the GitHub App read access to Checks, Actions and Commit statuses"
+}
+
+// clone clones p with token in a sandbox of its own, which it destroys, and
 // returns the base branch's head.
-func (r *doctor) clone(ctx context.Context) (string, error) {
-	b, err := r.host.open(r.Project.ID)
+func (r *doctor) clone(ctx context.Context, p Project, token string) (string, error) {
+	b, err := r.host.open(p.ID)
 	if err == nil {
 		err = b.Destroy(ctx, false)
 	}
@@ -464,7 +508,7 @@ func (r *doctor) clone(ctx context.Context) (string, error) {
 
 	if err = b.EnsureVolumes(ctx); err == nil {
 		head, err = b.Clone(ctx, sidecar.CloneRequest{
-			URL: r.Project.RepoURL, Token: r.token, BaseBranch: r.Project.BaseBranch, Branch: "cavu/doctor",
+			URL: p.RepoURL, Token: token, BaseBranch: p.BaseBranch, Branch: "cavu/doctor",
 			Name: r.Settings["commit_name"], Email: r.Settings["commit_email"],
 		})
 	}

@@ -169,7 +169,7 @@ func green(t *testing.T, mode string) (Deps, *fakeHost, *fakeDriver) {
 		Credential: credential,
 		CABundle:   bundle,
 		ForgeToken: forgeToken,
-		Project:    &Project{ID: 4, RepoURL: "https://forge.example/team/repo.git", BaseBranch: "main"},
+		Projects:   []Project{{ID: 4, Name: "web", RepoURL: "https://forge.example/team/repo.git", BaseBranch: "main"}},
 		Driver:     drv,
 		host:       h,
 	}, h, drv
@@ -229,7 +229,7 @@ func TestDoctorAllGreen(t *testing.T) {
 			assert.Empty(t, second.SessionID)
 
 			require.Len(t, h.clones, 1)
-			assert.Equal(t, d.Project.RepoURL, h.clones[0].URL)
+			assert.Equal(t, d.Projects[0].RepoURL, h.clones[0].URL)
 			assert.Equal(t, forgeToken, h.clones[0].Token)
 			assert.Equal(t, "main", h.clones[0].BaseBranch)
 		})
@@ -465,7 +465,7 @@ func onForge(t *testing.T, d *Deps) (*forgefake.Fake, string) {
 	require.NoError(t, err)
 
 	d.Forge = client
-	d.Project.RepoURL, d.Project.Publish = srv.URL+"/o/n", true
+	d.Projects[0].RepoURL, d.Projects[0].Publish = srv.URL+"/o/n", true
 
 	return fake, srv.URL + "/api/v3"
 }
@@ -504,7 +504,7 @@ func TestDoctorForgeReadsTheRepository(t *testing.T) {
 	t.Run("a personal access token, publish off", func(t *testing.T) {
 		d, h, _ := green(t, "key")
 		fake, _ := onForge(t, &d)
-		d.Project.Publish = false
+		d.Projects[0].Publish = false
 
 		assert.True(t, byName(t, Run(t.Context(), d))["forge"].OK)
 		require.Len(t, h.clones, 1)
@@ -538,7 +538,7 @@ func TestDoctorForgeReadsTheRepository(t *testing.T) {
 	t.Run("skipped without a credential or a project", func(t *testing.T) {
 		for name, edit := range map[string]func(*Deps){
 			"no credential": func(d *Deps) { d.ForgeToken = "" },
-			"no project":    func(d *Deps) { d.Project = nil },
+			"no project":    func(d *Deps) { d.Projects = nil },
 		} {
 			d, h, _ := green(t, "key")
 			edit(&d)
@@ -569,7 +569,7 @@ func TestForgeCheckReadsTheChecksOfTheBaseHead(t *testing.T) {
 			checks := Run(t.Context(), d)
 			forgeCheck := byName(t, checks)["forge"]
 			assert.True(t, forgeCheck.OK && !forgeCheck.Warning, "%+v", forgeCheck)
-			assert.Equal(t, tc.detail, forgeCheck.Detail != "", "%+v", forgeCheck)
+			assert.Equal(t, tc.detail, forgeCheck.Detail != d.Projects[0].Name, "%+v", forgeCheck)
 			assert.True(t, slices.ContainsFunc(paths(fake), func(p string) bool {
 				return strings.HasPrefix(p, "/api/v3/repos/o/n/commits/"+baseCommit+"/check-runs")
 			}), "both ways ask the check runs of the cloned commit first: %v", paths(fake))
@@ -579,23 +579,45 @@ func TestForgeCheckReadsTheChecksOfTheBaseHead(t *testing.T) {
 }
 
 func TestForgeCheckFailsForACredentialThatCannotReadChecks(t *testing.T) {
-	d, _, _ := green(t, "key")
-	fake, _ := onForge(t, &d)
-	fake.Deny(forgeToken, "checks", "actions")
+	// The first token the fake mints.
+	const appToken = "ghs_fake1"
 
-	checks := Run(t.Context(), d)
-	forgeCheck := byName(t, checks)["forge"]
-	assert.False(t, forgeCheck.OK)
-	assert.Equal(t, 1, ExitCode(checks))
+	fixes := map[string]string{}
 
-	for _, permission := range []string{"Actions", "Commit statuses"} {
-		assert.Contains(t, forgeCheck.Detail, permission)
+	for _, tc := range []struct {
+		name       string
+		credential func(*Deps)
+		denied     string
+		fix        []string
+	}{
+		{"a token", func(*Deps) {}, forgeToken, []string{"Actions", "Commit statuses", "publish"}},
+		{"an App", withApp, appToken, []string{"Checks", "Actions", "Commit statuses", "publish"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _ := green(t, "key")
+			fake, _ := onForge(t, &d)
+			tc.credential(&d)
+
+			fake.Deny(tc.denied, "checks", "actions")
+
+			checks := Run(t.Context(), d)
+			forgeCheck := byName(t, checks)["forge"]
+			assert.False(t, forgeCheck.OK)
+			assert.Equal(t, 1, ExitCode(checks))
+
+			for _, permission := range []string{"Actions", "Commit statuses"} {
+				assert.Contains(t, forgeCheck.Detail, permission)
+			}
+
+			for _, datum := range tc.fix {
+				assert.Contains(t, forgeCheck.Fix, datum)
+			}
+
+			fixes[tc.name] = forgeCheck.Fix
+		})
 	}
 
-	// An App's permissions, and the switch that turns the read off.
-	for _, datum := range []string{"Checks", "Actions", "Commit statuses", "publish"} {
-		assert.Contains(t, forgeCheck.Fix, datum)
-	}
+	assert.NotEqual(t, fixes["a token"], fixes["an App"])
 }
 
 // A GitHub App granted less than CAVU asks for fails at its token's mint, so
@@ -638,6 +660,110 @@ func TestDoctorMasksTheForgeCredential(t *testing.T) {
 		for _, secret := range []string{minted[0].Value, d.ForgeAppKey} {
 			assert.NotContains(t, c.Detail, secret)
 			assert.NotContains(t, c.Fix, secret)
+		}
+	}
+}
+
+// forgeLines are the forge checks, one for each project.
+func forgeLines(checks []Check) []Check {
+	return slices.DeleteFunc(slices.Clone(checks), func(c Check) bool { return c.Name != "forge" })
+}
+
+// withSecondProject adds the project api after web.
+func withSecondProject(d *Deps) {
+	d.Projects = append(d.Projects, Project{ID: 5, Name: "api", RepoURL: "https://forge.example/team/api.git", BaseBranch: "dev"})
+}
+
+func TestDoctorChecksTheForgeOfEveryProject(t *testing.T) {
+	t.Run("a line for each, naming it", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		withSecondProject(&d)
+
+		lines := forgeLines(Run(t.Context(), d))
+		require.Len(t, lines, 2)
+
+		for i, p := range d.Projects {
+			assert.True(t, lines[i].OK && !lines[i].Skipped, "%+v", lines[i])
+			assert.Contains(t, lines[i].Detail, p.Name)
+		}
+
+		require.Len(t, h.clones, 2)
+		assert.Equal(t, "https://forge.example/team/repo.git", h.clones[0].URL)
+		assert.Equal(t, "https://forge.example/team/api.git", h.clones[1].URL)
+		assert.Equal(t, "dev", h.clones[1].BaseBranch)
+	})
+
+	t.Run("one failing fails the doctor and the other is still checked", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		withSecondProject(&d)
+
+		h.cloneErr = func(r sidecar.CloneRequest) error {
+			if strings.HasSuffix(r.URL, "/repo.git") {
+				return errors.New("repository not found")
+			}
+
+			return nil
+		}
+
+		checks := Run(t.Context(), d)
+		lines := forgeLines(checks)
+		require.Len(t, lines, 2)
+		assert.False(t, lines[0].OK || lines[0].Skipped, "%+v", lines[0])
+		assert.Contains(t, lines[0].Detail, "web")
+		assert.Contains(t, lines[0].Detail, "repository not found")
+		assert.True(t, lines[1].OK && !lines[1].Skipped, "%+v", lines[1])
+		assert.Equal(t, 1, ExitCode(checks))
+	})
+
+	t.Run("a failed prerequisite is one skipped line", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		withSecondProject(&d)
+
+		h.found = false
+
+		lines := forgeLines(Run(t.Context(), d))
+		require.Len(t, lines, 1)
+		assert.True(t, lines[0].Skipped)
+		assert.Empty(t, h.clones)
+	})
+
+	t.Run("no credential is one skipped line", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		withSecondProject(&d)
+		d.ForgeToken = ""
+
+		lines := forgeLines(Run(t.Context(), d))
+		require.Len(t, lines, 1)
+		assert.True(t, lines[0].Skipped)
+		assert.Empty(t, h.clones)
+	})
+}
+
+// An App mints a token for each project's repository, and every one is masked.
+func TestDoctorMasksEveryProjectsMintedToken(t *testing.T) {
+	d, h, _ := green(t, "key")
+	fake, _ := onForge(t, &d)
+	withApp(&d)
+
+	second := d.Projects[0]
+	second.ID, second.Name = 5, "api"
+	second.RepoURL = strings.TrimSuffix(second.RepoURL, "/o/n") + "/o/m"
+	d.Projects = append(d.Projects, second)
+
+	h.cloneErr = func(r sidecar.CloneRequest) error {
+		return fmt.Errorf("fatal: https://x-access-token:%s@forge.example/o/n refused", r.Token)
+	}
+
+	checks := Run(t.Context(), d)
+
+	minted := fake.Tokens()
+	require.Len(t, minted, 2, "each repository gets a token of its own")
+	assert.Len(t, forgeLines(checks), 2)
+
+	for _, c := range checks {
+		for _, tok := range minted {
+			assert.NotContains(t, c.Detail, tok.Value)
+			assert.NotContains(t, c.Fix, tok.Value)
 		}
 	}
 }
