@@ -161,7 +161,7 @@ func refusedBoth(jobs bool, err error) error {
 	}
 
 	return fmt.Errorf("GitHub refused to show the commit's checks: a personal access token needs Actions and "+
-		"Commit statuses read, a GitHub App Checks, Actions and Commit statuses read: %w", err)
+		"Commit statuses read, a GitHub App needs Checks, Actions and Commit statuses read: %w", err)
 }
 
 func (c *Client) checkRuns(ctx context.Context, r Repo, token, sha string) ([]check, error) {
