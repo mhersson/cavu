@@ -103,7 +103,11 @@ func (s *Store) EventsAfter(ctx context.Context, afterID, taskID int64, limit in
 		limit = -1
 	}
 
-	return s.queryEvents(ctx, eventsSelect+`WHERE id > ? AND (? = 0 OR task_id = ?) ORDER BY id LIMIT ?`, afterID, taskID, taskID, limit)
+	if taskID == 0 {
+		return s.queryEvents(ctx, eventsSelect+`WHERE id > ? ORDER BY id LIMIT ?`, afterID, limit)
+	}
+
+	return s.queryEvents(ctx, eventsSelect+`WHERE task_id = ? AND id > ? ORDER BY id LIMIT ?`, taskID, afterID, limit)
 }
 
 // EventsOmitting returns the task's events but those of the given types, oldest first.
