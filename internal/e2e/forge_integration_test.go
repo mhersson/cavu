@@ -3,8 +3,8 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -120,6 +120,13 @@ func (in *instance) forge() (*forgefake.Fake, string) {
 	return fake, bare
 }
 
+// tip is the commit branch is at in the bare repository at bare, "" while it has none.
+func tip(t *testing.T, bare, branch string) string {
+	t.Helper()
+
+	return gitrepo.Git(t, bare, "for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+}
+
 func TestForgeTaskEndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -137,14 +144,8 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 
 	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &first)
 
-	read := func() string {
-		got = apiTask{}
-
-		return s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", first.ID), nil, http.StatusOK, &got)
-	}
-
 	within(t, patience, func() (bool, string) {
-		b := read()
+		b := s.read(first.ID, &got)
 
 		return len(fake.Pulls()) > 0 || got.Status == "blocked", b
 	})
@@ -154,7 +155,7 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 
 	// The head's check is set at once, so the watch's first looks find it running.
 	pull := pulls[0]
-	head := gitrepo.Git(t, bare, "for-each-ref", "--format=%(objectname)", "refs/heads/"+pull.Head)
+	head := tip(t, bare, pull.Head)
 	check := forgefake.CheckRun{ID: 1, App: "github-actions", Name: "test", Status: "in_progress"}
 	fake.SetChecks(head, check)
 
@@ -171,7 +172,7 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 	assert.Equal(t, want, line, "the text starts with CAVU's line for the task")
 
 	within(t, 2*time.Minute, func() (bool, string) {
-		b := read()
+		b := s.read(first.ID, &got)
 
 		return got.PullRequest != nil && got.PullRequest.Checks == "pending", b
 	})
@@ -184,7 +185,7 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 	fake.SetChecks(head, check)
 
 	within(t, 3*time.Minute, func() (bool, string) {
-		b := read()
+		b := s.read(first.ID, &got)
 
 		return got.PullRequest.Ready, b
 	})
@@ -209,7 +210,7 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 	fake.Merge(pull.Number)
 
 	within(t, 2*time.Minute, func() (bool, string) {
-		b := read()
+		b := s.read(first.ID, &got)
 
 		return got.Status == "done", b
 	})
@@ -241,4 +242,96 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 		return slices.ContainsFunc(started, func(e apiEvent) bool { return e.Type == "run_started" }), strings.Join(eventLines(started), "\n")
 	})
 	assert.Greater(t, idOf(t, started, "run_started"), events[merged].ID)
+}
+
+func TestForgeCIFixRound(t *testing.T) {
+	t.Parallel()
+
+	// The first run's work, then the fix session's: another line on top of it.
+	mock := mockapi.Start(t, []mockapi.Step{change, done, change, done})
+	in := setup(t, mock.HostURL())
+	fake, bare := in.forge()
+
+	// The setup passes only at the base commit, so a fix run set up at its head would stop.
+	in.ok("project", "add", "notes", "--repo", in.repo, "--verify", verify,
+		"--setup", `h=$(git rev-parse HEAD) && test "$h" = "$CAVU_BASE_COMMIT"`)
+	in.ok("project", "set", "notes", "--switch", "readiness=off", "--switch", "review=off")
+	in.ok("project", "check", "notes")
+
+	s := in.serve()
+
+	defer s.stop()
+
+	var task, got apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+
+	within(t, patience, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return len(fake.Pulls()) > 0 || got.Status == "blocked", b
+	})
+
+	pulls := fake.Pulls()
+	require.Len(t, pulls, 1, "%+v", got)
+
+	// The head's job fails at once. Its log is set first, so a look that finds
+	// the job failed also finds its log.
+	const planted = "E2E-JOB-LOG-0123456789"
+
+	fake.SetJobLog(1, "Run make test\nnotes_test: want "+planted+"\nError: Process completed with exit code 1.\n")
+
+	branch := pulls[0].Head
+	head := tip(t, bare, branch)
+	fake.SetChecks(head, forgefake.CheckRun{ID: 1, App: "github-actions", Run: 1, Name: "test", Status: "completed", Conclusion: "failure"})
+
+	var fixHead string
+
+	within(t, patience, func() (bool, string) {
+		b := s.read(task.ID, &got)
+		fixHead = tip(t, bare, branch)
+
+		return fixHead != head || got.Status == "blocked", b
+	})
+	require.NotEqual(t, head, fixHead, "%+v", got)
+
+	// The fix's job passes at once, so the look after its push finds it passed.
+	fake.SetChecks(fixHead, forgefake.CheckRun{ID: 2, App: "github-actions", Run: 2, Name: "test", Status: "completed", Conclusion: "success"})
+	assert.Equal(t, head, gitrepo.Git(t, bare, "rev-parse", fixHead+"^"), "the fix is a commit on top of the head CAVU published")
+
+	// That look marks the draft ready, and the next, a minute later, shows it ready.
+	within(t, 3*time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.PullRequest.Ready, b
+	})
+	assert.False(t, fake.Pulls()[0].Draft)
+
+	events := s.events(task.ID)
+	assert.Equal(t, []engine.RunStartedPayload{{Reason: "initial"}, {Reason: "ci_fix", Head: head}},
+		payloads[engine.RunStartedPayload](t, events, "run_started"))
+
+	sessions := payloads[engine.SessionStartedPayload](t, events, "session_started")
+	require.Len(t, sessions, 2)
+	assert.Equal(t, "fix_ci", sessions[1].Mode)
+	assert.True(t, sessions[1].Resume)
+	assert.Equal(t, sessions[0].SessionID, sessions[1].SessionID, "the fix resumes the first run's session")
+
+	var steps []string
+
+	for _, e := range events {
+		if e.Type == "run_started" || e.Type == "prepared" || e.Type == "stopped" {
+			steps = append(steps, e.Type)
+		}
+	}
+
+	assert.Equal(t, []string{"run_started", "prepared", "run_started", "prepared"}, steps, "each run's setup passed, and nothing stopped the task")
+
+	// The fix session's first call is the first to hold the failed job's log.
+	calls := modelCalls(mock)
+	require.Len(t, calls, 4)
+
+	for i, r := range calls[:3] {
+		assert.Equal(t, i == 2, bytes.Contains(r.Body, []byte(planted)), "model call %d holds the job's log", i+1)
+	}
 }

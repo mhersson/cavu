@@ -331,6 +331,16 @@ type apiTask struct {
 	}
 }
 
+// read reads the task over REST into got, which it zeroes first, and returns
+// the answer's body.
+func (s *server) read(id int64, got *apiTask) string {
+	s.in.t.Helper()
+
+	*got = apiTask{}
+
+	return s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, got)
+}
+
 // rested polls the task over REST until it rests, in_review or blocked, and
 // returns it.
 func (s *server) rested(id int64) apiTask {
@@ -340,8 +350,7 @@ func (s *server) rested(id int64) apiTask {
 	var got apiTask
 
 	within(t, patience, func() (bool, string) {
-		got = apiTask{}
-		b := s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, &got)
+		b := s.read(id, &got)
 
 		return got.Status == "in_review" || got.Status == "blocked", b
 	})
