@@ -45,7 +45,7 @@ func NeedsYou(s Snapshot) bool {
 		return f.OpenStop.Action != ClearNone && !f.retriesFault(s.Caps)
 	case StatusInReview:
 		if f.PR == nil {
-			return s.Task.ReplayID == 0
+			return !f.RunOpen && s.Task.ReplayID == 0
 		}
 
 		return PullRequestOf(f, s.Watch.NoCI).Ready

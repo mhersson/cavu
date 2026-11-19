@@ -251,6 +251,7 @@ func TestNeedsYou(t *testing.T) {
 		{name: "ready pull request", facts: inReview(engine.ChecksPassed), want: true},
 		{name: "pull request with pending checks", facts: inReview(engine.ChecksPending)},
 		{name: "in review with no pull request", facts: unpublished, want: true},
+		{name: "exported with the run still open and no pull request", facts: engine.Facts{Started: true, Exported: true, RunOpen: true}},
 		{name: "a replay's shadow in review with no pull request", facts: unpublished, replay: 4},
 		{name: "draft", facts: engine.Facts{}},
 		{name: "queued", facts: engine.Facts{Started: true}},
