@@ -322,8 +322,8 @@ type apiTask struct {
 	Requester   string
 	Stop        struct{ Reason, Explanation, Action string }
 	PullRequest *struct {
-		State, Checks string
-		Ready         bool
+		State, Checks, Head string
+		Ready               bool
 	} `json:"pull_request"`
 	Budget struct {
 		USD    float64

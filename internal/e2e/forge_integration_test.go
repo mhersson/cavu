@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -125,6 +126,19 @@ func tip(t *testing.T, bare, branch string) string {
 	t.Helper()
 
 	return gitrepo.Git(t, bare, "for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+}
+
+// pushOutside commits a file on branch in a clone of the bare repository at
+// bare, as a person does outside CAVU, pushes it there and returns the commit.
+func pushOutside(t *testing.T, bare, branch string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	gitrepo.Git(t, dir, "clone", "-q", "--branch", branch, bare, ".")
+	commit := gitrepo.Commit(t, dir, map[string]string{"person.txt": "a person's line\n"}, "docs(person): add a line")
+	gitrepo.Git(t, dir, "push", "-q", "origin", branch)
+
+	return commit
 }
 
 // pulled waits until the fake holds a pull request, or task id is blocked,
@@ -440,4 +454,95 @@ func TestForgeReviewCommentRun(t *testing.T) {
 	require.Len(t, calls, 5)
 	assert.True(t, bytes.Contains(calls[2].Body, []byte(asked)), "the first follow-up session gets the review")
 	assert.True(t, bytes.Contains(calls[4].Body, []byte(threaded)), "the second gets the thread")
+}
+
+func TestForgeTakenOver(t *testing.T) {
+	t.Parallel()
+
+	mock := mockapi.Start(t, []mockapi.Step{change, done})
+	in := setup(t, mock.HostURL())
+	fake, bare := in.forge()
+	s := in.serve()
+
+	defer s.stop()
+
+	s.project("notes", nil, map[string]bool{"readiness": false, "review": false})
+
+	var task, got apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+
+	pull := s.pulled(fake, task.ID)
+	theirs := pushOutside(t, bare, pull.Head)
+
+	within(t, 2*time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.Status == "blocked", b
+	})
+	require.Equal(t, "taken_over", got.Stop.Reason, "%+v", got)
+
+	// The look after the stop is CAVU's next action: it finds the merge.
+	fake.Merge(pull.Number)
+
+	within(t, 2*time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.Status == "done", b
+	})
+	assert.Equal(t, theirs, tip(t, bare, pull.Head), "CAVU pushed nothing over the person's commit")
+}
+
+func TestForgeResolvedConflictTakesOneRetry(t *testing.T) {
+	t.Parallel()
+
+	mock := mockapi.Start(t, []mockapi.Step{change, done})
+	in := setup(t, mock.HostURL())
+	fake, bare := in.forge()
+	s := in.serve()
+
+	defer s.stop()
+
+	s.project("notes", nil, map[string]bool{"readiness": false, "review": false})
+
+	var task, got apiTask
+
+	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
+
+	pull := s.pulled(fake, task.ID)
+	fake.Conflict(pull.Number, true)
+
+	within(t, 2*time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.Status == "blocked", b
+	})
+	require.Equal(t, "conflict", got.Stop.Reason, "%+v", got)
+
+	// A person resolves the conflict with a commit whose checks pass, and retries
+	// at once, without waiting for CAVU to look.
+	theirs := pushOutside(t, bare, pull.Head)
+	fake.SetChecks(theirs, forgefake.CheckRun{ID: 1, App: "github-actions", Name: "test", Status: "completed", Conclusion: "success"})
+	fake.Conflict(pull.Number, false)
+	s.call(http.MethodPost, fmt.Sprintf("/api/tasks/%d/actions", task.ID), map[string]string{"action": "retry"}, http.StatusOK, nil)
+
+	// The look that gives CAVU the person's commit finds no stop and marks the draft ready.
+	within(t, 2*time.Minute, func() (bool, string) {
+		ready := !fake.Pulls()[0].Draft
+
+		return ready, s.read(task.ID, &got)
+	})
+	assert.Equal(t, theirs, got.PullRequest.Head, "CAVU watches from the person's commit")
+
+	fake.Merge(pull.Number)
+
+	within(t, 2*time.Minute, func() (bool, string) {
+		b := s.read(task.ID, &got)
+
+		return got.Status == "done", b
+	})
+
+	stops := payloads[engine.StoppedPayload](t, s.events(task.ID), "stopped")
+	require.Len(t, stops, 1)
+	assert.Equal(t, "conflict", stops[0].Reason)
 }
