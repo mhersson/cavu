@@ -300,24 +300,56 @@ func fileExists(path string) bool {
 func TestLaunchdInstall(t *testing.T) {
 	const printCmd, target = "launchctl print gui/501/com.github.mhersson.cavu", "gui/501/com.github.mhersson.cavu"
 
-	for _, loaded := range []bool{true, false} {
-		t.Run(map[bool]string{true: "loaded", false: "not loaded"}[loaded], func(t *testing.T) {
-			home := host(t, "/bin")
-			f := &fake{fail: map[string]bool{printCmd: !loaded}}
+	install := func(t *testing.T, f *fake) string {
+		t.Helper()
 
-			path, _, err := Manager{OS: "darwin", UID: 501, Run: f.run}.Install(t.Context(), "/usr/local/bin/cavu", "/srv/cavu", false)
-			require.NoError(t, err)
+		path, _, err := Manager{OS: "darwin", UID: 501, Run: f.run}.Install(t.Context(), "/usr/local/bin/cavu", "/srv/cavu", false)
+		require.NoError(t, err)
 
-			want := [][]string{strings.Fields(dockerInspect), strings.Fields(printCmd)}
-			if loaded {
-				want = append(want, []string{"launchctl", "bootout", target})
-			}
-
-			want = append(want, []string{"launchctl", "bootstrap", "gui/501", path})
-			assert.Equal(t, want, f.calls)
-			assert.Equal(t, filepath.Join(home, "Library", "LaunchAgents", "com.github.mhersson.cavu.plist"), path)
-		})
+		return path
 	}
+
+	t.Run("not loaded", func(t *testing.T) {
+		home := host(t, "/bin")
+		f := &fake{fail: map[string]bool{printCmd: true}}
+
+		path := install(t, f)
+
+		assert.Equal(t, [][]string{
+			strings.Fields(dockerInspect), strings.Fields(printCmd), {"launchctl", "bootstrap", "gui/501", path},
+		}, f.calls)
+		assert.Equal(t, filepath.Join(home, "Library", "LaunchAgents", "com.github.mhersson.cavu.plist"), path)
+		assert.DirExists(t, filepath.Join(home, "Library", "Logs"))
+	})
+
+	t.Run("loaded and changed", func(t *testing.T) {
+		host(t, "/bin")
+
+		path := install(t, &fake{fail: map[string]bool{printCmd: true}})
+		require.NoError(t, os.WriteFile(path, []byte("old"), 0o644))
+
+		f := &fake{}
+		install(t, f)
+
+		assert.Equal(t, [][]string{
+			strings.Fields(dockerInspect), strings.Fields(printCmd),
+			{"launchctl", "bootout", target},
+			{"launchctl", "bootstrap", "gui/501", path},
+		}, f.calls)
+	})
+
+	t.Run("loaded and unchanged", func(t *testing.T) {
+		host(t, "/bin")
+
+		install(t, &fake{fail: map[string]bool{printCmd: true}})
+
+		f := &fake{}
+		install(t, f)
+
+		assert.Equal(t, [][]string{
+			strings.Fields(dockerInspect), strings.Fields(printCmd), {"launchctl", "kickstart", "-k", target},
+		}, f.calls)
+	})
 }
 
 func TestLaunchdRefusesLinger(t *testing.T) {

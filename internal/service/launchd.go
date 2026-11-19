@@ -28,16 +28,33 @@ func (m Manager) installAgent(ctx context.Context, home, binary, dataDir string,
 	}
 
 	path := agentPath(home)
+	logs := filepath.Join(home, "Library", "Logs")
+
+	if err := os.MkdirAll(logs, 0o755); err != nil { //nolint:gosec // G301: the Logs directory's convention
+		return path, false, err
+	}
+
 	env := m.environment(ctx, dataDir)
 	env["HOME"] = home
 
-	changed, err := write(path, renderAgent(binary, env, filepath.Join(home, "Library", "Logs", "cavu.log")))
+	changed, err := write(path, renderAgent(binary, env, filepath.Join(logs, "cavu.log")))
 	if err != nil {
 		return path, false, err
 	}
 
-	if err := m.bootout(ctx); err != nil {
-		return path, changed, err
+	target := m.domain() + "/" + label
+	_, printErr := m.Run(ctx, "launchctl", "print", target)
+	loaded := printErr == nil
+
+	// An upgrade leaves the text unchanged, so a loaded agent restarts in place.
+	if loaded && !changed {
+		return path, changed, m.run(ctx, []string{"launchctl", "kickstart", "-k", target})
+	}
+
+	if loaded {
+		if err := m.run(ctx, []string{"launchctl", "bootout", target}); err != nil {
+			return path, changed, err
+		}
 	}
 
 	return path, changed, m.run(ctx, []string{"launchctl", "bootstrap", m.domain(), path})
