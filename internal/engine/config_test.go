@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -322,6 +323,40 @@ func TestProjectSwitchesDefaults(t *testing.T) {
 	assert.Equal(t, map[string]bool{
 		"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true,
 	}, engine.ProjectSwitches(store.Project{}))
+}
+
+func TestSettingDefaultsValues(t *testing.T) {
+	defaults := engine.SettingDefaults()
+	assert.ElementsMatch(t, engine.SettableKeys(), slices.Collect(maps.Keys(defaults)))
+
+	want := map[string]string{
+		"concurrency": "3", "ci_timeout_minutes": "120", "listen_address": "127.0.0.1:7117",
+		"verify_timeout_minutes": "10", "task_max_turns": "1000", "task_timeout_minutes": "300",
+	}
+	for k, v := range defaults {
+		assert.Equal(t, want[k], v, k)
+	}
+}
+
+// A default served is what a run reads with the key unset.
+func TestADefaultIsWhatARunReads(t *testing.T) {
+	defaults := engine.SettingDefaults()
+
+	concurrency, err := engine.Concurrency(map[string]string{})
+	require.NoError(t, err)
+	assert.Equal(t, strconv.Itoa(concurrency), defaults["concurrency"])
+
+	cfg, err := engine.ReadSettings(map[string]string{
+		"instance_id": "i", "endpoint_mode": "subscription", "model_work": "m", "commit_name": "n", "commit_email": "e",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, strconv.Itoa(int(cfg.Verify.Timeout/time.Minute)), defaults["verify_timeout_minutes"])
+
+	h := newHarness(t)
+	s, err := h.loop.Snapshot(t.Context(), h.task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, strconv.Itoa(s.Limits.Turns), defaults["task_max_turns"])
+	assert.Equal(t, strconv.Itoa(int(s.Limits.SessionTime/time.Minute)), defaults["task_timeout_minutes"])
 }
 
 func TestSettingsLimit(t *testing.T) {

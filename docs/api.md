@@ -134,14 +134,16 @@ The others are the server's:
 
 ### `GET /api/settings`
 
-Answers 200 with every key `cavu settings set` takes whose value is not empty, and whether each instance secret is set:
+Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every settable key's default and every switch's default:
 
 ```json
 {"settings": {"endpoint_mode": "subscription", "model_work": "sonnet"},
- "secrets": {"endpoint_credential": true, "forge_token": false, "forge_app_key": false}}
+ "secrets": {"endpoint_credential": true, "forge_token": false, "forge_app_key": false},
+ "defaults": {"concurrency": "3", "verify_timeout_minutes": "10", "model_review": "", "...": "..."},
+ "switches": {"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true}}
 ```
 
-A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given.
+A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default.
 
 ### `PATCH /api/settings`
 
