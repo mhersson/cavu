@@ -127,6 +127,26 @@ func tip(t *testing.T, bare, branch string) string {
 	return gitrepo.Git(t, bare, "for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
 }
 
+// pulled waits until the fake holds a pull request, or task id is blocked,
+// requires that it holds one, and returns it.
+func (s *server) pulled(fake *forgefake.Fake, id int64) forgefake.Pull {
+	t := s.in.t
+	t.Helper()
+
+	var got apiTask
+
+	within(t, patience, func() (bool, string) {
+		b := s.read(id, &got)
+
+		return len(fake.Pulls()) > 0 || got.Status == "blocked", b
+	})
+
+	pulls := fake.Pulls()
+	require.Len(t, pulls, 1, "%+v", got)
+
+	return pulls[0]
+}
+
 func TestForgeTaskEndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -144,17 +164,8 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 
 	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &first)
 
-	within(t, patience, func() (bool, string) {
-		b := s.read(first.ID, &got)
-
-		return len(fake.Pulls()) > 0 || got.Status == "blocked", b
-	})
-
-	pulls := fake.Pulls()
-	require.Len(t, pulls, 1, "%+v", got)
-
 	// The head's check is set at once, so the watch's first looks find it running.
-	pull := pulls[0]
+	pull := s.pulled(fake, first.ID)
 	head := tip(t, bare, pull.Head)
 	check := forgefake.CheckRun{ID: 1, App: "github-actions", Name: "test", Status: "in_progress"}
 	fake.SetChecks(head, check)
@@ -266,14 +277,7 @@ func TestForgeCIFixRound(t *testing.T) {
 
 	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
 
-	within(t, patience, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return len(fake.Pulls()) > 0 || got.Status == "blocked", b
-	})
-
-	pulls := fake.Pulls()
-	require.Len(t, pulls, 1, "%+v", got)
+	branch := s.pulled(fake, task.ID).Head
 
 	// The head's job fails at once. Its log is set first, so a look that finds
 	// the job failed also finds its log.
@@ -281,7 +285,6 @@ func TestForgeCIFixRound(t *testing.T) {
 
 	fake.SetJobLog(1, "Run make test\nnotes_test: want "+planted+"\nError: Process completed with exit code 1.\n")
 
-	branch := pulls[0].Head
 	head := tip(t, bare, branch)
 	fake.SetChecks(head, forgefake.CheckRun{ID: 1, App: "github-actions", Run: 1, Name: "test", Status: "completed", Conclusion: "failure"})
 
@@ -327,11 +330,13 @@ func TestForgeCIFixRound(t *testing.T) {
 
 	assert.Equal(t, []string{"run_started", "prepared", "run_started", "prepared"}, steps, "each run's setup passed, and nothing stopped the task")
 
-	// The fix session's first call is the first to hold the failed job's log.
+	// Each setup passed at the base it was given, and both runs were given main's commit.
+	base := tip(t, bare, "main")
+	for _, p := range payloads[engine.PreparedPayload](t, events, "prepared") {
+		assert.Equal(t, base, p.BaseCommit)
+	}
+
 	calls := modelCalls(mock)
 	require.Len(t, calls, 4)
-
-	for i, r := range calls[:3] {
-		assert.Equal(t, i == 2, bytes.Contains(r.Body, []byte(planted)), "model call %d holds the job's log", i+1)
-	}
+	assert.True(t, bytes.Contains(calls[2].Body, []byte(planted)), "the fix session's first call holds the failed job's log")
 }
