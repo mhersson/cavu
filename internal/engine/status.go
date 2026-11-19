@@ -34,14 +34,36 @@ func StatusOf(f Facts) Status {
 	}
 }
 
+// NeedsYou reports whether a task waits for a person: a stop that only a person
+// clears or a fault past its retries, a ready pull request, or a change no
+// publish carried out. It reads facts and caps and chooses nothing.
+func NeedsYou(s Snapshot) bool {
+	f := s.Facts
+
+	switch StatusOf(f) {
+	case StatusBlocked:
+		return f.OpenStop.Action != ClearNone && !f.retriesFault(s.Caps)
+	case StatusInReview:
+		if f.PR == nil {
+			return !f.RunOpen && s.Task.ReplayID == 0
+		}
+
+		return PullRequestOf(f, s.Watch.NoCI).Ready
+	default:
+		return false
+	}
+}
+
 // PullRequest is a task's pull request as a person sees it.
 type PullRequest struct {
-	Number            int
-	URL, Branch, Head string // Head is the pull request's head as CAVU has it
-	State             string // PROpen, PRMerged or PRClosed as the newest look has it; PROpen before any look
-	Ready             bool   // open, no draft, checks passed (or none, with no CI), and the task waits for a person, not for a follow-up run
-	Checks            string // a Checks* value of the head; "" until a look showed it
-	Failed            []string
+	Number int      `json:"number"`
+	URL    string   `json:"url"`
+	Branch string   `json:"branch"`
+	Head   string   `json:"head"`   // the pull request's head as CAVU has it
+	State  string   `json:"state"`  // PROpen, PRMerged or PRClosed as the newest look has it; PROpen before any look
+	Ready  bool     `json:"ready"`  // open, no draft, checks passed (or none, with no CI), and the task waits for a person, not for a follow-up run
+	Checks string   `json:"checks"` // a Checks* value of the head; "" until a look showed it
+	Failed []string `json:"failed_checks"`
 }
 
 // PullRequestOf reads the task's pull request, nil before its first publish.

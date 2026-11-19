@@ -28,8 +28,8 @@ type Pause struct {
 
 // Dep is one dependency of a task, with where it stands.
 type Dep struct {
-	TaskID int64
-	Status Status
+	TaskID int64  `json:"id"`
+	Status Status `json:"status"`
 }
 
 // Snapshot is a task at one moment, as Decide sees it.
@@ -220,7 +220,7 @@ func decide(s Snapshot) Action {
 
 	resumeWhy := "A person asked the agent to carry on."
 
-	if (f.stoppedFor(StopSandbox) || f.OpenStop != nil && f.OpenStop.Fault) && f.Faults <= s.Caps.FaultRetries {
+	if f.retriesFault(s.Caps) {
 		backoff := firstFaultWait
 		if f.Faults > 1 {
 			backoff = secondFaultWait
@@ -621,6 +621,11 @@ func sessionStop(sess *SessionFact, s Snapshot) (Action, bool) {
 
 func (f Facts) stoppedFor(reason string) bool {
 	return f.OpenStop != nil && f.OpenStop.Reason == reason
+}
+
+// retriesFault reports a runner or endpoint fault Decide still retries after a pause.
+func (f Facts) retriesFault(c Caps) bool {
+	return (f.stoppedFor(StopSandbox) || f.OpenStop != nil && f.OpenStop.Fault) && f.Faults <= c.FaultRetries
 }
 
 func (f Facts) resumedFrom(reason string) bool {

@@ -2074,7 +2074,7 @@ func TestDependencies(t *testing.T) {
 		h.t.Helper()
 		h.withBaseline()
 
-		b, err := engine.AddTask(h.t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{h.task.ID})
+		b, err := h.loop.AddTask(h.t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{h.task.ID}, false)
 		require.NoError(h.t, err)
 		require.NoError(h.t, h.loop.Start(h.t.Context(), b.ID))
 

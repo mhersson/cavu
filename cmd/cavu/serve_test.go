@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -119,6 +120,62 @@ func TestServeStartsDrivesAndStops(t *testing.T) {
 	}}, fake.runner.releases, "the run in flight is released with its volumes kept")
 
 	require.NoError(t, a.lock(roleVerb), "the lock is free")
+}
+
+func TestServeGivesTheEndOfAnotherTasksUsageLimit(t *testing.T) {
+	dir, limited, _ := runSetup(t)
+	reset := time.Now().Add(time.Hour).Truncate(time.Second).UTC()
+
+	seedEvents(t, dir, limited, nil, event(engine.TaskStarted, "user", struct{}{}), event(engine.Stopped, "engine",
+		engine.StoppedPayload{Reason: engine.StopUsageLimit, Explanation: "limit", Action: engine.ClearNone, ResetsAt: reset}))
+
+	held := addTask(t, dir, "Add a footer")
+	seedEvents(t, dir, held, nil, event(engine.TaskStarted, "user", struct{}{}))
+
+	cavuIn(t, dir, "settings", "set", "listen_address", "127.0.0.1:0")
+	token := strings.TrimSpace(cavuIn(t, dir, "token", "add", "test"))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	out, done := &syncBuffer{}, make(chan error, 1)
+
+	go func() { done <- runServe(ctx, []string{"--data-dir", dir}, nil, out, &syncBuffer{}) }()
+
+	require.Eventually(t, func() bool { return serveURL(out.String()) != "" }, within, time.Millisecond)
+
+	var got struct {
+		Waiting      string
+		WaitingUntil *string `json:"waiting_until"`
+	}
+
+	// The scheduler's first pass reads the other task's stop.
+	require.Eventually(t, func() bool {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, serveURL(out.String())+"/api/tasks/"+held, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+
+		return got.Waiting != ""
+	}, within, 10*time.Millisecond)
+
+	assert.Equal(t, new(reset.Format(time.RFC3339)), got.WaitingUntil, "the held task waits until the other task's limit resets")
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(within):
+		require.FailNow(t, "the verb did not end")
+	}
 }
 
 func TestServeRefusedWhenLocked(t *testing.T) {

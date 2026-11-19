@@ -214,3 +214,57 @@ func TestChangeOf(t *testing.T) {
 		})
 	}
 }
+
+func TestNeedsYou(t *testing.T) {
+	stopped := func(reason, action string, fault bool) engine.Facts {
+		return engine.Facts{Started: true, OpenStop: &engine.StopFact{Reason: reason, Action: action, Fault: fault}}
+	}
+	faults := func(f engine.Facts, n int) engine.Facts {
+		f.Faults = n
+
+		return f
+	}
+	inReview := func(checks string) engine.Facts {
+		f := pullRequest(&engine.Observation{State: engine.PROpen, Head: "h2", Checks: checks})
+		f.Started, f.Exported = true, true
+
+		return f
+	}
+	unpublished := engine.Facts{Started: true, Exported: true}
+
+	tests := []struct {
+		name   string
+		facts  engine.Facts
+		replay int64
+		want   bool
+	}{
+		{name: "question", facts: stopped(engine.StopQuestion, engine.ClearAnswer, false), want: true},
+		{name: "verify failed", facts: stopped(engine.StopVerifyFailed, engine.ClearRetry, false), want: true},
+		{name: "checks failed", facts: stopped(engine.StopCIFailed, engine.ClearRetry, false), want: true},
+		{name: "dependency", facts: stopped(engine.StopDependency, engine.ClearRetry, false), want: true},
+		{name: "usage limit", facts: stopped(engine.StopUsageLimit, engine.ClearNone, false)},
+		{name: "sandbox within the retries", facts: faults(stopped(engine.StopSandbox, engine.ClearRetry, false), 2)},
+		{name: "sandbox past the retries", facts: faults(stopped(engine.StopSandbox, engine.ClearRetry, false), 3), want: true},
+		{name: "endpoint failed within the retries", facts: faults(stopped(engine.StopEndpoint, engine.ClearRetry, true), 2)},
+		{name: "endpoint failed past the retries", facts: faults(stopped(engine.StopEndpoint, engine.ClearRetry, true), 3), want: true},
+		{name: "endpoint refused", facts: stopped(engine.StopEndpoint, engine.ClearRetry, false), want: true},
+		{name: "ready pull request", facts: inReview(engine.ChecksPassed), want: true},
+		{name: "pull request with pending checks", facts: inReview(engine.ChecksPending)},
+		{name: "in review with no pull request", facts: unpublished, want: true},
+		{name: "exported with the run still open and no pull request", facts: engine.Facts{Started: true, Exported: true, RunOpen: true}},
+		{name: "a replay's shadow in review with no pull request", facts: unpublished, replay: 4},
+		{name: "draft", facts: engine.Facts{}},
+		{name: "queued", facts: engine.Facts{Started: true}},
+		{name: "running", facts: engine.Facts{Started: true, RunOpen: true}},
+		{name: "done", facts: engine.Facts{Started: true, Exported: true, Merged: true}},
+		{name: "cancelled", facts: engine.Facts{Started: true, Cancelled: true}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := engine.Snapshot{Facts: tc.facts, Caps: engine.Caps{FaultRetries: 2}}
+			s.Task.ReplayID = tc.replay
+			assert.Equal(t, tc.want, engine.NeedsYou(s))
+		})
+	}
+}

@@ -92,10 +92,12 @@ func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, s
 	s := &engine.Scheduler{Loop: a.loop(rt), Checks: true, OnError: func(taskID int64, err error) {
 		slog.Error("scheduler error", "task", taskID, "err", err)
 	}}
+	l := a.loop(rt)
+	l.Paused = s.Paused
 	stopped := make(chan struct{})
 	srv := &http.Server{
 		Handler: api.New(api.Deps{
-			Store: a.store, Vault: a.vault, Auth: auth.NewService(a.store, time.Now), Loop: a.loop(rt),
+			Store: a.store, Vault: a.vault, Auth: auth.NewService(a.store, time.Now), Loop: l,
 			Nudge: s.Nudge, Waiting: s.Waiting, Version: version, Stop: stopped,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,

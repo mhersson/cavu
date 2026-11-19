@@ -1,6 +1,6 @@
 // Package engine holds the task lifecycle: a task's state is what its
 // append-only events add up to, and each next action is decided from that
-// state alone.
+// state alone. It also gives what a person reads about a task.
 package engine
 
 import "time"

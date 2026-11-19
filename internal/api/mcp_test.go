@@ -213,6 +213,23 @@ func TestMCPCancelAndRead(t *testing.T) {
 	}}, tool(t, cs, "list_projects", nil))
 }
 
+func TestMCPListsTheTasksThatNeedYou(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	asked := f.task(t, `{"project": "site", "title": "Pick a colour"}`)
+	f.ask(t, asked, "Which colour?")
+	f.task(t, `{"project": "site", "title": "Add a footer"}`)
+
+	list := tool(t, f.client(t), "list_tasks", map[string]any{"needs_you": true})
+	require.Len(t, list["tasks"], 1)
+	assert.EqualValues(t, asked, list["tasks"].([]any)[0].(map[string]any)["id"])
+
+	status, body := f.call(t, "GET /api/tasks?needs_you=true", "")
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, object(t, body), list, "the list as REST shows it")
+}
+
 func TestMCPGetTaskShowsTheSame(t *testing.T) {
 	f := newServer(t)
 	f.addProject(t, site)

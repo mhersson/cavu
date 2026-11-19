@@ -29,7 +29,7 @@ func TestAddTaskRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 
-			got, err := engine.AddTask(t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: tc.title}, nil)
+			got, err := h.loop.AddTask(t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: tc.title}, nil, false)
 
 			tasks, listErr := h.store.Tasks(t.Context(), false)
 			require.NoError(t, listErr)
@@ -54,7 +54,7 @@ func TestAddTaskDependencies(t *testing.T) {
 		h := newHarness(t)
 		d := h.draft()
 
-		got, err := engine.AddTask(t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{d.ID, h.task.ID})
+		got, err := h.loop.AddTask(t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{d.ID, h.task.ID}, false)
 		require.NoError(t, err)
 		assert.Equal(t, []int64{h.task.ID, d.ID}, h.deps(got.ID))
 	})
@@ -62,7 +62,7 @@ func TestAddTaskDependencies(t *testing.T) {
 	t.Run("a dependency on a missing task is refused", func(t *testing.T) {
 		h := newHarness(t)
 
-		_, err := engine.AddTask(t.Context(), h.store, store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{h.task.ID, 999})
+		_, err := h.loop.AddTask(t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: "B"}, []int64{h.task.ID, 999}, false)
 		require.ErrorIs(t, err, engine.ErrRefused)
 
 		tasks, err := h.store.Tasks(t.Context(), false)
@@ -455,4 +455,38 @@ func TestDoneIsRefusedWithAPullRequest(t *testing.T) {
 
 	require.ErrorIs(t, h.loop.Done(t.Context(), h.task.ID), engine.ErrRefused)
 	assert.Equal(t, before, h.recorded(h.task.ID))
+}
+
+func TestAddTaskStart(t *testing.T) {
+	t.Run("a project that cannot run refuses a start and stores nothing", func(t *testing.T) {
+		h := newHarness(t)
+
+		_, err := h.loop.AddTask(t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: "B"}, nil, true)
+		require.ErrorIs(t, err, engine.ErrRefused)
+		require.ErrorIs(t, err, engine.ErrNoBaseline)
+
+		tasks, err := h.store.Tasks(t.Context(), false)
+		require.NoError(t, err)
+		assert.Len(t, tasks, 1, "nothing is stored")
+	})
+
+	t.Run("a project that cannot run still takes a draft", func(t *testing.T) {
+		h := newHarness(t)
+
+		got, err := h.loop.AddTask(t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: "B"}, nil, false)
+		require.NoError(t, err)
+		assert.Empty(t, h.recorded(got.ID))
+	})
+
+	t.Run("a runnable project stores the task and starts it", func(t *testing.T) {
+		h := newHarness(t)
+		h.withBaseline()
+
+		got, err := h.loop.AddTask(t.Context(), store.Task{ProjectID: h.task.ProjectID, Title: "B"}, nil, true)
+		require.NoError(t, err)
+
+		events := h.recorded(got.ID)
+		require.Len(t, events, 1)
+		assert.Equal(t, engine.TaskStarted, events[0].Type)
+	})
 }
