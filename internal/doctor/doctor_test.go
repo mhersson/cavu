@@ -579,23 +579,45 @@ func TestForgeCheckReadsTheChecksOfTheBaseHead(t *testing.T) {
 }
 
 func TestForgeCheckFailsForACredentialThatCannotReadChecks(t *testing.T) {
-	d, _, _ := green(t, "key")
-	fake, _ := onForge(t, &d)
-	fake.Deny(forgeToken, "checks", "actions")
+	// The first token the fake mints.
+	const appToken = "ghs_fake1"
 
-	checks := Run(t.Context(), d)
-	forgeCheck := byName(t, checks)["forge"]
-	assert.False(t, forgeCheck.OK)
-	assert.Equal(t, 1, ExitCode(checks))
+	fixes := map[string]string{}
 
-	for _, permission := range []string{"Actions", "Commit statuses"} {
-		assert.Contains(t, forgeCheck.Detail, permission)
+	for _, tc := range []struct {
+		name       string
+		credential func(*Deps)
+		denied     string
+		fix        []string
+	}{
+		{"a token", func(*Deps) {}, forgeToken, []string{"Actions", "Commit statuses", "publish"}},
+		{"an App", withApp, appToken, []string{"Checks", "Actions", "Commit statuses", "publish"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _ := green(t, "key")
+			fake, _ := onForge(t, &d)
+			tc.credential(&d)
+
+			fake.Deny(tc.denied, "checks", "actions")
+
+			checks := Run(t.Context(), d)
+			forgeCheck := byName(t, checks)["forge"]
+			assert.False(t, forgeCheck.OK)
+			assert.Equal(t, 1, ExitCode(checks))
+
+			for _, permission := range []string{"Actions", "Commit statuses"} {
+				assert.Contains(t, forgeCheck.Detail, permission)
+			}
+
+			for _, datum := range tc.fix {
+				assert.Contains(t, forgeCheck.Fix, datum)
+			}
+
+			fixes[tc.name] = forgeCheck.Fix
+		})
 	}
 
-	// An App's permissions, and the switch that turns the read off.
-	for _, datum := range []string{"Checks", "Actions", "Commit statuses", "publish"} {
-		assert.Contains(t, forgeCheck.Fix, datum)
-	}
+	assert.NotEqual(t, fixes["a token"], fixes["an App"])
 }
 
 // A GitHub App granted less than CAVU asks for fails at its token's mint, so

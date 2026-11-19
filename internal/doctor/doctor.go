@@ -474,14 +474,22 @@ func (r *doctor) forge(ctx context.Context, p Project, a engine.ForgeAccess) Che
 
 	switch {
 	case err != nil:
-		return failed(err, "grant a fine-grained personal access token read access to Actions and Commit statuses, "+
-			"or a GitHub App read access to Checks, Actions and Commit statuses; or turn the project's switch publish off")
+		return failed(err, grantRead(a)+"; or turn the project's switch publish off")
 	case jobs:
 		return Check{OK: true, Detail: "with this credential CAVU reads the jobs of GitHub Actions workflow runs and the commit " +
-			"statuses: a check reported only as a check run, by another app or by a workflow step, is not seen"}
+			"statuses: a check reported only as a check run, by another app or by a workflow step, is not seen, which a GitHub App does see"}
 	}
 
 	return Check{OK: true}
+}
+
+// grantRead is what the credential the instance holds needs to read checks.
+func grantRead(a engine.ForgeAccess) string {
+	if a.AppID == 0 {
+		return "grant a fine-grained personal access token read access to Actions and Commit statuses"
+	}
+
+	return "grant the GitHub App read access to Checks, Actions and Commit statuses"
 }
 
 // clone clones p with token in a sandbox of its own, which it destroys, and
