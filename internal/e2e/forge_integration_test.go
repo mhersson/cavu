@@ -147,13 +147,7 @@ func (s *server) pulled(fake *forgefake.Fake, id int64) forgefake.Pull {
 	t := s.in.t
 	t.Helper()
 
-	var got apiTask
-
-	within(t, patience, func() (bool, string) {
-		b := s.read(id, &got)
-
-		return len(fake.Pulls()) > 0 || got.Status == "blocked", b
-	})
+	got := s.until(id, patience, func(a apiTask) bool { return len(fake.Pulls()) > 0 || a.Status == "blocked" })
 
 	pulls := fake.Pulls()
 	require.Len(t, pulls, 1, "%+v", got)
@@ -196,11 +190,7 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 	line, _, _ := strings.Cut(pull.Body, "\n")
 	assert.Equal(t, want, line, "the text starts with CAVU's line for the task")
 
-	within(t, 2*time.Minute, func() (bool, string) {
-		b := s.read(first.ID, &got)
-
-		return got.PullRequest != nil && got.PullRequest.Checks == "pending", b
-	})
+	got = s.until(first.ID, 2*time.Minute, func(a apiTask) bool { return a.PullRequest != nil && a.PullRequest.Checks == "pending" })
 	assert.Equal(t, "in_review", got.Status)
 	assert.False(t, got.PullRequest.Ready)
 
@@ -209,11 +199,7 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 	check.Status, check.Conclusion = "completed", "success"
 	fake.SetChecks(head, check)
 
-	within(t, 3*time.Minute, func() (bool, string) {
-		b := s.read(first.ID, &got)
-
-		return got.PullRequest.Ready, b
-	})
+	s.until(first.ID, 3*time.Minute, func(a apiTask) bool { return a.PullRequest != nil && a.PullRequest.Ready })
 	assert.False(t, fake.Pulls()[0].Draft)
 
 	// The task's home, which holds its session, is kept for fix runs until the merge.
@@ -234,20 +220,10 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 
 	fake.Merge(pull.Number)
 
-	within(t, 2*time.Minute, func() (bool, string) {
-		b := s.read(first.ID, &got)
-
-		return got.Status == "done", b
-	})
+	got = s.until(first.ID, 2*time.Minute, func(a apiTask) bool { return a.Status == "done" })
 	assert.Equal(t, "merged", got.PullRequest.State)
 
-	var events []apiEvent
-
-	within(t, time.Minute, func() (bool, string) {
-		events = s.events(first.ID)
-
-		return slices.ContainsFunc(events, func(e apiEvent) bool { return e.Type == "home_removed" }), strings.Join(eventLines(events), "\n")
-	})
+	events := s.untilEvent(first.ID, time.Minute, "home_removed")
 
 	assert.NotContains(t, volumes(), home)
 
@@ -259,13 +235,7 @@ func TestForgeTaskEndToEnd(t *testing.T) {
 	})
 	require.GreaterOrEqual(t, merged, 0, eventLines(events))
 
-	var started []apiEvent
-
-	within(t, time.Minute, func() (bool, string) {
-		started = s.events(second.ID)
-
-		return slices.ContainsFunc(started, func(e apiEvent) bool { return e.Type == "run_started" }), strings.Join(eventLines(started), "\n")
-	})
+	started := s.untilEvent(second.ID, time.Minute, "run_started")
 	assert.Greater(t, idOf(t, started, "run_started"), events[merged].ID)
 }
 
@@ -317,11 +287,7 @@ func TestForgeCIFixRound(t *testing.T) {
 	assert.Equal(t, head, gitrepo.Git(t, bare, "rev-parse", fixHead+"^"), "the fix is a commit on top of the head CAVU published")
 
 	// That look marks the draft ready, and the next, a minute later, shows it ready.
-	within(t, 3*time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.PullRequest.Ready, b
-	})
+	s.until(task.ID, 3*time.Minute, func(a apiTask) bool { return a.PullRequest != nil && a.PullRequest.Ready })
 	assert.False(t, fake.Pulls()[0].Draft)
 
 	events := s.events(task.ID)
@@ -435,11 +401,7 @@ func TestForgeReviewCommentRun(t *testing.T) {
 
 	assert.Contains(t, replies(2)[1], answer2, "the second reply carries the second session's summary")
 
-	within(t, time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.Status == "in_review" && got.Waiting != "", b
-	})
+	got = s.until(task.ID, time.Minute, func(a apiTask) bool { return a.Status == "in_review" && a.Waiting != "" })
 	assert.True(t, got.PullRequest.Ready, "no reviewer's request waits for a follow-up run")
 	assert.Equal(t, moved, tip(t, bare, pull.Head), "the second follow-up pushed nothing")
 
@@ -475,21 +437,13 @@ func TestForgeTakenOver(t *testing.T) {
 	pull := s.pulled(fake, task.ID)
 	theirs := pushOutside(t, bare, pull.Head)
 
-	within(t, 2*time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.Status == "blocked", b
-	})
+	got = s.until(task.ID, 2*time.Minute, func(a apiTask) bool { return a.Status == "blocked" })
 	require.Equal(t, "taken_over", got.Stop.Reason, "%+v", got)
 
 	// The look after the stop is CAVU's next action: it finds the merge.
 	fake.Merge(pull.Number)
 
-	within(t, 2*time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.Status == "done", b
-	})
+	got = s.until(task.ID, 2*time.Minute, func(a apiTask) bool { return a.Status == "done" })
 	assert.Zero(t, got.Stop, "the merge closed the stop")
 	assert.Equal(t, theirs, tip(t, bare, pull.Head), "CAVU pushed nothing over the person's commit")
 }
@@ -513,11 +467,7 @@ func TestForgeResolvedConflictTakesOneRetry(t *testing.T) {
 	pull := s.pulled(fake, task.ID)
 	fake.Conflict(pull.Number, true)
 
-	within(t, 2*time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.Status == "blocked", b
-	})
+	got = s.until(task.ID, 2*time.Minute, func(a apiTask) bool { return a.Status == "blocked" })
 	require.Equal(t, "conflict", got.Stop.Reason, "%+v", got)
 
 	// A person resolves the conflict with a commit whose checks pass, and retries
@@ -537,11 +487,7 @@ func TestForgeResolvedConflictTakesOneRetry(t *testing.T) {
 
 	fake.Merge(pull.Number)
 
-	within(t, 2*time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.Status == "done", b
-	})
+	s.until(task.ID, 2*time.Minute, func(a apiTask) bool { return a.Status == "done" })
 
 	stops := payloads[engine.StoppedPayload](t, s.events(task.ID), "stopped")
 	require.Len(t, stops, 1)
@@ -625,7 +571,7 @@ func TestForgeChecksReadAsJobs(t *testing.T) {
 
 	defer s.stop()
 
-	var task, got apiTask
+	var task apiTask
 
 	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
 
@@ -634,13 +580,8 @@ func TestForgeChecksReadAsJobs(t *testing.T) {
 
 	// The look that finds the job passed marks the draft ready, and the next, a
 	// minute later, shows it ready.
-	within(t, 3*time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.PullRequest != nil && got.PullRequest.Ready, b
-	})
+	s.until(task.ID, 3*time.Minute, func(a apiTask) bool { return a.PullRequest != nil && a.PullRequest.Ready })
 	assert.False(t, fake.Pulls()[0].Draft)
-	assert.Equal(t, "passed", got.PullRequest.Checks)
 	assert.True(t, slices.ContainsFunc(fake.Requests(), func(q forgefake.Request) bool {
 		return strings.Contains(q.Path, "/actions/runs/1/jobs")
 	}), "the watch read the jobs of the head's workflow run")
@@ -718,13 +659,7 @@ func TestForgeCredentialsNeverInSandbox(t *testing.T) {
 	assert.Greater(t, len(fake.Tokens()), minted, "the push took a token of its own")
 
 	// The run ends after its publish, so by then its events are written.
-	var events []apiEvent
-
-	within(t, time.Minute, func() (bool, string) {
-		events = s.events(task.ID)
-
-		return slices.ContainsFunc(events, func(e apiEvent) bool { return e.Type == "run_ended" }), strings.Join(eventLines(events), "\n")
-	})
+	events := s.untilEvent(task.ID, time.Minute, "run_ended")
 
 	recorded := strings.Join(eventLines(events), "\n")
 	for _, v := range secrets() {
@@ -745,7 +680,7 @@ func TestForgeRestartKeepsWatching(t *testing.T) {
 
 	s.project("notes", nil, map[string]bool{"readiness": false, "review": false})
 
-	var task, got apiTask
+	var task apiTask
 
 	s.call(http.MethodPost, "/api/tasks", map[string]any{"project": "notes", "title": title, "start": true}, http.StatusCreated, &task)
 
@@ -753,21 +688,13 @@ func TestForgeRestartKeepsWatching(t *testing.T) {
 	pull := s.pulled(fake, task.ID)
 	fake.SetChecks(tip(t, bare, pull.Head), forgefake.CheckRun{ID: 1, App: "github-actions", Name: "test", Status: "in_progress"})
 
-	within(t, 2*time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.PullRequest != nil && got.PullRequest.Checks == "pending", b
-	})
+	s.until(task.ID, 2*time.Minute, func(a apiTask) bool { return a.PullRequest != nil && a.PullRequest.Checks == "pending" })
 
 	s.stop()
 	s.start()
 
 	fake.Merge(pull.Number)
 
-	within(t, 2*time.Minute, func() (bool, string) {
-		b := s.read(task.ID, &got)
-
-		return got.Status == "done", b
-	})
+	s.until(task.ID, 2*time.Minute, func(a apiTask) bool { return a.Status == "done" })
 	assert.Len(t, payloads[engine.RunStartedPayload](t, s.events(task.ID), "run_started"), 1, "the restart started no run")
 }

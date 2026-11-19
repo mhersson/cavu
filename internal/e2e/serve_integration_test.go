@@ -341,21 +341,46 @@ func (s *server) read(id int64, got *apiTask) string {
 	return s.call(http.MethodGet, fmt.Sprintf("/api/tasks/%d", id), nil, http.StatusOK, got)
 }
 
-// rested polls the task over REST until it rests, in_review or blocked, and
-// returns it.
-func (s *server) rested(id int64) apiTask {
+// until polls the task over REST until ok holds of it and returns it; past
+// bound it fails the test with the task's body.
+func (s *server) until(id int64, bound time.Duration, ok func(apiTask) bool) apiTask {
 	t := s.in.t
 	t.Helper()
 
 	var got apiTask
 
-	within(t, patience, func() (bool, string) {
+	within(t, bound, func() (bool, string) {
 		b := s.read(id, &got)
 
-		return got.Status == "in_review" || got.Status == "blocked", b
+		return ok(got), b
 	})
 
 	return got
+}
+
+// untilEvent polls the task's events over REST until one is of type kind and
+// returns them; past bound it fails the test with the event lines.
+func (s *server) untilEvent(id int64, bound time.Duration, kind string) []apiEvent {
+	t := s.in.t
+	t.Helper()
+
+	var events []apiEvent
+
+	within(t, bound, func() (bool, string) {
+		events = s.events(id)
+
+		return slices.ContainsFunc(events, func(e apiEvent) bool { return e.Type == kind }), strings.Join(eventLines(events), "\n")
+	})
+
+	return events
+}
+
+// rested polls the task over REST until it rests, in_review or blocked, and
+// returns it.
+func (s *server) rested(id int64) apiTask {
+	s.in.t.Helper()
+
+	return s.until(id, patience, func(a apiTask) bool { return a.Status == "in_review" || a.Status == "blocked" })
 }
 
 // rest waits until each task rests and requires it in_review.
