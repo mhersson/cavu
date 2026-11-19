@@ -19,7 +19,7 @@ type taskRef struct {
 // taskQuery narrows a list of tasks.
 type taskQuery struct {
 	Project  string        `json:"project,omitempty" jsonschema:"keep the tasks of the project with this name"`
-	Status   engine.Status `json:"status,omitempty" jsonschema:"keep the tasks with this status: draft, queued, running, blocked, in_review, done or cancelled"`
+	Status   engine.Status `json:"status,omitempty" jsonschema:"keep the tasks with one status or with any of several separated by commas: draft, queued, running, blocked, in_review, done or cancelled"`
 	NeedsYou bool          `json:"needs_you,omitempty" jsonschema:"keep only the tasks that need a person"`
 }
 
