@@ -16,6 +16,16 @@ const rows = query.get('empty') === '1' ? ROWS.filter((r) => !r.needs_you) : ROW
 // mode=key sets the endpoint mode to key, so the settings page shows its key-mode rows.
 if (query.get('mode') === 'key') SETTINGS.settings.endpoint_mode = 'key'
 
+// push=off|on|install-first|denied|unsupported makes this browser look so; the state is set every time, as one profile serves many pages.
+const push = query.get('push')
+if (push) {
+  if (push === 'on') localStorage.setItem('push_device', '1')
+  else localStorage.removeItem('push_device')
+  if (push === 'denied') Object.defineProperty(window, 'Notification', { value: { permission: 'denied' }, configurable: true })
+  if (push === 'unsupported' || push === 'install-first') Reflect.deleteProperty(window, 'PushManager')
+  if (push === 'install-first') Object.defineProperty(navigator, 'standalone', { value: false, configurable: true })
+}
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -114,13 +124,14 @@ export function Apply() {
   return null
 }
 
-// click=TEXT clicks the first button or link whose text starts with TEXT, once the page shows it.
+// click=TEXT clicks the first button, link or summary whose text starts with TEXT, once the page shows it.
 const click = query.get('click')
 if (click) {
   let tries = 0
   const timer = setInterval(() => {
-    const target = [...document.querySelectorAll<HTMLElement>('button, a')].find((e) => e.textContent?.startsWith(click))
+    const target = [...document.querySelectorAll<HTMLElement>('button, a, summary')].find((e) => e.textContent?.startsWith(click))
     target?.click()
+    target?.scrollIntoView()
     if (target || ++tries === 20) clearInterval(timer)
   }, 100)
 }

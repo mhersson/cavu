@@ -3,7 +3,7 @@ import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router'
 import App from './App.tsx'
-import { FakeEventSource, fakeServer, json, narrow, rows } from './test-server.ts'
+import { FakeEventSource, fakePush, fakeServer, json, narrow, rows } from './test-server.ts'
 
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => {
@@ -170,6 +170,39 @@ test('sign-out ends the session', async () => {
   await user.click(screen.getByRole('button', { name: 'Sign out' }))
   expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
   expect(logouts()).toHaveLength(2)
+})
+
+test('sign-out turns notifications off before it ends the session', async () => {
+  vi.useRealTimers()
+  fakePush({ subscribed: true })
+  localStorage.setItem('push_device', '7')
+  const calls = fakeServer((c) => {
+    if (needsYou(c)) return json({ tasks: [] })
+    if (c.path === '/api/projects') return json({ projects: [{ runnable: true }] })
+    if (c.path === '/api/push') return json({ id: 7 })
+    if (c.path === '/api/push/7' || c.path === '/api/auth/logout') return new Response(null, { status: 204 })
+  })
+  const user = userEvent.setup()
+  await show('/board')
+  await user.click(screen.getByRole('button', { name: 'Sign out' }))
+  expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
+  const sent = calls.filter((c) => c.path === '/api/push/7' || c.path === '/api/auth/logout').map((c) => [c.method, c.path])
+  expect(sent).toEqual([['DELETE', '/api/push/7'], ['POST', '/api/auth/logout']])
+})
+
+test('sign-out does not wait for a worker that is never ready', async () => {
+  vi.useRealTimers()
+  fakePush({ ready: false })
+  const calls = fakeServer((c) => {
+    if (needsYou(c)) return json({ tasks: [] })
+    if (c.path === '/api/projects') return json({ projects: [{ runnable: true }] })
+    if (c.path === '/api/auth/logout') return new Response(null, { status: 204 })
+  })
+  const user = userEvent.setup()
+  await show('/board')
+  await user.click(screen.getByRole('button', { name: 'Sign out' }))
+  expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
+  expect(calls.filter((c) => c.path === '/api/auth/logout')).toHaveLength(1)
 })
 
 const projects = (c: { path: string }) => c.path === '/api/projects'

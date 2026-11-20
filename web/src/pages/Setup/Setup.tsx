@@ -270,6 +270,9 @@ export default function Setup() {
                   Open the project
                 </Link>
               ))}
+            <p className="small">
+              Notifications are turned on per browser, in <Link to="/settings">Settings</Link> under This browser. On an iPhone or iPad, add CAVU to the Home Screen first.
+            </p>
           </div>
         ),
       },

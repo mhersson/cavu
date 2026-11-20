@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { useEvents, useStream } from './stream.ts'
+import { keepDevice, onReopen, useEvents, useStream } from './stream.ts'
 
 class FakeEventSource {
   static CONNECTING = 0
@@ -199,4 +199,42 @@ test('a page that unmounts hears nothing more', () => {
   act(() => last().open())
   act(() => vi.advanceTimersByTime(5000))
   expect(read).not.toHaveBeenCalled()
+})
+
+test('the stream carries the kept device and opens again when it changes', () => {
+  localStorage.setItem('push_device', '7')
+  setup()
+  expect(last().url).toBe('/api/events?device=7')
+  act(() => last().open())
+  act(() => last().send(42))
+
+  act(() => keepDevice('8'))
+  expect(FakeEventSource.all).toHaveLength(2)
+  expect(FakeEventSource.all[0].closed).toBe(true)
+  expect(last().url).toBe('/api/events?after=42&device=8')
+
+  act(() => keepDevice(null))
+  expect(FakeEventSource.all).toHaveLength(3)
+  expect(last().url).toBe('/api/events?after=42')
+  expect(localStorage.getItem('push_device')).toBeNull()
+
+  act(() => keepDevice(null))
+  expect(FakeEventSource.all).toHaveLength(3)
+})
+
+test('onReopen runs on a reopened stream, not on the first opening and not once removed', () => {
+  const f = vi.fn()
+  const remove = onReopen(f)
+  renderHook(() => useEvents())
+  act(() => last().open())
+  expect(f).not.toHaveBeenCalled()
+
+  act(() => last().fail(false))
+  act(() => last().open())
+  expect(f).toHaveBeenCalledTimes(1)
+
+  remove()
+  act(() => last().fail(false))
+  act(() => last().open())
+  expect(f).toHaveBeenCalledTimes(1)
 })

@@ -7,6 +7,7 @@ import { useLook } from '../../theme/theme.ts'
 import type { Look } from '../../theme/theme.ts'
 import Choice from './Choice.tsx'
 import Credentials from './Credentials.tsx'
+import Notifications from './Notifications.tsx'
 import './Settings.css'
 
 const palettes: [Look['palette'], string][] = [
@@ -277,6 +278,7 @@ export default function Settings() {
         <>
           <Choice id="look-palette" label="Palette" options={palettes} value={look.palette} onChange={(palette) => setLook({ ...look, palette })} />
           <Choice id="look-theme" label="Theme" options={themes} value={look.theme} onChange={(theme) => setLook({ ...look, theme })} />
+          <Notifications pushKey={saved?.push_key} />
           <p className="sub">Applied at once. It holds for this browser only.</p>
         </>
       ),

@@ -10,7 +10,7 @@ afterEach(() => vi.unstubAllGlobals())
 const unset = { endpoint_credential: false, forge_token: false, forge_app_key: false }
 
 function saved(settings: Settings['settings'] = {}, secrets: Partial<typeof unset> = {}, forge_credentials: Settings['forge_credentials'] = []): Settings {
-  return { settings, secrets: { ...unset, ...secrets }, defaults: {}, switches: {}, forge_credentials }
+  return { settings, secrets: { ...unset, ...secrets }, defaults: {}, switches: {}, forge_credentials, push_key: 'KEY' }
 }
 
 const ENDPOINT = { endpoint_mode: 'subscription', model_work: 'sonnet' }
@@ -223,6 +223,12 @@ test('a finished setup offers the first task', async () => {
   expect(screen.queryByRole('link', { name: 'Open the project' })).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Create the first task' }))
   expect(screen.getByRole('dialog', { name: 'New task' })).toBeInTheDocument()
+})
+
+test('the open last step links to the settings for notifications', async () => {
+  serve({ settings: READY, projects: [project(2, 'web')] })
+  await show()
+  expect(within(step('The environment check')).getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
 })
 
 test("a refused save shows the server's line and keeps what was typed", async () => {
