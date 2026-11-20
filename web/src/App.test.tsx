@@ -1,6 +1,7 @@
+import { useEffect } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import App from './App.tsx'
 import { FakeEventSource, fakeServer, json, narrow, rows } from './test-server.ts'
 
@@ -10,10 +11,20 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+let here = ''
+function Here() {
+  const { pathname } = useLocation()
+  useEffect(() => {
+    here = pathname
+  })
+  return null
+}
+
 async function show(path = '/') {
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <App />
+      <Here />
     </MemoryRouter>,
   )
   await act(async () => {
@@ -169,17 +180,23 @@ test('an instance with no project is sent to setup', async () => {
     if (needsYou(c)) return json({ tasks: [] })
   })
   await show('/board')
-  expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument()
+  expect(here).toBe('/setup')
   expect(screen.queryByRole('link', { name: /needs you/i })).toBeNull()
 })
 
 test('one with a project and a passed check does not open at all', async () => {
+  vi.useRealTimers()
+  const user = userEvent.setup()
   const calls = fakeServer((c) => {
     if (projects(c)) return json({ projects: [{ runnable: true, baseline: { passed: true } }] })
     if (needsYou(c)) return json({ tasks: [] })
   })
+  narrow(true)
   await show('/')
-  expect(screen.getByRole('link', { name: /needs you/i })).toHaveAttribute('aria-current', 'page')
+  expect(here).toBe('/')
+  await user.click(screen.getByRole('link', { name: /status/i }))
+  await user.click(screen.getByRole('link', { name: /needs you/i }))
+  expect(here).toBe('/')
   expect(calls.filter(projects)).toHaveLength(1)
 })
 
