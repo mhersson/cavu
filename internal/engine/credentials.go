@@ -120,8 +120,8 @@ func checkRemoval(name string, known []store.Credential, projects []store.Projec
 	return nil
 }
 
-// putCredential seals the secret before the row and drops the other kind's
-// after it, so a failed row write leaves the old credential whole.
+// putCredential seals the secret before it writes the row, so a row's kind
+// never lacks its secret, and drops the other kind's secret after.
 func putCredential(ctx context.Context, s Store, v *auth.Vault, name string, c NewCredential) error {
 	kind, secret := c.kind(), c.Token
 	if kind == CredentialApp {
