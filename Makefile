@@ -1,14 +1,15 @@
-.PHONY: help build build-go web-install web-build web-check build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-ecosystems
+.PHONY: help build install build-go web-install web-build web-check build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-ecosystems
 
 help:
 	@echo "Targets:"
 	@echo "  help         show this list"
 	@echo "  build        build the web app, then bin/cavu with it embedded"
+	@echo "  install      build the web app, then install cavu with it embedded into GOBIN, else the GOPATH bin directory"
 	@echo "  build-go     build bin/cavu with the web app as it is built now, or the placeholder page when none is"
 	@echo "  web-install  install the web app's npm packages; needs the Node of the root .nvmrc"
 	@echo "  web-build    build the web app into web/dist/app"
 	@echo "  web-check    lint, test and build the web app"
-	@echo "  build-darwin cross-compile everything for darwin"
+	@echo "  build-darwin build bin/cavu-darwin for macOS on Apple silicon (arm64), with the web app as built now"
 	@echo "  test         run the tests"
 	@echo "  test-race    run the tests with the race detector"
 	@echo "  vet          go vet, with and without the integration and live tags"
@@ -37,11 +38,14 @@ web-check:
 build: web-build
 	$(MAKE) build-go
 
+install: web-build
+	CGO_ENABLED=0 go install -trimpath -ldflags='-s -w' ./cmd/cavu
+
 build-go:
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/cavu ./cmd/cavu
 
 build-darwin:
-	GOOS=darwin go build -o /dev/null ./...
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o bin/cavu-darwin ./cmd/cavu
 
 test:
 	go test ./...
