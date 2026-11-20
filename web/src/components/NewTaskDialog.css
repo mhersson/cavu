@@ -2,3 +2,9 @@
   color: var(--red);
   margin: 0 0 14px;
 }
+
+.new-task-hint {
+  margin: -6px 0 12px;
+  color: var(--grey1);
+  font-size: 12px;
+}

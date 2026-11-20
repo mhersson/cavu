@@ -28,7 +28,11 @@ function open(onClose = vi.fn()) {
   return onClose
 }
 
-const field = (label: string) => screen.findByLabelText(label)
+// The select is there at once; its options come with the projects.
+const field = async (label: string) => {
+  await screen.findByRole('option', { name: 'web' })
+  return screen.getByLabelText(label)
+}
 
 test('the dialog creates a draft unless the tick is set', async () => {
   const calls = serve()
@@ -113,4 +117,23 @@ test('the phone page shows the form with Create alone', async () => {
   await field('Project')
   expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+})
+
+test('a second click while a create is pending sends no second request', async () => {
+  const calls = serve()
+  const answer = globalThis.fetch
+  let release = () => {}
+  const gate = new Promise<void>((r) => (release = r))
+  vi.stubGlobal('fetch', (path: string, init?: RequestInit) =>
+    init?.method === 'POST' ? gate.then(() => answer(path, init)) : answer(path, init),
+  )
+  open()
+  const user = userEvent.setup()
+  await user.type(await field('What should be done?'), 'x')
+  const create = screen.getByRole('button', { name: 'Create' })
+  await user.click(create)
+  await user.click(create)
+  release()
+  await screen.findByTestId('page')
+  expect(calls.filter(isCreate)).toHaveLength(1)
 })

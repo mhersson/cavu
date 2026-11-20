@@ -15,6 +15,7 @@ export function NewTaskForm({ onCancel }: { onCancel?: () => void }) {
   const [depends, setDepends] = useState('')
   const [start, setStart] = useState(false)
   const [error, setError] = useState('')
+  const [sending, setSending] = useState(false)
 
   useEffect(() => {
     api<{ projects: Project[] }>('GET', '/projects')
@@ -28,11 +29,13 @@ export function NewTaskForm({ onCancel }: { onCancel?: () => void }) {
   async function submit(e: FormEvent) {
     e.preventDefault()
     const depends_on = (depends.match(/\d+/g) ?? []).map(Number)
+    setSending(true)
     try {
       const task = await api<Task>('POST', '/tasks', { project, title, body, depends_on, start })
       navigate(`/tasks/${task.id}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      setSending(false)
     }
   }
 
@@ -57,7 +60,7 @@ export function NewTaskForm({ onCancel }: { onCancel?: () => void }) {
       <Field label="Start it now" check>
         <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} />
       </Field>
-      <p className="sub">{start ? 'It starts as soon as a slot is free.' : 'It is kept as a draft until you start it.'}</p>
+      <p className="new-task-hint">{start ? 'It starts as soon as a slot is free.' : 'It is kept as a draft until you start it.'}</p>
       {error && (
         <p role="alert" className="new-task-error">
           {error}
@@ -69,7 +72,7 @@ export function NewTaskForm({ onCancel }: { onCancel?: () => void }) {
             Cancel
           </button>
         )}
-        <button className="btn primary">Create</button>
+        <button className="btn primary" disabled={sending}>Create</button>
       </div>
     </form>
   )
