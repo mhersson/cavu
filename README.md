@@ -35,22 +35,34 @@ You describe a task in plain words, on a web page or on the command line. CAVU h
 
 - A computer with Linux or macOS. Linux with Docker and with Podman is tested; on macOS only the unit tests run, in CI, and nothing has run there with a container runtime.
 - A container runtime, Docker or Podman: the program that runs containers. CAVU starts every sandbox with it, and uses the one its `runtime` setting names, else Docker, else Podman.
-- What builds CAVU, since this repository publishes no built binary: Go (`go.mod` names the version, 1.27.4), Node (the version in `.nvmrc`, 26) with npm, `make`, and a copy of this repository.
+- `cavu`, a single binary. On Linux it comes built, from the [releases page](https://github.com/mhersson/cavu/releases). On macOS, or to build it yourself, you need what builds it: Go (`go.mod` names the version, 1.27.4), Node (the version in `.nvmrc`, 26) with npm, `make`, and a copy of this repository.
 - A Claude subscription, with Claude Code on your own machine to make the token CAVU uses (step 6), or an API key for a model endpoint together with that endpoint's address.
 - A repository on GitHub, on github.com or GitHub Enterprise, for CAVU to work on, and a way for CAVU to act on it there: a personal access token, a secret that lets CAVU act on GitHub with the access the token was given, or a GitHub App installed on the repository. [GitHub access](#github-access) lists the permissions each needs.
 
 ### Getting started
 
-Each step says what to do and what you then see. Type the commands in a terminal, in your copy of this repository.
+Each step says what to do and what you then see. Type the commands in a terminal, and the `make` commands in your copy of this repository.
 
-1. **Build CAVU.** Install the web app's npm packages once, then build and install `cavu`:
+1. **Install CAVU.** On Linux, download two files from a release on the [releases page](https://github.com/mhersson/cavu/releases): `checksums.txt` and the archive for your computer, `cavu_VERSION_linux_ARCH.tar.gz`, whose `ARCH` is `amd64` where `uname -m` prints `x86_64` and `arm64` where it prints `aarch64`. In the directory that holds them, check the archive, take `cavu` out of it and move it to a directory on your `PATH`, such as `~/.local/bin`:
+
+   ```
+   sha256sum -c --ignore-missing checksums.txt
+   tar -xzf cavu_VERSION_linux_ARCH.tar.gz cavu
+   mv cavu ~/.local/bin/
+   ```
+
+   The check prints the archive's name and `OK`; on `FAILED`, or when it says no file was verified, do not use the archive.
+
+   On macOS, or to build CAVU yourself, install the web app's npm packages once, then build and install `cavu`:
 
    ```
    make web-install
    make install
    ```
 
-   npm may report vulnerabilities as it installs; `npm audit --omit=dev` in `web/` checks only the packages the built app ships, the `dependencies` of `web/package.json`. `make install` builds the web app, then `cavu` with the app inside it, and puts `cavu` in Go's `GOBIN` directory, else in `$(go env GOPATH)/bin`. Your terminal finds `cavu` only when that directory is on your `PATH`. The other way is `make build`, which writes `bin/cavu` into your copy: then type `bin/cavu` wherever this README says `cavu`. Check that it runs:
+   npm may report vulnerabilities as it installs; `npm audit --omit=dev` in `web/` checks only the packages the built app ships, the `dependencies` of `web/package.json`. `make install` builds the web app, then `cavu` with the app inside it, and puts `cavu` in Go's `GOBIN` directory, else in `$(go env GOPATH)/bin`. Your terminal finds `cavu` only when that directory is on your `PATH`. The other way is `make build`, which writes `bin/cavu` into your copy: then type `bin/cavu` wherever this README says `cavu`.
+
+   Check that it runs:
 
    ```
    cavu version
@@ -58,13 +70,13 @@ Each step says what to do and what you then see. Type the commands in a terminal
 
    It prints `cavu` and its version.
 
-2. **Build the sandbox image.** Every sandbox starts from this image: a Debian Linux system with Claude Code, the tools a build needs, and `cavu` itself. On a network that inspects encrypted connections with a certificate authority of its own, first give CAVU that authority's certificates, a PEM file: `cavu settings set ca_bundle_path /path/to/ca.pem`. Then, on Linux and on macOS alike:
+2. **Build the sandbox image.** Every sandbox starts from this image: a Debian Linux system with Claude Code, the tools a build needs, and `cavu` itself. On a network that inspects encrypted connections with a certificate authority of its own, first give CAVU that authority's certificates, a PEM file: `cavu settings set ca_bundle_path /path/to/ca.pem`. Then, with a release's `cavu`:
 
    ```
-   make image
+   cavu image build
    ```
 
-   It builds the web app and `bin/cavu` again, a Linux `cavu` for the image, and then the image on Docker or Podman. The first build downloads Claude Code and the rest from the internet and takes a while. The runtime's steps scroll past, and the last line is `built cavu-sandbox:VERSION`, with the version `cavu version` printed. Each build of `cavu` has an image of its own: after your copy of the repository changes, run `make install` and `make image` again.
+   From source, on Linux and on macOS alike, run `make image` instead: it builds the web app and `bin/cavu` again and a Linux `cavu` for the image, then the image. Both build the image on Docker or Podman. The first build downloads Claude Code and the rest from the internet and takes a while. The runtime's steps scroll past, and the last line is `built cavu-sandbox:VERSION`, with the version `cavu version` printed. When `cavu` changes, [Upgrading](#upgrading) says what to run.
 
 3. **Make your user.** CAVU has one user: the name and password you sign in with. The password needs at least 12 characters. `cavu user set` reads it from a file (or a pipe), not from what you type in the terminal: with any text editor, write the password on the first line of a new file, `password.txt`, save it, and run this with your name for `NAME`:
 
@@ -80,7 +92,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
    cavu serve
    ```
 
-   It checks the image, prints `listening on http://127.0.0.1:7117`, the address of CAVU's web page, and runs until you press Ctrl-C. Leave it running in its terminal: it runs the tasks you start and watches their pull requests. When the image is missing or belongs to another build of `cavu`, it stops at once, and its last line names the image; run `make image` again. To keep CAVU running without a terminal, or to reach it from a phone, see [Running the server](#running-the-server).
+   It checks the image, prints `listening on http://127.0.0.1:7117`, the address of CAVU's web page, and runs until you press Ctrl-C. Leave it running in its terminal: it runs the tasks you start and watches their pull requests. When the image is missing or belongs to another build of `cavu`, it stops at once, and its last line names the image and `cavu image build`: run that, or `make image` from source. To keep CAVU running without a terminal, or to reach it from a phone, see [Running the server](#running-the-server).
 
 5. **Open CAVU and sign in.** Open `http://127.0.0.1:7117/` in a web browser on the same computer, and sign in with the name and password from step 3. `127.0.0.1` is the computer itself, so until you change the `listen_address` setting nothing else reaches CAVU. A new CAVU opens at **Set up CAVU**, four steps. **Save and go on** stores a step, and the page then opens the first step that is not done; a done step shows a summary and **Change**.
 
@@ -158,7 +170,7 @@ The commands below keep their data in one directory: the default is created on f
 
 Building from source needs Go and Node (the version in `.nvmrc`, 26); run `make web-install` once to install the web app's npm packages. Installing and running `cavu` need only the binary and a container runtime. `make image` builds the binary and the sandbox image; the build opens the data directory and uses its `runtime` and `ca_bundle_path` settings.
 
-The binary is `bin/cavu`, which is not on your `PATH`: `make install` also builds the web app and writes `cavu` to `GOBIN`, else `$(go env GOPATH)/bin` (put that directory on your `PATH`), without the image, or write `bin/cavu` where the commands below say `cavu`. With a built `cavu`, `cavu image build` builds the image alone; off Linux it takes `../libexec/cavu-linux` beside the directory of the real executable when that file is there, and otherwise needs `--cavu-binary PATH`, a `cavu` built for Linux, which `make image` builds and passes. `make build` builds the web app and the binary, without the image, and `make build-go` builds it with the web app as last built, or with a page that says none is built in. To have CAVU work on its own repository, add it as a project whose setup command runs `make web-install` and whose verify command adds `make web-check`.
+The binary is `bin/cavu`, which is not on your `PATH`: `make install` also builds the web app and writes `cavu` to `GOBIN`, else `$(go env GOPATH)/bin` (put that directory on your `PATH`), without the image, or write `bin/cavu` where the commands below say `cavu`. With a built `cavu`, `cavu image build` builds the image alone; off Linux it takes `../libexec/cavu-linux` beside the directory of the real executable when that file is there, and otherwise needs `--cavu-binary PATH`, a `cavu` built for Linux, which `make image` builds and passes. `make build` builds the web app and the binary, without the image, and `make build-go` builds it with the web app as last built, or with a page that says none is built in. `VERSION=x.y.z` on any build target stamps the version `cavu version` prints, which the image's tag follows, and `make dist VERSION=x.y.z` writes a release's Linux `amd64` and `arm64` archives and their `checksums.txt` into `dist/`. To have CAVU work on its own repository, add it as a project with the setup command `go mod download && make web-install` and the verify command `make check && make web-check`.
 
 ### Settings and secrets
 
@@ -321,7 +333,7 @@ A merge seen at any look makes the task `done`, and a close without a merge canc
 6. When the checks passed, or none started on a project with `no_ci`, CAVU marks the draft ready for review, once.
 7. Then the pull request waits for a person to merge it.
 
-A fix run starts from the pull request's newest commit and goes on with the task's agent session, with no readiness turn and no review. A fix run on failed checks gets what each failed check reported, for an Actions job the end of its log, and a follow-up run gets each request with its author and the file and line it is on. As in any run, its change must pass the verify command unless the project waives it, and its commits go on top of the pull request's, never in their place: a session whose work does not descend from the commit it started at fails, and no push is forced. Once a follow-up run's work is over, its commits pushed or the code left as it is, CAVU posts one comment on the pull request under the account of the token it holds (for a GitHub App, the App's bot), with the agent's summary and whether it changed the code. CAVU writes inside no review thread and resolves none; a reviewer's next request, a new review that requests changes or a new comment in an unresolved thread, starts the next follow-up run. For the fix runs, CAVU keeps the task's home volume, which holds the agent's session, until the task is done or cancelled, and removes it then. `cavu task cancel ID` leaves the pull request open, and CAVU no longer watches it.
+A fix run starts from the pull request's newest commit and goes on with the task's agent session, with no readiness turn and no review. A fix run on failed checks gets what each failed check reported, for an Actions job the end of its log, and a follow-up run gets each request with its author and the file and line it is on. As in any run, its change must pass the verify command unless the project waives it, and its commits go on top of the pull request's, never in their place: a session whose work does not descend from the commit it started at fails, and no push is forced. Once a follow-up run's work is over, its commits pushed or the code left as it is, CAVU posts one comment on the pull request under the account of the token it holds (for a GitHub App, the App's bot): the task's id, the agent's summary, which the agent is told to begin with what it changed for each request, and whether it changed the code. CAVU writes inside no review thread and resolves none; a reviewer's next request, a new review that requests changes or a new comment in an unresolved thread, starts the next follow-up run. For the fix runs, CAVU keeps the task's home volume, which holds the agent's session, until the task is done or cancelled, and removes it then. `cavu task cancel ID` leaves the pull request open, and CAVU no longer watches it.
 
 Each stop of the pull request explains itself and clears with `cavu task retry ID`, which gives the task its caps again. A retry of `push_rejected` pushes again. A retry of any other is taken up at the next look, unless, for a stop other than `conflict` or `taken_over`, a look has shown a commit on the branch that CAVU did not push, which then stops the task as `taken_over` at once; a retry of `conflict` or `taken_over` gives CAVU the commit that the next look shows at the head of the branch.
 
@@ -383,7 +395,7 @@ The web app fits a phone: at 720 pixels wide or less it shows four tabs at the b
 cavu settings set listen_address 0.0.0.0:7117
 ```
 
-CAVU serves plain HTTP, so what passes between the phone and CAVU, the password at sign-in included, travels unencrypted: do this only on a network you trust, or put a proxy that serves HTTPS in front of CAVU. When that proxy sends `X-Forwarded-Proto: https`, CAVU marks the session cookie `Secure`.
+CAVU serves plain HTTP, so what passes between the phone and CAVU, the password at sign-in included, travels unencrypted: do this only on a network you trust, or put a proxy that serves HTTPS in front of CAVU ([Behind a proxy or a tunnel](#behind-a-proxy-or-a-tunnel)).
 
 To keep it running without a terminal, install it as a service of your login with `cavu service install`. It writes `~/.config/systemd/user/cavu.service` on Linux, a systemd user unit, or `~/Library/LaunchAgents/com.github.mhersson.cavu.plist` on macOS, a launchd agent, and starts the service from it at once and again when it fails. The file names the `cavu` binary that installed it by its absolute path and sets your `PATH`, so the service finds the `docker` or `podman` your shell finds; `CAVU_DATA_DIR`, the absolute path of the data directory chosen as for every verb (`--data-dir`, else `CAVU_DATA_DIR`, else `$XDG_DATA_HOME/cavu`, else `~/.local/share/cavu`); `DOCKER_HOST`, only when your Docker context's endpoint is not `unix:///var/run/docker.sock`; and `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, their lower-case forms, `SSL_CERT_FILE` and `SSL_CERT_DIR`, each only when your shell sets it. The macOS agent also sets `HOME`. CAVU's secrets stay in the data directory, where `cavu secret set` stored them; the file is readable by you alone, since a proxy address in it may hold a password. As in a terminal, set the user and build the image first. On Linux, `--linger` also runs `loginctl enable-linger`, for a host nobody stays logged in to.
 
@@ -392,7 +404,38 @@ cavu service install
 cavu service uninstall
 ```
 
-Read the log with `journalctl --user -u cavu` on Linux, or in `~/Library/Logs/cavu.log` on macOS. Running `cavu service install` again rewrites the file when it changed and restarts the service. Each build of `cavu` has its own version and sandbox image, so after you replace the binary, build its image first (`cavu image build` with the new binary, or `make image`), then run `cavu service install` again. `cavu service uninstall` stops the service and removes its file, and keeps the data directory. To run `cavu doctor`, which a running server refuses, stop the service first with `systemctl --user stop cavu` on Linux or `launchctl bootout gui/$(id -u)/com.github.mhersson.cavu` on macOS, and start it again afterwards with `systemctl --user start cavu` or `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.mhersson.cavu.plist`.
+Read the log with `journalctl --user -u cavu` on Linux, or in `~/Library/Logs/cavu.log` on macOS. Running `cavu service install` again rewrites the file when it changed and restarts the service. `cavu service uninstall` stops the service and removes its file, and keeps the data directory. To run `cavu doctor`, which a running server refuses, stop the service first with `systemctl --user stop cavu` on Linux or `launchctl bootout gui/$(id -u)/com.github.mhersson.cavu` on macOS, and start it again afterwards with `systemctl --user start cavu` or `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.mhersson.cavu.plist`.
+
+#### Behind a proxy or a tunnel
+
+A proxy or a tunnel in front of CAVU gives it an https address, and can make it reachable away from home. CAVU needs this of it:
+
+- It reaches CAVU at `listen_address`. The default, `127.0.0.1:7117`, serves a proxy on the same computer; one elsewhere needs an address of that computer it can reach, set as for a phone above.
+- It serves HTTPS, redirects plain HTTP there, and sends `X-Forwarded-Proto: https`, on which CAVU marks the session cookie `Secure`.
+- It passes the page's live stream, `GET /api/events`, on as it comes and leaves it open, with no buffering and no request timeout. CAVU answers it with `X-Accel-Buffering: no` and sends a comment line on it every 15 seconds.
+- It gives CAVU one address at home and away: CAVU's sign-in, its notifications and its app on a home screen each belong to the address they were set up on.
+
+A CAVU the internet reaches belongs behind an access layer that admits only you, such as an identity-aware proxy. CAVU's sign-in limiter counts failed sign-ins by the user name and the connection's address, and behind a proxy every connection comes from the proxy's address: from the third failure in a row, sign-ins with that name wait 1 second, twice as long after each further failure, up to 5 minutes. So anyone who reaches the page and knows your user name can keep you out. A sign-in that succeeds, or a restart of `cavu serve`, clears the count. The page links its web manifest with `crossorigin="use-credentials"`, so that it is asked for with the page's cookies.
+
+API tokens, which an MCP client needs, are made only on CAVU's computer, with `cavu token add NAME`, also while `cavu serve` runs.
+
+#### Notifications
+
+CAVU can notify a browser when a task comes to need you. Turn them on in each browser you want them in: in **Settings**, under **This browser**, press **Turn on** and allow them when the browser asks; **Turn off** there stops them. They need CAVU on an https address ([Behind a proxy or a tunnel](#behind-a-proxy-or-a-tunnel)). On an iPhone or iPad, add CAVU to the Home Screen first and turn them on in the app it adds: Apple's documentation gives Web Push to Home Screen web apps on iOS and iPadOS 16.4 or later.
+
+A notification's title is what the task needs, `Needs an answer`, `Ready for review`, `Stopped` or `A change to take`, then its project, as in `Ready for review · web`; its text is the task's title, and a tap opens the task's page. The browser in which a CAVU page has the focus gets none; every other browser with them on does.
+
+Only `cavu serve` sends them, each need once, to the browsers that have them on when it finds the need. A need that comes while it is stopped, such as one of a task that `cavu task run` drives, is sent when it next starts, if the task still needs you.
+
+### Upgrading
+
+Each build of `cavu` has its own version and sandbox image, and `cavu serve` starts only on its own. To move to a new release, or to a newer copy of this repository:
+
+1. Replace `cavu`. With a release, download, check and unpack the new archive as in [Getting started](#getting-started), then move the new `cavu` over the old one with `mv`: on Linux, a copy over a running binary fails with `Text file busy`, while a move replaces it and a running server carries on. From source, run `make install`.
+2. Build the new image with `cavu image build`, or `make image` from source. It runs beside a running server, which goes on with the old image.
+3. Restart the server: `cavu service install` restarts the service on the new binary; without the service, stop `cavu serve` and start it again.
+
+A service that starts before its image is built stops with a line in its log naming `cavu image build`, and starts again every 10 seconds until the image is there.
 
 ### Replaying tasks
 
@@ -437,6 +480,7 @@ Packages a setup command installs with `pip` are shared by the project's tasks a
   - the model, with its effort when one is set, the time from the task's start to the change, and the task's id.
 
   It names no cost. The comment that answers reviewers holds the task's id, the agent's summary and whether it changed the code, and no cost either. The cost is for the instance's owner, in `cavu task show` and the API.
+- Outside its containers, `cavu` makes requests of its own of two kinds only, both through the proxy `HTTPS_PROXY` names when it is set: to GitHub's API, for a project's tasks, its environment checks and the doctor's forge check; and, once a browser has turned notifications on, to the push service that browser's subscription names. It sends no telemetry and dials nothing else. A notification is encrypted for the browser it goes to (RFC 8291), so the push service cannot read its title or text. It does see when each push is sent, to which subscription and how large it is (RFC 8030), your CAVU's address, which the push's signed token names, and the unencrypted `Topic` header, `task-` and the task's id.
 
 ## Licence
 
