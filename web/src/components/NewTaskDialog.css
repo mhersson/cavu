@@ -1,0 +1,4 @@
+.new-task-error {
+  color: var(--red);
+  margin: 0 0 14px;
+}
