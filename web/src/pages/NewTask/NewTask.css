@@ -2,3 +2,7 @@
   width: 100%;
   padding: 11px;
 }
+
+.page > .new-task {
+  margin-top: 18px;
+}
