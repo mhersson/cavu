@@ -224,13 +224,16 @@ test('an agent line renders inline code', () => {
 
 test('verify output stays text', () => {
   const said = '# FAIL\n- `a.test.ts` **failed**, see https://example.test/log'
-  const { root } = show([verify(1, 'failed', said), ev(2, 'prepare_failed', 'runner', { step: 'setup', output: said }), ev(3, 'stopped', 'engine', {}, said)])
+  const { root } = show([verify(1, 'failed', said), ev(2, 'prepare_failed', 'runner', { step: 'setup', output: said }), ev(3, 'stopped', 'engine', {}, said), ev(4, 'agent_tool', 'agent', {}, 'Bash ls **/*.go `x`')])
   expect([...root.querySelectorAll('pre')].map((b) => [b.textContent, b.childElementCount])).toEqual([
     [said, 0],
     [said, 0],
   ])
   expect(text(root.children[2])).toBe(said)
   expect(root.querySelector('h2, h3, h4, ul, strong, a, br')).toBeNull()
+  const tool = within(root).getByText('Bash ls **/*.go `x`')
+  expect(tool.childElementCount).toBe(0)
+  expect(tool.firstChild!.nodeType).toBe(Node.TEXT_NODE)
 })
 
 test("the account's summary is Markdown, and each listed line takes the inline part after its lead", () => {
