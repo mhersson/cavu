@@ -1,5 +1,10 @@
 # CAVU
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/needs-you-dark.png">
+  <img src="docs/images/needs-you-light.png" alt="CAVU's Needs you page on a desktop: five tasks wait for a person, and the chosen one shows the agent's two questions, each with the answer the agent would assume, a field for the answer, and the buttons Answer and Use its assumptions.">
+</picture>
+
 CAVU stands for "Containerized Agents, Verified, Unattended". In aviation the same letters mean "ceiling and visibility unlimited".
 
 CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended: a task goes in, a pull request comes out, and a person merges it. The agent is to run inside a container with API keys and GitHub tokens kept outside it, and a run is to count as successful only when a verify command, run by CAVU itself, passes.
@@ -108,6 +113,11 @@ Each step says what to do and what you then see. Type the commands in a terminal
     - CAVU pushes a branch and opens a draft pull request on GitHub. Once the pull request's checks pass, CAVU marks it ready for review. When the repository runs no checks on pull requests, tick **This repository has no CI** on the project's page, or the task stops as `no_checks`.
     - You read the pull request and merge it on GitHub. When CAVU sees the merge, the task is done.
 
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/images/task-page-dark.png">
+      <img src="docs/images/task-page-light.png" width="720" alt="A task's page: its pull request is ready for review, with the button Open pull request; under What happened, the timeline of its run step by step; beside it the pull request, the change's files and the review's findings.">
+    </picture>
+
 11. **When CAVU needs you.** **Needs you**, the first page, lists the tasks that wait for you, the most recent first, and on a desktop the navigation shows how many. Each says what it needs:
     - **A question from the agent**: write your answer and press **Answer**; **Use its assumptions** fills in the answers the agent would assume. The task goes on with your answer.
     - **Stopped**: the line says why. Clear the cause, then press **Retry**. [Tasks](#tasks) and [The pull request](#the-pull-request) explain each stop.
@@ -115,6 +125,11 @@ Each step says what to do and what you then see. Type the commands in a terminal
     - **A change to take by hand**, only for a project with the switch `publish` off, which opens no pull request: **Download the bundle** or **Download the diff**, merge the change yourself, then press **Record the merge**.
 
     Further tasks start from **New task** on **Needs you** or on the **Board**, which shows every open task in a column by its status.
+
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/images/board-dark.png">
+      <img src="docs/images/board-light.png" width="720" alt="The board: ten open tasks in five columns, draft, queued, running, blocked and in review; each card has the task's number, project and title, why it waits, and a needs you mark on those that need a person.">
+    </picture>
 
 ### With the command line
 
@@ -350,6 +365,11 @@ cavu settings set listen_address 0.0.0.0:7117
 ```
 
 CAVU serves plain HTTP, so what passes between the phone and CAVU, the password at sign-in included, travels unencrypted: do this only on a network you trust, or put a proxy that serves HTTPS in front of CAVU. When that proxy sends `X-Forwarded-Proto: https`, CAVU marks the session cookie `Secure`.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/phone-needs-you-and-task-page-dark.png">
+  <img src="docs/images/phone-needs-you-and-task-page-light.png" width="402" alt="CAVU on a phone, two screens side by side: Needs you, with a task's two questions from the agent and a pull request ready for review, and a running task's page with its timeline; each has the tabs Needs you, New task, Status and More at the bottom.">
+</picture>
 
 To keep it running without a terminal, install it as a service of your login with `cavu service install`. It writes `~/.config/systemd/user/cavu.service` on Linux, a systemd user unit, or `~/Library/LaunchAgents/com.github.mhersson.cavu.plist` on macOS, a launchd agent, and starts the service from it at once and again when it fails. The file names the `cavu` binary that installed it by its absolute path and sets your `PATH`, so the service finds the `docker` or `podman` your shell finds; `CAVU_DATA_DIR`, the absolute path of the data directory chosen as for every verb (`--data-dir`, else `CAVU_DATA_DIR`, else `$XDG_DATA_HOME/cavu`, else `~/.local/share/cavu`); `DOCKER_HOST`, only when your Docker context's endpoint is not `unix:///var/run/docker.sock`; and `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, their lower-case forms, `SSL_CERT_FILE` and `SSL_CERT_DIR`, each only when your shell sets it. The macOS agent also sets `HOME`. CAVU's secrets stay in the data directory, where `cavu secret set` stored them; the file is readable by you alone, since a proxy address in it may hold a password. As in a terminal, set the user and build the image first. On Linux, `--linger` also runs `loginctl enable-linger`, for a host nobody stays logged in to.
 
