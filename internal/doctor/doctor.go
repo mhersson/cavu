@@ -46,10 +46,8 @@ type Deps struct {
 	Settings     map[string]string // the settings table; runtime names the runtime to use
 	Credential   string            // the secret endpoint_credential
 	CABundle     []byte            // the configured CA bundle the image must carry, empty for none
-	ForgeToken   string
-	ForgeAppKey  string        // the secret forge_app_key
-	Forge        *forge.Client // the client the forge check mints and reads with
-	Projects     []Project     // the projects the forge check fetches, in the store's order
+	Forge        *forge.Client     // the client the forge check mints and reads with
+	Projects     []Project         // the projects the forge check fetches, in the store's order
 	Driver       driver.Driver
 
 	host host // nil drives the runtime; the unit tests set a fake
@@ -60,7 +58,10 @@ type Project struct {
 	ID                  int64
 	Name                string
 	RepoURL, BaseBranch string
-	Publish             bool // the switch publish
+	Publish             bool   // the switch publish
+	Credential          string // the GitHub credential the project names, "" for the instance's
+	Access              engine.ForgeAccess
+	AccessErr           error // of reading Access; the project's line fails with it
 }
 
 // host is the doctor's seam over internal/sandbox.
@@ -137,7 +138,12 @@ func Run(ctx context.Context, d Deps) []Check {
 
 	// In key mode the session's token is a stand-in only this mask knows, and
 	// an App's tokens are the forge checks' own.
-	mask := redact.New(append([]string{d.Credential, d.ForgeToken, d.ForgeAppKey, r.spec.Auth.Token}, r.tokens...)...)
+	secrets := append([]string{d.Credential, r.spec.Auth.Token}, r.tokens...)
+	for _, p := range d.Projects {
+		secrets = append(secrets, p.Access.Token, p.Access.AppKey)
+	}
+
+	mask := redact.New(secrets...)
 	for i := range r.checks {
 		r.checks[i].Detail, r.checks[i].Fix = mask(r.checks[i].Detail), mask(r.checks[i].Fix)
 	}
@@ -412,25 +418,33 @@ func (r *doctor) endpointFix() string {
 	return "check endpoint_mode, endpoint_url, endpoint_auth_header, model_work and the secret endpoint_credential"
 }
 
-// forges runs the forge check once for each project, a line each.
+// forges runs the forge check once for each project, a line each, with the
+// credential the project names.
 func (r *doctor) forges(ctx context.Context) {
-	a := r.config.Repo.Access
-	a.Token, a.AppKey = r.ForgeToken, r.ForgeAppKey
-
 	if c := r.skip([]string{"image", "settings"}); c.Skipped {
 		r.add("forge", c)
 
 		return
 	}
 
-	if a.Token == "" && a.AppID == 0 || len(r.Projects) == 0 {
-		r.add("forge", Check{Skipped: true, Detail: "no credential for GitHub, or no project"})
+	if len(r.Projects) == 0 {
+		r.add("forge", Check{Skipped: true, Detail: "no project"})
 
 		return
 	}
 
 	for _, p := range r.Projects {
-		c := r.forge(ctx, p, a)
+		var c Check
+
+		switch a := p.Access; {
+		case p.AccessErr != nil:
+			c = failed(p.AccessErr, forgeFix(p))
+		case a.Token == "" && a.AppID == 0:
+			c = Check{Skipped: true, Detail: "no credential for GitHub"}
+		default:
+			c = r.forge(ctx, p)
+		}
+
 		if c.Detail == "" {
 			c.Detail = p.Name
 		} else {
@@ -444,9 +458,8 @@ func (r *doctor) forges(ctx context.Context) {
 // forge fetches the project into its own mirror, with run and task id 0 and
 // the token a run's clone gets, then, when the project publishes, reads the
 // repository and the checks of the base head it fetched as the watch does.
-func (r *doctor) forge(ctx context.Context, p Project, a engine.ForgeAccess) Check {
-	const fix = "check the secret forge_token, or the setting forge_app_id and the secret forge_app_key, and the project's repository address; " +
-		"a GitHub App must be granted Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read"
+func (r *doctor) forge(ctx context.Context, p Project) Check {
+	a, fix := p.Access, forgeFix(p)
 
 	token, err := runner.CloneToken(ctx, r.Forge, p.RepoURL, a)
 	r.tokens = append(r.tokens, token)
@@ -477,7 +490,7 @@ func (r *doctor) forge(ctx context.Context, p Project, a engine.ForgeAccess) Che
 
 	switch {
 	case err != nil:
-		return failed(err, grantRead(a)+"; or turn the project's switch publish off")
+		return failed(err, grantRead(p)+"; or turn the project's switch publish off")
 	case jobs:
 		return Check{OK: true, Detail: "with this credential CAVU reads the jobs of GitHub Actions workflow runs and the commit " +
 			"statuses: a check reported only as a check run, by another app or by a workflow step, is not seen; with a GitHub App, CAVU sees it"}
@@ -486,13 +499,28 @@ func (r *doctor) forge(ctx context.Context, p Project, a engine.ForgeAccess) Che
 	return Check{OK: true}
 }
 
-// grantRead is what the credential the instance holds needs to read checks.
-func grantRead(a engine.ForgeAccess) string {
-	if a.AppID == 0 {
+// forgeFix is what to check when the project's clone, mint or read fails.
+func forgeFix(p Project) string {
+	const grants = "a GitHub App must be granted Contents and Pull requests read and write, and Checks, Commit statuses, Actions and Metadata read"
+
+	if p.Credential == "" {
+		return "check the secret forge_token, or the setting forge_app_id and the secret forge_app_key, and the project's repository address; " + grants
+	}
+
+	return "check the credential " + p.Credential + " (cavu credential set " + p.Credential +
+		", with --app-id for a GitHub App) and the project's repository address; " + grants
+}
+
+// grantRead is what the project's credential needs to read checks.
+func grantRead(p Project) string {
+	switch {
+	case p.Access.AppID != 0:
+		return "grant the GitHub App read access to Checks, Actions and Commit statuses"
+	case p.Credential == "":
 		return "grant the personal access token in the secret forge_token read access to Actions and Commit statuses"
 	}
 
-	return "grant the GitHub App read access to Checks, Actions and Commit statuses"
+	return "grant the personal access token of the credential " + p.Credential + " read access to Actions and Commit statuses"
 }
 
 // clone clones p with token in a sandbox of its own, which it destroys, and
