@@ -100,7 +100,7 @@ const hints: Record<string, string> = {
   commit_name: 'required',
   commit_email: 'required',
   endpoint_url: 'required',
-  endpoint_auth_header: 'bearer or x-api-key',
+  endpoint_auth_header: 'required',
   model_review: 'as Work',
   effort_review: 'as Work',
   model_strong: 'as Work',
