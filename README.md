@@ -48,6 +48,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
    ```
    sha256sum -c --ignore-missing checksums.txt
    tar -xzf cavu_VERSION_linux_ARCH.tar.gz cavu
+   mkdir -p ~/.local/bin
    mv cavu ~/.local/bin/
    ```
 
@@ -480,7 +481,7 @@ Packages a setup command installs with `pip` are shared by the project's tasks a
   - the model, with its effort when one is set, the time from the task's start to the change, and the task's id.
 
   It names no cost. The comment that answers reviewers holds the task's id, the agent's summary and whether it changed the code, and no cost either. The cost is for the instance's owner, in `cavu task show` and the API.
-- Outside its containers, `cavu` makes requests of its own of two kinds only, both through the proxy `HTTPS_PROXY` names when it is set: to GitHub's API, for a project's tasks, its environment checks and the doctor's forge check; and, once a browser has turned notifications on, to the push service that browser's subscription names. It sends no telemetry and dials nothing else. A notification is encrypted for the browser it goes to (RFC 8291), so the push service cannot read its title or text. It does see when each push is sent, to which subscription and how large it is (RFC 8030), your CAVU's address, which the push's signed token names, and the unencrypted `Topic` header, `task-` and the task's id.
+- Outside its containers, `cavu` makes requests of its own of two kinds only, both through the proxy `HTTPS_PROXY` names when it is set: to GitHub's API, for a project's tasks, its environment checks and the doctor's forge check, following its redirects, since GitHub answers a request for a failed job's log with an address to download it from, and sending the token to no other host; and, once a browser has turned notifications on, to the push service that browser's subscription names. It sends no telemetry and dials nothing else. A notification is encrypted for the browser it goes to (RFC 8291), so the push service cannot read its title or text. It does see when each push is sent, to which subscription and how large it is (RFC 8030), your CAVU's address, which the push's signed token names, and the unencrypted `Topic` header, `task-` and the task's id.
 
 ## Licence
 
