@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
 	"slices"
-	"strconv"
+	"strings"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -27,16 +29,22 @@ func (s *server) tasks(w http.ResponseWriter, r *http.Request) error {
 	q := r.URL.Query()
 	in := taskQuery{Project: q.Get("project"), Status: engine.Status(q.Get("status"))}
 
-	if v := q.Get("needs_you"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			return &apiError{http.StatusBadRequest, fmt.Sprintf("needs_you %q: want true or false", v)}
-		}
-
-		in.NeedsYou = b
+	var err error
+	if in.NeedsYou, err = boolean("needs_you", q.Get("needs_you"), false); err != nil {
+		return err
 	}
 
-	l, err := s.listTasks(r.Context(), in)
+	limit, err := number("limit", q.Get("limit"))
+	if err != nil {
+		return err
+	}
+
+	newest, err := newestFirst(q.Get("order"))
+	if err != nil {
+		return err
+	}
+
+	l, err := s.listTasks(r.Context(), in, int(limit), newest)
 	if err != nil {
 		return err
 	}
@@ -46,10 +54,11 @@ func (s *server) tasks(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// listTasks lists every task but a replay's shadows, oldest first, of the
-// live project, with the status and needing a person, when the query asks.
-func (s *server) listTasks(ctx context.Context, in taskQuery) (taskList, error) {
-	var projectID int64
+// listTasks lists the tasks the query keeps, of the live project, with any of
+// the statuses separated by commas: oldest first, or newest first with newest,
+// and at most limit of them when it is not 0.
+func (s *server) listTasks(ctx context.Context, in taskQuery, limit int, newest bool) (taskList, error) {
+	q := engine.ListQuery{NeedsYou: in.NeedsYou, Newest: newest, Limit: limit}
 
 	if in.Project != "" {
 		p, err := s.Store.ProjectByName(ctx, in.Project)
@@ -61,21 +70,25 @@ func (s *server) listTasks(ctx context.Context, in taskQuery) (taskList, error) 
 			return taskList{}, err
 		}
 
-		projectID = p.ID
+		q.ProjectID = p.ID
 	}
 
-	if in.Status != "" && !slices.Contains(statuses, in.Status) {
-		return taskList{}, &apiError{http.StatusBadRequest, fmt.Sprintf("status %q: want one of %v", in.Status, statuses)}
+	if in.Status != "" {
+		for st := range strings.SplitSeq(string(in.Status), ",") {
+			if !slices.Contains(statuses, engine.Status(st)) {
+				return taskList{}, &apiError{http.StatusBadRequest, fmt.Sprintf("status %q: want one of %v, or several separated by commas", st, statuses)}
+			}
+
+			q.Statuses = append(q.Statuses, engine.Status(st))
+		}
 	}
 
-	rows, err := s.Loop.List(ctx, projectID, s.Waiting)
+	rows, err := s.Loop.List(ctx, q, s.Waiting)
 	if err != nil {
 		return taskList{}, err
 	}
 
-	return taskList{Tasks: slices.DeleteFunc(rows, func(r engine.Row) bool {
-		return (in.Status != "" && r.Status != in.Status) || (in.NeedsYou && !r.NeedsYou)
-	})}, nil
+	return taskList{Tasks: rows}, nil
 }
 
 // newTask is what a request gives a new task, over REST and MCP. The optional
@@ -139,6 +152,56 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	return s.replyTask(w, r, id, http.StatusOK)
+}
+
+// change hands over the task's exported change, as a diff or a git bundle,
+// streamed from the file the export wrote.
+func (s *server) change(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r)
+	if err != nil {
+		return err
+	}
+
+	format := r.URL.Query().Get("format")
+	if format != "diff" && format != "bundle" {
+		return &apiError{http.StatusBadRequest, `format is required: "diff" or "bundle"`}
+	}
+
+	v, err := s.Loop.View(r.Context(), id, nil)
+	if err != nil {
+		return err
+	}
+
+	if v.Change == nil {
+		return &apiError{http.StatusNotFound, "the task shows no change"}
+	}
+
+	path, typ := v.Change.DiffPath, "text/x-diff"
+	if format == "bundle" {
+		path, typ = v.Change.BundlePath, "application/octet-stream"
+	}
+
+	file, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return &apiError{http.StatusNotFound, "the change's file is gone"}
+	}
+
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", typ)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="task-%d.%s"`, id, format))
+	http.ServeContent(w, r, "", info.ModTime(), file)
+
+	return nil
 }
 
 // editTask changes only the fields the body names, over the stored task and

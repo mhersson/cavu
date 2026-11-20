@@ -207,6 +207,13 @@ func TestMCPCancelAndRead(t *testing.T) {
 	require.Equal(t, http.StatusOK, status, body)
 	assert.Equal(t, object(t, body), list, "the list as REST shows it")
 
+	list = tool(t, cs, "list_tasks", map[string]any{"status": "cancelled,draft"})
+	require.Len(t, list["tasks"], 2, "several statuses, separated by commas")
+
+	status, body = f.call(t, "GET /api/tasks?status=cancelled,draft", "")
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, object(t, body), list, "the list as REST shows it")
+
 	assert.Equal(t, map[string]any{"projects": []any{
 		map[string]any{"name": "site", "repo_url": "https://example.com/site.git", "base_branch": "main", "runnable": true},
 		map[string]any{"name": "web", "repo_url": "https://example.com/web.git", "base_branch": "main", "runnable": false},

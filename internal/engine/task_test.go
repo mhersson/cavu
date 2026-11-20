@@ -111,6 +111,19 @@ func TestEditTask(t *testing.T) {
 		assert.Equal(t, h.task.Title, got.Title)
 	})
 
+	t.Run("a cancelled draft is refused", func(t *testing.T) {
+		h := newHarness(t)
+		d := h.draft()
+		require.NoError(t, h.loop.Cancel(t.Context(), d.ID))
+
+		err := engine.EditTask(t.Context(), h.store, store.Task{ID: d.ID, Title: "Something else"}, nil)
+		require.ErrorIs(t, err, engine.ErrRefused)
+
+		got, err := h.store.Task(t.Context(), d.ID)
+		require.NoError(t, err)
+		assert.Equal(t, d.Title, got.Title)
+	})
+
 	refused := map[string]func(h *harness, a, b store.Task) []int64{
 		"a dependency on itself":         func(_ *harness, _, b store.Task) []int64 { return []int64{b.ID} },
 		"a dependency on a missing task": func(*harness, store.Task, store.Task) []int64 { return []int64{999} },

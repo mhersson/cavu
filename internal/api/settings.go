@@ -9,13 +9,15 @@ import (
 	"strings"
 
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/store"
 )
 
 // instanceSecrets are the secrets the settings tell are set or not, never what they are.
 var instanceSecrets = []string{engine.SecretEndpointCredential, engine.SecretForgeToken, engine.SecretForgeAppKey}
 
 // settings answers with every settable key whose value is not empty, a value
-// that is a JSON object as one, and whether each instance secret is set.
+// that is a JSON object as one, whether each instance secret is set, every
+// key's default and every switch's default.
 func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 	all, err := s.Store.Settings(r.Context())
 	if err != nil {
@@ -43,7 +45,10 @@ func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 		secrets[name] = slices.Contains(names, name)
 	}
 
-	reply(w, http.StatusOK, map[string]any{"settings": settings, "secrets": secrets})
+	reply(w, http.StatusOK, map[string]any{
+		"settings": settings, "secrets": secrets,
+		"defaults": engine.SettingDefaults(), "switches": engine.ProjectSwitches(store.Project{}),
+	})
 
 	return nil
 }

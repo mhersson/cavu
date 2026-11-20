@@ -293,14 +293,25 @@ func CheckSetting(key, value string) error {
 
 	values := map[string]string{key: value}
 	set := settingsReader{values: values}
-	set.read()
+	set.readAll()
 
-	_, concurrency := Concurrency(values)
-	_, listen := ListenAddress(values)
 	_, prices := Prices(values)
-	_, ci := CITimeout(values)
 
-	return errors.Join(set.err, concurrency, listen, prices, ci, checkInstancePath(key, value))
+	return errors.Join(set.err, prices, checkInstancePath(key, value))
+}
+
+// SettingDefaults gives every settable key its default as text, "" for a key
+// with none: one a run falls back on another key for, or one that is off unset.
+func SettingDefaults() map[string]string {
+	set := settingsReader{values: map[string]string{}}
+	set.readAll()
+
+	out := make(map[string]string, len(settableKeys))
+	for _, k := range settableKeys {
+		out[k] = set.defaults[k]
+	}
+
+	return out
 }
 
 // checkInstancePath refuses a skills_path that is not a directory and an
@@ -327,7 +338,7 @@ func checkInstancePath(key, value string) error {
 // Concurrency reads the concurrency setting: a positive integer, 3 when unset.
 func Concurrency(values map[string]string) (int, error) {
 	set := settingsReader{values: values}
-	n := set.wholeNumber("concurrency", 3, 1)
+	n := set.concurrency()
 
 	return n, set.err
 }
@@ -336,15 +347,15 @@ func Concurrency(values map[string]string) (int, error) {
 // whole number of minutes, 120 when unset; 0 means no limit and returns 0.
 func CITimeout(values map[string]string) (time.Duration, error) {
 	set := settingsReader{values: values}
-	n := set.wholeNumber("ci_timeout_minutes", 120, 0)
+	d := set.ciTimeout()
 
-	return time.Duration(n) * time.Minute, set.err
+	return d, set.err
 }
 
 // ListenAddress reads the listen_address setting: a host and a port, 127.0.0.1:7117 when unset.
 func ListenAddress(values map[string]string) (string, error) {
 	set := settingsReader{values: values}
-	addr := set.hostPort("listen_address", "127.0.0.1:7117")
+	addr := set.listenAddress()
 
 	return addr, set.err
 }
@@ -404,8 +415,38 @@ func resolveSwitches(p store.Project, overrides map[string]string) (Switches, er
 
 // settingsReader reads typed settings and keeps the first error, which names its key.
 type settingsReader struct {
-	values map[string]string
-	err    error
+	values   map[string]string
+	err      error
+	defaults map[string]string // each key a reader gave a default, to its text
+}
+
+// readAll runs every reader that has a default, so CheckSetting and
+// SettingDefaults see the same set.
+func (s *settingsReader) readAll() {
+	s.read()
+	s.concurrency()
+	s.listenAddress()
+	s.ciTimeout()
+}
+
+func (s *settingsReader) concurrency() int { return s.wholeNumber("concurrency", 3, 1) }
+
+func (s *settingsReader) ciTimeout() time.Duration {
+	return time.Duration(s.wholeNumber("ci_timeout_minutes", 120, 0)) * time.Minute
+}
+
+func (s *settingsReader) listenAddress() string {
+	return s.hostPort("listen_address", "127.0.0.1:7117")
+}
+
+// recordDefault notes a key's default; one below what the key takes is no
+// value a person could set, so it is recorded as "".
+func (s *settingsReader) recordDefault(key, text string) {
+	if s.defaults == nil {
+		s.defaults = map[string]string{}
+	}
+
+	s.defaults[key] = text
 }
 
 // read reads every setting a run uses; a key not in values takes its default.
@@ -456,8 +497,14 @@ func (s *settingsReader) oneOf(key string, allowed ...string) string {
 
 // wholeNumber reads a whole number of least or more.
 func (s *settingsReader) wholeNumber(key string, def, least int) int {
-	v, ok := s.values[key]
-	if !ok || v == "" {
+	v := s.values[key]
+	if v == "" {
+		if def >= least {
+			s.recordDefault(key, strconv.Itoa(def))
+		} else {
+			s.recordDefault(key, "")
+		}
+
 		return def
 	}
 
@@ -470,6 +517,8 @@ func (s *settingsReader) wholeNumber(key string, def, least int) int {
 }
 
 func (s *settingsReader) hostPort(key, def string) string {
+	s.recordDefault(key, def)
+
 	v := cmp.Or(s.values[key], def)
 	if host, port, err := net.SplitHostPort(v); err != nil || host == "" || port == "" {
 		s.fail(key, fmt.Sprintf("%q is not a host and a port", v))
@@ -498,6 +547,8 @@ func (s *settingsReader) dollars(key string) int64 {
 
 // minutes reads a decimal number of minutes, clamped to [lo, hi].
 func (s *settingsReader) minutes(key string, def, lo, hi float64) time.Duration {
+	s.recordDefault(key, strconv.FormatFloat(def, 'f', -1, 64))
+
 	n := def
 
 	if v, ok := s.values[key]; ok && v != "" {

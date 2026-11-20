@@ -1,6 +1,6 @@
 # HTTP API
 
-`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP: the REST routes under `/api/`, and the [MCP tools](#mcp) at `/mcp`. Under `/api/`, request and response bodies are JSON, but for the event stream's. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
+`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP: the REST routes under `/api/`, and the [MCP tools](#mcp) at `/mcp`. Under `/api/`, request and response bodies are JSON, but for the event stream's and the change route's file. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
 
 ## Authentication
 
@@ -23,10 +23,10 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks; or the query names a project or a status that does not exist; or a query value or header that must be a whole number is not one. |
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one, or is absent when the route requires it. |
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
-| 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist. |
+| 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone. |
 | 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Or the container runtime would not remove a project's volumes, with its error in the line. Nothing was written; send it again. |
 | 413 | The body is larger than 1 MiB. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
@@ -134,14 +134,16 @@ The others are the server's:
 
 ### `GET /api/settings`
 
-Answers 200 with every key `cavu settings set` takes whose value is not empty, and whether each instance secret is set:
+Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every settable key's default and every switch's default:
 
 ```json
 {"settings": {"endpoint_mode": "subscription", "model_work": "sonnet"},
- "secrets": {"endpoint_credential": true, "forge_token": false, "forge_app_key": false}}
+ "secrets": {"endpoint_credential": true, "forge_token": false, "forge_app_key": false},
+ "defaults": {"concurrency": "3", "verify_timeout_minutes": "10", "model_review": "", "...": "..."},
+ "switches": {"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true}}
 ```
 
-A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given.
+A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default.
 
 ### `PATCH /api/settings`
 
@@ -158,11 +160,12 @@ A setting's value is a string, null or a JSON object, which is stored as its tex
 Answers 200 with every task but a replay's shadow tasks, oldest first:
 
 ```json
-{"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "needs_you": true, "stop_reason": "question",
-            "waiting": "", "pull_request_ready": false, "created_at": "2030-01-02T03:04:05Z"}]}
+{"tasks": [{"id": 7, "project": "web", "title": "Add a footer", "status": "blocked", "needs_you": true, "needs": "answer",
+            "needs_you_since": "2030-01-02T04:00:00Z", "stop_reason": "question",
+            "waiting": "", "waiting_until": null, "pull_request_ready": false, "created_at": "2030-01-02T03:04:05Z"}]}
 ```
 
-The query `project=NAME` keeps the tasks of one project, `status=STATUS` the tasks with one status, and `needs_you=true` the tasks that need a person; a project that does not exist, a status that is not one of [the task's](#the-task), or a `needs_you` that is not a boolean is 400. `stop_reason` is the open stop's reason, else `""`; `pull_request_ready` is the `ready` of the task's `pull_request`, false for a task with none; the other fields are the task's.
+The query `project=NAME` keeps the tasks of one project, `status=STATUS` the tasks with one status, or with any of several separated by commas (`status=draft,queued`), and `needs_you=true` the tasks that need a person. `order=newest` lists the newest first; `order=oldest` is the default. `limit=N` keeps the first N of the tasks the other queries keep, so `limit=20&needs_you=true` is 20 tasks that need a person; 0 or absent keeps every one. There is no cursor: a longer list is a larger limit. A project that does not exist, a status that is not one of [the task's](#the-task), a `needs_you` that is not a boolean, an `order` that is neither `oldest` nor `newest`, or a `limit` that is not a whole number is 400. `stop_reason` is the open stop's reason, else `""`; `pull_request_ready` is the `ready` of the task's `pull_request`, false for a task with none; `needs`, `needs_you_since`, `waiting` and `waiting_until` are the task's.
 
 ### `POST /api/tasks`
 
@@ -180,7 +183,7 @@ Answers 200 with the task.
 
 ### `PATCH /api/tasks/{id}`
 
-Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts. An edit after that is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
+Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts, unless it is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
 
 ### `POST /api/tasks/{id}/actions`
 
@@ -204,7 +207,8 @@ Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action
 
 ```json
 {"id": 7, "project": "web", "title": "Add a footer", "body": "Below the fold, on every page.", "requester": "api",
- "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "needs_you": true, "waiting": "", "waiting_until": null,
+ "created_at": "2030-01-02T03:04:05Z", "status": "blocked", "needs_you": true, "needs": "answer", "needs_you_since": "2030-01-02T04:00:00Z",
+ "waiting": "", "waiting_until": null,
  "dependencies": [{"id": 3, "status": "done"}],
  "stop": {"reason": "question", "explanation": "Which pages should the footer link to?", "action": "answer", "resets_at": null},
  "questions": [{"question": "Which pages should the footer link to?", "suggested_answer": ""},
@@ -230,6 +234,8 @@ A list is `[]` when empty, never null.
 | `created_at` | When the task was created. |
 | `status` | Where the task stands: `cancelled` once cancelled, started or not; else `draft` until started; `done` once its change is merged; `blocked` while a stop is open; `in_review` once its change is exported, or while it has a pull request and no run is open; `queued` while no run is open; else `running`. |
 | `needs_you` | Whether the task waits for a person: it is `blocked` on a stop that only a person clears, which is any stop but a usage limit, which resets by itself, and a `sandbox` stop or a failed model endpoint while CAVU still retries it; its `pull_request` is `ready`; or it is `in_review` with an exported change and no pull request, as with the switch `publish` off, once no run is open (while the exported run is still open, before its publish or finish, it does not), which waits for a person to take the change and record `done`. |
+| `needs` | In what way the task needs a person: `answer` or `retry`, the `action` of its stop; `review`, when its `pull_request` is `ready`; `take`, when its change was exported with no pull request; else `""`. It is `""` exactly when `needs_you` is false. |
+| `needs_you_since` | When the task came to need a person, as a UTC time, null when `needs` is `""`: the time of the stop for `answer` and `retry`; the end of the newest run for `take`; for `review` the later of the newest look at the pull request and the end of the newest run. |
 | `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; for a task whose pull request CAVU watches, what the watch waits for, or the error of the last look at the pull request and when the next look comes; else `""`. |
 | `waiting_until` | When the wait in `waiting` ends on a clock: the reset of the usage limit of the task, or of another task that holds it, the next try after a fault, local midnight under a spent daily cap, or the end of the time the pull request's checks are given to start or to finish; else null. |
 | `dependencies` | The tasks that must be done before this one runs, each with its `id` and its `status`. `POST` and `PATCH` take their ids as `depends_on`. |
@@ -247,13 +253,17 @@ A list is `[]` when empty, never null.
 
 ### `GET /api/tasks/{id}/events`
 
-Answers 200 with a page of the task's events, oldest first:
+Answers 200 with a page of the task's events, oldest first, or newest first with the query `order=newest` (`order=oldest` is the default):
 
 ```json
 {"events": [{"id": 42, "task_id": 7, "run_id": 3, "...": "..."}]}
 ```
 
-The query `after=ID` starts the page after the event with that id, and `limit=N` sets how many events the page holds at most: 200 when it is left out or 0, and never more than 1000. A client pages by sending the id of the last event it got as `after`, until a page comes back empty. An `after` or `limit` that is not a whole number is 400.
+The query `after=ID` starts the page after the event with that id, or under `order=newest` below it, and `limit=N` sets how many events the page holds at most: 200 when it is left out or 0, and never more than 1000. `agent=false` leaves out the events whose `actor` is `agent`, the agent's progress (`agent_text`, `agent_tool` and `rate_limit`); `agent=true` is the default. A client pages in either order by sending the id of the last event it got as `after`, until a page comes back empty. An `after` or `limit` that is not a whole number, an `order` that is neither `oldest` nor `newest`, or an `agent` that is not a boolean is 400.
+
+### `GET /api/tasks/{id}/change`
+
+Answers 200 with the task's exported change as a file, the one `change` shows (for a task with a pull request, the export CAVU published last). The query `format` is required: `diff` answers the diff (`git diff --binary`) as `text/x-diff` with `Content-Disposition: attachment; filename="task-ID.diff"`, and `bundle` answers the git bundle as `application/octet-stream` with `filename="task-ID.bundle"`. The file is streamed, never read whole, and the route honours `Range` and `HEAD`. A GET needs no CSRF header, so a link carrying the session's cookie downloads it. A `format` that is absent or neither is 400; a task that does not exist, or shows no change, or whose file is gone, is 404.
 
 ### `GET /api/events`
 
@@ -286,6 +296,14 @@ An event is one fact in a task's history, recorded once and never changed:
 | `actor` | Who recorded it: `user`, `engine`, `runner` or `agent`. |
 | `payload` | The event's details, a JSON value whose shape the type sets. |
 | `text` | One sentence that tells the event, for a person; the sentence `cavu task run` prints after the clock and the type. |
+
+Of the payloads, a client may rely on these fields and no others:
+
+| Type | Payload fields |
+|------|----------------|
+| `verify_ended` | `result` (`passed`, `failed`, `timeout` or `waived`), `command`, `exit_code`, `output`, what the command printed, its middle cut out when it is long, and `duration_ms`. |
+| `prepare_failed` | `step`, the step that failed (`clone`, `toolchain`, `setup` or `baseline`), and `output`. |
+| `session_ended` | `summary`, the agent's summary of the session, `""` when it gave none; `assumptions`, the choices it made without asking, a list that may be null; and `where_to_look`, the parts of the change a reviewer should read first, left out when it named none. |
 
 A task's pull request leaves these events: `publish_started` and `published` for a push of the branch and the pull request opened or updated by it, `pr_observed` for what GitHub showed of the pull request: CAVU's first look since its push, its ready-marking or a person's action, each later look that differs from the last record, and the look before a push that finds the pull request merged or closed or its branch moved by a person, and `ready_started` and `pr_ready` for CAVU marking it ready for review. After a follow-up run for reviewers' requests, `reply_started` and `replied` record CAVU's one comment on the pull request that answers them. `home_removed` records that the task's home volume was removed once the task could run no more: it is done or cancelled, or its change was exported with no pull request to follow, as with the switch `publish` off.
 

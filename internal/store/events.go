@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -108,6 +109,40 @@ func (s *Store) EventsAfter(ctx context.Context, afterID, taskID int64, limit in
 	}
 
 	return s.queryEvents(ctx, eventsSelect+`WHERE task_id = ? AND id > ? ORDER BY id LIMIT ?`, taskID, afterID, limit)
+}
+
+// EventPage is a page of a task's events: those after the event After, oldest
+// first, or with Newest those below it (all when it is 0), newest first; at
+// most Limit (0 or less: no limit); and none whose actor is OmitActor, unless
+// that is "".
+type EventPage struct {
+	After     int64
+	Limit     int
+	Newest    bool
+	OmitActor string
+}
+
+// EventsPage returns a page of the task's events.
+func (s *Store) EventsPage(ctx context.Context, taskID int64, p EventPage) ([]Event, error) {
+	if p.Limit <= 0 {
+		p.Limit = -1
+	}
+
+	where, order := `id > ?`, `id`
+	if p.Newest {
+		where, order = `id < ?`, `id DESC`
+
+		if p.After == 0 {
+			p.After = math.MaxInt64
+		}
+	}
+
+	q, args := eventsSelect+`WHERE task_id = ? AND `+where, []any{taskID, p.After}
+	if p.OmitActor != "" {
+		q, args = q+` AND actor != ?`, append(args, p.OmitActor)
+	}
+
+	return s.queryEvents(ctx, q+` ORDER BY `+order+` LIMIT ?`, append(args, p.Limit)...)
 }
 
 // EventsOmitting returns the task's events but those of the given types, oldest first.

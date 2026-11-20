@@ -2,7 +2,9 @@ package api_test
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +12,15 @@ import (
 
 	"github.com/mhersson/cavu/internal/engine"
 )
+
+const settingSwitches = `{"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true}`
+
+// The parts every answer of GET /api/settings carries beside what is set.
+const settingDefaults = `{"runtime": "", "ca_bundle_path": "", "endpoint_mode": "", "endpoint_url": "", "endpoint_auth_header": "",
+	"model_work": "", "effort_work": "", "model_review": "", "effort_review": "", "model_strong": "", "effort_strong": "",
+	"task_timeout_minutes": "300", "task_max_turns": "1000", "task_budget_usd": "", "daily_budget_usd": "", "model_prices": "",
+	"verify_timeout_minutes": "10", "commit_name": "", "commit_email": "", "concurrency": "3", "listen_address": "127.0.0.1:7117",
+	"skills_path": "", "instructions_path": "", "forge_app_id": "", "ci_timeout_minutes": "120"}`
 
 func TestSettingsRoundTrip(t *testing.T) {
 	const secret = "sealed-forge-token-value"
@@ -26,7 +37,8 @@ func TestSettingsRoundTrip(t *testing.T) {
 		return body
 	}
 
-	assert.JSONEq(t, `{"settings": {}, "secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false}}`, settings(t),
+	assert.JSONEq(t, `{"settings": {}, "secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false},
+		"defaults": `+settingDefaults+`, "switches": `+settingSwitches+`}`, settings(t),
 		"a setting a person cannot set is not shown")
 
 	status, body := f.call(t, "PATCH /api/settings", `{"settings": {"endpoint_mode": "subscription", "model_work": "sonnet",
@@ -34,7 +46,8 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusOK, status, body)
 
 	want := `{"settings": {"endpoint_mode": "subscription", "model_work": "sonnet", "concurrency": "4",
-		"commit_name": {"b": 2, "a": [1, 2.50]}}, "secrets": {"endpoint_credential": false, "forge_token": true, "forge_app_key": false}}`
+		"commit_name": {"b": 2, "a": [1, 2.50]}}, "secrets": {"endpoint_credential": false, "forge_token": true, "forge_app_key": false},
+		"defaults": ` + settingDefaults + `, "switches": ` + settingSwitches + `}`
 	assert.JSONEq(t, want, body)
 	assert.JSONEq(t, want, settings(t))
 
@@ -86,7 +99,8 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusOK, status, body)
 
 	want = `{"settings": {"endpoint_mode": "subscription", "commit_name": {"b": 2, "a": [1, 2.50]}},
-		"secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false}}`
+		"secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false},
+		"defaults": ` + settingDefaults + `, "switches": ` + settingSwitches + `}`
 	assert.JSONEq(t, want, body, "null and an empty value unset a key, and an empty secret removes it")
 	assert.JSONEq(t, want, settings(t))
 
@@ -183,4 +197,15 @@ func TestModelPricesRoundTrip(t *testing.T) {
 	after, err := f.store.Settings(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, stored, after, "a refused price writes nothing")
+}
+
+func TestDefaultsCoverEverySettableKey(t *testing.T) {
+	f := newServer(t)
+
+	status, body := f.call(t, "GET /api/settings", "")
+	require.Equal(t, http.StatusOK, status, body)
+
+	defaults, ok := object(t, body)["defaults"].(map[string]any)
+	require.True(t, ok, body)
+	assert.ElementsMatch(t, engine.SettableKeys(), slices.Collect(maps.Keys(defaults)))
 }

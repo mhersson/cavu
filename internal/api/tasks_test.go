@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -151,7 +153,8 @@ func TestTasksRoundTrip(t *testing.T) {
 
 	at := rfc3339(stored.CreatedAt)
 	assert.JSONEq(t, `{"id": 1, "project": "site", "title": "Add a footer", "body": "Below the fold.", "requester": "api",
-		"created_at": "`+at+`", "status": "draft", "needs_you": false, "waiting": "", "waiting_until": null, "dependencies": [],
+		"created_at": "`+at+`", "status": "draft", "needs_you": false, "needs": "", "needs_you_since": null, "waiting": "", "waiting_until": null,
+		"dependencies": [],
 		"stop": null, "questions": [], "review": null, "pull_request": null, "change": null, "turns": 0, "duration_ms": 0,
 		"cost_estimate_usd": 0, "cost_missing_sessions": 0, "usage": [],
 		"budget": {"turns": 0, "max_turns": 1000, "minutes": 0, "max_minutes": 300}}`, created)
@@ -163,7 +166,7 @@ func TestTasksRoundTrip(t *testing.T) {
 	status, body = f.call(t, "GET /api/tasks", "")
 	require.Equal(t, http.StatusOK, status, body)
 	assert.JSONEq(t, `{"tasks": [{"id": 1, "project": "site", "title": "Add a footer", "status": "draft", "needs_you": false,
-		"stop_reason": "", "waiting": "", "pull_request_ready": false, "created_at": "`+at+`"}]}`, body)
+		"needs": "", "needs_you_since": null, "stop_reason": "", "waiting": "", "waiting_until": null, "pull_request_ready": false, "created_at": "`+at+`"}]}`, body)
 
 	t.Run("a PATCH changes only the fields it names", func(t *testing.T) {
 		second := f.task(t, `{"project": "site", "title": "Add a header", "body": "On top.", "depends_on": [1]}`)
@@ -632,8 +635,8 @@ func TestListFilters(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, []any{map[string]any{
-			"id": 4.0, "project": "api", "title": "A question", "status": "blocked", "needs_you": true, "stop_reason": "question",
-			"waiting": "", "pull_request_ready": false, "created_at": rfc3339(stored.CreatedAt),
+			"id": 4.0, "project": "api", "title": "A question", "status": "blocked", "needs_you": true, "needs": engine.ClearAnswer,
+			"needs_you_since": "2030-01-02T03:04:05Z", "stop_reason": "question", "waiting": "", "waiting_until": nil, "pull_request_ready": false, "created_at": rfc3339(stored.CreatedAt),
 		}}, list(t, "?status=blocked"))
 	})
 
@@ -835,4 +838,162 @@ func TestListMarksReadyPullRequests(t *testing.T) {
 
 	assert.Equal(t, map[float64]any{float64(ready): true, float64(failing): false, float64(bare): false}, got)
 	assert.Equal(t, got, needsYou, "a ready pull request needs a person, and the others here do not")
+}
+
+// thirty gives the fixture 30 tasks of site, with the ids 1 to 30: the even
+// ones are done, those one above a multiple of four stopped on a question, and
+// the others are drafts.
+func (f *fixture) thirty(t *testing.T) {
+	t.Helper()
+
+	f.addProject(t, site)
+
+	for i := range 30 {
+		id := f.task(t, fmt.Sprintf(`{"project": "site", "title": "Task %d"}`, i+1))
+		require.EqualValues(t, i+1, id)
+
+		switch {
+		case id%2 == 0:
+			f.add(t, id, engine.TaskStarted, struct{}{})
+			f.add(t, id, engine.Exported, engine.ExportedPayload{HeadCommit: "4b825dc"})
+			f.add(t, id, engine.Merged, struct{}{})
+		case id%4 == 1:
+			f.ask(t, id, "Which colour?")
+		}
+	}
+}
+
+// listed lists the tasks with the query and gives their ids in order.
+func (f *fixture) listed(t *testing.T, query string) []int64 {
+	t.Helper()
+
+	status, body := f.call(t, "GET /api/tasks"+query, "")
+	require.Equal(t, http.StatusOK, status, body)
+
+	var l struct{ Tasks []struct{ ID int64 } }
+	require.NoError(t, json.Unmarshal([]byte(body), &l))
+
+	ids := []int64{}
+	for _, task := range l.Tasks {
+		ids = append(ids, task.ID)
+	}
+
+	return ids
+}
+
+// ids gives n ids from first, step apart.
+func ids(first, step int64, n int) []int64 {
+	out := make([]int64, n)
+	for i := range out {
+		out[i] = first + int64(i)*step
+	}
+
+	return out
+}
+
+func TestTaskListLimitAndOrder(t *testing.T) {
+	f := newServer(t)
+	f.thirty(t)
+
+	for _, tc := range []struct {
+		query string
+		want  []int64
+	}{
+		{"?limit=10&order=newest", ids(30, -1, 10)},
+		{"?limit=10&order=newest&status=done", ids(30, -2, 10)},
+		{"?limit=10&order=oldest&status=done", ids(2, 2, 10)},
+		{"?order=newest&status=draft,blocked", ids(29, -2, 15)},
+		{"?limit=3&status=blocked,draft", ids(1, 2, 3)},
+		{"?limit=5&order=newest&needs_you=true", ids(29, -4, 5)},
+		{"?limit=50", ids(1, 1, 30)},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			assert.Equal(t, tc.want, f.listed(t, tc.query))
+		})
+	}
+
+	for _, query := range []string{"?limit=ten", "?limit=-1", "?order=sideways", "?status=done,paused", "?status=done,"} {
+		t.Run("refused: "+query, func(t *testing.T) {
+			status, body := f.call(t, "GET /api/tasks"+query, "")
+			require.Equal(t, http.StatusBadRequest, status, body)
+			assertError(t, body)
+		})
+	}
+}
+
+func TestTaskListWithoutLimitIsUnchanged(t *testing.T) {
+	f := newServer(t)
+	f.thirty(t)
+
+	for _, tc := range []struct {
+		query string
+		want  []int64
+	}{
+		{"", ids(1, 1, 30)},
+		{"status=done", ids(2, 2, 15)},
+		{"needs_you=true", ids(1, 4, 8)},
+	} {
+		t.Run("filtered by "+tc.query, func(t *testing.T) {
+			assert.Equal(t, tc.want, f.listed(t, "?"+tc.query), "every task the filters keep, oldest first")
+			assert.Equal(t, tc.want, f.listed(t, "?"+tc.query+"&limit=0&order=oldest"))
+		})
+	}
+}
+
+func TestChangeDownload(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	dir := t.TempDir()
+	diffPath, bundlePath := filepath.Join(dir, "change.diff"), filepath.Join(dir, "change.bundle")
+	require.NoError(t, os.WriteFile(diffPath, []byte("diff --git a/footer.html b/footer.html\n"), 0o600))
+	require.NoError(t, os.WriteFile(bundlePath, []byte("# v2 git bundle\n\x00\x01binary"), 0o600))
+
+	id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+	f.add(t, id, engine.TaskStarted, struct{}{})
+	f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+	f.add(t, id, engine.Exported, engine.ExportedPayload{HeadCommit: "4b825dc", DiffPath: diffPath, BundlePath: bundlePath})
+	f.add(t, id, engine.RunEnded, engine.RunEndedPayload{Outcome: engine.RunExported})
+
+	get := func(route string, bearer bool) (*http.Response, string) {
+		r := f.request(t, route, "")
+		if bearer {
+			r.Header.Set("Authorization", "Bearer "+f.token)
+		}
+
+		return send(t, r)
+	}
+	url := fmt.Sprintf("GET /api/tasks/%d/change?format=", id)
+
+	resp, body := get(url+"diff", true)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	assert.Equal(t, "diff --git a/footer.html b/footer.html\n", body)
+	assert.Equal(t, fmt.Sprintf(`attachment; filename="task-%d.diff"`, id), resp.Header.Get("Content-Disposition"))
+	assert.Equal(t, "text/x-diff", resp.Header.Get("Content-Type"))
+
+	resp, body = get(url+"bundle", true)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "# v2 git bundle\n\x00\x01binary", body)
+	assert.Equal(t, fmt.Sprintf(`attachment; filename="task-%d.bundle"`, id), resp.Header.Get("Content-Disposition"))
+	assert.Equal(t, "application/octet-stream", resp.Header.Get("Content-Type"))
+
+	for _, q := range []string{"", "patch"} {
+		resp, _ = get(url+q, true)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "format %q", q)
+	}
+
+	resp, _ = get(url+"diff", false)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	resp, _ = get("GET /api/tasks/999/change?format=diff", true)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "an unknown task")
+
+	none := f.task(t, `{"project": "site", "title": "Nothing yet"}`)
+	resp, _ = get(fmt.Sprintf("GET /api/tasks/%d/change?format=diff", none), true)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "a task with no change")
+
+	require.NoError(t, os.Remove(diffPath))
+
+	resp, _ = get(url+"diff", true)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "a file that is gone")
 }

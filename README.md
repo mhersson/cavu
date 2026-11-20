@@ -16,7 +16,7 @@ Pre-release. The verbs today:
 - `cavu image build` builds the sandbox image on Docker or Podman.
 - `cavu doctor` checks the runtime, the image, the settings, the endpoint and the access to GitHub.
 - `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
-- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts, lists them, each with whether it needs you (`--needs-you` keeps those that do), shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
+- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts and while it is not cancelled, lists them, each with whether it needs you (`--needs-you` keeps those that do), shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 - `cavu serve` drives every started task, watches the pull requests CAVU opened, and serves the HTTP API until interrupted.
 - `cavu service` runs `cavu serve` as a service of your login, a systemd user unit on Linux or a launchd agent on macOS, and removes it.
@@ -116,7 +116,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
    cavu task add web --title "Test the login redirect" --depends-on ID --start
    ```
 
-   `cavu task edit ID` changes only the title, body or dependencies it is given, until the task's first run starts; `--depends-on ""` removes every dependency.
+   `cavu task edit ID` changes only the title, body or dependencies it is given, until the task's first run starts and while it is not cancelled; `--depends-on ""` removes every dependency.
 
    ```
    cavu task edit ID --depends-on 3,4
@@ -124,7 +124,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    `task run` drives only the task it names, so run a dependency first: on a task that waits for one, `task run` prints why and waits until that task is done or you interrupt it.
 
-   With the switch `publish` on, `task run` ends where the pull request opens, and `cavu serve` records its merge, which makes the task `done`; `cavu task done` is refused for a task with a pull request. With `cavu project set web --switch publish=off`, a task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
+   With the switch `publish` on, `task run` ends where the pull request opens, and `cavu serve` records its merge, which makes the task `done`; `cavu task done` is refused for a task with a pull request. With `cavu project set web --switch publish=off`, a task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`; `GET /api/tasks/ID/change?format=bundle` hands over the same bundle, and `format=diff` the diff), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
 
    ```
    cavu task done ID

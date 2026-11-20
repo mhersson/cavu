@@ -35,14 +35,15 @@ type Facts struct {
 	CostMissing                int             // sessions and reviews of the whole task that ended without a cost
 	LastHumanEventID           int64           // the newest human action's event; the task's spend counts the usage after it
 	Review                     ReviewFact
-	Role                       string   // of the task's session, strong after a fresh fix session; "" means work
-	Answers                    []string // every answer a person gave on the task
-	Assumptions                []string // of the open run's sessions
-	PR                         *PRFact  // the task's pull request, nil before its first publish
-	RunReason                  string   // of the newest run, kept past its end so a retry after its failed prepare starts its like
-	RunRequests                []string // of the newest run, kept past its end: the ids of the requests a comments run was given
-	RunHead                    string   // of the open run: the pull request's head a fix run starts from
-	VerifyCommand              string   // of the newest verify_ended in the open run
+	Role                       string    // of the task's session, strong after a fresh fix session; "" means work
+	Answers                    []string  // every answer a person gave on the task
+	Assumptions                []string  // of the open run's sessions
+	PR                         *PRFact   // the task's pull request, nil before its first publish
+	RunReason                  string    // of the newest run, kept past its end so a retry after its failed prepare starts its like
+	RunRequests                []string  // of the newest run, kept past its end: the ids of the requests a comments run was given
+	RunHead                    string    // of the open run: the pull request's head a fix run starts from
+	VerifyCommand              string    // of the newest verify_ended in the open run
+	RunEndedAt                 time.Time // of the newest run_ended
 
 	started time.Time // of the newest session or review that has not ended, zero when none
 }
@@ -64,6 +65,7 @@ type PRFact struct {
 	Since                     time.Time       // the latest of the head's publish, CAVU's ready-marking and a person's action
 	Export                    ExportedPayload // the export CAVU published last
 	Seen                      *Observation    // the newest observation since the head was published; nil when none
+	SeenAt                    time.Time       // when Seen was recorded
 	Looked                    bool            // Seen was recorded after the event Since is the time of
 	TakeBack                  bool            // a retry of a takeover or a conflict gives CAVU the head the next look shows
 	MarkedReady               bool            // CAVU marked the pull request ready for review
@@ -179,6 +181,7 @@ func (f *Facts) apply(e store.Event) {
 		f.fixRunStarted(p)
 	case RunEnded:
 		f.resetRun()
+		f.RunEndedAt = e.At
 		f.RunOpen, f.Home = false, decode[RunEndedPayload](e.Payload).KeptHome
 	case HomeRemoved:
 		// A result, recorded after the release: it closes no stop, or a cancelled
@@ -249,7 +252,7 @@ func (f *Facts) apply(e store.Event) {
 	case Published:
 		f.published(decode[PublishedPayload](e.Payload), e.At)
 	case PRObserved:
-		f.observed(decode[PRObservedPayload](e.Payload))
+		f.observed(decode[PRObservedPayload](e.Payload), e.At)
 	case PRReady:
 		if f.PR != nil {
 			f.PR.MarkedReady, f.PR.Since, f.PR.Looked = true, e.At, false
@@ -367,7 +370,7 @@ func (f *Facts) published(p PublishedPayload, at time.Time) {
 // observed records what the forge showed of the pull request, and gives CAVU
 // the head it shows when a retry owes that and the head is not one of CAVU's.
 // A merge closes the open stop: a done task has nothing left to retry.
-func (f *Facts) observed(o Observation) {
+func (f *Facts) observed(o Observation, at time.Time) {
 	switch o.State {
 	case PRMerged:
 		f.Merged, f.OpenStop = true, nil
@@ -380,7 +383,7 @@ func (f *Facts) observed(o Observation) {
 			pr.Head, pr.Heads = o.Head, append(pr.Heads, o.Head)
 		}
 
-		pr.Seen, pr.Looked, pr.TakeBack = &o, true, false
+		pr.Seen, pr.SeenAt, pr.Looked, pr.TakeBack = &o, at, true, false
 	}
 }
 

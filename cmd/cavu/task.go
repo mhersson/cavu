@@ -249,7 +249,7 @@ func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	defer a.close()
 
-	rows, err := a.actions().List(ctx, 0, nil)
+	rows, err := a.actions().List(ctx, engine.ListQuery{NeedsYou: *needsYou}, nil)
 	if err != nil {
 		return err
 	}
@@ -258,16 +258,7 @@ func taskList(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	fmt.Fprintln(w, "ID\tPROJECT\tSTATUS\tNEEDS YOU\tTITLE")
 
 	for _, r := range rows {
-		if *needsYou && !r.NeedsYou {
-			continue
-		}
-
-		var needs string
-		if r.NeedsYou {
-			needs = "yes"
-		}
-
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", r.ID, r.Project, r.Status, needs, r.Title)
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", r.ID, r.Project, r.Status, r.Needs, r.Title)
 	}
 
 	return w.Flush()
@@ -317,8 +308,8 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 func printView(w io.Writer, v engine.View) {
 	fmt.Fprintf(w, "task:    %d\nproject: %s\ntitle:   %s\nstatus:  %s\n", v.ID, v.Project, v.Title, v.Status)
 
-	if v.NeedsYou {
-		fmt.Fprintln(w, "needs:   you")
+	if v.Needs != "" {
+		fmt.Fprintf(w, "needs:   you: %s (since %s)\n", v.Needs, v.NeedsYouSince.Local().Format(time.DateTime))
 	}
 
 	if s := v.Stop; s != nil {

@@ -234,7 +234,7 @@ func TestList(t *testing.T) {
 			return ""
 		}
 
-		rows, err := h.loop.List(ctx, projectID, scheduler)
+		rows, err := h.loop.List(ctx, engine.ListQuery{ProjectID: projectID}, scheduler)
 		require.NoError(t, err)
 
 		out := []row{}
@@ -253,4 +253,129 @@ func TestList(t *testing.T) {
 	assert.Equal(t, append(web, row{elsewhere.ID, "api", engine.StatusDraft, false, "", ""}), list(0),
 		"every task but the shadow, a removed project's with its name")
 	assert.Equal(t, web, list(h.task.ProjectID))
+}
+
+func TestNeedsYouSince(t *testing.T) {
+	at := func(m int) time.Time { return now.Add(time.Duration(m) * time.Minute) }
+	stop := func(h *harness, action string) {
+		h.addTo(h.task.ID, at(1), engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+		h.addTo(h.task.ID, at(2), engine.Stopped, engine.StoppedPayload{Reason: engine.StopVerifyFailed, Explanation: "x", Action: action})
+	}
+	published := func(h *harness) {
+		h.addTo(h.task.ID, at(1), engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+		h.addTo(h.task.ID, at(2), engine.Exported, engine.ExportedPayload{})
+		h.addTo(h.task.ID, at(3), engine.Published, engine.PublishedPayload{Number: 3, Head: "h1"})
+		h.addTo(h.task.ID, at(4), engine.RunEnded, engine.RunEndedPayload{})
+		h.addTo(h.task.ID, at(5), engine.PRObserved, engine.Observation{State: engine.PROpen, Head: "h1", Checks: engine.ChecksPassed})
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*harness)
+		way   string
+		since *time.Time
+	}{
+		{"a question", func(h *harness) { stop(h, engine.ClearAnswer) }, engine.ClearAnswer, new(at(2))},
+		{"a failure", func(h *harness) { stop(h, engine.ClearRetry) }, engine.ClearRetry, new(at(2))},
+		{"a ready pull request", published, engine.NeedsReview, new(at(5))},
+		{"a pull request made ready by a run that only replied", func(h *harness) {
+			published(h)
+			h.addTo(h.task.ID, at(6), engine.RunStarted, engine.RunStartedPayload{Reason: engine.ReasonComments, Head: "h1"})
+			h.addTo(h.task.ID, at(7), engine.RunEnded, engine.RunEndedPayload{})
+		}, engine.NeedsReview, new(at(7))},
+		{"a change to take", func(h *harness) {
+			h.addTo(h.task.ID, at(1), engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+			h.addTo(h.task.ID, at(2), engine.Exported, engine.ExportedPayload{})
+			h.addTo(h.task.ID, at(3), engine.RunEnded, engine.RunEndedPayload{})
+		}, engine.NeedsTake, new(at(3))},
+		{"a running task", func(h *harness) {
+			h.addTo(h.task.ID, at(1), engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+		}, "", nil},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			tc.setup(h)
+
+			v := h.viewOf(h.task.ID, nil)
+			assert.Equal(t, tc.way, v.Needs)
+			assert.Equal(t, tc.since, v.NeedsYouSince)
+			assert.Equal(t, tc.way != "", v.NeedsYou)
+
+			rows, err := h.loop.List(t.Context(), engine.ListQuery{}, nil)
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			assert.Equal(t, tc.way, rows[0].Needs)
+			assert.Equal(t, tc.since, rows[0].NeedsYouSince)
+		})
+	}
+}
+
+func TestRowCarriesTheWait(t *testing.T) {
+	h := newHarness(t)
+	id := h.task.ID
+	resets := now.Add(time.Hour)
+
+	h.addTo(id, now, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+	h.addTo(id, now, engine.SessionEnded, engine.SessionEndedPayload{Outcome: engine.OutcomeUsageLimit, ResetsAt: resets})
+	h.addTo(id, now, engine.Stopped, engine.StoppedPayload{
+		Reason: engine.StopUsageLimit, Explanation: "The usage limit was reached.", Action: engine.ClearNone, ResetsAt: resets,
+	})
+
+	rows, err := h.loop.List(t.Context(), engine.ListQuery{}, nil)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	v := h.viewOf(id, nil)
+	require.NotNil(t, v.WaitingUntil)
+	assert.Equal(t, v.WaitingUntil, rows[0].WaitingUntil)
+}
+
+func TestListReadsAFinishedTaskOnce(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+
+	done, cancelled, told, halting, drafted, asked := h.draft(), h.draft(), h.draft(), h.draft(), h.draft(), h.draft()
+
+	for _, id := range []int64{done.ID, told.ID} {
+		h.addTo(id, now, engine.TaskStarted, struct{}{})
+		h.addTo(id, now, engine.Exported, engine.ExportedPayload{})
+		h.addTo(id, now, engine.Merged, struct{}{})
+	}
+
+	require.NoError(t, h.loop.Cancel(ctx, cancelled.ID))
+	h.addTo(halting.ID, now, engine.TaskStarted, struct{}{})
+	h.addTo(halting.ID, now, engine.HumanCancelled, struct{}{}) // its cancelled stop is not recorded yet
+	h.addTo(asked.ID, now, engine.TaskStarted, struct{}{})
+	h.stopTask(asked.ID, engine.StoppedPayload{Reason: engine.StopQuestion, Explanation: "Which colour?", Action: engine.ClearAnswer})
+
+	s := &readsStore{Store: h.store}
+	l := &engine.Loop{Store: s, Now: h.clock.Now}
+
+	list := func(waiting func(int64) string) []engine.Row {
+		t.Helper()
+
+		rows, err := l.List(ctx, engine.ListQuery{}, waiting)
+		require.NoError(t, err)
+
+		return rows
+	}
+
+	first := list(func(id int64) string {
+		if id == told.ID {
+			return engine.WaitingForSlot
+		}
+
+		return ""
+	})
+
+	assert.Equal(t, []int64{h.task.ID, done.ID, cancelled.ID, told.ID, halting.ID, drafted.ID, asked.ID}, s.reads, "the first list reads every task")
+
+	s.reads = nil
+	second := list(nil)
+
+	assert.Equal(t, []int64{h.task.ID, told.ID, halting.ID, drafted.ID, asked.ID}, s.reads,
+		"a finished task is read once; an open one, one with a reason to wait, one the engine has yet to stop, a draft and a stopped one, every time")
+	assert.Equal(t, first[1:3], second[1:3], "a kept row is the row the task had")
 }

@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"time"
+
+	"github.com/mhersson/cavu/internal/store"
 )
 
 // View is what a person reads about a task, which the API and MCP serve as it
@@ -18,6 +21,8 @@ type View struct {
 	CreatedAt           time.Time    `json:"created_at"`
 	Status              Status       `json:"status"`
 	NeedsYou            bool         `json:"needs_you"`
+	Needs               string       `json:"needs"`
+	NeedsYouSince       *time.Time   `json:"needs_you_since"`
 	Waiting             string       `json:"waiting"`
 	WaitingUntil        *time.Time   `json:"waiting_until"`
 	Dependencies        []Dep        `json:"dependencies"`
@@ -95,15 +100,18 @@ type Budget struct {
 
 // Row is a task in a list.
 type Row struct {
-	ID               int64     `json:"id"`
-	Project          string    `json:"project"`
-	Title            string    `json:"title"`
-	Status           Status    `json:"status"`
-	NeedsYou         bool      `json:"needs_you"`
-	StopReason       string    `json:"stop_reason"`
-	Waiting          string    `json:"waiting"`
-	PullRequestReady bool      `json:"pull_request_ready"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID               int64      `json:"id"`
+	Project          string     `json:"project"`
+	Title            string     `json:"title"`
+	Status           Status     `json:"status"`
+	NeedsYou         bool       `json:"needs_you"`
+	Needs            string     `json:"needs"`
+	NeedsYouSince    *time.Time `json:"needs_you_since"`
+	StopReason       string     `json:"stop_reason"`
+	Waiting          string     `json:"waiting"`
+	WaitingUntil     *time.Time `json:"waiting_until"`
+	PullRequestReady bool       `json:"pull_request_ready"`
+	CreatedAt        time.Time  `json:"created_at"`
 }
 
 // View reads the task as a person sees it now. waiting is the scheduler's
@@ -129,10 +137,12 @@ func (l *Loop) View(ctx context.Context, taskID int64, waiting func(int64) strin
 	turns, d := TurnsAndDuration(events)
 	v := View{
 		ID: t.ID, Project: p.Name, Title: t.Title, Body: t.Body, Requester: t.Requester, CreatedAt: t.CreatedAt.UTC(),
-		Status: StatusOf(f), NeedsYou: NeedsYou(s), Dependencies: s.Deps, Questions: []Question{},
+		Status: StatusOf(f), Dependencies: s.Deps, Questions: []Question{},
 		Turns: turns, DurationMS: d.Milliseconds(), CostMissingSessions: f.CostMissing,
 		Usage: make([]UsageRow, len(usage)), Budget: budgetOf(s),
 	}
+	v.Needs, v.NeedsYouSince = needsOf(s)
+	v.NeedsYou = v.Needs != ""
 	v.Waiting, v.WaitingUntil = waitingOf(s, waiting)
 
 	if st := f.OpenStop; st != nil {
@@ -187,9 +197,21 @@ func (l *Loop) View(ctx context.Context, taskID int64, waiting func(int64) strin
 	return v, nil
 }
 
-// List lists every task but a replay's shadows, oldest first, of the project
-// projectID when it is not 0. A removed project's tasks keep its name.
-func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) string) ([]Row, error) {
+// ListQuery narrows a list of tasks: to the project ProjectID when it is not
+// 0, to the statuses in Statuses when it has any, and with NeedsYou to the
+// tasks that need a person. Newest lists the newest first, and Limit, when it
+// is not 0, keeps the first Limit tasks the other fields keep.
+type ListQuery struct {
+	ProjectID int64
+	Statuses  []Status
+	NeedsYou  bool
+	Newest    bool
+	Limit     int
+}
+
+// List lists the tasks q keeps, but a replay's shadows, oldest first unless q
+// says newest. A removed project's tasks keep its name.
+func (l *Loop) List(ctx context.Context, q ListQuery, waiting func(int64) string) ([]Row, error) {
 	names, err := l.Store.ProjectNames(ctx)
 	if err != nil {
 		return nil, err
@@ -200,36 +222,77 @@ func (l *Loop) List(ctx context.Context, projectID int64, waiting func(int64) st
 		return nil, err
 	}
 
+	if q.Newest {
+		slices.Reverse(ts)
+	}
+
 	rows := []Row{}
 
 	for _, t := range ts {
-		if projectID != 0 && t.ProjectID != projectID {
+		if q.Limit > 0 && len(rows) == q.Limit {
+			break
+		}
+
+		if q.ProjectID != 0 && t.ProjectID != q.ProjectID {
 			continue
 		}
 
-		s, err := l.Snapshot(ctx, t.ID)
+		r, err := l.row(ctx, t, names[t.ProjectID], waiting)
 		if err != nil {
 			return nil, err
 		}
 
-		r := Row{
-			ID: t.ID, Project: names[t.ProjectID], Title: t.Title, Status: StatusOf(s.Facts), NeedsYou: NeedsYou(s),
-			CreatedAt: t.CreatedAt.UTC(),
-		}
-		r.Waiting, _ = waitingOf(s, waiting)
-
-		if st := s.Facts.OpenStop; st != nil {
-			r.StopReason = st.Reason
-		}
-
-		if pr := PullRequestOf(s.Facts, s.Watch.NoCI); pr != nil {
-			r.PullRequestReady = pr.Ready
+		if len(q.Statuses) > 0 && !slices.Contains(q.Statuses, r.Status) || q.NeedsYou && !r.NeedsYou {
+			continue
 		}
 
 		rows = append(rows, r)
 	}
 
 	return rows, nil
+}
+
+// row is the task's row. That of a done or cancelled task the engine leaves
+// alone and the scheduler gives no reason to wait is kept: no action of the
+// engine or of a person changes it any more.
+func (l *Loop) row(ctx context.Context, t store.Task, project string, waiting func(int64) string) (Row, error) {
+	if kept, ok := l.finished.Load(t.ID); ok {
+		return kept.(Row), nil
+	}
+
+	s, err := l.Snapshot(ctx, t.ID)
+	if err != nil {
+		return Row{}, err
+	}
+
+	r := Row{ID: t.ID, Project: project, Title: t.Title, Status: StatusOf(s.Facts), CreatedAt: t.CreatedAt.UTC()}
+	r.Needs, r.NeedsYouSince = needsOf(s)
+	r.NeedsYou = r.Needs != ""
+	r.Waiting, r.WaitingUntil = waitingOf(s, waiting)
+
+	if st := s.Facts.OpenStop; st != nil {
+		r.StopReason = st.Reason
+	}
+
+	if pr := PullRequestOf(s.Facts, s.Watch.NoCI); pr != nil {
+		r.PullRequestReady = pr.Ready
+	}
+
+	if (r.Status == StatusDone || r.Status == StatusCancelled) && r.Waiting == "" && Decide(s).Kind == KindNone {
+		l.finished.Store(t.ID, r)
+	}
+
+	return r, nil
+}
+
+// needsOf is Needs with its time as a view carries it: UTC, nil for no need.
+func needsOf(s Snapshot) (string, *time.Time) {
+	way, since := Needs(s)
+	if way == "" {
+		return "", nil
+	}
+
+	return way, new(since.UTC())
 }
 
 // waitingOf is why the task does not act and until when: the wait or the

@@ -67,7 +67,8 @@ func noBaseline(p store.Project) error {
 	return refuse("project %q has %w", p.Name, ErrNoBaseline)
 }
 
-// EditTask writes a task's title, body and dependencies until its first run starts.
+// EditTask writes a task's title, body and dependencies until its first run
+// starts, and never once it is cancelled.
 func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) error {
 	if err := checkTitle(t.Title); err != nil {
 		return err
@@ -83,8 +84,11 @@ func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) err
 		return fmt.Errorf("task %d: %w", t.ID, err)
 	}
 
-	if hadRun(events) {
+	switch {
+	case hadRun(events):
 		return refuse("task %d has started a run", t.ID)
+	case Reduce(events).Cancelled:
+		return refuse("task %d is cancelled", t.ID)
 	}
 
 	if err := checkDeps(ctx, s, t.ID, dependsOn); err != nil {

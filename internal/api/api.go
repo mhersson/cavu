@@ -63,6 +63,7 @@ var routes = []route{
 	{"PATCH /api/tasks/{id}", false, (*server).editTask},
 	{"POST /api/tasks/{id}/actions", false, (*server).act},
 	{"GET /api/tasks/{id}/events", false, (*server).events},
+	{"GET /api/tasks/{id}/change", false, (*server).change},
 	{"GET /api/events", false, (*server).stream},
 }
 

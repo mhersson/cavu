@@ -412,3 +412,44 @@ func TestEventsAfter(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []int64{a[0], b[0]}, eventIDs(got))
 }
+
+func TestEventsPage(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+	one := seedTask(t, s)
+	two := seedTaskIn(t, s, one.ProjectID)
+
+	var ids []int64
+
+	for i, actor := range []string{"engine", "agent", "runner", "agent", "user", "engine"} {
+		id, err := s.Append(ctx, one.ID, -1, []Event{{Type: "x", Actor: actor}}, nil)
+		require.NoError(t, err)
+
+		ids = append(ids, id)
+
+		if i == 2 {
+			appendTyped(t, s, two.ID, "x") // another task's event among the task's
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		page EventPage
+		want []int64
+	}{
+		{"the defaults", EventPage{}, ids},
+		{"after and a limit", EventPage{After: ids[1], Limit: 2}, ids[2:4]},
+		{"newest first", EventPage{Newest: true}, []int64{ids[5], ids[4], ids[3], ids[2], ids[1], ids[0]}},
+		{"newest first below an id", EventPage{Newest: true, After: ids[4], Limit: 2}, []int64{ids[3], ids[2]}},
+		{"without the agent's", EventPage{OmitActor: "agent"}, []int64{ids[0], ids[2], ids[4], ids[5]}},
+		{"newest first without the agent's", EventPage{Newest: true, After: ids[5], OmitActor: "agent", Limit: 2}, []int64{ids[4], ids[2]}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.EventsPage(ctx, one.ID, tc.page)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, eventIDs(got))
+		})
+	}
+}
