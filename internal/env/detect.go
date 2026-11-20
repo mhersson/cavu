@@ -6,6 +6,7 @@ package env
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +45,7 @@ var toolAliases = map[string]string{"golang": "go", "nodejs": "node"}
 // VersionFiles are the root-level files Detect reads from a clone.
 func VersionFiles() []string {
 	return []string{
+		".golangci.json", ".golangci.toml", ".golangci.yaml", ".golangci.yml",
 		".nvmrc", ".python-version", ".tool-versions", "Cargo.toml", "go.mod",
 		"mise.toml", "package.json", "pyproject.toml", "requirements.txt", "rust-toolchain.toml", "uv.lock",
 	}
@@ -285,7 +287,71 @@ func (r *reader) ownVersions(files map[string][]byte) (map[string]string, error)
 		}
 	}
 
+	for _, name := range []string{".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"} {
+		b, ok := files[name]
+		if !ok {
+			continue
+		}
+
+		v, err := golangciVersion(name, b)
+		if err != nil {
+			return nil, err
+		}
+
+		// Only version 2 files carry the field, so none means 1.
+		if err := r.take(out, name, "golangci-lint", cmp.Or(v, "1")); err != nil {
+			return nil, err
+		}
+
+		break
+	}
+
 	return out, nil
+}
+
+// golangciVersion returns the top-level version field of a golangci-lint
+// configuration as text, or "" when it has none.
+func golangciVersion(name string, b []byte) (string, error) {
+	var doc struct {
+		Version any `toml:"version" json:"version"`
+	}
+
+	var err error
+
+	switch {
+	case strings.HasSuffix(name, ".toml"):
+		err = toml.Unmarshal(b, &doc)
+	case strings.HasSuffix(name, ".json"):
+		err = json.Unmarshal(b, &doc)
+	default:
+		for line := range strings.SplitSeq(string(b), "\n") {
+			if rest, ok := strings.CutPrefix(line, "version:"); ok {
+				rest, _, _ = strings.Cut(rest, "#")
+				rest = strings.TrimSpace(rest)
+
+				for _, q := range []string{`"`, `'`} {
+					rest = strings.TrimSuffix(strings.TrimPrefix(rest, q), q)
+				}
+
+				return rest, nil
+			}
+		}
+
+		return "", nil
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+
+	switch v := doc.Version.(type) {
+	case string:
+		return v, nil
+	case nil:
+		return "", nil
+	default:
+		return fmt.Sprint(v), nil
+	}
 }
 
 // firstLine returns the first line that is not blank or a # comment, trimmed,

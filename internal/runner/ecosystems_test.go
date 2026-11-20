@@ -53,7 +53,8 @@ var ecosystemFixtures = []ecosystemFixture{
 	{
 		name: "go",
 		files: map[string]string{
-			"go.mod": "module example.com/eco\n\ngo " + goVersion + "\n\nrequire github.com/google/uuid v1.6.0\n",
+			"go.mod":         "module example.com/eco\n\ngo " + goVersion + "\n\nrequire github.com/google/uuid v1.6.0\n",
+			".golangci.yaml": "version: \"2\"\n",
 			"go.sum": "github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=\n" +
 				"github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=\n",
 			"eco.go": "package eco\n\nimport \"github.com/google/uuid\"\n\n" +
@@ -62,8 +63,9 @@ var ecosystemFixtures = []ecosystemFixture{
 				"func TestValid(t *testing.T) {\n\tif !Valid(\"6ba7b810-9dad-11d1-80b4-00c04fd430c8\") {\n\t\tt.Fatal(\"not valid\")\n\t}\n}\n",
 		},
 		setup: "go mod download", verify: "go test ./...",
-		tools:        []string{"go@" + goVersion},
+		tools:        []string{"go@" + goVersion, "golangci-lint@2"},
 		toolchainURL: "https://go.dev/dl/", version: "go version",
+		checks: []string{"golangci-lint version && golangci-lint run ./..."},
 		added: map[string]string{
 			"added_test.go": "package eco\n\nimport (\n\t\"testing\"\n\n\t\"github.com/dustin/go-humanize\"\n)\n\n" +
 				"func TestAdded(t *testing.T) {\n\tif got := humanize.Comma(1234567); got != \"1,234,567\" {\n\t\tt.Fatal(got)\n\t}\n}\n",
