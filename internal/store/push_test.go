@@ -42,13 +42,19 @@ func TestPushSubscriptions(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []PushSubscription{phone, laptop}, got, "new keys and origin, the first creation and the last delivery kept")
 
-	require.NoError(t, s.RemovePushSubscription(ctx, phone.ID))
-	require.ErrorIs(t, s.RemovePushSubscription(ctx, phone.ID), ErrNotFound)
-	require.NoError(t, s.PushDelivered(ctx, phone.ID, delivered), "a delivery to a subscription removed meanwhile")
+	require.NoError(t, s.RemovePushSubscription(ctx, laptop.ID))
+	require.ErrorIs(t, s.RemovePushSubscription(ctx, laptop.ID), ErrNotFound)
+	require.NoError(t, s.PushDelivered(ctx, laptop.ID, delivered), "a delivery to a subscription removed meanwhile")
+
+	tablet := PushSubscription{Endpoint: "https://push.example.org/c", P256DH: "k4", Auth: "s4", Origin: "https://cavu.example.org", CreatedAt: delivered}
+
+	tablet.ID, err = s.PutPushSubscription(ctx, tablet)
+	require.NoError(t, err)
+	require.NotEqual(t, laptop.ID, tablet.ID, "a removed subscription's id is never given to another")
 
 	got, err = s.PushSubscriptions(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []PushSubscription{laptop}, got)
+	require.Equal(t, []PushSubscription{phone, tablet}, got)
 }
 
 func TestPushNotified(t *testing.T) {

@@ -323,7 +323,7 @@ Registers a browser's push subscription, or updates the one with the same endpoi
  "origin": "https://cavu.example.org", "focused": true}
 ```
 
-Answers 200 with the id of the device, the same for every call with that endpoint:
+Answers 200 with the id of the device, the same for every call with that endpoint while the device stays registered; an id is never given to another device:
 
 ```json
 {"id": 3}

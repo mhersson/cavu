@@ -202,7 +202,7 @@ ALTER TABLE projects ADD COLUMN forge_credential TEXT REFERENCES forge_credentia
 `},
 	{Version: 9, SQL: `
 CREATE TABLE push_subscriptions (
-	id         INTEGER PRIMARY KEY,
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	endpoint   TEXT NOT NULL UNIQUE,
 	p256dh     TEXT NOT NULL,
 	auth       TEXT NOT NULL,
