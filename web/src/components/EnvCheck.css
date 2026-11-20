@@ -14,13 +14,29 @@
   --k: var(--red);
 }
 
+.envcheck.k-run {
+  --k: var(--aqua);
+}
+
+.envcheck.k-wait {
+  --k: var(--wait-yellow);
+}
+
 .envcheck .l0 {
   margin: 0;
 }
 
-.envcheck .l0 b {
+.envcheck .l0 b,
+.envcheck .later b {
   font-weight: 600;
   margin-right: 6px;
+}
+
+/* Indented by the mark's width and margin, under the first line's text. */
+.envcheck .later {
+  margin: 4px 0 0 18px;
+  color: var(--grey2);
+  font-size: 13px;
 }
 
 .envcheck .fault {
