@@ -20,6 +20,27 @@
   white-space: pre-wrap;
 }
 
+.task-page .title-field {
+  width: 100%;
+  margin: 0;
+}
+
+.task-page .title-field input {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.task-page .task-edit {
+  max-width: 74ch;
+  margin: 0 0 18px;
+}
+
+.task-page .task-edit textarea {
+  display: block;
+  resize: vertical;
+}
+
 .task-page .waitline {
   border-left: 3px solid var(--bg4);
   padding: 4px 0 4px 12px;
@@ -138,11 +159,13 @@
   margin-bottom: 9px;
 }
 
-.task-page .cancel-row {
+.task-page .foot-acts {
+  display: grid;
+  gap: 8px;
   margin: 20px 0 0;
 }
 
-.task-page .cancel-row .btn {
+.task-page .foot-acts .btn {
   width: 100%;
   padding: 9px;
 }
@@ -161,5 +184,9 @@
   .task-page .task-body {
     font-size: 13px;
     margin-bottom: 14px;
+  }
+
+  .task-page .title-field input {
+    font-size: 20px !important;
   }
 }

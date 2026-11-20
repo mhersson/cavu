@@ -9,7 +9,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 3. Upgrades, and removals of model-weakness parts, rest on a replay tool's comparison of outcomes.
 4. Everything vendor-specific lives in one thin adapter, the Claude Code version is pinned, and an upgrade ships only after tests against the real binary pass.
 5. Know-how lives in files the agent reads (`AGENTS.md`, skills), and CAVU's own prompts are few, plain, and kept as files.
-6. Small on purpose, with at most 25 REST routes, 7 MCP tools, 30 config keys and 30 concepts a user must learn, and the Go and web line counts reported, not capped. The limits are not hard: when one would make CAVU a worse tool, the case is made to the project's owner, and the number changes with their word.
+6. Small on purpose, with at most 25 REST routes, 8 MCP tools, 30 config keys and 30 concepts a user must learn, and the Go and web line counts reported, not capped. The limits are not hard: when one would make CAVU a worse tool, the case is made to the project's owner, and the number changes with their word.
 
 ## Constraints
 
@@ -49,7 +49,7 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 ## Commands
 
 - `make check` runs build-go, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan and size. It is Go only and needs no Node.
-- `make build` builds the web app, then `bin/cavu` with it embedded; `make build-go` builds `bin/cavu` alone, with the app as built last or with the placeholder page when none is built; `make test` and `make test-race` run the Go tests.
+- `make build` builds the web app, then `bin/cavu` with it embedded; `make build-go` builds `bin/cavu` alone, with the app as built last or with the placeholder page when none is built; `make install` builds the web app, then installs `cavu` with it embedded into `GOBIN`, else `$(go env GOPATH)/bin`; `make build-darwin` builds `bin/cavu-darwin` for macOS on arm64; `make test` and `make test-race` run the Go tests.
 - Building the web app needs Node, the version in the root `.nvmrc`, and `make web-install` once (`npm ci` in `web/`); `make web-build` builds it into `web/dist/app`, and `make web-check` runs its lint, tests and build. Run `make web-check` when `web/` changes. Installing and running CAVU need only the binary and a container runtime.
 - `make fmt` formats with `golangci-lint fmt` (gofumpt and goimports); `make lint` runs `golangci-lint run`.
 - `make scan` fails on em-dashes in the Go, Markdown, YAML, TOML, shell and Dockerfile files and the web app's TypeScript, JavaScript, CSS, HTML and JSON files; `make scan-commits` fails on session links, attribution lines, task or milestone numbers, em-dashes and blobs over 500 KB in the commits since `origin/main`.

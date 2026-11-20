@@ -249,10 +249,6 @@ pre.out {
     padding: 9px 12px;
   }
 
-  .strip .acts .btn.link {
-    flex: none;
-  }
-
   .strip .answer {
     grid-template-columns: minmax(0, 1fr);
   }
