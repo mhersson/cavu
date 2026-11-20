@@ -266,3 +266,134 @@ test('on a phone the list is flat and a project folds its sections', async () =>
   expect(folds).toHaveLength(8)
   expect([...folds].filter((d) => d.open)).toEqual([])
 })
+
+// The new-project dialog: the settings it reads and the requests Create sends.
+const CREDENTIALS = [
+  { name: 'acme-org', kind: 'token' as const },
+  { name: 'work-app', kind: 'app' as const, app_id: 7 },
+]
+function serveNew(world: { projects: Project[] }, refuse?: Response) {
+  return serve(world, (c) => {
+    if (c.method === 'GET' && c.path === '/api/settings') return json({ forge_credentials: CREDENTIALS })
+    if (c.method === 'POST' && c.path === '/api/projects') {
+      if (refuse) return refuse
+      const made = project(9, 'fresh', { runnable: false, baseline: null })
+      world.projects = [...world.projects, made]
+      return json(made, 201)
+    }
+    if (c.method === 'POST' && c.path === '/api/projects/9/check') return json(world.projects.find((p) => p.id === 9))
+    return undefined
+  })
+}
+const posts = (calls: Call[]) => calls.filter((c) => c.method === 'POST').map((c) => [c.path, c.body])
+const typeInto = (name: string, value: string) => fireEvent.change(within(screen.getByRole('dialog')).getByLabelText(name), { target: { value } })
+const openNew = async () => {
+  fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+  await settle()
+}
+
+test('the new-project dialog creates and opens the project', async () => {
+  const calls = serveNew({ projects: [project(1, 'api')] })
+  await show()
+  await openNew()
+  typeInto('Name', 'fresh')
+  typeInto('Repository address', 'https://github.com/acme/fresh.git')
+  typeInto('Setup command', 'make deps')
+  typeInto('Verify command', 'make test')
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create' }))
+  await settle()
+  expect(posts(calls)).toEqual([
+    [
+      '/api/projects',
+      {
+        name: 'fresh',
+        repo_url: 'https://github.com/acme/fresh.git',
+        base_branch: 'main',
+        forge_credential: '',
+        setup_command: 'make deps',
+        verify_command: 'make test',
+        verify_waived: false,
+      },
+    ],
+    ['/api/projects/9/check', undefined],
+  ])
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(here).toBe('/projects/fresh')
+  expect(rows().map((r) => r.textContent)).toEqual(['api', 'fresh'])
+  expect(current()).toEqual(['fresh'])
+  expect(screen.getByRole('heading', { name: 'fresh' })).toBeInTheDocument()
+})
+
+test('the credential picker lists the default and the named ones', async () => {
+  const calls = serveNew({ projects: [project(1, 'api')] })
+  await show()
+  await openNew()
+  const pick = within(screen.getByRole('dialog')).getByLabelText('GitHub credential') as HTMLSelectElement
+  expect([...pick.options].map((o) => o.value)).toEqual(['', 'acme-org', 'work-app'])
+  expect(pick.value).toBe('')
+  fireEvent.change(pick, { target: { value: 'work-app' } })
+  typeInto('Name', 'fresh')
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create' }))
+  await settle()
+  expect((posts(calls)[0][1] as { forge_credential: string }).forge_credential).toBe('work-app')
+})
+
+test('a refused project shows the server\'s line and keeps what was typed', async () => {
+  const line = 'a project named fresh exists'
+  const calls = serveNew({ projects: [project(1, 'api')] }, json({ error: line }, 409))
+  await show()
+  await openNew()
+  typeInto('Name', 'fresh')
+  typeInto('Verify command', 'make test')
+  fireEvent.click(within(screen.getByRole('dialog')).getByLabelText('No verify command: a person checks every change'))
+  const create = within(screen.getByRole('dialog')).getByRole('button', { name: 'Create' })
+  fireEvent.click(create)
+  expect(create).toBeDisabled()
+  await settle()
+  expect(within(screen.getByRole('dialog')).getByRole('alert').textContent).toBe(line)
+  expect(posts(calls).map((p) => p[0])).toEqual(['/api/projects'])
+  const d = within(screen.getByRole('dialog'))
+  expect((d.getByLabelText('Name') as HTMLInputElement).value).toBe('fresh')
+  expect((d.getByLabelText('Verify command') as HTMLInputElement).value).toBe('make test')
+  expect((d.getByLabelText('Base branch') as HTMLInputElement).value).toBe('main')
+  expect(d.getByLabelText('No verify command: a person checks every change')).toBeChecked()
+  expect(create).toBeEnabled()
+  expect(here).toBe('/projects')
+})
+
+test('the tick sends verify_waived', async () => {
+  const calls = serveNew({ projects: [project(1, 'api')] })
+  await show()
+  await openNew()
+  typeInto('Name', 'fresh')
+  const tick = within(screen.getByRole('dialog')).getByLabelText('No verify command: a person checks every change')
+  expect(tick).not.toBeChecked()
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create' }))
+  await settle()
+  fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+  await settle()
+  typeInto('Name', 'fresh')
+  fireEvent.click(within(screen.getByRole('dialog')).getByLabelText('No verify command: a person checks every change'))
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create' }))
+  await settle()
+  expect(posts(calls).filter((p) => p[0] === '/api/projects').map((p) => (p[1] as { verify_waived: boolean }).verify_waived)).toEqual([false, true])
+})
+
+test('Cancel sends nothing', async () => {
+  const calls = serveNew({ projects: [project(1, 'api')] })
+  await show()
+  await openNew()
+  typeInto('Name', 'fresh')
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  await openNew()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
+})
+
+test('a phone shows no New project button', async () => {
+  serveNew({ projects: [project(1, 'api')] })
+  await show('/projects', true)
+  expect(screen.queryByRole('button', { name: 'New project' })).toBeNull()
+})

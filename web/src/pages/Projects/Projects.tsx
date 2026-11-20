@@ -7,6 +7,7 @@ import Dialog from '../../components/Dialog.tsx'
 import EnvCheck from '../../components/EnvCheck.tsx'
 import PageHead from '../../components/PageHead.tsx'
 import { useNarrow } from '../../components/useNarrow.ts'
+import NewProject from './NewProject.tsx'
 import Sections from './Sections.tsx'
 import './Projects.css'
 
@@ -53,6 +54,7 @@ export default function Projects() {
   const [projects, setProjects] = useState<Project[] | null>(null)
   // The id of the project the dialog asks to remove, so it never opens over another.
   const [removing, setRemoving] = useState(0)
+  const [creating, setCreating] = useState(false)
 
   const read = () => {
     api<{ projects: Project[] }>('GET', '/projects')
@@ -68,6 +70,12 @@ export default function Projects() {
   const removed = () => {
     setRemoving(0)
     navigate('/projects')
+    read()
+  }
+
+  const created = (made: string) => {
+    setCreating(false)
+    navigate(`/projects/${made}`)
     read()
   }
 
@@ -111,7 +119,12 @@ export default function Projects() {
 
   return (
     <div className="page projects-page">
-      <PageHead title="Projects" />
+      <PageHead title="Projects">
+        <button className="btn primary" onClick={() => setCreating(true)}>
+          New project
+        </button>
+      </PageHead>
+      {creating && <NewProject onClose={() => setCreating(false)} onCreated={created} />}
       <p className="sub">{'\u00a0'}</p>
       <div className="panes">
         <nav className="plist" aria-label="Projects">
