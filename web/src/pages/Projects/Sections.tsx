@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from 'react'
 import type { Project } from '../../api/types.ts'
+import CredentialOptions from './CredentialOptions.tsx'
 import { pairs, type Edit, type Form } from './edit.ts'
 
 type Props = { project: Project; folded: boolean; onRemove: () => void; edit: Edit | null }
@@ -10,7 +11,6 @@ type Text = { [K in keyof Form]: Form[K] extends string ? K : never }[keyof Form
 
 const small = (text: string) => <span className="small">{text}</span>
 
-// A value in the mono face, or "none" when it is empty.
 const mono = (value: string) => (value ? <code>{value}</code> : small('none'))
 
 function list(values: string[], hint = 'none') {
@@ -80,12 +80,7 @@ const tick =
 
 const credential: Control = (label, e) => (
   <select className="in" aria-label={label} value={e.form.forge_credential} onChange={(v) => e.set('forge_credential', v.target.value)}>
-    <option value="">the default</option>
-    {e.credentials.map((c) => (
-      <option key={c.name} value={c.name}>
-        {c.name}
-      </option>
-    ))}
+    <CredentialOptions credentials={e.credentials} />
   </select>
 )
 
@@ -95,28 +90,27 @@ function Secrets({ names, e }: { names: string[]; e: Edit }) {
   const put = (i: number, s: Partial<Form['added'][number]>) => e.set('added', added.map((x, j) => (j === i ? { ...x, ...s } : x)))
   return (
     <div className="secrets">
-      {names.length > 0 ? (
-        <div className="names">
-          {names.map((n) => {
-            const gone = removed.includes(n)
-            return (
-              <span className="secret" key={n}>
-                <code className={gone ? 'gone' : undefined}>{n}</code>
-                <button
-                  className="btn"
-                  aria-label={`${gone ? 'Keep' : 'Remove'} ${n}`}
-                  onClick={() => e.set('removed', gone ? removed.filter((x) => x !== n) : [...removed, n])}
-                >
-                  {gone ? 'Keep' : 'Remove'}
-                </button>
-              </span>
-            )
-          })}
-          {small('set; a value is never shown')}
-        </div>
-      ) : (
-        small('none')
-      )}
+      <div className="names">
+        {names.map((n) => {
+          const gone = removed.includes(n)
+          return (
+            <span className="secret" key={n}>
+              <code className={gone ? 'gone' : undefined}>{n}</code>
+              <button
+                className="btn"
+                aria-label={`${gone ? 'Keep' : 'Remove'} ${n}`}
+                onClick={() => e.set('removed', gone ? removed.filter((x) => x !== n) : [...removed, n])}
+              >
+                {gone ? 'Keep' : 'Remove'}
+              </button>
+            </span>
+          )
+        })}
+        {small(names.length > 0 ? 'set; a value is never shown' : 'none')}
+        <button className="btn" onClick={() => e.set('added', [...added, { name: '', value: '' }])}>
+          Add a secret
+        </button>
+      </div>
       {added.map((s, i) => (
         <div className="pair" key={i}>
           <input className="in mono" aria-label="Secret name" placeholder="NAME" value={s.name} onChange={(v) => put(i, { name: v.target.value })} />
@@ -130,14 +124,10 @@ function Secrets({ names, e }: { names: string[]; e: Edit }) {
           />
         </div>
       ))}
-      <button className="btn" onClick={() => e.set('added', [...added, { name: '', value: '' }])}>
-        Add a secret
-      </button>
     </div>
   )
 }
 
-// A desktop lays the sections in two columns; a phone folds each.
 export default function Sections({ project: p, folded, onRemove, edit: e }: Props) {
   const row = (label: string, read: ReactNode, control?: Control): Row => [label, e && control ? control(label, e) : read]
   const limit = (label: string, key: string) => row(label, p.caps[key] || small("the instance's setting"), cap(key))

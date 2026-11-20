@@ -24,7 +24,6 @@ function Verify({ p }: { p: Project }) {
   return <>No result of the verify command is stored.</>
 }
 
-// The newest check's fact: its fault, else its failed step, else that it passed, else that none has ended.
 function Newest({ p }: { p: Project }) {
   const c = p.check
   if (c.fault)

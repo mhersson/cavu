@@ -3,6 +3,7 @@ import { api } from '../../api/client.ts'
 import type { Project, Settings } from '../../api/types.ts'
 import Dialog from '../../components/Dialog.tsx'
 import Field from '../../components/Field.tsx'
+import CredentialOptions from './CredentialOptions.tsx'
 
 const blank = { name: '', repo_url: '', base_branch: 'main', forge_credential: '', setup_command: '', verify_command: '', verify_waived: false }
 
@@ -48,13 +49,8 @@ export default function NewProject({ onClose, onCreated }: { onClose: () => void
           <input className="mono" value={form.base_branch} onChange={set('base_branch')} />
         </Field>
         <Field label="GitHub credential">
-          <select value={form.forge_credential} onChange={set('forge_credential')}>
-            <option value="">the default</option>
-            {credentials.map((c) => (
-              <option key={c.name} value={c.name}>
-                {c.name}
-              </option>
-            ))}
+          <select className="in" value={form.forge_credential} onChange={set('forge_credential')}>
+            <CredentialOptions credentials={credentials} />
           </select>
         </Field>
         <Field label="Setup command">

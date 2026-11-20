@@ -64,7 +64,6 @@ export default function Projects() {
 
   const list = projects ?? []
   const project = name === undefined ? list[0] : list.find((p) => p.name === name)
-  // A project a check or a save gives back takes the place of the one with its id.
   const put = (p: Project) => setProjects((l) => l && l.map((x) => (x.id === p.id ? p : x)))
   const removed = () => {
     setRemoving(0)
@@ -85,7 +84,6 @@ export default function Projects() {
     </>
   )
 
-  // A phone shows the list alone, and a project on a page of its own.
   if (narrow && name !== undefined)
     return (
       <div className="page projects-page">
