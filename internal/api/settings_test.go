@@ -78,6 +78,8 @@ func TestSettingsRoundTrip(t *testing.T) {
 		{"an array", `{"settings": {"model_work": ["opus"]}}`},
 		{"a secret that is not the instance's", `{"settings": {"model_work": "opus"}, "secrets": {"project.web.NPM_TOKEN": "x"}}`},
 		{"a secret beside a bad value", `{"settings": {"concurrency": "zero"}, "secrets": {"endpoint_credential": "sk-x"}}`},
+		{"a credential beside a bad value", `{"settings": {"concurrency": "zero"}, "forge_credentials": {"x": {"token": "t"}}}`},
+		{"a credential beside a bad secret name", `{"secrets": {"nope": "v"}, "forge_credentials": {"x": {"token": "t"}}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status, body := f.call(t, "PATCH /api/settings", tc.body)
