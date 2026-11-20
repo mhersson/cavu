@@ -165,12 +165,14 @@ func TestDoctorRefusedUnderAServer(t *testing.T) {
 
 func TestDoctorDepsResolvesEachProjectsCredential(t *testing.T) {
 	ctx := t.Context()
-	dir := t.TempDir()
+	dir := runData(t)
 
-	for name, value := range map[string]string{"forge_token": "default-tok", "endpoint_credential": "cred"} {
+	for name, value := range map[string]string{"forge_token": "default-tok", "forge_app_key": "default-key", "endpoint_credential": "cred"} {
 		code, _, stderr := withStdin(value+"\n", "secret", "set", name, "--data-dir", dir)
 		require.Equal(t, 0, code, stderr)
 	}
+
+	cavuIn(t, dir, "settings", "set", "forge_app_id", "9")
 
 	code, _, stderr := withStdin("acme-tok\n", "credential", "set", "acme", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
@@ -201,7 +203,7 @@ func TestDoctorDepsResolvesEachProjectsCredential(t *testing.T) {
 
 	ps := byName(d)
 	assert.Empty(t, ps["plain"].Credential)
-	assert.Equal(t, engine.ForgeAccess{Token: "default-tok"}, ps["plain"].Access)
+	assert.Equal(t, engine.ForgeAccess{Token: "default-tok", AppID: 9, AppKey: "default-key"}, ps["plain"].Access)
 	assert.Equal(t, "acme", ps["named"].Credential)
 	assert.Equal(t, engine.ForgeAccess{Token: "acme-tok"}, ps["named"].Access)
 	assert.Equal(t, "work", ps["app"].Credential)
