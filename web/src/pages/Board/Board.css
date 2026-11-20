@@ -1,0 +1,124 @@
+.board-page .tools {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.board-page .inline {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--grey2);
+  font-size: 13px;
+}
+
+.board-page .in {
+  background: var(--bg0);
+  color: var(--fg);
+  border: 1px solid var(--bg3);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.board-page .board {
+  display: grid;
+  border-top: 1px solid var(--bg2);
+}
+
+.board-page .bcol {
+  border-right: 1px solid var(--bg2);
+  padding: 12px 14px 22px;
+  min-width: 0;
+}
+
+.board-page .bcol:first-child {
+  padding-left: 0;
+}
+
+.board-page .bcol:last-child {
+  border-right: 0;
+  padding-right: 0;
+}
+
+.board-page .bcol h2 {
+  font-size: 13px;
+  margin: 0 0 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.board-page .bcol h2 .n {
+  color: var(--grey1);
+  font-weight: 400;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.board-page .bitem {
+  display: block;
+  color: var(--fg);
+  padding: 9px 0 10px;
+  border-top: 1px solid var(--bg2);
+}
+
+.board-page .bitem:hover {
+  text-decoration: none;
+  background: var(--bg0);
+}
+
+.board-page .b1 {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.board-page .b1 .num,
+.board-page .b1 .proj {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--grey1);
+  letter-spacing: 0;
+}
+
+.board-page .b1 .num {
+  flex: none;
+}
+
+.board-page .b1 .proj {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-page .b1 .mark {
+  flex: none;
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--bg0);
+  background: var(--wait-yellow);
+  border-radius: 99px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+
+.board-page .b2 {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.board-page .b3 {
+  color: var(--grey2);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+
+.board-page .none {
+  color: var(--grey0);
+  font-size: 12.5px;
+  padding: 9px 0;
+  border-top: 1px solid var(--bg2);
+}

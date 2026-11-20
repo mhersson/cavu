@@ -148,7 +148,7 @@ test('sign-out ends the session', async () => {
 
   narrow(false)
   const wide = await show('/board')
-  await user.click(screen.getByRole('button'))
+  await user.click(screen.getByRole('button', { name: 'Sign out' }))
   expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
   expect(logouts()).toHaveLength(1)
   expect(logouts()[0].method).toBe('POST')
@@ -156,7 +156,7 @@ test('sign-out ends the session', async () => {
 
   narrow(true)
   await show('/more')
-  await user.click(screen.getByRole('button'))
+  await user.click(screen.getByRole('button', { name: 'Sign out' }))
   expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
   expect(logouts()).toHaveLength(2)
 })
