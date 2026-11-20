@@ -37,6 +37,9 @@ export type Stop = {
   resets_at: string | null
 }
 
+// How a task needs a person, as the server says: "" when it does not.
+export type Needs = '' | 'answer' | 'retry' | 'review' | 'take'
+
 export type Question = { question: string; suggested_answer: string }
 
 export type Finding = {
@@ -62,7 +65,7 @@ export type PullRequest = {
 export type Change = {
   head_commit: string
   files_changed: number
-  diff_stat: string
+  diff_stat: string[]
   flagged: { workflows: string[]; instructions: string[]; large: string[] }
 }
 
@@ -96,6 +99,8 @@ export type Task = {
   created_at: string
   status: Status
   needs_you: boolean
+  needs: Needs
+  needs_you_since: string | null
   waiting: string
   waiting_until: string | null
   dependencies: { id: number; status: Status }[]
@@ -112,15 +117,18 @@ export type Task = {
   budget: Budget
 }
 
-// An item of GET /api/tasks: some of the task's fields, and two derived ones.
+// An item of GET /api/tasks: some of the task's fields.
 export type Row = {
   id: number
   project: string
   title: string
   status: Status
   needs_you: boolean
+  needs: Needs
+  needs_you_since: string | null
   stop_reason: StopReason | ''
   waiting: string
+  waiting_until: string | null
   pull_request_ready: boolean
   created_at: string
 }
@@ -170,4 +178,6 @@ export type Project = {
 export type Settings = {
   settings: Record<string, string | Record<string, unknown>>
   secrets: Record<string, boolean>
+  defaults: Record<string, string>
+  switches: Record<string, boolean>
 }

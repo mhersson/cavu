@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import type { TaskEvent } from './types.ts'
 
-type Options = { onEvent: (e: TaskEvent) => void; onReconnect: () => void; taskId?: number }
+type Subscriber = { event: (e: TaskEvent) => void; reconnect: () => void }
+
+// The tab's one stream is the frame's; pages hear it through useStream.
+const subscribers = new Set<Subscriber>()
+
+const readGap = 2000
 
 const firstDelay = 1000
 const maxDelay = 30000
 
-export function useEvents(o: Options): { live: boolean } {
+export function useEvents(): { live: boolean } {
   const [live, setLive] = useState(false)
-  // Callbacks change between renders without reopening the stream.
-  const callbacks = useRef(o)
-  useEffect(() => {
-    callbacks.current = o
-  })
-  const { taskId } = o
 
   useEffect(() => {
     let source: EventSource | null = null
@@ -23,23 +22,19 @@ export function useEvents(o: Options): { live: boolean } {
     let opened = false
 
     const open = () => {
-      const params = new URLSearchParams()
-      if (taskId !== undefined) params.set('task', String(taskId))
       // The browser reconnects a source it keeps by sending Last-Event-ID; a new source after a closed one needs the id in the address.
-      if (lastId > 0) params.set('after', String(lastId))
-      const query = params.toString()
-      const s = new EventSource('/api/events' + (query ? '?' + query : ''))
+      const s = new EventSource('/api/events' + (lastId > 0 ? '?after=' + lastId : ''))
       source = s
       s.onopen = () => {
         setLive(true)
         delay = firstDelay
-        if (opened) callbacks.current.onReconnect()
+        if (opened) subscribers.forEach((p) => p.reconnect())
         opened = true
       }
       s.onmessage = (m: MessageEvent<string>) => {
         const e = JSON.parse(m.data) as TaskEvent
         lastId = e.id
-        callbacks.current.onEvent(e)
+        subscribers.forEach((p) => p.event(e))
       }
       s.onerror = () => {
         setLive(false)
@@ -55,7 +50,50 @@ export function useEvents(o: Options): { live: boolean } {
       clearTimeout(timer)
       source?.close()
     }
-  }, [taskId])
+  }, [])
 
   return { live }
+}
+
+// read gets null for everything, or the ids of the tasks a burst of events was about.
+export function useStream(read: (tasks: Set<number> | null) => void): void {
+  // A new read between renders is used without resubscribing.
+  const current = useRef(read)
+  useEffect(() => {
+    current.current = read
+  })
+
+  useEffect(() => {
+    let lastRead = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let pending = new Set<number>()
+    const run = (tasks: Set<number> | null) => {
+      lastRead = Date.now()
+      current.current(tasks)
+    }
+    const sub: Subscriber = {
+      event: (e) => {
+        pending.add(e.task_id)
+        if (timer !== undefined) return
+        timer = setTimeout(() => {
+          timer = undefined
+          const tasks = pending
+          pending = new Set()
+          run(tasks)
+        }, Math.max(0, lastRead + readGap - Date.now()))
+      },
+      reconnect: () => {
+        clearTimeout(timer)
+        timer = undefined
+        pending = new Set()
+        run(null)
+      },
+    }
+    subscribers.add(sub)
+    run(null)
+    return () => {
+      subscribers.delete(sub)
+      clearTimeout(timer)
+    }
+  }, [])
 }

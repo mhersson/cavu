@@ -1,6 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { useEvents } from './stream.ts'
-import type { TaskEvent } from './types.ts'
+import { useEvents, useStream } from './stream.ts'
 
 class FakeEventSource {
   static CONNECTING = 0
@@ -30,8 +29,8 @@ class FakeEventSource {
     this.onopen?.()
   }
 
-  send(id: number) {
-    this.onmessage?.({ data: JSON.stringify({ id }) } as MessageEvent<string>)
+  send(id: number, more: object = {}) {
+    this.onmessage?.({ data: JSON.stringify({ id, ...more }) } as MessageEvent<string>)
   }
 
   // A closed source is one the browser gave up on, as after a 502 or a 401.
@@ -45,6 +44,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeEventSource.all = []
   vi.stubGlobal('EventSource', FakeEventSource)
+  vi.setSystemTime(10_000)
 })
 
 afterEach(() => {
@@ -52,28 +52,28 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function setup(taskId?: number) {
-  const onEvent = vi.fn<(e: TaskEvent) => void>()
-  const onReconnect = vi.fn()
-  const hook = renderHook(() => useEvents({ onEvent, onReconnect, taskId }))
-  return { onEvent, onReconnect, ...hook }
-}
-
 const last = () => FakeEventSource.all[FakeEventSource.all.length - 1]
 
+// The frame's stream, and a page that subscribes to it.
+function setup() {
+  const read = vi.fn<(tasks: Set<number> | null) => void>()
+  const frame = renderHook(() => useEvents())
+  const page = renderHook(() => useStream(read))
+  return { read, frame, page }
+}
+
 test('stream reconnects from the last event id', () => {
-  const { onEvent } = setup(7)
-  expect(last().url).toBe('/api/events?task=7')
+  setup()
+  expect(last().url).toBe('/api/events')
   act(() => last().open())
   act(() => last().send(41))
   act(() => last().send(42))
-  expect(onEvent).toHaveBeenCalledTimes(2)
 
   act(() => last().fail(true))
   expect(FakeEventSource.all).toHaveLength(1)
   act(() => vi.advanceTimersByTime(1000))
   expect(FakeEventSource.all).toHaveLength(2)
-  expect(last().url).toBe('/api/events?task=7&after=42')
+  expect(last().url).toBe('/api/events?after=42')
 
   // The delay doubles while the stream does not open, to a cap.
   act(() => last().fail(true))
@@ -98,48 +98,105 @@ test('stream reconnects from the last event id', () => {
 })
 
 test("a reconnect reads the screen's data again", () => {
-  const { onReconnect } = setup()
-  expect(last().url).toBe('/api/events')
+  const { read } = setup()
   act(() => last().open())
-  expect(onReconnect).not.toHaveBeenCalled()
+  read.mockClear()
 
   // The browser reconnects a source that is still connecting by itself.
   act(() => last().fail(false))
   act(() => last().open())
-  expect(onReconnect).toHaveBeenCalledTimes(1)
+  expect(read).toHaveBeenCalledTimes(1)
+  expect(read).toHaveBeenLastCalledWith(null)
   expect(FakeEventSource.all).toHaveLength(1)
 
   act(() => last().fail(true))
   act(() => vi.advanceTimersByTime(1000))
   act(() => last().open())
-  expect(onReconnect).toHaveBeenCalledTimes(2)
+  expect(read).toHaveBeenCalledTimes(2)
 })
 
 test('live is false after an error and true at the next open', () => {
-  const { result, unmount } = setup()
-  expect(result.current.live).toBe(false)
+  const { frame } = setup()
+  expect(frame.result.current.live).toBe(false)
   act(() => last().open())
-  expect(result.current.live).toBe(true)
+  expect(frame.result.current.live).toBe(true)
   act(() => last().fail(false))
-  expect(result.current.live).toBe(false)
+  expect(frame.result.current.live).toBe(false)
   act(() => last().open())
-  expect(result.current.live).toBe(true)
+  expect(frame.result.current.live).toBe(true)
 
   const source = last()
-  unmount()
+  frame.unmount()
   expect(source.closed).toBe(true)
 })
 
-test('new callbacks do not reopen the stream', () => {
+test('a new read does not reopen the stream', () => {
   const first = vi.fn()
   const second = vi.fn()
-  const { rerender } = renderHook(
-    ({ f }) => useEvents({ onEvent: f, onReconnect: () => {} }),
-    { initialProps: { f: first } },
-  )
+  renderHook(() => useEvents())
+  const { rerender } = renderHook(({ f }) => useStream(f), { initialProps: { f: first } })
   rerender({ f: second })
   expect(FakeEventSource.all).toHaveLength(1)
-  act(() => last().send(1))
+  first.mockClear()
+  act(() => last().send(1, { task_id: 3 }))
+  act(() => vi.advanceTimersByTime(2000))
   expect(first).not.toHaveBeenCalled()
   expect(second).toHaveBeenCalledTimes(1)
+})
+
+test('a page reads once when it mounts', () => {
+  const { read } = setup()
+  expect(read).toHaveBeenCalledTimes(1)
+  expect(read).toHaveBeenCalledWith(null)
+})
+
+test("a page hears the frame's events: a burst leads to one read with the ids of its tasks", () => {
+  const { read } = setup()
+  act(() => last().open())
+  read.mockClear()
+
+  // The mount read was just now, so the burst waits out the gap.
+  act(() => last().send(1, { task_id: 7 }))
+  act(() => last().send(2, { task_id: 7 }))
+  act(() => last().send(3, { task_id: 9 }))
+  expect(read).not.toHaveBeenCalled()
+  act(() => vi.advanceTimersByTime(2000))
+  expect(read).toHaveBeenCalledTimes(1)
+  expect(read).toHaveBeenCalledWith(new Set([7, 9]))
+
+  // The last read is old enough, so the next burst reads at once.
+  act(() => vi.advanceTimersByTime(5000))
+  act(() => last().send(4, { task_id: 8 }))
+  act(() => vi.advanceTimersByTime(0))
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(read).toHaveBeenLastCalledWith(new Set([8]))
+})
+
+test('a reconnect reads everything at once', () => {
+  const { read } = setup()
+  act(() => last().open())
+  read.mockClear()
+  act(() => last().send(1, { task_id: 7 }))
+  act(() => last().fail(false))
+  act(() => last().open())
+  expect(read).toHaveBeenCalledTimes(1)
+  expect(read).toHaveBeenCalledWith(null)
+
+  // The pending burst was folded into the reconnect's read.
+  act(() => vi.advanceTimersByTime(2000))
+  expect(read).toHaveBeenCalledTimes(1)
+})
+
+test('a page that unmounts hears nothing more', () => {
+  const { read, page } = setup()
+  act(() => last().open())
+  act(() => last().send(1, { task_id: 7 }))
+  read.mockClear()
+  page.unmount()
+  act(() => vi.advanceTimersByTime(5000))
+  act(() => last().send(2, { task_id: 7 }))
+  act(() => last().fail(false))
+  act(() => last().open())
+  act(() => vi.advanceTimersByTime(5000))
+  expect(read).not.toHaveBeenCalled()
 })
