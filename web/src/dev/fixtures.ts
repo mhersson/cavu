@@ -233,8 +233,7 @@ export const EVENTS: Record<number, TaskEvent[]> = {
   ],
 };
 
-
-// The Settings page's: the drawing's credentials, the server's defaults, and the credential each project names.
+// The Settings page's: two named credentials, the server's defaults, and the credential each project names.
 SETTINGS.forge_credentials = [{ name: 'acme-org', kind: 'token' }, { name: 'work-app', kind: 'app', app_id: 482913 }]
 SETTINGS.defaults = {
   runtime: '', ca_bundle_path: '', endpoint_mode: '', endpoint_url: '', endpoint_auth_header: '',
