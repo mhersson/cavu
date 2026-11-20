@@ -293,6 +293,9 @@ test('key mode sends the address and the header', async () => {
       },
     ],
   ])
+  // The answer leaves the step open, and the key it sent is no longer held.
+  expect(current()).toEqual([step('The model endpoint')])
+  await waitFor(() => expect(field('The key')).toHaveValue(''))
 })
 
 test("an App's key is read from its file and sent", async () => {
@@ -324,6 +327,20 @@ test("an App's key is read from its file and sent", async () => {
       { settings: { commit_name: 'Ada', commit_email: 'ada@example.com', forge_app_id: '8' }, secrets: { forge_app_key: PEM, forge_token: '' } },
     ],
   ])
+})
+
+test('an App id typed without its key file is sent', async () => {
+  const world = { settings: saved(ENDPOINT, { endpoint_credential: true }), projects: [] as Project[] }
+  const calls = serveSaves(world, [saved({ ...ENDPOINT, forge_app_id: '7' }, { endpoint_credential: true })])
+  const user = await show()
+  await user.click(screen.getByRole('button', { name: 'Use a GitHub App instead' }))
+  await user.type(field('App id'), '7')
+  await user.click(screen.getByRole('button', { name: 'Save and go on' }))
+  await waitFor(() => expect(writes(calls)).toHaveLength(1))
+  expect(writes(calls)).toEqual([['PATCH', '/api/settings', { settings: { forge_app_id: '7' } }]])
+  // The step stays open, on the App's form, with the id as saved.
+  expect(current()).toEqual([step('GitHub')])
+  await waitFor(() => expect(field('App id')).toHaveValue('7'))
 })
 
 test("a failed read shows the server's line", async () => {

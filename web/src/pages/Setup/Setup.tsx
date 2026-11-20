@@ -144,10 +144,11 @@ function GitHub({ saved, onSaved }: StepProps) {
   // The default is written as Settings writes it, clearing the other kind; the key is read only as it is sent.
   async function build() {
     const commits = { commit_name: f.commit_name, commit_email: f.commit_email }
-    const key = app ? await file.current?.files?.[0]?.text() : undefined
-    if (key !== undefined) return body(saved, commits, { settings: { forge_app_id: f.forge_app_id }, secrets: { forge_app_key: key, forge_token: '' } })
-    if (!app && token) return body(saved, commits, { settings: { forge_app_id: null }, secrets: { forge_token: token, forge_app_key: '' } })
-    return body(saved, commits)
+    if (app) {
+      const key = await file.current?.files?.[0]?.text()
+      return body(saved, { ...commits, forge_app_id: f.forge_app_id }, key === undefined ? {} : { secrets: { forge_app_key: key, forge_token: '' } })
+    }
+    return body(saved, commits, token ? { settings: { forge_app_id: null }, secrets: { forge_token: token, forge_app_key: '' } } : {})
   }
 
   return (
