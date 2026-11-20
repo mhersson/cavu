@@ -182,6 +182,24 @@ test('the chosen task holds when a new one arrives at the top', async () => {
   expect(beside()).toHaveTextContent('Task 2')
 })
 
+test('after an answer the next row is chosen without waiting for an event', async () => {
+  vi.useFakeTimers()
+  const world = { needing: [row(1), row(2, { needs_you_since: '2030-01-02T05:00:00Z' })], working: [] }
+  serve(world, (c) => {
+    if (c.method !== 'POST' || c.path !== '/api/tasks/2/actions') return
+    world.needing = [row(1)]
+    return json(task(row(2, { status: 'queued', needs_you: false, needs: '', needs_you_since: null, stop_reason: '' })))
+  })
+  await show()
+  expect(chosen()).toHaveTextContent('Task 2')
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Answer' }), { target: { value: 'Only the changelog.' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Answer' }))
+  await settle()
+  expect(chosen()).toHaveTextContent('Task 1')
+  expect(beside()).toHaveTextContent('Task 1')
+})
+
 test('an event for a shown task reads it again', async () => {
   vi.useFakeTimers()
   const calls = serve({ needing: [row(1), stopped(2, '2030-01-02T05:00:00Z')], working: [] })

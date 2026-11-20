@@ -45,7 +45,7 @@ export default function NeedsYou() {
       .catch(() => {}) // the next event or reconnect reads again
   }
 
-  useStream((ids) => {
+  const readLists = () => {
     Promise.all([
       api<{ tasks: Row[] }>('GET', '/tasks?needs_you=true'),
       api<{ tasks: Row[] }>('GET', '/tasks?status=queued,running,blocked,in_review'),
@@ -57,6 +57,15 @@ export default function NeedsYou() {
         setChosen((c) => (rows.some((r) => r.id === c) ? c : (rows[0]?.id ?? 0)))
       })
       .catch(() => {})
+  }
+  // A task that no longer needs a person leaves the list now, not at the next burst of events.
+  const acted = (t: Task) => {
+    keep(t)
+    if (!t.needs) readLists()
+  }
+
+  useStream((ids) => {
+    readLists()
     for (const id of shown) if (!ids || ids.has(id)) read(id)
   })
 
@@ -92,7 +101,7 @@ export default function NeedsYou() {
         ) : (
           needing.map((r) => {
             const t = views.get(r.id)
-            return t && <NeedsBox key={r.id} task={t} onTask={keep} />
+            return t && <NeedsBox key={r.id} task={t} onTask={acted} />
           })
         )}
       </div>
@@ -171,7 +180,7 @@ export default function NeedsYou() {
               </Link>
             ))}
           </div>
-          <div className="detail">{task && <NeedsBox flat task={task} onTask={keep} key={task.id} />}</div>
+          <div className="detail">{task && <NeedsBox flat task={task} onTask={acted} key={task.id} />}</div>
         </div>
       )}
       {creating && <NewTaskDialog onClose={() => setCreating(false)} />}
