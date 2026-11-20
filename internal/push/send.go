@@ -3,6 +3,9 @@ package push
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/store"
@@ -31,6 +35,69 @@ type Message struct {
 	Tag   string `json:"tag"`
 }
 
+// NewClient is the client a Sender posts with: through the proxy the
+// environment names, trusting the system's certificates and caBundle's. It
+// follows no redirect, so a push reaches the endpoint's host and no other.
+func NewClient(caBundle []byte) (*http.Client, error) {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+
+	if len(caBundle) > 0 {
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, fmt.Errorf("push: the system's certificates: %w", err)
+		}
+
+		if !pool.AppendCertsFromPEM(caBundle) {
+			return nil, errors.New("push: the CA bundle holds no certificate")
+		}
+
+		t.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+
+	return &http.Client{
+		Transport:     t,
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}, nil
+}
+
+// Check refuses a subscription Send could not push to: an endpoint that is not
+// an https URL with a host, or keys that do not decode. Its error never quotes
+// the endpoint.
+func Check(sub store.PushSubscription) error {
+	if u, err := url.Parse(sub.Endpoint); err != nil || u.Scheme != "https" || u.Host == "" {
+		return errors.New("endpoint: want an https URL")
+	}
+
+	_, _, err := keys(sub)
+
+	return err
+}
+
+// keys decodes sub's keys, base64url with or without padding: p256dh a P-256
+// point and auth 16 octets, as RFC 8291 has them.
+func keys(sub store.PushSubscription) (p256dh, auth []byte, err error) {
+	p256dh, err = b64.DecodeString(strings.TrimRight(sub.P256DH, "="))
+	if err == nil {
+		_, err = ecdh.P256().NewPublicKey(p256dh)
+	}
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("subscription key: %w", err)
+	}
+
+	auth, err = b64.DecodeString(strings.TrimRight(sub.Auth, "="))
+	if err == nil && len(auth) != 16 {
+		err = errors.New("want 16 octets")
+	}
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("subscription secret: %w", err)
+	}
+
+	return p256dh, auth, nil
+}
+
 // Sender posts messages to the push services subscriptions name.
 type Sender struct {
 	Client *http.Client
@@ -45,14 +112,9 @@ func (s *Sender) Send(ctx context.Context, sub store.PushSubscription, m Message
 		return err
 	}
 
-	p256dh, err := b64.DecodeString(strings.TrimRight(sub.P256DH, "="))
+	p256dh, auth, err := keys(sub)
 	if err != nil {
-		return fmt.Errorf("subscription key: %w", err)
-	}
-
-	auth, err := b64.DecodeString(strings.TrimRight(sub.Auth, "="))
-	if err != nil {
-		return fmt.Errorf("subscription secret: %w", err)
+		return err
 	}
 
 	body, err := Seal(p256dh, auth, payload)

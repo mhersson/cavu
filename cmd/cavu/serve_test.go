@@ -178,6 +178,42 @@ func TestServeGivesTheEndOfAnotherTasksUsageLimit(t *testing.T) {
 	}
 }
 
+func TestServeRunsTheNotifier(t *testing.T) {
+	dir, id, _ := runSetup(t)
+	seedEvents(t, dir, id, nil, event(engine.TaskStarted, "user", struct{}{}), question())
+	cavuIn(t, dir, "settings", "set", "listen_address", "127.0.0.1:0")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan error, 1)
+
+	go func() { done <- runServe(ctx, []string{"--data-dir", dir}, nil, &syncBuffer{}, &syncBuffer{}) }()
+
+	task := taskID(t, id)
+
+	// With no subscription, the notifier records the need without sending it.
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		a, err := openApp(t.Context(), dir)
+		require.NoError(c, err)
+
+		defer a.close()
+
+		notified, err := a.store.PushNotified(t.Context())
+		require.NoError(c, err)
+		assert.Equal(c, engine.ClearAnswer, notified[task].Way)
+	}, within, 10*time.Millisecond)
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(within):
+		require.FailNow(t, "the verb did not end")
+	}
+}
+
 func TestServeRefusedWhenLocked(t *testing.T) {
 	for _, role := range []string{roleServe, roleVerb} {
 		t.Run(role, func(t *testing.T) {

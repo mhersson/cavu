@@ -3,11 +3,13 @@ package push_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,6 +122,53 @@ func TestMessageCut(t *testing.T) {
 		assert.Equal(t, m.Tag, cut.Tag)
 		assert.True(t, strings.HasPrefix(m.Body, cut.Body), "cut at a rune boundary")
 	}
+}
+
+func TestClientFollowsNoRedirect(t *testing.T) {
+	var reached atomic.Int32
+
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(elsewhere.Close)
+
+	srv := httptest.NewServer(http.RedirectHandler(elsewhere.URL+"/push/JzLQ3raZ", http.StatusTemporaryRedirect))
+	t.Cleanup(srv.Close)
+
+	client, err := push.NewClient(nil)
+	require.NoError(t, err)
+
+	sender := newSender(t, srv)
+	sender.Client = client
+	m := push.Message{Title: "Stopped · cavu", Body: "Add a dark theme", URL: "/tasks/3", Tag: "task-3"}
+
+	err = sender.Send(t.Context(), newBrowser(t).subscription(srv.URL+"/push/JzLQ3raZ", base64.RawURLEncoding), m)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), strconv.Itoa(http.StatusTemporaryRedirect))
+	assert.Zero(t, reached.Load(), "a push reaches only the endpoint's host")
+}
+
+func TestClientTrustsTheCABundle(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) }))
+	t.Cleanup(srv.Close)
+
+	send := func(bundle []byte) error {
+		client, err := push.NewClient(bundle)
+		require.NoError(t, err)
+
+		sender := newSender(t, srv)
+		sender.Client = client
+		m := push.Message{Title: "Stopped · cavu", Body: "Add a dark theme", URL: "/tasks/3", Tag: "task-3"}
+
+		return sender.Send(t.Context(), newBrowser(t).subscription(srv.URL+"/push/JzLQ3raZ", base64.RawURLEncoding), m)
+	}
+
+	require.Error(t, send(nil), "the system's certificates do not hold the test server's")
+	require.NoError(t, send(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})))
+
+	_, err := push.NewClient([]byte("no certificate here"))
+	require.Error(t, err)
 }
 
 // sent is a push as the push service received it.

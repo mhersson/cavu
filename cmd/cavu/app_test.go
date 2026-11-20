@@ -15,6 +15,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/forge"
+	"github.com/mhersson/cavu/internal/push"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -305,6 +306,28 @@ func TestOpenAppCreatesTheDataDirectoryOnFirstUse(t *testing.T) {
 	got, _, err := a.vault.Get(ctx, "forge_token")
 	require.NoError(t, err)
 	assert.Equal(t, "sealed-on-first-open", got, "the master key is kept")
+}
+
+// A new key would orphan every browser's subscription.
+func TestOpenAppKeepsThePushKey(t *testing.T) {
+	dir := t.TempDir()
+
+	key := func() string {
+		a, err := openApp(t.Context(), dir)
+		require.NoError(t, err)
+
+		defer a.close()
+
+		sealed, ok, err := a.vault.Get(t.Context(), "push.vapid_key")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, push.EncodeKey(a.pushKey), sealed)
+
+		return sealed
+	}
+
+	first := key()
+	assert.Equal(t, first, key())
 }
 
 func TestLockRefusesASecondHolder(t *testing.T) {

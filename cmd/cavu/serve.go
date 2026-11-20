@@ -9,12 +9,14 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/mhersson/cavu/internal/api"
 	"github.com/mhersson/cavu/internal/auth"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/push"
 	"github.com/mhersson/cavu/web"
 )
 
@@ -63,6 +65,16 @@ func runServe(ctx context.Context, args []string, _ io.Reader, stdout, stderr io
 		return err
 	}
 
+	bundle, err := a.caBundle(ctx)
+	if err != nil {
+		return err
+	}
+
+	client, err := push.NewClient(bundle)
+	if err != nil {
+		return fmt.Errorf("ca_bundle_path: %w", err)
+	}
+
 	if err := a.checkImage(ctx, rt); err != nil {
 		return err
 	}
@@ -84,22 +96,33 @@ func runServe(ctx context.Context, args []string, _ io.Reader, stdout, stderr io
 		return err
 	}
 
-	return a.serve(ctx, ln, rt, stdout)
+	return a.serve(ctx, ln, rt, client, stdout)
 }
 
-// serve runs the scheduler and the handler on ln until ctx ends or the
-// handler stops serving.
-func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, stdout io.Writer) error {
+// serve runs the scheduler, the notifier and the handler on ln until ctx ends
+// or the handler stops serving. The notifier posts with client.
+func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, client *http.Client, stdout io.Writer) error {
 	s := &engine.Scheduler{Loop: a.loop(rt), Checks: true, OnError: func(taskID int64, err error) {
 		slog.Error("scheduler error", "task", taskID, "err", err)
 	}}
 	l := a.loop(rt)
 	l.Paused = s.Paused
+	focus := &push.Focus{}
+	n := &push.Notifier{
+		List: func(ctx context.Context) ([]engine.Row, error) {
+			return l.List(ctx, engine.ListQuery{NeedsYou: true}, nil)
+		},
+		Store:   a.store,
+		Sender:  &push.Sender{Client: client, Signer: push.NewSigner(a.pushKey, time.Now)},
+		Focus:   focus,
+		OnError: func(err error) { slog.Error("notifier error", "err", err) },
+	}
 	stopped := make(chan struct{})
 	srv := &http.Server{
 		Handler: web.Handler(api.New(api.Deps{
 			Store: a.store, Vault: a.vault, Auth: auth.NewService(a.store, time.Now), Loop: l,
 			Nudge: s.Nudge, Waiting: s.Waiting, CheckStarted: s.CheckStarted, Version: version, Stop: stopped,
+			Focus: focus, PushKey: push.PublicKey(a.pushKey),
 		})),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -108,13 +131,11 @@ func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, s
 
 	// The scheduler ends after the open requests, which may still record a person's action.
 	sctx, stop := context.WithCancel(context.WithoutCancel(ctx))
-	ran := make(chan struct{})
 
-	go func() {
-		defer close(ran)
+	var ran sync.WaitGroup
 
-		_ = s.Run(sctx)
-	}()
+	ran.Go(func() { _ = s.Run(sctx) })
+	ran.Go(func() { _ = n.Run(sctx) })
 
 	served := make(chan error, 1)
 
@@ -139,7 +160,7 @@ func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, s
 	}
 
 	stop()
-	<-ran
+	ran.Wait()
 	slog.Info("stopped")
 
 	return err

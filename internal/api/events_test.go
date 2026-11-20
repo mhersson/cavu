@@ -209,6 +209,7 @@ func TestEventRequestsRefused(t *testing.T) {
 		{"a page whose agent is not a boolean", fmt.Sprintf("GET /api/tasks/%d/events?agent=maybe", id), "", http.StatusBadRequest},
 		{"a stream of an unknown task", "GET /api/events?task=99", "", http.StatusNotFound},
 		{"a stream after what is not a number", "GET /api/events?after=last", "", http.StatusBadRequest},
+		{"a stream whose device is not a number", "GET /api/events?device=phone", "", http.StatusBadRequest},
 		{"a stream whose Last-Event-ID is not a number", "GET /api/events", "last", http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

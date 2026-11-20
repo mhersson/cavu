@@ -140,10 +140,16 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) error {
 // stream sends the events of every task, or of the task the query names, as
 // they are stored, until the client leaves or the server stops. Other
 // processes store events too, so it polls the store rather than hear of them.
+// While it is open, it holds the focus of the push device the query names.
 func (s *server) stream(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	task, err := number("task", r.URL.Query().Get("task"))
+	if err != nil {
+		return err
+	}
+
+	device, err := number("device", r.URL.Query().Get("device"))
 	if err != nil {
 		return err
 	}
@@ -157,6 +163,10 @@ func (s *server) stream(w http.ResponseWriter, r *http.Request) error {
 	cursor, err := s.start(r)
 	if err != nil {
 		return err
+	}
+
+	if device != 0 {
+		defer s.Focus.Connect(device)()
 	}
 
 	h := w.Header()

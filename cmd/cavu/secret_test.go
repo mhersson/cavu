@@ -65,7 +65,7 @@ func TestSecretSetRefusesAnEmptyValueAndATerminal(t *testing.T) {
 
 	names, err := a.store.SecretNames(t.Context())
 	require.NoError(t, err)
-	assert.Empty(t, names)
+	assert.Equal(t, []string{"push.vapid_key"}, names, "only the key openApp makes")
 }
 
 func TestIsTerminal(t *testing.T) {

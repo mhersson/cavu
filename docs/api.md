@@ -138,17 +138,18 @@ The others are the server's:
 
 ### `GET /api/settings`
 
-Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every named GitHub credential, every settable key's default and every switch's default:
+Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every named GitHub credential, the key a browser subscribes to notifications with, every settable key's default and every switch's default:
 
 ```json
 {"settings": {"endpoint_mode": "subscription", "model_work": "sonnet"},
  "secrets": {"endpoint_credential": true, "forge_token": false, "forge_app_key": false},
  "forge_credentials": [{"name": "acme-org", "kind": "token"}, {"name": "work-app", "kind": "app", "app_id": 482913}],
+ "push_key": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
  "defaults": {"concurrency": "3", "verify_timeout_minutes": "10", "model_review": "", "...": "..."},
  "switches": {"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true}}
 ```
 
-A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `forge_credentials` lists the named credentials by name, each with its `kind` (`token` or `app`) and, for an App, its `app_id` as a number; it is `[]` when there are none, and a credential's secret is never given or shown as set. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default.
+A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `forge_credentials` lists the named credentials by name, each with its `kind` (`token` or `app`) and, for an App, its `app_id` as a number; it is `[]` when there are none, and a credential's secret is never given or shown as set. `push_key` is the public half of the instance's VAPID key (RFC 8292), the uncompressed P-256 point in base64url, for a page to subscribe with as its `applicationServerKey`. CAVU makes the key once, when it opens a data directory that has none, and keeps it, sealed, as the secret `push.vapid_key`. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default.
 
 ### `PATCH /api/settings`
 
@@ -281,7 +282,7 @@ data: {"id":42,"task_id":7,"run_id":3,"at":"2030-01-02T03:04:05Z","type":"agent_
 
 ```
 
-The stream starts after the event named by the header `Last-Event-ID`, else by the query `after=ID`, else after the newest event when the request arrives. It opens with a message that holds only that id (`id: 41` and a blank line) and carries no event. A client that reconnects with the id it got last, as a browser's `EventSource` does, misses no event and gets none twice, even when it drops before its first event. The server looks for new events once a second and sends them in id order, and sends a comment line, `:`, every 15 seconds. The stream's answer carries `Cache-Control: no-store` and `X-Accel-Buffering: no`, which keeps a proxy such as nginx from holding the events back. The stream ends when the client leaves or the server stops. A `task` that does not exist is 404; a `task`, or the `Last-Event-ID` or `after` the stream starts after, that is not a whole number is 400.
+The stream starts after the event named by the header `Last-Event-ID`, else by the query `after=ID`, else after the newest event when the request arrives. It opens with a message that holds only that id (`id: 41` and a blank line) and carries no event. A client that reconnects with the id it got last, as a browser's `EventSource` does, misses no event and gets none twice, even when it drops before its first event. The server looks for new events once a second and sends them in id order, and sends a comment line, `:`, every 15 seconds. The stream's answer carries `Cache-Control: no-store` and `X-Accel-Buffering: no`, which keeps a proxy such as nginx from holding the events back. The stream ends when the client leaves or the server stops. With the query `device=ID`, the id [`PUT /api/push`](#put-apipush) answered, the device counts as looked at while the stream is open and its page last said it has focus. A `task` that does not exist is 404; a `task`, a `device`, or the `Last-Event-ID` or `after` the stream starts after, that is not a whole number is 400.
 
 ### The event
 
@@ -312,6 +313,29 @@ Of the payloads, a client may rely on these fields and no others:
 | `session_ended` | `summary`, the agent's summary of the session, `""` when it gave none; `assumptions`, the choices it made without asking, a list that may be null; and `where_to_look`, the parts of the change a reviewer should read first, left out when it named none. |
 
 A task's pull request leaves these events: `publish_started` and `published` for a push of the branch and the pull request opened or updated by it, `pr_observed` for what GitHub showed of the pull request: CAVU's first look since its push, its ready-marking or a person's action, each later look that differs from the last record, and the look before a push that finds the pull request merged or closed or its branch moved by a person, and `ready_started` and `pr_ready` for CAVU marking it ready for review. After a follow-up run for reviewers' requests, `reply_started` and `replied` record CAVU's one comment on the pull request that answers them. `home_removed` records that the task's home volume was removed once the task could run no more: it is done or cancelled, or its change was exported with no pull request to follow, as with the switch `publish` off.
+
+### `PUT /api/push`
+
+Registers a browser's push subscription, or updates the one with the same endpoint, and records whether the browser's CAVU page has focus. The body holds the subscription as the browser gives it, the origin of the page, and the focus:
+
+```json
+{"endpoint": "https://push.example.org/send/...", "keys": {"p256dh": "...", "auth": "..."},
+ "origin": "https://cavu.example.org", "focused": true}
+```
+
+Answers 200 with the id of the device, the same for every call with that endpoint:
+
+```json
+{"id": 3}
+```
+
+A later call with the same endpoint replaces the keys and the origin. An `endpoint` that is not an `https` URL with a host, a `p256dh` that is not a P-256 public key, or an `auth` that is not 16 octets, each in base64url, is 400, and the line does not quote the endpoint.
+
+While `cavu serve` runs, it looks every 2 seconds for the tasks that need a person and sends each new need, a task's `needs` with its `needs_you_since`, once, to every registered device but those being looked at: a device whose page last said it has focus while an event stream opened with its id is open ([`GET /api/events`](#get-apievents)). A push is encrypted for the subscription (RFC 8291) and signed with the instance's VAPID key, whose token names the `origin` as its subject; it holds `{"title": "Needs an answer · web", "body": "Add a footer", "url": "/tasks/7", "tag": "task-7"}`, at most 2 KiB with the body cut to fit, the title being `Needs an answer`, `Ready for review`, `Stopped` or `A change to take` for `answer`, `review`, `retry` and `take`, then the project, and the body the task's title. A device whose push service answers 404 or 410 is removed, and a push that fails otherwise is logged and not sent again. A need found while no device is registered is recorded and never sent. Only `cavu serve` sends notifications: a task that `cavu task run` drives while no server runs sends none.
+
+### `DELETE /api/push/{id}`
+
+Removes the device and answers 204 with no body; an id that names no device is 404.
 
 ## MCP
 

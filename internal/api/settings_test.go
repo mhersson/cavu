@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -38,7 +40,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 
 	assert.JSONEq(t, `{"settings": {}, "secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false},
-		"forge_credentials": [],
+		"forge_credentials": [], "push_key": "`+f.pushKey+`",
 		"defaults": `+settingDefaults+`, "switches": `+settingSwitches+`}`, settings(t),
 		"a setting a person cannot set is not shown")
 
@@ -48,7 +50,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	want := `{"settings": {"endpoint_mode": "subscription", "model_work": "sonnet", "concurrency": "4",
 		"commit_name": {"b": 2, "a": [1, 2.50]}}, "secrets": {"endpoint_credential": false, "forge_token": true, "forge_app_key": false},
-		"forge_credentials": [],
+		"forge_credentials": [], "push_key": "` + f.pushKey + `",
 		"defaults": ` + settingDefaults + `, "switches": ` + settingSwitches + `}`
 	assert.JSONEq(t, want, body)
 	assert.JSONEq(t, want, settings(t))
@@ -104,7 +106,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	want = `{"settings": {"endpoint_mode": "subscription", "commit_name": {"b": 2, "a": [1, 2.50]}},
 		"secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false},
-		"forge_credentials": [],
+		"forge_credentials": [], "push_key": "` + f.pushKey + `",
 		"defaults": ` + settingDefaults + `, "switches": ` + settingSwitches + `}`
 	assert.JSONEq(t, want, body, "null and an empty value unset a key, and an empty secret removes it")
 	assert.JSONEq(t, want, settings(t))
@@ -202,6 +204,25 @@ func TestModelPricesRoundTrip(t *testing.T) {
 	after, err := f.store.Settings(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, stored, after, "a refused price writes nothing")
+}
+
+func TestSettingsCarryThePushKey(t *testing.T) {
+	f := newServer(t)
+
+	for route, body := range map[string]string{"GET /api/settings": "", "PATCH /api/settings": "{}"} {
+		status, got := f.call(t, route, body)
+		require.Equal(t, http.StatusOK, status, got)
+
+		key, ok := object(t, got)["push_key"].(string)
+		require.True(t, ok, got)
+		assert.Equal(t, f.pushKey, key, route)
+
+		point, err := base64.RawURLEncoding.DecodeString(key)
+		require.NoError(t, err, route)
+
+		_, err = ecdh.P256().NewPublicKey(point)
+		require.NoError(t, err, "%s: an uncompressed P-256 point, as applicationServerKey takes", route)
+	}
 }
 
 func TestDefaultsCoverEverySettableKey(t *testing.T) {
