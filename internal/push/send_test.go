@@ -41,6 +41,14 @@ func TestSendHeaders(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, authorization, p.header.Get("Authorization"))
 
+			token, _, ok := strings.Cut(strings.TrimPrefix(p.header.Get("Authorization"), "vapid t="), ", k=")
+			require.True(t, ok)
+
+			var claims struct{ Aud, Sub string }
+			require.NoError(t, json.Unmarshal(unb64(t, strings.Split(token, ".")[1]), &claims))
+			assert.Equal(t, srv.URL, claims.Aud)
+			assert.Equal(t, sub.Origin, claims.Sub)
+
 			assert.JSONEq(t,
 				`{"title":"Ready for review · cavu","body":"Fix the sign-in page","url":"/tasks/7","tag":"task-7"}`,
 				string(b.open(t, p.body)))
