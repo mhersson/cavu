@@ -26,7 +26,7 @@ export const PROJECTS: Project[] = [
 export const SETTINGS: Settings = { settings: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: 'cavu', commit_email: 'cavu@example.com' },
   secrets: { endpoint_credential: true, forge_token: true, forge_app_key: false },
   defaults: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: '', commit_email: '' },
-  switches: SWITCHES };
+  switches: SWITCHES, forge_credentials: [] };
 
 // GET /api/tasks, oldest first
 export const ROWS: Row[] = [
@@ -233,3 +233,15 @@ export const EVENTS: Record<number, TaskEvent[]> = {
   ],
 };
 
+// The Settings page's: two named credentials, the server's defaults, and the credential each project names.
+SETTINGS.forge_credentials = [{ name: 'acme-org', kind: 'token' }, { name: 'work-app', kind: 'app', app_id: 482913 }]
+SETTINGS.defaults = {
+  runtime: '', ca_bundle_path: '', endpoint_mode: '', endpoint_url: '', endpoint_auth_header: '',
+  model_work: '', effort_work: '', model_review: '', effort_review: '', model_strong: '', effort_strong: '',
+  task_timeout_minutes: '300', task_max_turns: '1000', task_budget_usd: '', daily_budget_usd: '', model_prices: '',
+  verify_timeout_minutes: '10', commit_name: '', commit_email: '', concurrency: '3', listen_address: '127.0.0.1:7117',
+  skills_path: '', instructions_path: '', forge_app_id: '', ci_timeout_minutes: '120',
+}
+for (const [name, credential] of [['cavu', ''], ['homelander', ''], ['docs-site', 'acme-org']]) {
+  Object.assign(PROJECTS.find((p) => p.name === name)!, { forge_credential: credential })
+}
