@@ -66,10 +66,10 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 
 The sandbox image holds a headless Chromium. After a change to `web/`, look at the screen before you finish.
 
-- Run `make web-install` once, then start Vite in `web/` on a loopback port: `npx vite --host 127.0.0.1 --port 5173 --strictPort`. Run it in the background and record its pid.
+- Run `make web-install` once, then start Vite in `web/` on a loopback port in the background and record its pid: `./node_modules/.bin/vite --host 127.0.0.1 --port 5173 --strictPort > /tmp/vite.log 2>&1 & echo $!`. Started through `npx`, the pid would be npm's, and stopping it leaves Vite running.
 - Take the shot: `chromium --headless --no-sandbox --no-proxy-server --hide-scrollbars --window-size=1280,900 --virtual-time-budget=5000 --screenshot=/tmp/shot.png "http://127.0.0.1:5173/harness.html?palette=copper&theme=dark"`. Use `--window-size=390,844` for a phone.
 - `web/harness.html` shows the app on fixed data. Its `palette` is `copper` or `catppuccin`, its `theme` is `dark` or `light`, and its `path` picks the route, for example `path=/status`.
-- Read the PNG and say what you see. Fix what looks wrong and shoot again.
+- Read the PNG and say what you see. Fix what looks wrong and shoot again to a new file: a page that does not load exits 0 and writes no file, so an old PNG would still be there.
 - Stop Vite by the pid you recorded, never by port or name.
 
 ## Layout
