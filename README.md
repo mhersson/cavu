@@ -414,6 +414,8 @@ Download the modules in the setup command (`go mod download`): the setup phase r
 
 A task's first build starts from the build cache of the project's newest passed check. Go's test results travel with that cache, so a verify command that must rerun every test says `-count=1` (`go test -count=1 ./...`).
 
+A `.golangci.yml`, `.golangci.yaml`, `.golangci.toml` or `.golangci.json` at the repository's root installs golangci-lint, at the newest release of the major version its `version` field names, or of 1 when it has none. A newer release can report what an older one does not, so a repository whose CI pins golangci-lint pins the same version in the project: `cavu project set NAME --tool golangci-lint=VERSION`, or a line under **Versions set here** on the project's page. `--tool` sets the whole list, so repeat it for every version the project already sets.
+
 ### Python projects
 
 A `uv.lock` at the repository's root installs uv. Use `uv sync --frozen` as the setup command and `uv run` in the verify command (`uv run pytest -q`): every run then has its own `.venv`, which uv keeps out of git. uv runs on the Python that mise installs and never downloads its own.
