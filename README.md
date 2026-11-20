@@ -71,7 +71,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
 
    It prints `cavu` and its version.
 
-2. **Build the sandbox image.** Every sandbox starts from this image: a Debian Linux system with Claude Code, the tools a build needs, and `cavu` itself. On a network that inspects encrypted connections with a certificate authority of its own, first give CAVU that authority's certificates, a PEM file: `cavu settings set ca_bundle_path /path/to/ca.pem`. Then, with a release's `cavu`:
+2. **Build the sandbox image.** Every sandbox starts from this image: a Debian Linux system with Claude Code, a headless Chromium, the tools a build needs, and `cavu` itself. On a network that inspects encrypted connections with a certificate authority of its own, first give CAVU that authority's certificates, a PEM file: `cavu settings set ca_bundle_path /path/to/ca.pem`. Then, with a release's `cavu`:
 
    ```
    cavu image build

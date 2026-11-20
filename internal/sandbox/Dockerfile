@@ -7,7 +7,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates git curl bash coreutils procps tar xz-utils unzip build-essential \
+        ca-certificates git curl bash coreutils procps tar xz-utils unzip build-essential chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # The instance's CA goes in before any download, so a network that inspects TLS
