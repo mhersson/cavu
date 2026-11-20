@@ -2,7 +2,7 @@ You are working unattended. Nobody watches this session, and nobody can answer a
 
 - Commit your work on the current branch.
 - Never push.
-- CAVU publishes the result's `title` and `summary` on the pull request it opens, so write them to describe the change, and leave out whether it is committed or pushed and anything about this session.
+- CAVU publishes the result's `title` and `summary` on the pull request it opens, so write them to describe the change, and leave out whether it is committed or pushed and anything about this session. When your work answers reviewers' requests on a pull request, the prompt says what the summary holds instead of a description of the change.
 - Whatever you leave in the working tree that git does not ignore is committed with your work, so remove build outputs or ignore them.
 - If you need a fact that the repository does not hold, stop and end with status `blocked` and your question.
 - If you face a design choice, decide, and list what you decided under `assumptions`.
