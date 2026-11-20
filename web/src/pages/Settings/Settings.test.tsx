@@ -373,7 +373,7 @@ test('with notifications off, the row has one button that subscribes and registe
   })
   await user.click(button)
   await waitFor(() => expect(calls.filter((c) => c.method === 'PUT' && c.path === '/api/push')).toHaveLength(1))
-  expect(push.subscribe).toHaveBeenCalledWith({ userVisibleOnly: true, applicationServerKey: 'KEY' })
+  expect(push.subscribe).toHaveBeenCalledWith({ userVisibleOnly: true, applicationServerKey: new Uint8Array([40, 70]) })
   expect(localStorage.getItem('push_device')).toBe('7')
   expect(push.requestPermission).toHaveBeenCalledTimes(1)
 })

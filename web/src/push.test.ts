@@ -36,11 +36,11 @@ test('pushState says what a browser can do and whether it is on', () => {
 test('turnOn asks, subscribes with the key and reports the subscription', async () => {
   const push = fakePush()
   const calls = server()
-  const done = turnOn('KEY')
+  const done = turnOn('-_8')
   // The permission is asked before anything is awaited, so it stays inside the click.
   expect(push.requestPermission).toHaveBeenCalledTimes(1)
   await done
-  expect(push.subscribe).toHaveBeenCalledWith({ userVisibleOnly: true, applicationServerKey: 'KEY' })
+  expect(push.subscribe).toHaveBeenCalledWith({ userVisibleOnly: true, applicationServerKey: new Uint8Array([251, 255]) })
   expect(puts(calls)).toEqual([{ endpoint: 'https://push.example/s1', keys: { p256dh: 'P', auth: 'A' }, origin: location.origin, focused: true }])
   expect(localStorage.getItem('push_device')).toBe('7')
 })

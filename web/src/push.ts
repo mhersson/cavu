@@ -34,11 +34,14 @@ async function send(s: PushSubscription, focused: boolean) {
   keepDevice(String(id))
 }
 
+// The key arrives as unpadded base64url.
+const bytes = (key: string) => Uint8Array.from(atob(key.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))
+
 // Called from a click: the permission is asked before anything is awaited.
 export async function turnOn(key: string): Promise<void> {
   if ((await Notification.requestPermission()) !== 'granted') return
   const registration = await navigator.serviceWorker.ready
-  await send(await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }), true)
+  await send(await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes(key) }), true)
 }
 
 export async function turnOff(): Promise<void> {
