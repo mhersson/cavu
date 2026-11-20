@@ -27,6 +27,7 @@ const BASE: Project = {
   no_ci: false,
   ignored_checks: [],
   review_bots: [],
+  forge_credential: '',
   runnable: true,
   baseline: { commit: 'c0ffee1', passed: true, at: '2030-01-02T03:04:05Z', output: '' },
   check: {

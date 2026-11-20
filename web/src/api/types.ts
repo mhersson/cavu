@@ -174,6 +174,7 @@ export type Project = {
   no_ci: boolean
   ignored_checks: string[]
   review_bots: string[]
+  forge_credential: string
   runnable: boolean
   baseline: { commit: string; passed: boolean; at: string; output: string } | null
   check: {
@@ -193,4 +194,5 @@ export type Settings = {
   secrets: Record<string, boolean>
   defaults: Record<string, string>
   switches: Record<string, boolean>
+  forge_credentials: { name: string; kind: 'token' | 'app'; app_id?: number }[]
 }
