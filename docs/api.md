@@ -1,6 +1,6 @@
 # HTTP API
 
-`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP: the REST routes under `/api/`, and the [MCP tools](#mcp) at `/mcp`. Under `/api/`, request and response bodies are JSON, but for the event stream's. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
+`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP: the REST routes under `/api/`, and the [MCP tools](#mcp) at `/mcp`. Under `/api/`, request and response bodies are JSON, but for the event stream's and the change route's file. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
 
 ## Authentication
 
@@ -23,10 +23,10 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one. |
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one, or is absent when the route requires it. |
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
-| 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist. |
+| 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone. |
 | 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Or the container runtime would not remove a project's volumes, with its error in the line. Nothing was written; send it again. |
 | 413 | The body is larger than 1 MiB. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
