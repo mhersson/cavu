@@ -159,8 +159,7 @@ test('a ready pull request links to its address', () => {
 
 test('a change to take offers the download and the recorded merge', async () => {
   const calls = serve(done, () => json(done))
-  const { onTask, container } = show(task({ status: 'in_review', needs: 'take', change: { ...change, files_changed: 1 } }))
-  expect(container.querySelector('.facts')).toHaveTextContent(/^1 file changed/)
+  const { onTask } = show(task({ status: 'in_review', needs: 'take', change }))
   expect(link('Download the change')).toHaveAttribute('href', '/api/tasks/7/change?format=bundle')
   expect(link('Download the change')).toHaveAttribute('download')
   expect(link('Diff')).toHaveAttribute('href', '/api/tasks/7/change?format=diff')

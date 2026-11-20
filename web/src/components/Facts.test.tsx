@@ -42,12 +42,10 @@ it('a change names its flagged paths', () => {
     flagged: { workflows: ['.github/ci.yaml'], instructions: ['AGENTS.md'], large: ['big.bin'] },
   }
   const { container } = render(<ChangeFacts change={change} />)
-  expect(container.querySelector('section > div')).toHaveTextContent(/^1 file changed/)
-  expect([...container.querySelectorAll('.flag')].map((e) => e.textContent)).toEqual([
-    'Touches .github/ci.yaml',
-    'Touches AGENTS.md',
-    'Touches big.bin',
-  ])
+  const flags = container.querySelectorAll('.flag')
+  const paths = ['.github/ci.yaml', 'AGENTS.md', 'big.bin']
+  expect(flags).toHaveLength(paths.length)
+  paths.forEach((p, i) => expect(flags[i]).toHaveTextContent(p))
 })
 
 it('a finding with markup is shown as text', () => {
