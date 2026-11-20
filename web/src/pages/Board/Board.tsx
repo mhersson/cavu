@@ -86,7 +86,7 @@ function Columns({ finished, project }: { finished: boolean; project: string }) 
             <section className="bcol" key={status} aria-label={status}>
               <h2>
                 <StatusMark status={status} />
-                <span className="n">{here.length}</span>
+                <span className="n">{rows && here.length}</span>
               </h2>
               {here.length === 0 && rows && <div className="none">None</div>}
               {here.map((r) => (
