@@ -84,7 +84,7 @@ Removes the project, as `cavu project remove` does: its cache and mirror volumes
 
 ### `POST /api/projects/{id}/check`
 
-Asks for an environment check, the one `cavu project check` runs, which the server starts as soon as it can. Answers 202 with the project. `check.requested_at` stays set until a check that started after the request ends; a request made while a check runs is kept, and the check runs again.
+Asks for an environment check, the one `cavu project check` runs, which the server starts as soon as it can. Answers 202 with the project. `check.requested_at` stays set until a check that started after the request ends; a request made while a check runs is kept, and the check runs again. `check.started_at` is set while the server's check of the project runs.
 
 ### The project
 
@@ -100,7 +100,7 @@ Asks for an environment check, the one `cavu project check` runs, which the serv
  "forge_credential": "",
  "runnable": true,
  "baseline": {"commit": "4b825dc", "passed": true, "at": "2030-01-02T03:04:05Z", "output": ""},
- "check": {"requested_at": null, "tools": ["node"], "ignored_tools": [], "failed_step": "",
+ "check": {"requested_at": null, "started_at": null, "tools": ["node"], "ignored_tools": [], "failed_step": "",
            "verify_suggestion": "npm test", "fault": "", "commit": "4b825dc", "output": ""}}
 ```
 
@@ -134,7 +134,7 @@ The others are the server's:
 | `switches` | Every switch and its state, the defaults included. |
 | `runnable` | Whether the project's tasks may start: the baseline passed, or verify is waived. |
 | `baseline` | The verify command's result on the base commit at the newest check that ran it, or null. |
-| `check` | The newest check that ended: the tools it found and ignored, the step that failed, the verify command the repository suggests, the error it met (`fault`), the base commit and the output. `requested_at` is the time of a check asked for and not yet answered, or null. |
+| `check` | The newest check that ended: the tools it found and ignored, the step that failed, the verify command the repository suggests, the error it met (`fault`), the base commit and the output. `requested_at` is the time of a check asked for and not yet answered, or null. `started_at` is the time the server started the check of the project that runs now, or null: a check asked for and not yet started waits for a free slot and for any other project's check to end, since one check runs at a time. |
 
 ### `GET /api/settings`
 

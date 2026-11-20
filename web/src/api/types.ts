@@ -179,6 +179,7 @@ export type Project = {
   baseline: { commit: string; passed: boolean; at: string; output: string } | null
   check: {
     requested_at: string | null
+    started_at: string | null
     tools: string[]
     ignored_tools: string[]
     failed_step: string

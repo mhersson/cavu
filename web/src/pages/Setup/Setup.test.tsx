@@ -38,7 +38,7 @@ function project(id: number, name: string, more: Partial<Project> = {}): Project
     forge_credential: '',
     runnable: true,
     baseline: { commit: 'c0ffee1', passed: true, at: '2030-01-02T03:04:05Z', output: '' },
-    check: { requested_at: null, tools: [], ignored_tools: [], failed_step: '', verify_suggestion: '', fault: '', commit: 'c0ffee1', output: '' },
+    check: { requested_at: null, started_at: null, tools: [], ignored_tools: [], failed_step: '', verify_suggestion: '', fault: '', commit: 'c0ffee1', output: '' },
     ...more,
   }
 }

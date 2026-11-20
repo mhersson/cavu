@@ -33,6 +33,7 @@ function project(id: number, name: string, more: Partial<Project> = {}): Project
     baseline: { commit: 'c0ffee1', passed: true, at: '2030-01-02T03:04:05Z', output: '' },
     check: {
       requested_at: null,
+      started_at: null,
       tools: [],
       ignored_tools: [],
       failed_step: '',
@@ -197,7 +198,7 @@ test('a check that ends shows without a reload', async () => {
   const calls = serve({ projects: [asked] }, (c) => (c.method === 'GET' && c.path === '/api/projects/1' ? json(project(1, 'web')) : undefined))
   await show()
   expect(rows()[0]).toHaveClass('k-stop')
-  expect(check()).toHaveClass('k-stop')
+  expect(check()).toHaveClass('k-wait')
   await act(() => vi.advanceTimersByTimeAsync(3000))
   expect(reads(calls).map((c) => c.path)).toEqual(['/api/projects', '/api/projects/1'])
   expect(rows()[0]).toHaveClass('k-ready')

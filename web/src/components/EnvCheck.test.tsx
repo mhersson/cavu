@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import type { Project } from '../api/types.ts'
 import { fakeServer, json } from '../test-server.ts'
 import EnvCheck from './EnvCheck.tsx'
@@ -32,6 +33,7 @@ const BASE: Project = {
   baseline: { commit: 'c0ffee1', passed: true, at: '2030-01-02T03:04:05Z', output: '' },
   check: {
     requested_at: null,
+    started_at: null,
     tools: ['node', 'go'],
     ignored_tools: [],
     failed_step: '',
@@ -87,7 +89,121 @@ describe('EnvCheck', () => {
     expect(screen.getByRole('region').textContent).not.toContain(clock(asked.check.requested_at!))
     rerender(<EnvCheck project={asked} onProject={onProject} />)
     expect(screen.getByRole('region').textContent).toContain(clock(asked.check.requested_at!))
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('a check under way says whether it waits or runs, since when, and offers no second check', () => {
+    const waits = project({}, { requested_at: '2030-01-02T05:06:00Z' })
+    const runs = project({}, { requested_at: '2030-01-02T05:06:00Z', started_at: '2030-01-02T07:08:00Z' })
+    const { rerender } = render(<EnvCheck project={waits} onProject={() => {}} />)
+    const box = screen.getByRole('region')
+    const first = box.querySelector('.l0')!
+    expect(box).toHaveClass('k-wait')
+    expect(first.textContent).toContain(clock(waits.check.requested_at!))
+    expect(screen.queryByRole('button')).toBeNull()
+
+    rerender(<EnvCheck project={runs} onProject={() => {}} />)
+    expect(box).toHaveClass('k-run')
+    expect(first.textContent).toContain(clock(runs.check.started_at!))
+    expect(first.textContent).not.toContain(clock(runs.check.requested_at!))
+    expect(first.querySelector('code')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+
+    // The line under the first holds the facts that follow the verdict when no check is under way, and no verdict.
+    const later = box.querySelector('.later')!
+    expect(later.querySelector('b')).toBeNull()
+    expect(later.querySelector('code')?.textContent).toBe('c0ffee1')
+    expect(later.textContent).toContain(clock(BASE.baseline!.at))
+    expect(box.querySelector('.first')).toBeNull()
+    const shown = later.textContent
+    rerender(<EnvCheck project={BASE} onProject={() => {}} />)
+    expect(box.querySelector('.later')).toBeNull()
+    expect(box.querySelector('.l0 b')).not.toBeNull()
+    expect(box.querySelector('.l0 span')?.textContent).toBe(shown)
+  })
+
+  it('a project that cannot run shows neither the stop look nor its verdict while a check is under way', () => {
+    const { rerender } = render(<EnvCheck project={failed} onProject={() => {}} />)
+    const box = screen.getByRole('region')
+    expect(box).toHaveClass('k-stop')
+    expect(box.querySelector('.l0 b')).not.toBeNull()
+    const facts = box.querySelector('.l0 span')?.textContent
+    rerender(<EnvCheck project={{ ...failed, check: { ...failed.check, requested_at: '2030-01-02T05:06:00Z' } }} onProject={() => {}} />)
+    expect(box).not.toHaveClass('k-stop')
+    expect(box.querySelector('.later b')).toBeNull()
+    expect(box.querySelector('.later')?.textContent).toBe(facts)
+    expect(box.querySelector('.later code')?.textContent).toBe('badc0de')
+    expect(box.querySelector('pre.out')?.textContent).toBe(failed.check.output)
+  })
+
+  it('a first check under way says that CAVU asked for it', () => {
+    const made = project({ runnable: false, baseline: null }, { tools: [], commit: '', requested_at: '2030-01-02T05:06:00Z' })
+    const { rerender } = render(<EnvCheck project={made} onProject={() => {}} />)
+    const box = screen.getByRole('region')
+    expect(box).toHaveClass('k-wait')
+    expect(box.querySelector('.later.first')).not.toBeNull()
+    expect(box.querySelectorAll('.later')).toHaveLength(1)
+    expect(screen.queryByRole('button')).toBeNull()
+
+    rerender(<EnvCheck project={{ ...made, check: { ...made.check, started_at: '2030-01-02T05:07:00Z' } }} onProject={() => {}} />)
+    expect(box).toHaveClass('k-run')
+    expect(box.querySelector('.later.first')).not.toBeNull()
+
+    rerender(<EnvCheck project={{ ...made, check: { ...made.check, requested_at: null } }} onProject={() => {}} />)
+    expect(box).toHaveClass('k-stop')
+    expect(box.querySelector('.later')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Check' })).toBeEnabled()
+  })
+
+  // The page holds the project, as the project's page and the setup page do.
+  function Page({ start }: { start: Project }) {
+    const [p, setP] = useState(start)
+    return <EnvCheck project={p} onProject={setP} />
+  }
+
+  const running = project(
+    { runnable: false, baseline: null },
+    { tools: [], commit: '', requested_at: '2030-01-02T05:06:00Z', started_at: '2030-01-02T05:07:00Z' },
+  )
+
+  it('a check that ends and passes shows its result without a reload', async () => {
+    vi.useFakeTimers()
+    const calls = fakeServer(() => json(BASE))
+    render(<Page start={running} />)
+    const box = screen.getByRole('region')
+    expect(box).toHaveClass('k-run')
+    await act(() => vi.advanceTimersByTimeAsync(3000))
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /api/projects/4'])
+    expect(box).toHaveClass('k-ready')
+    expect(box.querySelector('.later')).toBeNull()
+    expect(box.querySelector('.l0 code')?.textContent).toBe('c0ffee1')
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
+    await act(() => vi.advanceTimersByTimeAsync(9000))
+    expect(calls).toHaveLength(1)
+  })
+
+  it('a check that ends and fails shows the failed step and its output without a reload', async () => {
+    vi.useFakeTimers()
+    fakeServer(() => json(failed))
+    render(<Page start={running} />)
+    const box = screen.getByRole('region')
+    await act(() => vi.advanceTimersByTimeAsync(3000))
+    expect(box).toHaveClass('k-stop')
+    expect(box.querySelector('.later')).toBeNull()
+    expect([...box.querySelectorAll('.l0 code')].map((c) => c.textContent)).toEqual(['badc0de', 'verify', 'badc0de'])
+    expect(box.querySelector('pre.out')?.textContent).toBe(failed.check.output)
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
+  })
+
+  it('a check whose result is stored but which has not yet ended is read again', async () => {
+    vi.useFakeTimers()
+    const storing = project({}, { requested_at: null, started_at: '2030-01-02T05:07:00Z' })
+    const calls = fakeServer(() => json(BASE))
+    render(<Page start={storing} />)
+    expect(screen.getByRole('region')).toHaveClass('k-run')
+    await act(() => vi.advanceTimersByTimeAsync(3000))
+    expect(calls).toHaveLength(1)
+    expect(screen.getByRole('region')).toHaveClass('k-ready')
   })
 
   it('a check asked for is read again until it ends', async () => {
