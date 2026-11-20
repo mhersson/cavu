@@ -155,7 +155,7 @@ export type VerifyEnded = {
 
 export type PrepareFailed = { step: 'clone' | 'toolchain' | 'setup' | 'baseline'; output: string }
 
-export type SessionEnded ={ summary: string; assumptions: string[] | null; where_to_look?: string[] }
+export type SessionEnded = { summary: string; assumptions: string[] | null; where_to_look?: string[] }
 
 export type Project = {
   id: number
