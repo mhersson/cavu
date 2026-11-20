@@ -67,6 +67,13 @@ export default function NeedsYou() {
     inView.current = new Set(shown)
   })
 
+  // How long ago is worked out as the page renders, so a quiet page renders each minute.
+  const [, setMinute] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => setMinute((m) => m + 1), 60000)
+    return () => clearInterval(timer)
+  }, [])
+
   const n = needing.length
   const empty = lists !== null && n === 0
   const sub = n ? tasks(n, 'waits', 'wait') + ' for you' + (narrow ? '.' : ', the most recent first.') : '\u00a0'
