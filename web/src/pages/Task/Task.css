@@ -14,10 +14,29 @@
 }
 
 .task-page .task-body {
-  color: var(--grey2);
   max-width: 74ch;
   margin: 0 0 18px;
+}
+
+.task-page .task-body p {
+  color: var(--grey2);
+  margin: 0;
   white-space: pre-wrap;
+}
+
+.task-page .task-body .fold {
+  max-height: 6lh;
+  overflow: hidden;
+}
+
+/* A mask fades the text itself, so it suits any background behind it; only the gradient's alpha counts. */
+.task-page .task-body .cut {
+  mask-image: linear-gradient(to bottom, var(--fg) calc(100% - 2lh), transparent);
+}
+
+.task-page .task-body .btn.link {
+  padding-left: 0;
+  margin-top: 4px;
 }
 
 .task-page .title-field {

@@ -11,6 +11,15 @@ if (typeof window.matchMedia !== 'function') {
     }) as unknown as MediaQueryList
 }
 
+// jsdom has no ResizeObserver and lays nothing out, so nothing it observes ever resizes.
+if (typeof globalThis.ResizeObserver !== 'function') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
 // Node 25 and later expose no localStorage by default and jsdom does not install one there.
 if (typeof globalThis.localStorage?.getItem !== 'function') {
   const items = new Map<string, string>()
