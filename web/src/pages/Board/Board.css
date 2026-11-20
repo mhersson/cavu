@@ -82,7 +82,19 @@
   letter-spacing: 0;
 }
 
+.board-page .b1 .num {
+  flex: none;
+}
+
+.board-page .b1 .proj {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .board-page .b1 .mark {
+  flex: none;
   margin-left: auto;
   font-size: 11.5px;
   font-weight: 600;
