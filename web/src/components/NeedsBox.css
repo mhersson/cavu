@@ -1,0 +1,263 @@
+/* What a task needs, as a square in its colour; the Needs you list's rows use it too. */
+.mk {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--k);
+  margin-right: 9px;
+  flex-shrink: 0;
+}
+
+.k-answer {
+  --k: var(--wait-yellow);
+}
+
+.k-retry {
+  --k: var(--red);
+}
+
+.k-review {
+  --k: var(--green);
+}
+
+.k-take {
+  --k: var(--blue);
+}
+
+.needs .kind {
+  font-weight: 600;
+}
+
+.needs .why,
+.needs .lead {
+  white-space: pre-wrap;
+}
+
+.needs .acts {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.needs textarea {
+  display: block;
+  width: 100%;
+  background: var(--bg0);
+  color: var(--fg);
+  border: 1px solid var(--bg3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  resize: vertical;
+}
+
+.needs textarea::placeholder {
+  color: var(--grey0);
+}
+
+.needs .qs {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.needs .qs li {
+  margin-bottom: 6px;
+}
+
+.needs .sug {
+  display: block;
+  color: var(--grey2);
+  font-size: 13px;
+}
+
+.needs .facts {
+  color: var(--grey2);
+  font-size: 13px;
+}
+
+.needs .refused {
+  color: var(--red);
+  margin: 10px 0 0;
+}
+
+.strip {
+  background: var(--bg0);
+  border: 1px solid var(--bg2);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+}
+
+.strip .l0 {
+  display: flex;
+  align-items: baseline;
+}
+
+.strip .age {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--grey1);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.strip .l1 {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 2px;
+}
+
+.strip .l1 .mono {
+  color: var(--grey1);
+}
+
+.strip .title {
+  font-weight: 600;
+  color: var(--fg);
+  min-width: 0;
+}
+
+.strip .l2 {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.strip .why {
+  flex: 1;
+  min-width: 0;
+}
+
+.strip .more {
+  margin-top: 8px;
+}
+
+.strip .qs {
+  margin-top: 8px;
+}
+
+.strip .answer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 8px;
+}
+
+.strip textarea {
+  min-height: 58px;
+}
+
+.strip .answer .acts {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.needs.flat .kind {
+  display: flex;
+  align-items: baseline;
+}
+
+.needs.flat h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 2px 0;
+}
+
+.needs.flat h2 a {
+  color: var(--fg);
+}
+
+.needs.flat .meta {
+  color: var(--grey2);
+  margin-bottom: 18px;
+}
+
+.needs.flat .lead {
+  font-size: 16px;
+  margin-bottom: 10px;
+  max-width: 64ch;
+}
+
+.needs.flat .qs {
+  margin-bottom: 14px;
+}
+
+.needs.flat .qs li {
+  margin-bottom: 10px;
+}
+
+.needs.flat .sug {
+  margin-top: 2px;
+}
+
+.needs.flat textarea {
+  padding: 8px 10px;
+  min-height: 96px;
+}
+
+.needs.flat > .acts {
+  margin-top: 14px;
+}
+
+.needs.flat .rail {
+  margin-top: 14px;
+}
+
+.needs .verify {
+  color: var(--grey1);
+  font-size: 12px;
+}
+
+.needs pre.out {
+  background: var(--bg0);
+  border: 1px solid var(--bg2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 6px 0 4px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  letter-spacing: 0;
+  overflow: auto;
+  max-height: 260px;
+}
+
+@media (max-width: 720px) {
+  .strip .l1 {
+    flex-wrap: wrap;
+    gap: 2px 8px;
+  }
+
+  .strip .l2 {
+    display: block;
+  }
+
+  .strip .acts {
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+
+  .strip .acts .btn {
+    flex: 1;
+    text-align: center;
+    padding: 9px 12px;
+  }
+
+  .strip .acts .btn.link {
+    flex: none;
+  }
+
+  .strip .answer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .strip .answer .acts {
+    flex-direction: row;
+  }
+}
