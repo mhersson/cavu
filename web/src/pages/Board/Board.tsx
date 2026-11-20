@@ -3,14 +3,12 @@ import { Link, useSearchParams } from 'react-router'
 import { api } from '../../api/client.ts'
 import { useStream } from '../../api/stream.ts'
 import type { Project, Row, Status } from '../../api/types.ts'
+import { count, open, readLists } from '../../components/lists.ts'
 import { NewTaskDialog } from '../../components/NewTaskDialog.tsx'
 import PageHead from '../../components/PageHead.tsx'
 import StatusMark from '../../components/StatusMark.tsx'
 import { clock } from '../../components/time.ts'
 import './Board.css'
-
-const open: Status[] = ['draft', 'queued', 'running', 'blocked', 'in_review']
-const finishedLimit = 30
 
 export default function Board() {
   const [params, setParams] = useSearchParams()
@@ -64,12 +62,8 @@ function Columns({ finished, project }: { finished: boolean; project: string }) 
   const columns: Status[] = finished ? [...open, 'done', 'cancelled'] : open
 
   useStream(() => {
-    const scope = project ? '&project=' + encodeURIComponent(project) : ''
-    const tail = `&order=newest&limit=${finishedLimit}` + scope
-    const paths = ['/tasks?status=' + open.join(',') + scope]
-    if (finished) paths.push('/tasks?status=done' + tail, '/tasks?status=cancelled' + tail)
-    Promise.all(paths.map((p) => api<{ tasks: Row[] }>('GET', p)))
-      .then((lists) => setRows(lists.flatMap((l) => l.tasks)))
+    readLists(finished, project)
+      .then(setRows)
       .catch(() => {}) // the next event or reconnect reads again
   })
 
@@ -82,13 +76,11 @@ function Columns({ finished, project }: { finished: boolean; project: string }) 
       <div className="board" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
         {columns.map((status) => {
           const here = shown.filter((r) => r.status === status)
-          // A finished column at its limit is the newest of more, so its count is not a total.
-          const count = !open.includes(status) && here.length === finishedLimit ? `newest ${finishedLimit}` : here.length
           return (
             <section className="bcol" key={status} aria-label={status}>
               <h2>
                 <StatusMark status={status} />
-                <span className="n">{rows && count}</span>
+                <span className="n">{rows && count(status, here.length)}</span>
               </h2>
               {here.length === 0 && rows && <div className="none">None</div>}
               {here.map((r) => (
