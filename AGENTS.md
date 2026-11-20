@@ -62,6 +62,16 @@ CAVU is meant to be a self-hosted tool that runs a coding agent fully unattended
 - Prerequisites for the tagged tests: Docker, or Podman with `CAVU_TEST_RUNTIME=podman`; the image `docker.io/library/busybox:1.37`, which the runtime tests run with `--pull=never`, so pull it first (`docker pull docker.io/library/busybox:1.37`); the internet for the first sandbox image build, since later builds come from the layer cache.
 - `live` checks skip unless their variables are set and never run in CI: `CAVU_LIVE_SUBSCRIPTION_TOKEN` for a subscription, `CAVU_LIVE_ENDPOINT_URL` and `CAVU_LIVE_ENDPOINT_KEY` for a gateway, and optionally `CAVU_LIVE_ENDPOINT_AUTH_HEADER` and `CAVU_LIVE_MODEL`. `docs/assumptions.md` has the commands.
 
+## Looking at the web app
+
+The sandbox image holds a headless Chromium. After a change to `web/`, look at the screen before you finish.
+
+- Run `make web-install` once, then start Vite in `web/` on a loopback port: `npx vite --host 127.0.0.1 --port 5173 --strictPort`. Run it in the background and record its pid.
+- Take the shot: `chromium --headless --no-sandbox --no-proxy-server --hide-scrollbars --window-size=1280,900 --virtual-time-budget=5000 --screenshot=/tmp/shot.png "http://127.0.0.1:5173/harness.html?palette=copper&theme=dark"`. Use `--window-size=390,844` for a phone.
+- `web/harness.html` shows the app on fixed data. Its `palette` is `copper` or `catppuccin`, its `theme` is `dark` or `light`, and its `path` picks the route, for example `path=/status`.
+- Read the PNG and say what you see. Fix what looks wrong and shoot again.
+- Stop Vite by the pid you recorded, never by port or name.
+
 ## Layout
 
 Every package states its one responsibility in its package comment. Run `go doc ./cmd/cavu` to read one. `web/` is the web app's npm package (`web/src` its sources, `web/dist/placeholder.html` the page a binary built without the app serves) and the Go package `web`, which embeds the built app in `web/dist/app` and serves it in front of the API.
