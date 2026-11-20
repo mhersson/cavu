@@ -61,9 +61,9 @@ Each step says what to do and what you then see. Type the commands in a terminal
    make install
    ```
 
-   npm may report vulnerabilities as it installs; `npm audit --omit=dev` in `web/` checks only the packages the built app ships, the `dependencies` of `web/package.json`. `make install` builds the web app, then `cavu` with the app inside it, and puts `cavu` in Go's `GOBIN` directory, else in `$(go env GOPATH)/bin`. Your terminal finds `cavu` only when that directory is on your `PATH`. The other way is `make build`, which writes `bin/cavu` into your copy: then type `bin/cavu` wherever this README says `cavu`.
+   npm may report vulnerabilities as it installs; `npm audit --omit=dev` in `web/` checks only the packages the built app ships, the `dependencies` of `web/package.json`. `make install` builds the web app, then `cavu` with the app inside it, and puts `cavu` in Go's `GOBIN` directory, else in `$(go env GOPATH)/bin`. The other way is `make build`, which writes `bin/cavu` into your copy: then type `bin/cavu` wherever this README says `cavu`.
 
-   Check that it runs:
+   Your terminal finds `cavu` only when the directory it is in, `~/.local/bin` or Go's, is on your `PATH`. Check that it runs:
 
    ```
    cavu version
@@ -432,7 +432,7 @@ Only `cavu serve` sends them, each need once, to the browsers that have them on 
 
 Each build of `cavu` has its own version and sandbox image, and `cavu serve` starts only on its own. To move to a new release, or to a newer copy of this repository:
 
-1. Replace `cavu`. With a release, download, check and unpack the new archive as in [Getting started](#getting-started), then move the new `cavu` over the old one with `mv`: on Linux, a copy over a running binary fails with `Text file busy`, while a move replaces it and a running server carries on. From source, run `make install`.
+1. Replace `cavu`. With a release, download the new archive and its `checksums.txt` into an empty directory, check and unpack it there as in [Getting started](#getting-started), then move the new `cavu` over the old one with `mv`: on Linux, a copy over a running binary fails with `Text file busy`, while a move replaces it and a running server carries on. From source, run `make install`.
 2. Build the new image with `cavu image build`, or `make image` from source. It runs beside a running server, which goes on with the old image.
 3. Restart the server: `cavu service install` restarts the service on the new binary; without the service, stop `cavu serve` and start it again.
 
