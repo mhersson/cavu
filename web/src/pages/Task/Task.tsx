@@ -121,7 +121,6 @@ function Body({ text, folds }: { text: string; folds: boolean }) {
     if (!el || !fold) return
     const measure = () => setCut(el.scrollHeight > el.clientHeight + 1)
     measure()
-    if (typeof ResizeObserver === 'undefined') return
     const watch = new ResizeObserver(measure)
     watch.observe(el)
     return () => watch.disconnect()
