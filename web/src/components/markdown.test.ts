@@ -72,6 +72,10 @@ test('_ inside a word is never emphasis, and a * or _ before a space opens nothi
   }
 })
 
+test('a * after punctuation and before a word closes nothing', () => {
+  for (const s of ['(*Loop).List and (*Server).Serve', '[]*Task and map[int]*Store']) expect(inlines(s), s).toEqual([t(s)])
+})
+
 test('an unclosed backtick or ** is shown as typed', () => {
   for (const s of ['a `b c', 'a **b c', '``a`']) expect(inlines(s), s).toEqual([t(s)])
 })

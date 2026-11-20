@@ -126,7 +126,7 @@ function closer(s: string, from: number, c: string, n: number): number {
     else if (s[j] !== c) j++
     else {
       const m = run(s, j)
-      if (m === n && j > from && /\S/.test(s[j - 1]) && (c === '*' || !WORD.test(s[j + m] ?? ''))) return j
+      if (m === n && j > from && /\S/.test(s[j - 1]) && !(WORD.test(s[j + m] ?? '') && (c === '_' || /[\p{P}\p{S}]/u.test(s[j - 1])))) return j
       j += m
     }
   }
