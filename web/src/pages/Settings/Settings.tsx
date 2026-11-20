@@ -26,7 +26,7 @@ type Row = { label: string; keys: string[]; mono?: boolean; keyOnly?: boolean; o
 
 // head draws "Model" and "Effort" over the pairs; rest takes every key no section places;
 // credentials is the GitHub table, which has no Save.
-type Section = { id: string; title: string; rows: Row[]; head?: boolean; note?: ReactNode; rest?: boolean; credentials?: boolean }
+type Section = { id: string; title: string; rows: Row[]; head?: boolean; notes?: ReactNode[]; rest?: boolean; credentials?: boolean }
 
 type Patch = { settings?: Record<string, string | null>; secrets?: Record<string, string> }
 
@@ -64,7 +64,7 @@ const layout: Section[] = [
       { label: 'A day, dollars', keys: ['daily_budget_usd'], keyOnly: true },
       { label: 'Model prices', keys: ['model_prices'], mono: true, keyOnly: true },
     ],
-    note: 'The three limits in dollars hold only with a key and an endpoint.',
+    notes: ['The three limits in dollars hold only with a key and an endpoint.'],
   },
   { id: 'github', title: 'GitHub', rows: [], credentials: true },
   {
@@ -86,11 +86,12 @@ const layout: Section[] = [
       { label: 'Skills directory', keys: ['skills_path'], mono: true },
       { label: 'Instructions file', keys: ['instructions_path'], mono: true },
     ],
-    note: (
+    notes: [
+      'The container runtime, the CA bundle and the listen address take effect when the server starts again.',
       <>
         API tokens and the password are made on the server's command line: <code>cavu token add NAME</code> and <code>cavu user set NAME &lt; FILE</code>.
-      </>
-    ),
+      </>,
+    ],
   },
 ]
 
@@ -244,7 +245,11 @@ export default function Settings() {
           </div>
         )}
         {s.rows.map((r) => row(d, r))}
-        {s.note && <p className="note">{s.note}</p>}
+        {s.notes?.map((n, i) => (
+          <p key={i} className="note">
+            {n}
+          </p>
+        ))}
         {refused[s.id] && (
           <p role="alert" className="note err">
             {refused[s.id]}
