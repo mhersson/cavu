@@ -23,6 +23,12 @@ type taskQuery struct {
 	NeedsYou bool          `json:"needs_you,omitempty" jsonschema:"keep only the tasks that need a person"`
 }
 
+// taskChange is the id of a task and the fields to change.
+type taskChange struct {
+	taskRef
+	taskEdit
+}
+
 // taskAnswer answers the question a task stopped on.
 type taskAnswer struct {
 	ID     int64  `json:"id" jsonschema:"the task's id"`
@@ -62,6 +68,14 @@ func (s *server) tools() http.Handler {
 		func(ctx context.Context, in taskRef) (engine.View, error) { return s.Loop.View(ctx, in.ID, s.Waiting) })
 	addTool(srv, "list_tasks", "List the tasks, oldest first; a project, a status and needs_you, when given, narrow the list.",
 		func(ctx context.Context, in taskQuery) (taskList, error) { return s.listTasks(ctx, in, 0, false) })
+	addTool(srv, "edit_task", "Edit a task's title, body or dependencies until its first run starts; a field left out keeps its value.",
+		func(ctx context.Context, in taskChange) (engine.View, error) {
+			if err := s.edit(ctx, in.ID, in.taskEdit); err != nil {
+				return engine.View{}, err
+			}
+
+			return s.Loop.View(ctx, in.ID, s.Waiting)
+		})
 	addTool(srv, "run_task", "Start a draft task, or retry a stopped one; a task stopped on a question needs an answer instead.",
 		s.runTask)
 	addTool(srv, "cancel_task", "Cancel a task.",
