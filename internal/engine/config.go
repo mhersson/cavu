@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mhersson/cavu/internal/auth"
 	"github.com/mhersson/cavu/internal/store"
 )
 
@@ -208,14 +209,8 @@ func ProjectSecretName(project, variable string) string {
 func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) error {
 	var err error
 
-	if c.Repo.Access.Token, _, err = l.Vault.Get(ctx, SecretForgeToken); err != nil {
+	if c.Repo.Access, err = ForgeAccessOf(ctx, l.Store, l.Vault, c.Repo.Access.AppID, p); err != nil {
 		return err
-	}
-
-	if c.Repo.Access.AppID != 0 {
-		if c.Repo.Access.AppKey, err = l.requiredSecret(ctx, SecretForgeAppKey); err != nil {
-			return err
-		}
 	}
 
 	if c.Endpoint.Credential, _, err = l.Vault.Get(ctx, SecretEndpointCredential); err != nil {
@@ -225,7 +220,7 @@ func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) e
 	c.Setup.Secrets = make(map[string]string, len(p.SecretVars))
 
 	for _, v := range p.SecretVars {
-		if c.Setup.Secrets[v], err = l.requiredSecret(ctx, ProjectSecretName(p.Name, v)); err != nil {
+		if c.Setup.Secrets[v], err = requiredSecret(ctx, l.Vault, ProjectSecretName(p.Name, v)); err != nil {
 			return err
 		}
 	}
@@ -233,9 +228,48 @@ func (l *Loop) readSecrets(ctx context.Context, p store.Project, c *RunConfig) e
 	return nil
 }
 
+// ForgeAccessOf is the project's access to its forge: its named credential's
+// alone, or with none named the instance's forge_token and, with defaultAppID
+// (the forge_app_id setting) not 0, its App with forge_app_key.
+func ForgeAccessOf(ctx context.Context, s Store, v *auth.Vault, defaultAppID int64, p store.Project) (ForgeAccess, error) {
+	if p.ForgeCredential == "" {
+		token, _, err := v.Get(ctx, SecretForgeToken)
+		if err != nil || defaultAppID == 0 {
+			return ForgeAccess{Token: token}, err
+		}
+
+		key, err := requiredSecret(ctx, v, SecretForgeAppKey)
+
+		return ForgeAccess{Token: token, AppID: defaultAppID, AppKey: key}, err
+	}
+
+	creds, err := s.Credentials(ctx)
+	if err != nil {
+		return ForgeAccess{}, err
+	}
+
+	i := slices.IndexFunc(creds, func(c store.Credential) bool { return c.Name == p.ForgeCredential })
+	if i < 0 {
+		return ForgeAccess{}, fmt.Errorf("project %s: credential %s does not exist", p.Name, p.ForgeCredential)
+	}
+
+	cred := creds[i]
+
+	secret, err := requiredSecret(ctx, v, CredentialSecretName(cred.Name, cred.Kind))
+	if err != nil {
+		return ForgeAccess{}, err
+	}
+
+	if cred.Kind == CredentialApp {
+		return ForgeAccess{AppID: cred.AppID, AppKey: secret}, nil
+	}
+
+	return ForgeAccess{Token: secret}, nil
+}
+
 // requiredSecret reads a secret the run's config cannot be built without.
-func (l *Loop) requiredSecret(ctx context.Context, name string) (string, error) {
-	v, ok, err := l.Vault.Get(ctx, name)
+func requiredSecret(ctx context.Context, vault *auth.Vault, name string) (string, error) {
+	v, ok, err := vault.Get(ctx, name)
 	if err == nil && !ok {
 		err = fmt.Errorf("secret %s is not set", name)
 	}

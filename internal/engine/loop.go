@@ -47,6 +47,9 @@ type Store interface {
 	ProjectNames(ctx context.Context) (map[int64]string, error)
 	Tasks(ctx context.Context, includeReplays bool) ([]store.Task, error)
 	RemoveProject(ctx context.Context, id int64, at time.Time, secretPrefix string) error
+	Credentials(ctx context.Context) ([]store.Credential, error)
+	PutCredential(ctx context.Context, c store.Credential) error
+	RemoveCredential(ctx context.Context, name, secretPrefix string) error
 }
 
 // Loop carries out the actions Decide chooses, through a Runner.

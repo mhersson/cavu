@@ -1231,6 +1231,23 @@ func TestLoopMasksBeforeCutting(t *testing.T) {
 	}
 }
 
+func TestNoSecretInAnyRecord(t *testing.T) {
+	const token = "ghp_namedcredentialsecret" //nolint:gosec // a dummy
+
+	h := newHarness(t)
+	ctx := t.Context()
+
+	require.NoError(t, engine.ChangeCredentials(ctx, h.store, h.vault, map[string]*engine.NewCredential{"bot": {Token: token}}))
+	h.runner.works = []step[engine.WorkResult]{{err: errors.New("push failed with " + token)}}
+
+	_, err := h.run(ctx)
+	require.NoError(t, err)
+
+	explanation := h.lastStop().Explanation
+	assert.NotContains(t, explanation, token)
+	assert.Contains(t, explanation, "[redacted]")
+}
+
 // A runner fault or export problem has no result event, so its stop keeps the whole redacted text.
 func TestLoopStopKeepsRunnerText(t *testing.T) {
 	const planted = "sk-ant-api03-plainsecretvalue"
