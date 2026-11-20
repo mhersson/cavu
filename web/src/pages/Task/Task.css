@@ -17,7 +17,7 @@
   color: var(--grey2);
   max-width: 74ch;
   margin: 0 0 18px;
-  white-space: pre-line;
+  white-space: pre-wrap;
 }
 
 .task-page .waitline {
