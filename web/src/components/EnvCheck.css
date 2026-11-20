@@ -1,0 +1,56 @@
+.envcheck {
+  background: var(--bg0);
+  border: 1px solid var(--bg2);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 14px 0 20px;
+}
+
+.envcheck.k-ready {
+  --k: var(--green);
+}
+
+.envcheck.k-stop {
+  --k: var(--red);
+}
+
+.envcheck .l0 {
+  margin: 0;
+}
+
+.envcheck .l0 b {
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.envcheck .fault {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.envcheck .facts {
+  margin-top: 4px;
+  color: var(--grey2);
+  font-size: 13px;
+}
+
+.envcheck .acts {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.envcheck .refused {
+  color: var(--red);
+  margin: 10px 0 0;
+}
+
+@media (max-width: 720px) {
+  .envcheck {
+    margin: 12px 0 14px;
+  }
+
+  .envcheck pre.out {
+    font-size: 10.5px;
+  }
+}
