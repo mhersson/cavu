@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { api, onUnauthorized } from './api/client.ts'
 import { useEvents, useStream } from './api/stream.ts'
-import type { Row } from './api/types.ts'
+import type { Project, Row } from './api/types.ts'
 import Nav from './components/Nav.tsx'
 import PhoneTabs from './components/PhoneTabs.tsx'
 import { useNarrow } from './components/useNarrow.ts'
@@ -23,6 +23,15 @@ function Frame() {
   const narrow = useNarrow()
   const version = useVersion()
   const [count, setCount] = useState(0)
+  const [empty, setEmpty] = useState(false)
+
+  // A new instance has no project: its first visit goes to setup, and nothing later does.
+  useEffect(() => {
+    api<{ projects: Project[] }>('GET', '/projects').then(
+      (r) => setEmpty(r.projects.length === 0),
+      () => {},
+    )
+  }, [])
 
   const read = useCallback(() => {
     api<{ tasks: Row[] }>('GET', '/tasks?needs_you=true')
@@ -32,6 +41,8 @@ function Frame() {
 
   const { live } = useEvents()
   useStream(read)
+
+  if (empty) return <Navigate to="/setup" replace />
 
   return (
     <div className="frame">

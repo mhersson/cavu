@@ -84,7 +84,12 @@ async function show(path = '/projects', phone = false) {
 const settle = () => act(() => vi.advanceTimersByTimeAsync(0))
 const rows = () => within(screen.getByRole('navigation', { name: 'Projects' })).getAllByRole('link')
 const current = () => rows().filter((r) => r.getAttribute('aria-current') === 'page').map((r) => r.textContent)
-const reads = (calls: Call[]) => calls.filter((c) => c.method === 'GET' && c.path.startsWith('/api/projects'))
+// The page's reads of the projects: the frame's own read of the list, made once at mount, is left out.
+const reads = (calls: Call[]) => {
+  const all = calls.filter((c) => c.method === 'GET' && c.path.startsWith('/api/projects'))
+  all.splice(all.findIndex((c) => c.path === '/api/projects'), 1)
+  return all
+}
 const deletes = (calls: Call[]) => calls.filter((c) => c.method === 'DELETE').map((c) => c.path)
 const check = () => screen.getByRole('region', { name: 'Environment check' })
 // The key and value list a value is in, as its keys with their values.

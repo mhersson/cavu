@@ -362,7 +362,7 @@ test('a typed answer survives the sign-in after a 401', async () => {
 
 test('New task opens the dialog', async () => {
   vi.useFakeTimers()
-  serve({ needing: [row(1)], working: [] }, (c) => (c.path === '/api/projects' ? json({ projects: [] }) : undefined))
+  serve({ needing: [row(1)], working: [] }, (c) => (c.path === '/api/projects' ? json({ projects: [{ runnable: true }] }) : undefined))
   await show()
   expect(screen.queryByRole('dialog')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'New task' }))

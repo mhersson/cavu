@@ -140,7 +140,7 @@ test('sign-out ends the session', async () => {
   vi.useRealTimers()
   const calls = fakeServer((c) => {
     if (needsYou(c)) return json({ tasks: [] })
-    if (c.path === '/api/projects') return json({ projects: [] })
+    if (c.path === '/api/projects') return json({ projects: [{ runnable: true }] })
     if (c.path === '/api/auth/logout') return new Response(null, { status: 204 })
   })
   const user = userEvent.setup()
@@ -159,4 +159,35 @@ test('sign-out ends the session', async () => {
   await user.click(screen.getByRole('button', { name: 'Sign out' }))
   expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
   expect(logouts()).toHaveLength(2)
+})
+
+const projects = (c: { path: string }) => c.path === '/api/projects'
+
+test('an instance with no project is sent to setup', async () => {
+  fakeServer((c) => {
+    if (projects(c)) return json({ projects: [] })
+    if (needsYou(c)) return json({ tasks: [] })
+  })
+  await show('/board')
+  expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: /needs you/i })).toBeNull()
+})
+
+test('one with a project and a passed check does not open at all', async () => {
+  const calls = fakeServer((c) => {
+    if (projects(c)) return json({ projects: [{ runnable: true, baseline: { passed: true } }] })
+    if (needsYou(c)) return json({ tasks: [] })
+  })
+  await show('/')
+  expect(screen.getByRole('link', { name: /needs you/i })).toHaveAttribute('aria-current', 'page')
+  expect(calls.filter(projects)).toHaveLength(1)
+})
+
+test('a failed read of the projects sends nowhere', async () => {
+  fakeServer((c) => {
+    if (projects(c)) return json({ error: 'boom' }, 500)
+    if (needsYou(c)) return json({ tasks: [] })
+  })
+  await show('/board')
+  expect(screen.getByRole('link', { name: /board/i })).toHaveAttribute('aria-current', 'page')
 })
