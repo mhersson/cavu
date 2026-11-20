@@ -49,6 +49,10 @@
   margin: -6px 0 12px;
 }
 
+.setup .now .small {
+  margin: 12px 0 0;
+}
+
 .setup .refused {
   color: var(--red);
   margin: 0 0 12px;
