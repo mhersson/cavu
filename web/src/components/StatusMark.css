@@ -1,0 +1,39 @@
+.st {
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.st::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 7px;
+  background: var(--s, var(--grey0));
+}
+
+.st.running {
+  --s: var(--aqua);
+}
+
+.st.queued {
+  --s: var(--yellow);
+}
+
+.st.blocked {
+  --s: var(--red);
+}
+
+.st.in_review {
+  --s: var(--blue);
+}
+
+.st.done {
+  --s: var(--green);
+}
+
+.st.draft,
+.st.cancelled {
+  --s: var(--grey0);
+}

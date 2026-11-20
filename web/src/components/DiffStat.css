@@ -1,0 +1,23 @@
+.stat {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow: auto;
+  color: var(--grey2);
+  letter-spacing: 0;
+  margin: 6px 0 0;
+}
+
+.stat-totals {
+  color: var(--grey1);
+  font-size: 12px;
+}
+
+.add {
+  color: var(--green);
+}
+
+.del {
+  color: var(--red);
+}
