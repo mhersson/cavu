@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useState, type ReactNode } from 'react'
-import type { SessionEnded, TaskEvent, VerifyEnded } from '../api/types.ts'
+import type { PrepareFailed, SessionEnded, TaskEvent, VerifyEnded } from '../api/types.ts'
 import { clock, duration } from './time.ts'
 import './Timeline.css'
 
@@ -91,6 +91,16 @@ function Verify({ p }: { p: VerifyEnded }) {
   )
 }
 
+// Always a failure, and its output is what a person fixes a setup from.
+function Prepare({ p }: { p: PrepareFailed }) {
+  if (!p.output) return null
+  return (
+    <Fold init summary="Output">
+      <pre className="out">{p.output}</pre>
+    </Fold>
+  )
+}
+
 function Account({ p }: { p: SessionEnded }) {
   if (!p.summary) return null
   const list = (items: string[] | null | undefined, lead: string) =>
@@ -122,6 +132,7 @@ function Row({ e }: { e: TaskEvent }) {
       <span className="ty">{e.type}</span>
       <div className="tx">
         {e.text}
+        {e.type === 'prepare_failed' && <Prepare p={e.payload as PrepareFailed} />}
         {e.type === 'verify_ended' && <Verify p={e.payload as VerifyEnded} />}
         {e.type === 'session_ended' && <Account p={e.payload as SessionEnded} />}
       </div>

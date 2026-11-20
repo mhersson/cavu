@@ -150,6 +150,21 @@ test("a failed verify's output is open and a passed one is closed", async () => 
   expect(shown[0].open).toBe(false)
 })
 
+test("a failed preparation's output is open in its box", () => {
+  const output = 'npm ci\nnpm ERR! code ERESOLVE\n  peer react@"^18" from a@1.0.0'
+  const { root } = show([
+    ev(1, 'prepare_failed', 'runner', { step: 'setup', output }),
+    ev(2, 'prepare_failed', 'runner', { step: 'clone', output: '' }),
+  ])
+  const shown = [...root.querySelectorAll('details')]
+  expect(shown).toHaveLength(1)
+  expect(shown[0].open).toBe(true)
+  const boxes = root.querySelectorAll('pre')
+  expect(boxes).toHaveLength(1)
+  expect(boxes[0].textContent).toBe(output)
+  expect(text(boxes[0].closest('.ev')!)).toBe('prepare_failed 1')
+})
+
 test('a long output stays in its box', () => {
   const output = 'FAIL src/a.test.ts > a long line of output\n'.repeat(24000)
   expect(output.length).toBeGreaterThan(1e6)
