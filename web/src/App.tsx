@@ -17,6 +17,7 @@ import Settings from './pages/Settings/Settings.tsx'
 import Setup from './pages/Setup/Setup.tsx'
 import Status from './pages/Status/Status.tsx'
 import Task from './pages/Task/Task.tsx'
+import { useFocusReport } from './push.ts'
 import './App.css'
 
 function Frame() {
@@ -56,6 +57,7 @@ function Frame() {
 }
 
 export default function App() {
+  useFocusReport()
   const navigate = useNavigate()
   const location = useLocation()
   const here = useRef(location)

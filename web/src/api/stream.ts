@@ -8,6 +8,27 @@ const subscribers = new Set<Subscriber>()
 
 const readGap = 2000
 
+const kept = 'push_device'
+
+// Browsers that block site data throw on access; then no id is kept.
+export function device(): string | null {
+  try {
+    return localStorage.getItem(kept)
+  } catch {
+    return null
+  }
+}
+
+// The stream carries the id, so a change of it opens the stream again.
+let restart = () => {}
+
+export function keepDevice(id: string | null) {
+  if (id === device()) return
+  if (id === null) localStorage.removeItem(kept)
+  else localStorage.setItem(kept, id)
+  restart()
+}
+
 const firstDelay = 1000
 const maxDelay = 30000
 
@@ -23,7 +44,11 @@ export function useEvents(): { live: boolean } {
 
     const open = () => {
       // The browser reconnects a source it keeps by sending Last-Event-ID; a new source after a closed one needs the id in the address.
-      const s = new EventSource('/api/events' + (lastId > 0 ? '?after=' + lastId : ''))
+      const q = new URLSearchParams()
+      if (lastId > 0) q.set('after', String(lastId))
+      const d = device()
+      if (d !== null) q.set('device', d)
+      const s = new EventSource('/api/events' + (q.size > 0 ? '?' + q : ''))
       source = s
       s.onopen = () => {
         setLive(true)
@@ -45,8 +70,15 @@ export function useEvents(): { live: boolean } {
       }
     }
     open()
+    restart = () => {
+      clearTimeout(timer)
+      source?.close()
+      delay = firstDelay
+      open()
+    }
 
     return () => {
+      restart = () => {}
       clearTimeout(timer)
       source?.close()
     }

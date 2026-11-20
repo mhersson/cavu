@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Settings as Saved } from '../../api/types.ts'
-import { fakeServer, json, narrow, type Call } from '../../test-server.ts'
+import { fakePush, fakeServer, json, narrow, type Call } from '../../test-server.ts'
 import Settings from './Settings.tsx'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -18,7 +18,7 @@ const DEFAULTS: Record<string, string> = {
 const unset = { endpoint_credential: false, forge_token: false, forge_app_key: false }
 
 const saved = (settings: Saved['settings'] = {}, secrets = unset): Saved => ({
-  settings, secrets, defaults: DEFAULTS, switches: {}, forge_credentials: [],
+  settings, secrets, defaults: DEFAULTS, switches: {}, forge_credentials: [], push_key: 'KEY',
 })
 
 const isPatch = (c: Call) => c.method === 'PATCH' && c.path === '/api/settings'
@@ -347,4 +347,69 @@ test('choosing a palette and a theme sets the root and the stored keys', async (
   await user.click(radios(theme)[0])
   expect(localStorage.getItem('theme')).toBeNull()
   expect(localStorage.getItem('palette')).toBe('catppuccin')
+})
+
+// The notifications row: the only button in "This browser", since its palette and theme are radios.
+function openPush(push: (c: Call) => Response | undefined = () => undefined) {
+  const calls = fakeServer((c) => {
+    if (c.path === '/api/settings') return json(saved())
+    if (c.path === '/api/projects') return json({ projects: [] })
+    return push(c)
+  })
+  render(<Settings />)
+  return calls
+}
+
+const pushRow = async () => within(await section('This browser')).queryByRole('button')
+
+test('with notifications off, the row has one button that subscribes and registers the browser', async () => {
+  const push = fakePush()
+  const calls = openPush((c) => (c.method === 'PUT' ? json({ id: 7 }) : undefined))
+  const user = userEvent.setup()
+  const button = await waitFor(async () => {
+    const b = await pushRow()
+    expect(b).toBeEnabled()
+    return b!
+  })
+  await user.click(button)
+  await waitFor(() => expect(calls.filter((c) => c.method === 'PUT' && c.path === '/api/push')).toHaveLength(1))
+  expect(push.subscribe).toHaveBeenCalledWith({ userVisibleOnly: true, applicationServerKey: 'KEY' })
+  expect(localStorage.getItem('push_device')).toBe('7')
+  expect(push.requestPermission).toHaveBeenCalledTimes(1)
+})
+
+test('with notifications on, the row has one button that deletes the subscription', async () => {
+  const push = fakePush({ subscribed: true })
+  localStorage.setItem('push_device', '7')
+  const calls = openPush((c) => (c.method === 'DELETE' ? new Response(null, { status: 204 }) : undefined))
+  const user = userEvent.setup()
+  await user.click((await waitFor(async () => (await pushRow())!)))
+  await waitFor(() => expect(calls.some((c) => c.method === 'DELETE' && c.path === '/api/push/7')).toBe(true))
+  expect(push.unsubscribe).toHaveBeenCalledTimes(1)
+  await waitFor(() => expect(localStorage.getItem('push_device')).toBeNull())
+})
+
+test('a refused action shows an alert and leaves the button to try again', async () => {
+  fakePush({ subscribed: true })
+  localStorage.setItem('push_device', '7')
+  openPush(() => json({ error: 'broken' }, 500))
+  const user = userEvent.setup()
+  const sec = await section('This browser')
+  await user.click(await waitFor(async () => (await pushRow())!))
+  expect(await within(sec).findByRole('alert')).toBeInTheDocument()
+  expect(await pushRow()).toBeEnabled()
+})
+
+test('a browser that cannot be turned on shows a line and no button, a different line for each reason', async () => {
+  const lines: string[] = []
+  for (const setup of [() => fakePush({ permission: 'denied' }), () => fakePush({ supported: false, standalone: false }), () => fakePush({ supported: false })]) {
+    setup()
+    open(saved())
+    const sec = await section('This browser')
+    expect(within(sec).queryByRole('button')).toBeNull()
+    lines.push(sec.querySelector('.notify')!.textContent!)
+    cleanup()
+    vi.unstubAllGlobals()
+  }
+  expect(new Set(lines).size).toBe(3)
 })

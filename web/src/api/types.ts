@@ -196,4 +196,5 @@ export type Settings = {
   defaults: Record<string, string>
   switches: Record<string, boolean>
   forge_credentials: { name: string; kind: 'token' | 'app'; app_id?: number }[]
+  push_key: string
 }

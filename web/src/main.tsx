@@ -5,6 +5,9 @@ import './theme/tokens.css'
 import './theme/base.css'
 import './theme/theme.ts'
 import App from './App.tsx'
+import { register } from './push.ts'
+
+register()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
