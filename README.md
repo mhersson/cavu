@@ -64,7 +64,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
    make image
    ```
 
-   It builds the web app and `bin/cavu` again, a Linux `cavu` for the image, and then the image on Docker or Podman. The first build downloads Claude Code and the rest from the internet and may take up to 20 minutes. The runtime's steps scroll past, and the last line is `built cavu-sandbox:VERSION`, with the version `cavu version` printed. Each build of `cavu` has an image of its own: after your copy of the repository changes, run `make install` and `make image` again.
+   It builds the web app and `bin/cavu` again, a Linux `cavu` for the image, and then the image on Docker or Podman. The first build downloads Claude Code and the rest from the internet and takes a while. The runtime's steps scroll past, and the last line is `built cavu-sandbox:VERSION`, with the version `cavu version` printed. Each build of `cavu` has an image of its own: after your copy of the repository changes, run `make install` and `make image` again.
 
 3. **Make your user.** CAVU has one user: the name and password you sign in with. The password needs at least 12 characters. `cavu user set` reads it from a file (or a pipe), not from what you type in the terminal: with any text editor, write the password on the first line of a new file, `password.txt`, save it, and run this with your name for `NAME`:
 
