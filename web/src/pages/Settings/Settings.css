@@ -182,4 +182,24 @@
   .set-page .pair {
     grid-template-columns: minmax(0, 1fr) 96px;
   }
+
+  .set-page .creds tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 12px;
+    border-top: 1px solid var(--bg2);
+    padding: 10px 0;
+  }
+
+  .set-page .creds td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+
+  .set-page .creds td.cacts {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    align-self: center;
+  }
 }
