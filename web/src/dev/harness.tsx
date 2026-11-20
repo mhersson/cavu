@@ -13,6 +13,9 @@ const query = new URLSearchParams(window.location.search)
 // empty=1 serves no task that needs a person.
 const rows = query.get('empty') === '1' ? ROWS.filter((r) => !r.needs_you) : ROWS
 
+// mode=key sets the endpoint mode to key, so the settings page shows its key-mode rows.
+if (query.get('mode') === 'key') SETTINGS.settings.endpoint_mode = 'key'
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
