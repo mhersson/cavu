@@ -2,6 +2,7 @@ import { render, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { TaskEvent } from '../api/types.ts'
 import Timeline from './Timeline.tsx'
+import { clock } from './time.ts'
 
 const ev = (id: number, type: string, actor: TaskEvent['actor'] = 'engine', payload: unknown = {}, text = `${type} ${id}`): TaskEvent => ({
   id,
@@ -81,6 +82,24 @@ test('a fold counts its steps only once its stretch is read', () => {
   expect(counts()).toEqual([undefined, undefined])
   again(events, [1, 5])
   expect(counts()).toEqual(['2 ', '0 '])
+})
+
+test("a fold's end has its day only when it differs from the start's", () => {
+  const at = (id: number, type: string, iso: string) => ({ ...ev(id, type), at: iso })
+  const start = '2020-03-04T12:00:00Z'
+  const sameDay = '2020-03-04T12:05:00Z'
+  const later = '2020-03-06T12:00:00Z'
+  const { root } = show([at(1, 'session_started', start), at(2, 'session_ended', sameDay), at(3, 'session_started', start), at(4, 'session_ended', later)])
+  const [one, two] = folds(root).map((d) => d.querySelector('summary')!.textContent!)
+  const startClock = clock(start)
+  const day = startClock.slice(0, startClock.lastIndexOf(' '))
+  const time = (iso: string) => clock(iso).slice(clock(iso).lastIndexOf(' ') + 1)
+
+  expect(one).toContain(startClock)
+  expect(one.split(day)).toHaveLength(2)
+  expect(one.endsWith(time(sameDay))).toBe(true)
+  expect(two).toContain(startClock)
+  expect(two.endsWith(clock(later))).toBe(true)
 })
 
 test('the live fold is open and asks for its stretch', () => {

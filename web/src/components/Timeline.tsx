@@ -20,6 +20,13 @@ const account = "The agent's own account"
 const time = (iso: string) =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
 
+// The end's day only when it is not the start's.
+function until(start: string, end: string): string {
+  const e = new Date(end)
+  if (e.toDateString() !== new Date(start).toDateString()) return clock(end)
+  return e.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+}
+
 // A session runs from its start to the next event that is neither the agent's, a denied request nor a person's.
 function arrange(events: TaskEvent[]): Item[] {
   const items: Item[] = []
@@ -129,7 +136,7 @@ function Steps({ s, read, onStretch }: { s: Session; read: boolean; onStretch: P
     <Fold
       className="fold"
       init={!s.end}
-      summary={`${lead}, ${clock(s.start.at)} to ${s.end ? clock(s.end.at) : 'now'}`}
+      summary={`${lead}, ${clock(s.start.at)} to ${s.end ? until(s.start.at, s.end.at) : 'now'}`}
       onOpen={read ? undefined : () => onStretch(s.start.id, s.end?.id)}
     >
       {s.steps.map((e) => (
