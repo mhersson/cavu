@@ -26,8 +26,7 @@
   margin: 0;
 }
 
-.envcheck .l0 b,
-.envcheck .later b {
+.envcheck .l0 b {
   font-weight: 600;
   margin-right: 6px;
 }

@@ -109,24 +109,34 @@ describe('EnvCheck', () => {
     expect(first.querySelector('code')).toBeNull()
     expect(screen.queryByRole('button')).toBeNull()
 
-    // What holds until it ends is the line under the first.
+    // The line under the first holds the facts that follow the verdict when no check is under way, and no verdict.
     const later = box.querySelector('.later')!
+    expect(later.querySelector('b')).toBeNull()
     expect(later.querySelector('code')?.textContent).toBe('c0ffee1')
     expect(later.textContent).toContain(clock(BASE.baseline!.at))
     expect(box.querySelector('.first')).toBeNull()
+    const shown = later.textContent
+    rerender(<EnvCheck project={BASE} onProject={() => {}} />)
+    expect(box.querySelector('.later')).toBeNull()
+    expect(box.querySelector('.l0 b')).not.toBeNull()
+    expect(box.querySelector('.l0 span')?.textContent).toBe(shown)
   })
 
-  it('a stop look shows for a project that cannot run only when no check is under way', () => {
+  it('a project that cannot run shows neither the stop look nor its verdict while a check is under way', () => {
     const { rerender } = render(<EnvCheck project={failed} onProject={() => {}} />)
     const box = screen.getByRole('region')
     expect(box).toHaveClass('k-stop')
+    expect(box.querySelector('.l0 b')).not.toBeNull()
+    const facts = box.querySelector('.l0 span')?.textContent
     rerender(<EnvCheck project={{ ...failed, check: { ...failed.check, requested_at: '2030-01-02T05:06:00Z' } }} onProject={() => {}} />)
     expect(box).not.toHaveClass('k-stop')
+    expect(box.querySelector('.later b')).toBeNull()
+    expect(box.querySelector('.later')?.textContent).toBe(facts)
     expect(box.querySelector('.later code')?.textContent).toBe('badc0de')
     expect(box.querySelector('pre.out')?.textContent).toBe(failed.check.output)
   })
 
-  it('a first check after creation says that CAVU asked for it', () => {
+  it('a first check under way says that CAVU asked for it', () => {
     const made = project({ runnable: false, baseline: null }, { tools: [], commit: '', requested_at: '2030-01-02T05:06:00Z' })
     const { rerender } = render(<EnvCheck project={made} onProject={() => {}} />)
     const box = screen.getByRole('region')

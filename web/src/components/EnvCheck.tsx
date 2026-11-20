@@ -117,28 +117,32 @@ export default function EnvCheck({ project, onProject }: Props) {
   const suggested = check.verify_suggestion !== '' && check.verify_suggestion !== project.verify_command
   const first = project.baseline === null && !ended
   const kind = check.started_at ? 'k-run' : underway ? 'k-wait' : project.runnable ? 'k-ready' : 'k-stop'
-  const state = (
+  const facts = (
     <>
-      <b>{project.runnable ? 'It can run tasks.' : 'It cannot run tasks yet.'}</b>
-      <span>
-        <Verify p={project} /> <Newest p={project} />
-      </span>
+      <Verify p={project} /> <Newest p={project} />
     </>
   )
   return (
     <section className={`envcheck ${kind}`} aria-label="Environment check">
       <p className="l0">
         <i className="mk" />
-        {underway ? <Underway running={check.started_at !== null} since={since} /> : state}
+        {underway ? (
+          <Underway running={check.started_at !== null} since={since} />
+        ) : (
+          <>
+            <b>{project.runnable ? 'It can run tasks.' : 'It cannot run tasks yet.'}</b>
+            <span>{facts}</span>
+          </>
+        )}
       </p>
       {underway &&
         (first ? (
           <p className="later first">
-            CAVU asked for this first check by itself when the project was created, so there is nothing to do but wait. A first check
-            downloads the project's tools and can take many minutes.
+            CAVU asked for this first check by itself, so there is nothing to do but wait. A first check downloads the project's
+            tools and can take many minutes.
           </p>
         ) : (
-          <p className="later">{state}</p>
+          <p className="later">{facts}</p>
         ))}
       {check.output && <pre className="out">{check.output}</pre>}
       {tools && <div className="facts">{tools}</div>}
