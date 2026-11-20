@@ -200,4 +200,20 @@ CREATE TABLE forge_credentials (
 
 ALTER TABLE projects ADD COLUMN forge_credential TEXT REFERENCES forge_credentials (name);
 `},
+	{Version: 9, SQL: `
+CREATE TABLE push_subscriptions (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	endpoint   TEXT NOT NULL UNIQUE,
+	p256dh     TEXT NOT NULL,
+	auth       TEXT NOT NULL,
+	origin     TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
+
+CREATE TABLE push_notified (
+	task_id INTEGER PRIMARY KEY,
+	way     TEXT NOT NULL,
+	since   INTEGER NOT NULL
+);
+`},
 }

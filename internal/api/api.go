@@ -16,6 +16,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/auth"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/push"
 	"github.com/mhersson/cavu/internal/store"
 )
 
@@ -37,6 +38,8 @@ type Deps struct {
 	Version      string
 	Stop         <-chan struct{} // closed when the server stops, which ends the open streams
 	Poll         time.Duration   // how often a stream asks the store for new events; 0 is a second
+	Focus        *push.Focus     // the notifier's
+	PushKey      string          // the VAPID public key, as push.PublicKey gives it
 }
 
 // route is one REST route. Only an open route is served without authority.
@@ -66,6 +69,8 @@ var routes = []route{
 	{"GET /api/tasks/{id}/events", false, (*server).events},
 	{"GET /api/tasks/{id}/change", false, (*server).change},
 	{"GET /api/events", false, (*server).stream},
+	{"PUT /api/push", false, (*server).putPush},
+	{"DELETE /api/push/{id}", false, (*server).removePush},
 }
 
 // Routes lists every REST route as "METHOD /path". The handler is built from it.

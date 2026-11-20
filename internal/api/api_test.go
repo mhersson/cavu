@@ -18,6 +18,7 @@ import (
 	"github.com/mhersson/cavu/internal/api"
 	"github.com/mhersson/cavu/internal/auth"
 	"github.com/mhersson/cavu/internal/engine"
+	"github.com/mhersson/cavu/internal/push"
 	"github.com/mhersson/cavu/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,6 +63,8 @@ type fixture struct {
 	auth    *auth.Service
 	clock   *clock
 	token   string
+	focus   *push.Focus
+	pushKey string // the VAPID public key the settings carry
 	nudges  atomic.Int32
 	waiting sync.Map // task id to the scheduler's reason it is not acting
 	checks  sync.Map // project id to when the scheduler started its running check
@@ -101,11 +104,15 @@ func newServerRunning(t *testing.T, runner engine.Runner, wrap ...func(*store.St
 		records = w(s)
 	}
 
-	f := &fixture{db: db, store: s, vault: vault, auth: svc, clock: c, token: token}
+	key, err := push.NewKey()
+	require.NoError(t, err)
+
+	f := &fixture{db: db, store: s, vault: vault, auth: svc, clock: c, token: token, focus: &push.Focus{}, pushKey: push.PublicKey(key)}
 	stop := make(chan struct{})
 	f.srv = httptest.NewUnstartedServer(api.New(api.Deps{
 		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: records, Vault: vault, Now: c.Now, Runner: runner},
 		Nudge: func() { f.nudges.Add(1) }, Waiting: f.why, CheckStarted: f.started, Version: "1.2.3", Stop: stop, Poll: 10 * time.Millisecond,
+		Focus: f.focus, PushKey: f.pushKey,
 	}))
 	// As cavu serve does, so that Shutdown ends the open streams.
 	f.srv.Config.RegisterOnShutdown(func() { close(stop) })

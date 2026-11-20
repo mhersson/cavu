@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -21,6 +22,7 @@ import (
 	"github.com/mhersson/cavu/internal/driver/claudecode"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/forge"
+	"github.com/mhersson/cavu/internal/push"
 	"github.com/mhersson/cavu/internal/runner"
 	"github.com/mhersson/cavu/internal/sandbox"
 	"github.com/mhersson/cavu/internal/store"
@@ -34,11 +36,12 @@ type app struct {
 	instanceID string
 	held       *os.File // the lock file, while the lock is held
 	image      string   // the image this process drives on, a person's choice and unchecked; "" for this binary's
+	pushKey    *ecdsa.PrivateKey
 }
 
-// openApp opens the data directory, creating it, the master key and the
-// instance id on first use. It takes no lock and detects no runtime, so a verb
-// that needs neither works on a machine without one and beside a running task.
+// openApp opens the data directory, creating it, the master key, the instance
+// id and the VAPID key on first use. It takes no lock and detects no runtime, so
+// a verb that needs neither works on a machine without one and beside a running task.
 func openApp(ctx context.Context, dir string) (*app, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("data directory: %w", err)
@@ -60,6 +63,10 @@ func openApp(ctx context.Context, dir string) (*app, error) {
 		a.instanceID, err = ensureInstanceID(ctx, s)
 	}
 
+	if err == nil {
+		a.pushKey, err = ensurePushKey(ctx, a.vault)
+	}
+
 	if err != nil {
 		_ = s.Close()
 
@@ -79,6 +86,26 @@ func ensureInstanceID(ctx context.Context, s *store.Store) (string, error) {
 	id := hex.EncodeToString(b)
 
 	return id, s.SetSetting(ctx, "instance_id", id)
+}
+
+// ensurePushKey is the instance's VAPID key, made once: every browser's
+// subscription is bound to it.
+func ensurePushKey(ctx context.Context, v *auth.Vault) (*ecdsa.PrivateKey, error) {
+	sealed, ok, err := v.Get(ctx, "push.vapid_key")
+	if err != nil {
+		return nil, err
+	}
+
+	if ok {
+		return push.DecodeKey(sealed)
+	}
+
+	key, err := push.NewKey()
+	if err != nil {
+		return nil, fmt.Errorf("vapid key: %w", err)
+	}
+
+	return key, v.Set(ctx, "push.vapid_key", push.EncodeKey(key))
 }
 
 // The roles a lock holder writes into the lock file.
