@@ -134,9 +134,10 @@ test('a narrow window shows each section as a fold, the first open', async () =>
 })
 
 test('choosing a palette and a theme sets the root and the stored keys', async () => {
-  render(<Settings />)
+  open(saved())
   const user = userEvent.setup()
-  const [palette, theme] = screen.getAllByRole('radiogroup')
+  await section('Model endpoint')
+  const [palette, theme] = within(await section('This browser')).getAllByRole('radiogroup')
   const root = document.documentElement
 
   const radios = (g: HTMLElement) => within(g).getAllByRole('radio')
