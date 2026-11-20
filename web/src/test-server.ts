@@ -95,18 +95,16 @@ export function fakePush({ supported = true, secure = true, standalone, permissi
     unsubscribe,
   }
   let current: typeof subscription | null = subscribed ? subscription : null
-  const subscribe = vi.fn((options: PushSubscriptionOptionsInit) => {
-    void options
+  const subscribe = vi.fn<(options: PushSubscriptionOptionsInit) => Promise<typeof subscription>>(() => {
     current = subscription
     return Promise.resolve(subscription)
   })
   const registration = { pushManager: { getSubscription: () => Promise.resolve(current), subscribe } }
-  const register = vi.fn(() => Promise.resolve(registration))
   const requestPermission = vi.fn(() => Promise.resolve(answer))
   if (supported) {
-    Object.defineProperty(navigator, 'serviceWorker', { value: { register, ready: ready ? Promise.resolve(registration) : new Promise(() => {}) }, configurable: true })
+    Object.defineProperty(navigator, 'serviceWorker', { value: { ready: ready ? Promise.resolve(registration) : new Promise(() => {}) }, configurable: true })
     vi.stubGlobal('PushManager', class {})
     vi.stubGlobal('Notification', { permission, requestPermission })
   }
-  return { subscribe, unsubscribe, requestPermission, register }
+  return { subscribe, unsubscribe, requestPermission }
 }

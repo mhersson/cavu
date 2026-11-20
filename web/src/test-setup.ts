@@ -37,7 +37,7 @@ if (typeof globalThis.localStorage?.getItem !== 'function') {
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true })
 }
 
-// What a push fake put on navigator.
+// Storage, and what a push fake put on navigator.
 afterEach(() => {
   localStorage.clear()
   Reflect.deleteProperty(navigator, 'serviceWorker')

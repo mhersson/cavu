@@ -230,7 +230,7 @@ test('every push shows its notification, the same task again as well', () => {
   const waited: Promise<unknown>[] = []
   for (let i = 0; i < 2; i++) listeners.push({ data: { json: () => message }, waitUntil: (p: Promise<unknown>) => waited.push(p) })
   expect(self.registration.showNotification).toHaveBeenCalledTimes(2)
-  expect(self.registration.showNotification).toHaveBeenCalledWith(message.title, expect.objectContaining({ body: message.body, tag: message.tag, data: { url: message.url } }))
+  expect(self.registration.showNotification).toHaveBeenCalledWith(message.title, expect.objectContaining({ body: message.body, tag: message.tag, renotify: true, data: { url: message.url } }))
   expect(waited).toHaveLength(2)
 })
 
