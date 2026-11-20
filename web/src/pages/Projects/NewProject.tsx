@@ -9,7 +9,8 @@ const blank = { name: '', repo_url: '', base_branch: 'main', forge_credential: '
 
 type Props = { submit: string; onCreated: (name: string) => void; onCancel?: () => void; children?: ReactNode }
 
-// The server asks for no check of a new project, so Create asks for one; its refusals are shown as said.
+// The server asks for no check of a new project, so the submit button, whatever the caller names it, asks for one;
+// its refusals are shown as said.
 export function NewProjectForm({ submit, onCreated, onCancel, children }: Props) {
   const [form, setForm] = useState(blank)
   const [credentials, setCredentials] = useState<Settings['forge_credentials']>([])

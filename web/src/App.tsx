@@ -25,7 +25,7 @@ function Frame() {
   const [count, setCount] = useState(0)
   const [empty, setEmpty] = useState(false)
 
-  // A new instance has no project: its first visit goes to setup, and nothing later does.
+  // Each mount of the frame on an instance with no project goes to setup; moving between its pages does not.
   useEffect(() => {
     api<{ projects: Project[] }>('GET', '/projects').then(
       (r) => setEmpty(r.projects.length === 0),

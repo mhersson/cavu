@@ -141,7 +141,8 @@ function GitHub({ saved, onSaved }: StepProps) {
   const file = useRef<HTMLInputElement>(null)
   const set = (k: string) => (e: ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
 
-  // The default is written as Settings writes it, clearing the other kind; the key is read only as it is sent.
+  // A secret sent is written as Settings writes it, clearing the other kind's; an App id alone clears nothing.
+  // The key is read only as it is sent.
   async function build() {
     const commits = { commit_name: f.commit_name, commit_email: f.commit_email }
     if (app) {
