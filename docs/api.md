@@ -2,6 +2,8 @@
 
 `cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP: the REST routes under `/api/`, and the [MCP tools](#mcp) at `/mcp`. Under `/api/`, request and response bodies are JSON, but for the event stream's and the change route's file. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
 
+On the same address `cavu serve` serves the web app, whose files are not routes of this API. A `GET` or `HEAD` of a path outside `/api/` and `/mcp` answers the app's file that the path names, else the app's page; a path under `/assets/` that names no file is 404. These answers need no authentication, and their `Content-Security-Policy` allows content and connections from the app's own origin only. A request with any other method goes to this API, whatever its path. The app signs in with `POST /api/auth/login` and works through the routes below, as any client may. A binary built without the web app answers with a page that says so in place of the app's, and serves this API as usual.
+
 ## Authentication
 
 Every route under `/api/` but `GET /api/health` and `POST /api/auth/login` needs one of these:
