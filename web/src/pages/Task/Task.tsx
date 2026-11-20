@@ -6,6 +6,7 @@ import type { TaskEvent, Task as TaskView } from '../../api/types.ts'
 import Dialog from '../../components/Dialog.tsx'
 import { ChangeFacts, PullRequestFacts, ReviewFacts } from '../../components/Facts.tsx'
 import Field from '../../components/Field.tsx'
+import { Markdown } from '../../components/Markdown.tsx'
 import NeedsBox from '../../components/NeedsBox.tsx'
 import PageHead from '../../components/PageHead.tsx'
 import StatusMark from '../../components/StatusMark.tsx'
@@ -110,7 +111,7 @@ function Budget({ task }: { task: TaskView }) {
 // Once a task has started, its run is what the page is for: a body longer than the fold shows its first lines until asked.
 function Body({ text, folds }: { text: string; folds: boolean }) {
   const id = useId()
-  const ref = useRef<HTMLParagraphElement>(null)
+  const ref = useRef<HTMLDivElement>(null)
   const [whole, setWhole] = useState(false)
   const [cut, setCut] = useState(false)
   const fold = folds && !whole
@@ -128,9 +129,9 @@ function Body({ text, folds }: { text: string; folds: boolean }) {
 
   return (
     <div className="task-body">
-      <p id={id} ref={ref} className={fold ? (cut ? 'fold cut' : 'fold') : undefined}>
-        {text}
-      </p>
+      <div id={id} ref={ref} className={fold ? (cut ? 'fold cut' : 'fold') : undefined}>
+        <Markdown text={text} />
+      </div>
       {folds && cut && (
         <button className="btn link" aria-expanded={whole} aria-controls={id} onClick={() => setWhole(!whole)}>
           {whole ? 'Show less' : 'Show the whole task'}

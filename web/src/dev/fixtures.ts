@@ -15,7 +15,7 @@ export const PROJECTS: Project[] = [
     tool_overrides: { node: '24' }, egress_hosts: ['registry.npmjs.org'], env: { CI: '1' }, secret_vars: [], switches: SWITCHES,
     caps: {}, no_ci: false, ignored_checks: [], review_bots: ['copilot[bot]'], forge_credential: '', runnable: true,
     baseline: { commit: '0e41aa7c95d2', passed: true, at: '2026-11-19T14:40:00Z', output: '' },
-    check: { requested_at: null, started_at: null, tools: ['node'], ignored_tools: [], failed_step: '', verify_suggestion: 'npm test', fault: '', commit: '0e41aa7c95d2', output: '' } },
+    check: { requested_at: '2026-11-19T16:30:00Z', started_at: '2026-11-19T16:31:10Z', tools: ['node'], ignored_tools: [], failed_step: '', verify_suggestion: 'npm test', fault: '', commit: '0e41aa7c95d2', output: '' } },
   { id: 3, name: 'docs-site', repo_url: 'https://github.com/acme/docs-site.git', base_branch: 'main', setup_command: 'npm ci', verify_command: 'npm run build', verify_waived: false,
     tool_overrides: {}, egress_hosts: ['registry.npmjs.org', 'npm.pkg.github.com'], env: {}, secret_vars: [], switches: { ...SWITCHES, review: false },
     caps: {}, no_ci: true, ignored_checks: [], review_bots: [], forge_credential: 'acme-org', runnable: false, baseline: null,
@@ -76,7 +76,10 @@ export const VIEWS: Record<number, Task> = {
     turns: 64, duration_ms: 2460000, cost_estimate_usd: 1.38, usage: [usage('claude-sonnet-5-5', 70400, 39900, 1630000, 141000, 1.38)], budget: { turns: 64, max_turns: 1000, minutes: 29, max_minutes: 300 },
   }),
   38: base(38, {
-    body: 'The doctor prints the Claude Code version the binary pins. Make it also read the version the image was built with, and say when the two differ.',
+    body: '## Goal\n\nThe doctor prints the Claude Code version the binary pins. Make it also read the version the image was built with, and say when the two differ.\n\n' +
+      '## Acceptance\n\n- `cavu doctor` reads the version from the image\'s label\n  - one inspect call gives both values\n  - a missing label means an image built by an older cavu\n' +
+      '- A difference is a warning, **not a failure**\n- `docs/cli.md` says what the check prints\n\n### Where the label is set\n\n' +
+      '```go\nlabels["io.cavu.claude-code"] = version\n```\n\nThe check is described in [docs/cli.md](https://github.com/mhersson/cavu/blob/main/docs/cli.md).',
     waiting: 'The pull request waits for a person to merge it.', dependencies: [{ id: 31, status: 'done' }],
     pull_request: { number: 57, url: 'https://github.com/mhersson/cavu/pull/57', branch: 'cavu/show-the-images-claude-code-version-in-the-doctor', head: '9c1e44d07ab2f1e05b38', state: 'open', checks: 'passed', failed_checks: [], ready: true },
     change: { head_commit: '9c1e44d07ab2f1e05b38', files_changed: 6, diff_stat: [' .github/workflows/ci.yaml      |  2 +-', ' README.md                      |  3 +', ' cmd/cavu/doctor.go             | 41 +++++++++++---', ' docs/cli.md                    |  6 +-', ' internal/sandbox/image.go      | 18 ++++++', ' internal/sandbox/image_test.go | 52 +++++++++++++++++', ' 6 files changed, 108 insertions(+), 14 deletions(-)'], flagged: { workflows: ['.github/workflows/ci.yaml'], instructions: [], large: [] } },
@@ -118,7 +121,7 @@ export const EVENTS: Record<number, TaskEvent[]> = {
       ['16:04:05', '', 'The doctor prints the version the binary pins and never asks the image.'],
       ['16:04:20', 'Grep', 'claude-code in internal/sandbox'],
       ['16:04:41', 'Read', 'internal/sandbox/image.go'],
-      ['16:05:30', '', 'The image carries the version as a label. I will read it with one inspect and compare.'],
+      ['16:05:30', '', 'The image carries the version as the label `io.cavu.claude-code`. I will read it with one inspect and compare.'],
       ['16:06:12', 'Edit', 'internal/sandbox/image.go'],
       ['16:07:48', 'Edit', 'cmd/cavu/doctor.go'],
       ['16:09:03', 'Write', 'internal/sandbox/image_test.go'],
@@ -129,7 +132,7 @@ export const EVENTS: Record<number, TaskEvent[]> = {
       ['16:15:02', 'Edit', '.github/workflows/ci.yaml'],
       ['16:15:20', 'Bash', 'git commit'],
     ]),
-    ev(38, 61, '16:15:41', 'session_ended', 'runner', 'done after 41 turns', { summary: 'The doctor now reads the Claude Code version from the image\'s label and says when it differs from the binary\'s pin. A missing label is reported as an image built by an older cavu.', assumptions: ['An image without the label is an old image, not a broken one.'], where_to_look: ['cmd/cavu/doctor.go: the comparison and its two messages', '.github/workflows/ci.yaml: the build step now passes the version'] }),
+    ev(38, 61, '16:15:41', 'session_ended', 'runner', 'done after 41 turns', { summary: 'The doctor now reads the Claude Code version from the image\'s label and says when it differs from the binary\'s pin.\n\n- A missing label is reported as an image built by an older cavu.\n- `docs/cli.md` shows the new line.', assumptions: ['An image without the label is an old image, not a broken one.'], where_to_look: ['`cmd/cavu/doctor.go`: the comparison and its two messages', '.github/workflows/ci.yaml: the build step now passes the version'] }),
     ev(38, 61, '16:15:42', 'verify_started', 'engine', 'The change has not been verified.'),
     ev(38, 61, '16:17:55', 'verify_ended', 'runner', 'passed', { result: 'passed', command: 'make check', exit_code: 0, duration_ms: 133000, output: 'go build ./...\ngolangci-lint run\n0 issues.\nok  \tgithub.com/mhersson/cavu/cmd/cavu\t2.411s\nok  \tgithub.com/mhersson/cavu/internal/sandbox\t1.204s\n...\nno em-dash found\n24911 non-test Go lines' }),
     ev(38, 61, '16:17:56', 'review_started', 'engine', 'the whole change'),

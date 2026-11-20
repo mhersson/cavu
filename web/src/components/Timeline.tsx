@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useState, type ReactNode } from 'react'
 import type { PrepareFailed, SessionEnded, TaskEvent, VerifyEnded } from '../api/types.ts'
+import { Markdown, MarkdownInline } from './Markdown.tsx'
 import { clock, duration } from './time.ts'
 import './Timeline.css'
 
@@ -108,7 +109,7 @@ function Account({ p }: { p: SessionEnded }) {
       <ul>
         {items.map((s, i) => (
           <li key={i}>
-            {lead} {s}
+            {lead} <MarkdownInline text={s} />
           </li>
         ))}
       </ul>
@@ -116,7 +117,7 @@ function Account({ p }: { p: SessionEnded }) {
   return (
     <Fold init={false} summary={account}>
       <div className="said" role="note" aria-label={account}>
-        <p>{p.summary}</p>
+        <Markdown text={p.summary} />
         {list(p.assumptions, 'It assumed:')}
         {list(p.where_to_look, 'Look at')}
       </div>
@@ -131,7 +132,7 @@ function Row({ e }: { e: TaskEvent }) {
       <span className="t">{time(e.at)}</span>
       <span className="ty">{e.type}</span>
       <div className="tx">
-        {e.text}
+        {e.type === 'agent_text' ? <Markdown text={e.text} /> : e.text}
         {e.type === 'prepare_failed' && <Prepare p={e.payload as PrepareFailed} />}
         {e.type === 'verify_ended' && <Verify p={e.payload as VerifyEnded} />}
         {e.type === 'session_ended' && <Account p={e.payload as SessionEnded} />}

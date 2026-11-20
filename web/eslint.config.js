@@ -23,7 +23,7 @@ export default tseslint.config(
     },
   },
   {
-    // Text from outside is shown as text, never as HTML.
+    // Text from outside never becomes HTML.
     files: ['**/*.{js,ts,tsx}'],
     rules: {
       'no-restricted-syntax': [
