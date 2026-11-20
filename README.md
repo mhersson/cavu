@@ -50,7 +50,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
    make install
    ```
 
-   `make install` builds the web app, then `cavu` with the app inside it, and puts `cavu` in Go's `GOBIN` directory, else in `$(go env GOPATH)/bin`. Your terminal finds `cavu` only when that directory is on your `PATH`. The other way is `make build`, which writes `bin/cavu` into your copy: then type `bin/cavu` wherever this README says `cavu`. Check that it runs:
+   npm may report vulnerabilities as it installs; they are in the tools that build the web app, not in the packages the built app ships, the `dependencies` of `web/package.json`, which `npm audit --omit=dev` in `web/` checks alone. `make install` builds the web app, then `cavu` with the app inside it, and puts `cavu` in Go's `GOBIN` directory, else in `$(go env GOPATH)/bin`. Your terminal finds `cavu` only when that directory is on your `PATH`. The other way is `make build`, which writes `bin/cavu` into your copy: then type `bin/cavu` wherever this README says `cavu`. Check that it runs:
 
    ```
    cavu version
