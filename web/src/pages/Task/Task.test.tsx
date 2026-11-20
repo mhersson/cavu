@@ -211,6 +211,30 @@ test('Save with nothing changed and Cancel send nothing and end the edit', async
   expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0)
 })
 
+test('a draft with no body shows the Details box when Edit is pressed', async () => {
+  serve({ ...draft, body: '' })
+  await show()
+  fireEvent.click(button('Edit')!)
+  expect(field('Details')).toHaveValue('')
+})
+
+test('the Details box opens twelve rows high on a desktop and eight on a phone, and taller for a longer body', async () => {
+  const rows = async (t: Task) => {
+    serve(t)
+    await show()
+    fireEvent.click(button('Edit')!)
+    const n = Number(field('Details')!.getAttribute('rows'))
+    cleanup()
+    return n
+  }
+  const long = { ...draft, body: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n') }
+  expect(await rows(draft)).toBe(12)
+  expect(await rows(long)).toBeGreaterThan(20)
+  narrow(true)
+  expect(await rows(draft)).toBe(8)
+  expect(await rows(long)).toBeGreaterThan(20)
+})
+
 test("a refused edit shows the server's line and keeps what was typed", async () => {
   const line = 'task 42 does not exist'
   const calls = serve(draft, (c) => (c.method === 'PATCH' ? json({ error: line }, 400) : undefined))

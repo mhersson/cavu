@@ -109,6 +109,11 @@ function Budget({ task }: { task: TaskView }) {
 
 type Editing = { was: TaskView; title: string; body: string; depends: string }
 
+// Rows cannot see wrapped lines: grow the box to show all it holds, and never shrink it, so a drag taller stays.
+function grow(el: HTMLTextAreaElement | null) {
+  if (el && el.scrollHeight > el.clientHeight) el.style.height = `${el.offsetHeight + el.scrollHeight - el.clientHeight}px`
+}
+
 function Page({ id }: { id: number }) {
   const narrow = useNarrow()
   const [task, setTask] = useState<TaskView | null>(null)
@@ -259,7 +264,6 @@ function Page({ id }: { id: number }) {
           </span>
           {!narrow && (
             <>
-              <span className="spacer" />
               {dropButton}
               {saveButton}
             </>
@@ -290,7 +294,16 @@ function Page({ id }: { id: number }) {
       {edit ? (
         <div className="task-edit">
           <div className="field">
-            <textarea aria-label="Details" rows={Math.max(4, edit.body.split('\n').length + 1)} value={edit.body} onChange={(e) => set('body', e.target.value)} />
+            <textarea
+              aria-label="Details"
+              ref={grow}
+              rows={Math.max(narrow ? 8 : 12, edit.body.split('\n').length + 1)}
+              value={edit.body}
+              onChange={(e) => {
+                set('body', e.target.value)
+                grow(e.target)
+              }}
+            />
           </div>
           <Field label="Depends on">
             <input placeholder="Task numbers, such as 42" value={edit.depends} onChange={(e) => set('depends', e.target.value)} />
