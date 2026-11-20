@@ -25,7 +25,7 @@ export function useEvents(o: Options): { live: boolean } {
     const open = () => {
       const params = new URLSearchParams()
       if (taskId !== undefined) params.set('task', String(taskId))
-      // A source the browser could not keep reconnects by Last-Event-ID; a new one needs the id in the address.
+      // The browser reconnects a source it keeps by sending Last-Event-ID; a new source after a closed one needs the id in the address.
       if (lastId > 0) params.set('after', String(lastId))
       const query = params.toString()
       const s = new EventSource('/api/events' + (query ? '?' + query : ''))
