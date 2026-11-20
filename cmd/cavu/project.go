@@ -24,10 +24,10 @@ func init() {
 }
 
 const (
-	projectAddUsage = "cavu project add NAME --repo URL [--base BRANCH, default main] [--setup CMD] [--verify CMD | --no-verify] [--data-dir DIR]"
+	projectAddUsage = "cavu project add NAME --repo URL [--base BRANCH, default main] [--setup CMD] [--verify CMD | --no-verify] [--forge-credential NAME] [--data-dir DIR]"
 	projectSetUsage = "cavu project set NAME [--base BRANCH] [--setup CMD] [--verify CMD | --no-verify] [--egress HOST]... [--env K=V]...\n" +
 		"         [--secret VAR]... [--tool NAME=VERSION]... [--switch NAME=on|off]... [--cap KEY=VALUE]...\n" +
-		"         [--no-ci on|off] [--ignore-check NAME]... [--review-bot LOGIN]... [--data-dir DIR]"
+		"         [--no-ci on|off] [--ignore-check NAME]... [--review-bot LOGIN]... [--forge-credential NAME] [--data-dir DIR]"
 	projectListUsage   = "cavu project list [--data-dir DIR]"
 	projectShowUsage   = "cavu project show NAME [--data-dir DIR]"
 	projectCheckUsage  = "cavu project check NAME [--data-dir DIR]"
@@ -62,7 +62,7 @@ func runProject(ctx context.Context, args []string, _ io.Reader, stdout, stderr 
 type projectFlags struct {
 	verbFlags
 
-	base, setup, verify, noCI                   string
+	base, setup, verify, noCI, forgeCredential  string
 	noVerify                                    bool
 	egress, env, secrets, tools, switches, caps listFlag
 	ignoredChecks, reviewBots                   listFlag
@@ -74,6 +74,8 @@ func newProjectFlags(usage string, stderr io.Writer, lists bool) *projectFlags {
 	f.StringVar(&f.setup, "setup", "", "the command that prepares the workspace, such as installing dependencies")
 	f.StringVar(&f.verify, "verify", "", "the command whose exit code decides whether a change passes")
 	f.BoolVar(&f.noVerify, "no-verify", false, "waive the verify command: a person checks every change")
+
+	f.StringVar(&f.forgeCredential, "forge-credential", "", "the GitHub credential the project uses, by its name from cavu credential set; '' for the default")
 
 	if lists {
 		f.Var(&f.egress, "egress", "a host the setup command, the agent and verify may reach; repeat for more, '' alone for none")
@@ -159,6 +161,10 @@ func (f *projectFlags) apply(p *store.Project) error {
 	// Given together, the command and the waiver reach the engine, which refuses them.
 	if given["verify"] || f.noVerify {
 		p.VerifyCommand, p.VerifyWaived = f.verify, f.noVerify
+	}
+
+	if given["forge-credential"] {
+		p.ForgeCredential = f.forgeCredential
 	}
 
 	if given["egress"] {
@@ -375,6 +381,7 @@ func projectShow(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	fmt.Fprintf(stdout, "no ci:    %s\nignored:  %s\nbots:     %s\nbaseline: %s\n",
 		onOff[p.Forge.NoCI], list(p.Forge.IgnoredChecks), list(p.Forge.ReviewBots), baseline)
 
+	fmt.Fprintf(stdout, "forge:    %s\n", cmp.Or(p.ForgeCredential, "default"))
 	fmt.Fprintf(stdout, "detected: %s\nsuggests: %s\n", list(p.CheckResult.Tools), cmp.Or(p.CheckResult.VerifySuggestion, "none"))
 
 	return nil

@@ -11,6 +11,7 @@ import (
 
 	"github.com/mhersson/cavu/internal/doctor"
 	"github.com/mhersson/cavu/internal/driver/claudecode"
+	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,8 +99,12 @@ func TestDoctorVerb(t *testing.T) {
 			assert.Equal(t, version, got.Version)
 			assert.Equal(t, claudecode.Version, got.AgentVersion)
 			assert.Equal(t, "cred", got.Credential)
-			assert.Equal(t, "tok", got.ForgeToken)
-			assert.Equal(t, "app-key", got.ForgeAppKey)
+
+			for _, p := range got.Projects {
+				assert.Equal(t, engine.ForgeAccess{Token: "tok"}, p.Access)
+				require.NoError(t, p.AccessErr)
+			}
+
 			assert.Equal(t, bundleOf(srv), got.CABundle)
 			assert.Equal(t, bundle, got.Settings["ca_bundle_path"])
 			assert.NotNil(t, got.Driver)
@@ -156,4 +161,65 @@ func TestDoctorRefusedUnderAServer(t *testing.T) {
 	assert.NotEmpty(t, stderr)
 	assert.NotContains(t, stderr, filepath.Join(dir, "lock"), "the server is named, not the lock")
 	assert.Empty(t, got.Version, "no check runs")
+}
+
+func TestDoctorDepsResolvesEachProjectsCredential(t *testing.T) {
+	ctx := t.Context()
+	dir := runData(t)
+
+	for name, value := range map[string]string{"forge_token": "default-tok", "forge_app_key": "default-key", "endpoint_credential": "cred"} {
+		code, _, stderr := withStdin(value+"\n", "secret", "set", name, "--data-dir", dir)
+		require.Equal(t, 0, code, stderr)
+	}
+
+	cavuIn(t, dir, "settings", "set", "forge_app_id", "9")
+
+	code, _, stderr := withStdin("acme-tok\n", "credential", "set", "acme", "--data-dir", dir)
+	require.Equal(t, 0, code, stderr)
+
+	code, _, stderr = withStdin("app-key\n", "credential", "set", "work", "--app-id", "7", "--data-dir", dir)
+	require.Equal(t, 0, code, stderr)
+
+	cavuIn(t, dir, "project", "add", "plain", "--repo", repo, "--no-verify")
+	cavuIn(t, dir, "project", "add", "named", "--repo", repo, "--no-verify", "--forge-credential", "acme")
+	cavuIn(t, dir, "project", "add", "app", "--repo", repo, "--no-verify", "--forge-credential", "work")
+
+	a, err := openApp(ctx, dir)
+	require.NoError(t, err)
+
+	defer a.close()
+
+	byName := func(d doctor.Deps) map[string]doctor.Project {
+		m := map[string]doctor.Project{}
+		for _, p := range d.Projects {
+			m[p.Name] = p
+		}
+
+		return m
+	}
+
+	d, err := a.doctorDeps(ctx)
+	require.NoError(t, err)
+
+	ps := byName(d)
+	assert.Empty(t, ps["plain"].Credential)
+	assert.Equal(t, engine.ForgeAccess{Token: "default-tok", AppID: 9, AppKey: "default-key"}, ps["plain"].Access)
+	assert.Equal(t, "acme", ps["named"].Credential)
+	assert.Equal(t, engine.ForgeAccess{Token: "acme-tok"}, ps["named"].Access)
+	assert.Equal(t, "work", ps["app"].Credential)
+	assert.Equal(t, int64(7), ps["app"].Access.AppID)
+
+	for _, p := range ps {
+		require.NoError(t, p.AccessErr, p.Name)
+	}
+
+	require.NoError(t, a.vault.Delete(ctx, engine.CredentialSecretName("work", engine.CredentialApp)))
+
+	d, err = a.doctorDeps(ctx)
+	require.NoError(t, err, "a project's access failing is its line's to report")
+
+	ps = byName(d)
+	require.Error(t, ps["app"].AccessErr)
+	require.NoError(t, ps["named"].AccessErr)
+	require.NoError(t, ps["plain"].AccessErr)
 }

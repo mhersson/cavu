@@ -28,19 +28,9 @@ func runSecret(ctx context.Context, args []string, stdin io.Reader, _, stderr io
 		return err
 	}
 
-	// Typed on a terminal, the value would show on the screen.
-	if isTerminal(stdin) {
-		return fmt.Errorf("the value is read from standard input, not a terminal: cavu secret set %s < FILE", name[0])
-	}
-
-	data, err := io.ReadAll(stdin)
+	value, err := readValue(stdin, "cavu secret set "+name[0]+" < FILE")
 	if err != nil {
-		return fmt.Errorf("standard input: %w", err)
-	}
-
-	value := strings.TrimSuffix(string(data), "\n")
-	if value == "" {
-		return errors.New("the value on standard input is empty")
+		return err
 	}
 
 	a, err := f.open(ctx)
@@ -50,4 +40,24 @@ func runSecret(ctx context.Context, args []string, stdin io.Reader, _, stderr io
 	defer a.close()
 
 	return a.vault.Set(ctx, name[0], value)
+}
+
+// readValue reads a secret from standard input, one trailing newline trimmed.
+// Typed on a terminal, it would show on the screen.
+func readValue(stdin io.Reader, command string) (string, error) {
+	if isTerminal(stdin) {
+		return "", fmt.Errorf("the value is read from standard input, not a terminal: %s", command)
+	}
+
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		return "", fmt.Errorf("standard input: %w", err)
+	}
+
+	value := strings.TrimSuffix(string(data), "\n")
+	if value == "" {
+		return "", errors.New("the value on standard input is empty")
+	}
+
+	return value, nil
 }

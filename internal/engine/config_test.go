@@ -191,6 +191,65 @@ func TestRunConfigCarriesTheAccess(t *testing.T) {
 	})
 }
 
+func TestRunUsesTheProjectsCredential(t *testing.T) {
+	setup := func(t *testing.T, tt configCase, creds map[string]*engine.NewCredential, name string) (engine.RunConfig, error) {
+		t.Helper()
+
+		loop, fx := configFixtureFor(t, tt)
+		require.NoError(t, engine.ChangeCredentials(t.Context(), loop.Store, loop.Vault, creds))
+
+		if name != "" {
+			p, err := loop.Store.Project(t.Context(), fx.task.ProjectID)
+			require.NoError(t, err)
+
+			p.ForgeCredential = name
+			require.NoError(t, engine.EditProject(t.Context(), loop.Store, p))
+		}
+
+		return loop.BuildRunConfig(t.Context(), fx.task, fx.run, nil)
+	}
+
+	creds := map[string]*engine.NewCredential{"bot": {Token: "ghp_bot"}, "team": {AppID: 42, AppKey: "pem-team"}}
+
+	t.Run("a token credential", func(t *testing.T) {
+		got, err := setup(t, configCase{set: map[string]string{"forge_app_id": "123456"}}, creds, "bot")
+		require.NoError(t, err)
+		assert.Equal(t, engine.ForgeAccess{Token: "ghp_bot"}, got.Repo.Access, "no App id, no default token")
+	})
+
+	t.Run("an App credential", func(t *testing.T) {
+		got, err := setup(t, configCase{}, creds, "team")
+		require.NoError(t, err)
+		assert.Equal(t, engine.ForgeAccess{AppID: 42, AppKey: "pem-team"}, got.Repo.Access)
+	})
+
+	t.Run("none names today's", func(t *testing.T) {
+		got, err := setup(t, configCase{}, creds, "")
+		require.NoError(t, err)
+		assert.Equal(t, engine.ForgeAccess{Token: "ghp_forgetokenvalue"}, got.Repo.Access) //nolint:gosec // a dummy
+
+		got, err = setup(t, configCase{set: map[string]string{"forge_app_id": "123456"}, unset: []string{"forge_token"}}, creds, "")
+		require.NoError(t, err)
+		assert.Equal(t, engine.ForgeAccess{AppID: 123456, AppKey: "app-key-value"}, got.Repo.Access)
+	})
+
+	t.Run("a missing secret fails and does not fall back", func(t *testing.T) {
+		loop, fx := configFixtureFor(t, configCase{})
+		require.NoError(t, engine.ChangeCredentials(t.Context(), loop.Store, loop.Vault, creds))
+
+		p, err := loop.Store.Project(t.Context(), fx.task.ProjectID)
+		require.NoError(t, err)
+
+		p.ForgeCredential = "bot"
+		require.NoError(t, engine.EditProject(t.Context(), loop.Store, p))
+		require.NoError(t, loop.Vault.Delete(t.Context(), engine.CredentialSecretName("bot", engine.CredentialToken)))
+
+		_, err = loop.BuildRunConfig(t.Context(), fx.task, fx.run, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), engine.CredentialSecretName("bot", engine.CredentialToken))
+	})
+}
+
 func runConfigCases(t *testing.T, tests []configCase) {
 	t.Helper()
 

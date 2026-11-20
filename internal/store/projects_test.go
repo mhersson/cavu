@@ -253,3 +253,71 @@ func TestProjectNames(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, map[int64]string{a.ID: "a", b.ID: "b"}, names, "a removed project's name too")
 }
+
+func TestProjectForgeCredentialRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.PutCredential(ctx, Credential{Name: "acme", Kind: "token"}))
+
+	named, err := s.CreateProject(ctx, Project{Name: "named", ForgeCredential: "acme"})
+	require.NoError(t, err)
+
+	plain, err := s.CreateProject(ctx, Project{Name: "plain"})
+	require.NoError(t, err)
+
+	byID, err := s.Project(ctx, named.ID)
+	require.NoError(t, err)
+	require.Equal(t, "acme", byID.ForgeCredential)
+
+	byName, err := s.ProjectByName(ctx, "named")
+	require.NoError(t, err)
+	require.Equal(t, "acme", byName.ForgeCredential)
+
+	all, err := s.Projects(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+	require.Equal(t, "acme", all[0].ForgeCredential)
+	require.Empty(t, all[1].ForgeCredential)
+
+	got, err := s.Project(ctx, plain.ID)
+	require.NoError(t, err)
+	require.Empty(t, got.ForgeCredential)
+
+	for _, want := range []string{"", "acme"} {
+		byID.ForgeCredential = want
+		require.NoError(t, s.UpdateProject(ctx, byID))
+
+		got, err = s.Project(ctx, named.ID)
+		require.NoError(t, err)
+		require.Equal(t, want, got.ForgeCredential)
+	}
+}
+
+func TestAProjectCannotNameAMissingCredential(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	ctx := context.Background()
+
+	_, err := s.CreateProject(ctx, Project{Name: "new", ForgeCredential: "nope"})
+	require.Error(t, err)
+
+	all, err := s.Projects(ctx)
+	require.NoError(t, err)
+	require.Empty(t, all)
+
+	require.NoError(t, s.PutCredential(ctx, Credential{Name: "acme", Kind: "token"}))
+
+	p, err := s.CreateProject(ctx, Project{Name: "old", ForgeCredential: "acme"})
+	require.NoError(t, err)
+
+	p.ForgeCredential = "nope"
+	require.Error(t, s.UpdateProject(ctx, p))
+
+	got, err := s.Project(ctx, p.ID)
+	require.NoError(t, err)
+	require.Equal(t, "acme", got.ForgeCredential)
+}

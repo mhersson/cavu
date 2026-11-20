@@ -23,7 +23,7 @@ var (
 // A duplicate name returns an error wrapping store.ErrConflict.
 func AddProject(ctx context.Context, s Store, p store.Project) (store.Project, error) {
 	p.Caps = withoutEmptyCaps(p.Caps)
-	if err := checkProject(p); err != nil {
+	if err := checkProject(ctx, s, p); err != nil {
 		return store.Project{}, err
 	}
 
@@ -35,7 +35,7 @@ func AddProject(ctx context.Context, s Store, p store.Project) (store.Project, e
 // alone everything the baseline rests on, and never writes one of its own.
 func EditProject(ctx context.Context, s Store, p store.Project) error {
 	p.Caps = withoutEmptyCaps(p.Caps)
-	if err := checkProject(p); err != nil {
+	if err := checkProject(ctx, s, p); err != nil {
 		return err
 	}
 
@@ -64,7 +64,7 @@ func withoutEmptyCaps(caps map[string]string) map[string]string {
 // checkProject refuses what a project may not hold, naming the field: a
 // value a person typed never reaches git as an option, nor a shell as a blank
 // command, which exits 0.
-func checkProject(p store.Project) error {
+func checkProject(ctx context.Context, s Store, p store.Project) error {
 	switch {
 	case !projectName.MatchString(p.Name):
 		return refuse("name %q: want 1 to 40 of a-z, 0-9 and -", p.Name)
@@ -114,6 +114,24 @@ func checkProject(p store.Project) error {
 		if err := CheckSetting(k, v); err != nil {
 			return refuse("caps: %v", err)
 		}
+	}
+
+	return checkCredential(ctx, s, p.ForgeCredential)
+}
+
+// checkCredential refuses a name no credential has; the foreign key holds it in a race.
+func checkCredential(ctx context.Context, s Store, name string) error {
+	if name == "" {
+		return nil
+	}
+
+	creds, err := s.Credentials(ctx)
+	if err != nil {
+		return err
+	}
+
+	if !slices.ContainsFunc(creds, func(c store.Credential) bool { return c.Name == name }) {
+		return refuse("forge_credential %q: no such credential", name)
 	}
 
 	return nil

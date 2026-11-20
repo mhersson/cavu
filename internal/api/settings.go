@@ -15,9 +15,23 @@ import (
 // instanceSecrets are the secrets the settings tell are set or not, never what they are.
 var instanceSecrets = []string{engine.SecretEndpointCredential, engine.SecretForgeToken, engine.SecretForgeAppKey}
 
+// credentialJSON is a named credential as the settings show it: never its secret.
+type credentialJSON struct {
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
+	AppID int64  `json:"app_id,omitempty"`
+}
+
+// credentialIn is a credential a request writes whole; its kind follows from its fields.
+type credentialIn struct {
+	Token  string `json:"token"`
+	AppID  int64  `json:"app_id"`
+	AppKey string `json:"app_key"`
+}
+
 // settings answers with every settable key whose value is not empty, a value
 // that is a JSON object as one, whether each instance secret is set, every
-// key's default and every switch's default.
+// named credential, every key's default and every switch's default.
 func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 	all, err := s.Store.Settings(r.Context())
 	if err != nil {
@@ -40,13 +54,23 @@ func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	credentials, err := s.Store.Credentials(r.Context())
+	if err != nil {
+		return err
+	}
+
+	named := make([]credentialJSON, len(credentials))
+	for i, c := range credentials {
+		named[i] = credentialJSON{Name: c.Name, Kind: c.Kind, AppID: c.AppID}
+	}
+
 	secrets := map[string]bool{}
 	for _, name := range instanceSecrets {
 		secrets[name] = slices.Contains(names, name)
 	}
 
 	reply(w, http.StatusOK, map[string]any{
-		"settings": settings, "secrets": secrets,
+		"settings": settings, "secrets": secrets, "forge_credentials": named,
 		"defaults": engine.SettingDefaults(), "switches": engine.ProjectSwitches(store.Project{}),
 	})
 
@@ -54,11 +78,13 @@ func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 }
 
 // setSettings checks every value before it writes any. A null or empty value
-// unsets its key, and an empty secret is removed.
+// unsets its key, and an empty secret is removed. A credential is written
+// whole, and null removes it.
 func (s *server) setSettings(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		Settings map[string]json.RawMessage `json:"settings"`
 		Secrets  map[string]string          `json:"secrets"`
+		Forge    map[string]*credentialIn   `json:"forge_credentials"`
 	}
 
 	if err := decode(w, r, &in); err != nil {
@@ -84,6 +110,20 @@ func (s *server) setSettings(w http.ResponseWriter, r *http.Request) error {
 		if !slices.Contains(instanceSecrets, name) {
 			return &apiError{http.StatusBadRequest, "secrets " + strconv.Quote(name) + ": want " + strings.Join(instanceSecrets, " or ")}
 		}
+	}
+
+	changes := make(map[string]*engine.NewCredential, len(in.Forge))
+
+	for name, c := range in.Forge {
+		if c != nil {
+			changes[name] = &engine.NewCredential{Token: c.Token, AppID: c.AppID, AppKey: c.AppKey}
+		} else {
+			changes[name] = nil
+		}
+	}
+
+	if err := engine.ChangeCredentials(r.Context(), s.Store, s.Vault, changes); err != nil {
+		return err
 	}
 
 	for k, v := range values {

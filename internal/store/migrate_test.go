@@ -166,6 +166,51 @@ func TestMigrationSixKeepsProjects(t *testing.T) {
 	require.Equal(t, ForgePolicy{}, p.Forge)
 }
 
+func TestMigrationEightKeepsProjectsOnTheDefault(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cavu.db")
+	ctx := context.Background()
+
+	old, err := open(ctx, path, migrations[:7])
+	require.NoError(t, err)
+
+	_, err = old.db.Exec(`INSERT INTO projects (name, repo_url, base_branch, setup_command, verify_command,
+		verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches, removed_at)
+		VALUES ('live', 'r', 'main', '', '', 0, '{}', '[]', '{}', '[]', '{}', NULL),
+		       ('gone', 'r', 'main', '', '', 0, '{}', '[]', '{}', '[]', '{}', 5)`)
+	require.NoError(t, err)
+	require.NoError(t, old.Close())
+
+	s, err := Open(ctx, path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = s.Close() })
+
+	live, err := s.ProjectByName(ctx, "live")
+	require.NoError(t, err)
+	require.Empty(t, live.ForgeCredential)
+
+	var gone Project
+
+	rows, err := s.db.Query(`SELECT id FROM projects WHERE name = 'gone'`)
+	require.NoError(t, err)
+
+	defer rows.Close()
+
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&gone.ID))
+
+	gone, err = s.Project(ctx, gone.ID)
+	require.NoError(t, err)
+	require.NotNil(t, gone.RemovedAt)
+	require.Empty(t, gone.ForgeCredential)
+
+	creds, err := s.Credentials(ctx)
+	require.NoError(t, err)
+	require.Empty(t, creds)
+}
+
 type columnInfo struct {
 	Name, Type string
 	NotNull    bool
@@ -266,8 +311,8 @@ func TestMigrationSevenKeepsEverythingAndFreesNames(t *testing.T) {
 
 	t.Cleanup(func() { _ = s.Close() })
 
-	assert.Equal(t, append(before, columnInfo{Name: "removed_at", Type: "INTEGER"}), projectColumnInfo(t, s),
-		"the rebuilt table is the old one plus removed_at")
+	assert.Equal(t, append(before, columnInfo{Name: "removed_at", Type: "INTEGER"}, columnInfo{Name: "forge_credential", Type: "TEXT"}),
+		projectColumnInfo(t, s), "the rebuilt table is the old one plus removed_at and the later forge_credential")
 
 	var uniques []string
 
@@ -290,7 +335,7 @@ func TestMigrationSevenKeepsEverythingAndFreesNames(t *testing.T) {
 	require.Len(t, newRows, len(oldRows))
 
 	for i, want := range oldRows {
-		require.Equal(t, append(want, nil), newRows[i], "every column and id kept, removed_at empty")
+		require.Equal(t, append(want, nil, nil), newRows[i], "every column and id kept, removed_at and forge_credential empty")
 	}
 
 	var tasks, events, bad int

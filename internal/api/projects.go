@@ -14,25 +14,26 @@ import (
 // projectJSON is a project as the API shows it. Its lists and maps are
 // copies that are never nil, so they go out as [] and {}, never null.
 type projectJSON struct {
-	ID            int64             `json:"id"`
-	Name          string            `json:"name"`
-	RepoURL       string            `json:"repo_url"`
-	BaseBranch    string            `json:"base_branch"`
-	SetupCommand  string            `json:"setup_command"`
-	VerifyCommand string            `json:"verify_command"`
-	VerifyWaived  bool              `json:"verify_waived"`
-	ToolOverrides map[string]string `json:"tool_overrides"`
-	EgressHosts   []string          `json:"egress_hosts"`
-	Env           map[string]string `json:"env"`
-	SecretVars    []string          `json:"secret_vars"`
-	Switches      map[string]bool   `json:"switches"`
-	Caps          map[string]string `json:"caps"`
-	NoCI          bool              `json:"no_ci"`
-	IgnoredChecks []string          `json:"ignored_checks"`
-	ReviewBots    []string          `json:"review_bots"`
-	Runnable      bool              `json:"runnable"`
-	Baseline      *baselineJSON     `json:"baseline"`
-	Check         checkJSON         `json:"check"`
+	ID              int64             `json:"id"`
+	Name            string            `json:"name"`
+	RepoURL         string            `json:"repo_url"`
+	BaseBranch      string            `json:"base_branch"`
+	SetupCommand    string            `json:"setup_command"`
+	VerifyCommand   string            `json:"verify_command"`
+	VerifyWaived    bool              `json:"verify_waived"`
+	ToolOverrides   map[string]string `json:"tool_overrides"`
+	EgressHosts     []string          `json:"egress_hosts"`
+	Env             map[string]string `json:"env"`
+	SecretVars      []string          `json:"secret_vars"`
+	Switches        map[string]bool   `json:"switches"`
+	Caps            map[string]string `json:"caps"`
+	NoCI            bool              `json:"no_ci"`
+	IgnoredChecks   []string          `json:"ignored_checks"`
+	ReviewBots      []string          `json:"review_bots"`
+	ForgeCredential string            `json:"forge_credential"`
+	Runnable        bool              `json:"runnable"`
+	Baseline        *baselineJSON     `json:"baseline"`
+	Check           checkJSON         `json:"check"`
 }
 
 type baselineJSON struct {
@@ -62,7 +63,7 @@ func projectView(p store.Project) projectJSON {
 		Env: maps.Collect(maps.All(p.Env)), SecretVars: append([]string{}, p.SecretVars...),
 		Switches: engine.ProjectSwitches(p), Caps: maps.Collect(maps.All(p.Caps)),
 		NoCI: p.Forge.NoCI, IgnoredChecks: append([]string{}, p.Forge.IgnoredChecks...), ReviewBots: append([]string{}, p.Forge.ReviewBots...),
-		Runnable: engine.Runnable(p),
+		ForgeCredential: p.ForgeCredential, Runnable: engine.Runnable(p),
 		Check: checkJSON{
 			Tools: append([]string{}, c.Tools...), IgnoredTools: append([]string{}, c.IgnoredTools...),
 			FailedStep: c.FailedStep, VerifySuggestion: c.VerifySuggestion, Fault: c.Fault, Commit: c.BaseCommit, Output: c.Output,
@@ -83,20 +84,21 @@ func projectView(p store.Project) projectJSON {
 // projectFields are what a request may set on a project. A field left out, or
 // null, keeps its value.
 type projectFields struct {
-	RepoURL       *string            `json:"repo_url"`
-	BaseBranch    *string            `json:"base_branch"`
-	SetupCommand  *string            `json:"setup_command"`
-	VerifyCommand *string            `json:"verify_command"`
-	VerifyWaived  *bool              `json:"verify_waived"`
-	ToolOverrides *map[string]string `json:"tool_overrides"`
-	EgressHosts   *[]string          `json:"egress_hosts"`
-	Env           *map[string]string `json:"env"`
-	NoCI          *bool              `json:"no_ci"`
-	IgnoredChecks *[]string          `json:"ignored_checks"`
-	ReviewBots    *[]string          `json:"review_bots"`
-	Switches      map[string]bool    `json:"switches"` // merged per key
-	Caps          map[string]string  `json:"caps"`     // merged per key; an empty value removes the cap
-	Secrets       map[string]string  `json:"secrets"`  // variable to value; an empty value removes the variable
+	RepoURL         *string            `json:"repo_url"`
+	BaseBranch      *string            `json:"base_branch"`
+	SetupCommand    *string            `json:"setup_command"`
+	VerifyCommand   *string            `json:"verify_command"`
+	VerifyWaived    *bool              `json:"verify_waived"`
+	ToolOverrides   *map[string]string `json:"tool_overrides"`
+	EgressHosts     *[]string          `json:"egress_hosts"`
+	Env             *map[string]string `json:"env"`
+	ForgeCredential *string            `json:"forge_credential"`
+	NoCI            *bool              `json:"no_ci"`
+	IgnoredChecks   *[]string          `json:"ignored_checks"`
+	ReviewBots      *[]string          `json:"review_bots"`
+	Switches        map[string]bool    `json:"switches"` // merged per key
+	Caps            map[string]string  `json:"caps"`     // merged per key; an empty value removes the cap
+	Secrets         map[string]string  `json:"secrets"`  // variable to value; an empty value removes the variable
 }
 
 // apply writes the fields over p. What p may hold is the engine's to refuse.
@@ -109,6 +111,7 @@ func (f projectFields) apply(p *store.Project) {
 	set(&p.ToolOverrides, f.ToolOverrides)
 	set(&p.EgressHosts, f.EgressHosts)
 	set(&p.Env, f.Env)
+	set(&p.ForgeCredential, f.ForgeCredential)
 	set(&p.Forge.NoCI, f.NoCI)
 	set(&p.Forge.IgnoredChecks, f.IgnoredChecks)
 	set(&p.Forge.ReviewBots, f.ReviewBots)

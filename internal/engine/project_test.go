@@ -314,3 +314,36 @@ func TestCheckProjectRefusesAMissingSetting(t *testing.T) {
 	assert.Empty(t, h.runner.callsOf("check"))
 	assert.Equal(t, err.Error(), h.project().CheckResult.Fault)
 }
+
+func TestAProjectCannotNameAMissingCredential(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+
+	add := store.Project{Name: "api", RepoURL: "https://example.com/api.git", BaseBranch: "main", ForgeCredential: "ghost"}
+
+	_, err := engine.AddProject(ctx, h.store, add)
+	require.ErrorIs(t, err, engine.ErrRefused)
+
+	p := h.withBaseline()
+	p.ForgeCredential = "ghost"
+	require.ErrorIs(t, engine.EditProject(ctx, h.store, p), engine.ErrRefused)
+
+	names, err := h.store.ProjectNames(ctx)
+	require.NoError(t, err)
+	assert.Len(t, names, 1, "the refused add stored nothing")
+	assert.Empty(t, h.project().ForgeCredential, "the refused edit stored nothing")
+
+	require.NoError(t, engine.ChangeCredentials(ctx, h.store, h.vault, map[string]*engine.NewCredential{"bot": {Token: "ghp_bot"}}))
+
+	added, err := engine.AddProject(ctx, h.store, store.Project{Name: "api", RepoURL: add.RepoURL, BaseBranch: "main", ForgeCredential: "bot"})
+	require.NoError(t, err)
+	assert.Equal(t, "bot", added.ForgeCredential)
+
+	p.ForgeCredential = "bot"
+	require.NoError(t, engine.EditProject(ctx, h.store, p))
+
+	got := h.project()
+	assert.Equal(t, "bot", got.ForgeCredential)
+	require.NotNil(t, got.Baseline, "naming a credential keeps the baseline")
+	assert.Equal(t, "old999", got.Baseline.Commit)
+}

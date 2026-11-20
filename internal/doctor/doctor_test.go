@@ -168,10 +168,12 @@ func green(t *testing.T, mode string) (Deps, *fakeHost, *fakeDriver) {
 		},
 		Credential: credential,
 		CABundle:   bundle,
-		ForgeToken: forgeToken,
-		Projects:   []Project{{ID: 4, Name: "web", RepoURL: "https://forge.example/team/repo.git", BaseBranch: "main"}},
-		Driver:     drv,
-		host:       h,
+		Projects: []Project{{
+			ID: 4, Name: "web", RepoURL: "https://forge.example/team/repo.git", BaseBranch: "main",
+			Access: engine.ForgeAccess{Token: forgeToken},
+		}},
+		Driver: drv,
+		host:   h,
 	}, h, drv
 }
 
@@ -487,10 +489,11 @@ func onForge(t *testing.T, d *Deps) (*forgefake.Fake, string) {
 	return fake, srv.URL + "/api/v3"
 }
 
-// withApp makes d's forge credential a GitHub App's.
+// withApp makes every project's forge credential a GitHub App's.
 func withApp(d *Deps) {
-	d.ForgeToken, d.ForgeAppKey = "", forgefake.AppKey()
-	d.Settings["forge_app_id"] = "42"
+	for i := range d.Projects {
+		d.Projects[i].Access = engine.ForgeAccess{AppID: 42, AppKey: forgefake.AppKey()}
+	}
 }
 
 func paths(fake *forgefake.Fake) []string {
@@ -552,9 +555,9 @@ func TestDoctorForgeReadsTheRepository(t *testing.T) {
 		})
 	}
 
-	t.Run("skipped without a credential or a project", func(t *testing.T) {
+	t.Run("skipped without a project or a credential", func(t *testing.T) {
 		for name, edit := range map[string]func(*Deps){
-			"no credential": func(d *Deps) { d.ForgeToken = "" },
+			"no credential": func(d *Deps) { d.Projects[0].Access = engine.ForgeAccess{} },
 			"no project":    func(d *Deps) { d.Projects = nil },
 		} {
 			d, h, _ := green(t, "key")
@@ -664,7 +667,7 @@ func TestDoctorMasksTheForgeCredential(t *testing.T) {
 	withApp(&d)
 
 	h.cloneErr = func(r sidecar.CloneRequest) error {
-		return fmt.Errorf("fatal: https://x-access-token:%s@forge.example/o/n refused; key %s", r.Token, d.ForgeAppKey)
+		return fmt.Errorf("fatal: https://x-access-token:%s@forge.example/o/n refused; key %s", r.Token, d.Projects[0].Access.AppKey)
 	}
 
 	checks := Run(t.Context(), d)
@@ -674,7 +677,7 @@ func TestDoctorMasksTheForgeCredential(t *testing.T) {
 	require.Len(t, minted, 1)
 
 	for _, c := range checks {
-		for _, secret := range []string{minted[0].Value, d.ForgeAppKey} {
+		for _, secret := range []string{minted[0].Value, d.Projects[0].Access.AppKey} {
 			assert.NotContains(t, c.Detail, secret)
 			assert.NotContains(t, c.Fix, secret)
 		}
@@ -688,7 +691,10 @@ func forgeLines(checks []Check) []Check {
 
 // withSecondProject adds the project api after web.
 func withSecondProject(d *Deps) {
-	d.Projects = append(d.Projects, Project{ID: 5, Name: "api", RepoURL: "https://forge.example/team/api.git", BaseBranch: "dev"})
+	d.Projects = append(d.Projects, Project{
+		ID: 5, Name: "api", RepoURL: "https://forge.example/team/api.git", BaseBranch: "dev",
+		Access: engine.ForgeAccess{Token: forgeToken},
+	})
 }
 
 func TestDoctorChecksTheForgeOfEveryProject(t *testing.T) {
@@ -743,17 +749,6 @@ func TestDoctorChecksTheForgeOfEveryProject(t *testing.T) {
 		assert.True(t, lines[0].Skipped)
 		assert.Empty(t, h.clones)
 	})
-
-	t.Run("no credential is one skipped line", func(t *testing.T) {
-		d, h, _ := green(t, "key")
-		withSecondProject(&d)
-		d.ForgeToken = ""
-
-		lines := forgeLines(Run(t.Context(), d))
-		require.Len(t, lines, 1)
-		assert.True(t, lines[0].Skipped)
-		assert.Empty(t, h.clones)
-	})
 }
 
 // An App mints a token for each project's repository, and every one is masked.
@@ -782,5 +777,94 @@ func TestDoctorMasksEveryProjectsMintedToken(t *testing.T) {
 			assert.NotContains(t, c.Detail, tok.Value)
 			assert.NotContains(t, c.Fix, tok.Value)
 		}
+	}
+}
+
+func TestDoctorChecksEachProjectWithItsOwn(t *testing.T) {
+	t.Run("each is cloned with its own token", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		withSecondProject(&d)
+		d.Projects[1].Credential, d.Projects[1].Access = "acme", engine.ForgeAccess{Token: "acme-token"}
+
+		lines := forgeLines(Run(t.Context(), d))
+		require.Len(t, lines, 2)
+		require.Len(t, h.clones, 2)
+		assert.Equal(t, forgeToken, h.clones[0].Token)
+		assert.Equal(t, "acme-token", h.clones[1].Token)
+	})
+
+	t.Run("a project whose access failed fails its own line", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		withSecondProject(&d)
+		d.Projects[0].AccessErr = errors.New("credential gone")
+
+		checks := Run(t.Context(), d)
+		lines := forgeLines(checks)
+		require.Len(t, lines, 2)
+		assert.False(t, lines[0].OK || lines[0].Skipped, "%+v", lines[0])
+		assert.Contains(t, lines[0].Detail, "credential gone")
+		assert.NotEmpty(t, lines[0].Fix)
+		assert.True(t, lines[1].OK && !lines[1].Skipped, "%+v", lines[1])
+		assert.Len(t, h.clones, 1)
+		assert.Equal(t, 1, ExitCode(checks))
+	})
+
+	t.Run("a project with no credential is skipped and the others are checked", func(t *testing.T) {
+		d, h, _ := green(t, "key")
+		withSecondProject(&d)
+		d.Projects[0].Access = engine.ForgeAccess{}
+
+		checks := Run(t.Context(), d)
+		lines := forgeLines(checks)
+		require.Len(t, lines, 2)
+		assert.True(t, lines[0].Skipped)
+		assert.Contains(t, lines[0].Detail, "web")
+		assert.True(t, lines[1].OK && !lines[1].Skipped, "%+v", lines[1])
+		assert.Len(t, h.clones, 1)
+		assert.Equal(t, 0, ExitCode(checks))
+	})
+}
+
+func TestForgeFixNamesTheProjectsCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		credential string
+		want, not  string
+	}{
+		{"the default", "", "forge_token", "acme"},
+		{"a named credential", "acme", "acme", "forge_token"},
+	} {
+		t.Run(tc.name+" on a clone failure", func(t *testing.T) {
+			d, h, _ := green(t, "key")
+			d.Projects[0].Credential = tc.credential
+			h.cloneErr = func(sidecar.CloneRequest) error { return errors.New("refused") }
+
+			fix := forgeLines(Run(t.Context(), d))[0].Fix
+			assert.Contains(t, fix, tc.want)
+			assert.NotContains(t, fix, tc.not)
+		})
+
+		t.Run(tc.name+" when the checks cannot be read", func(t *testing.T) {
+			d, _, _ := green(t, "key")
+			fake, _ := onForge(t, &d)
+			d.Projects[0].Credential = tc.credential
+
+			fake.Deny(forgeToken, "checks", "actions")
+
+			fix := forgeLines(Run(t.Context(), d))[0].Fix
+			assert.Contains(t, fix, tc.want)
+			assert.NotContains(t, fix, tc.not)
+		})
+	}
+}
+
+func TestDoctorMasksANamedCredentialsToken(t *testing.T) {
+	d, h, _ := green(t, "key")
+	d.Projects[0].Credential, d.Projects[0].Access = "acme", engine.ForgeAccess{Token: "acme-secret-token"}
+	h.cloneErr = func(r sidecar.CloneRequest) error { return fmt.Errorf("refused with %s", r.Token) }
+
+	for _, c := range Run(t.Context(), d) {
+		assert.NotContains(t, c.Detail, "acme-secret-token")
+		assert.NotContains(t, c.Fix, "acme-secret-token")
 	}
 }

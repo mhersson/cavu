@@ -81,13 +81,8 @@ func (a *app) doctorDeps(ctx context.Context) (doctor.Deps, error) {
 		return doctor.Deps{}, err
 	}
 
-	if d.ForgeToken, _, err = a.vault.Get(ctx, engine.SecretForgeToken); err != nil {
-		return doctor.Deps{}, err
-	}
-
-	if d.ForgeAppKey, _, err = a.vault.Get(ctx, engine.SecretForgeAppKey); err != nil {
-		return doctor.Deps{}, err
-	}
+	// A settings error is the doctor's settings check's to report, and skips the forge check.
+	cfg, _ := engine.ReadSettings(settings)
 
 	ps, err := a.store.Projects(ctx)
 	if err != nil {
@@ -95,9 +90,12 @@ func (a *app) doctorDeps(ctx context.Context) (doctor.Deps, error) {
 	}
 
 	for _, p := range ps {
-		d.Projects = append(d.Projects, doctor.Project{
+		dp := doctor.Project{
 			ID: p.ID, Name: p.Name, RepoURL: p.RepoURL, BaseBranch: p.BaseBranch, Publish: engine.ProjectSwitches(p)["publish"],
-		})
+			Credential: p.ForgeCredential,
+		}
+		dp.Access, dp.AccessErr = engine.ForgeAccessOf(ctx, a.store, a.vault, cfg.Repo.Access.AppID, p)
+		d.Projects = append(d.Projects, dp)
 	}
 
 	return d, nil
