@@ -109,6 +109,7 @@ func TestMCPEditTask(t *testing.T) {
 	f.addProject(t, site)
 
 	other := f.task(t, `{"project": "site", "title": "Other"}`)
+	another := f.task(t, `{"project": "site", "title": "Another"}`)
 	id := f.task(t, fmt.Sprintf(`{"project": "site", "title": "Draft", "body": "Original", "depends_on": [%d]}`, other))
 	cs := f.client(t)
 
@@ -136,6 +137,10 @@ func TestMCPEditTask(t *testing.T) {
 	assert.Equal(t, "Renamed", got["title"])
 	assert.Empty(t, got["body"])
 	assert.Equal(t, []int64{other}, depIDs(got))
+
+	got = edit(map[string]any{"depends_on": []int64{another}})
+	assert.Equal(t, "Renamed", got["title"])
+	assert.Equal(t, []int64{another}, depIDs(got))
 
 	got = edit(map[string]any{"depends_on": []int64{}})
 	assert.Equal(t, "Renamed", got["title"])

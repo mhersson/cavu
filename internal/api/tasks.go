@@ -230,8 +230,7 @@ func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
 	return s.replyTask(w, r, id, http.StatusOK)
 }
 
-// edit changes only the fields in names, over the stored task and its stored
-// dependencies.
+// edit changes only the fields that `in` sets, over the stored task and its dependencies.
 func (s *server) edit(ctx context.Context, id int64, in taskEdit) error {
 	t, err := s.Store.Task(ctx, id)
 	if err != nil {
