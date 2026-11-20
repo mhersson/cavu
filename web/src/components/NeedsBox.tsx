@@ -91,7 +91,11 @@ function Box({ task, onTask, onPage = false, flat = false }: Props) {
     </Link>
   )
   const { pull_request: pr, change } = task
-  const files = change && <span className="facts">{change.files_changed} files changed.</span>
+  const files = change && (
+    <span className="facts">
+      {change.files_changed} {change.files_changed === 1 ? 'file' : 'files'} changed.
+    </span>
+  )
   const since = task.needs_you_since && ago(task.needs_you_since)
 
   let label = ''

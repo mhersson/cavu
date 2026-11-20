@@ -214,7 +214,7 @@
   font-size: 12px;
 }
 
-.needs pre.out {
+pre.out {
   background: var(--bg0);
   border: 1px solid var(--bg2);
   border-radius: 6px;

@@ -37,11 +37,12 @@ it('a section renders nothing for null', () => {
 it('a change names its flagged paths', () => {
   const change: Change = {
     head_commit: 'fedcba9876543210',
-    files_changed: 3,
+    files_changed: 1,
     diff_stat: [' a | 1 +', ' 1 file changed, 1 insertion(+)'],
     flagged: { workflows: ['.github/ci.yaml'], instructions: ['AGENTS.md'], large: ['big.bin'] },
   }
   const { container } = render(<ChangeFacts change={change} />)
+  expect(container.querySelector('section > div')).toHaveTextContent(/^1 file changed/)
   expect([...container.querySelectorAll('.flag')].map((e) => e.textContent)).toEqual([
     'Touches .github/ci.yaml',
     'Touches AGENTS.md',

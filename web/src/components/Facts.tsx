@@ -40,7 +40,7 @@ export function ChangeFacts({ change }: { change: Change | null }) {
     <section>
       <h3>Change</h3>
       <div>
-        {change.files_changed} files changed, head <code>{change.head_commit.slice(0, 12)}</code>
+        {change.files_changed} {change.files_changed === 1 ? 'file' : 'files'} changed, head <code>{change.head_commit.slice(0, 12)}</code>
       </div>
       {[...workflows, ...instructions, ...large].map((p) => (
         <span key={p} className="flag">
