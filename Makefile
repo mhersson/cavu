@@ -1,9 +1,13 @@
-.PHONY: help build build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-ecosystems
+.PHONY: help build build-go web-install web-build web-check build-darwin test test-race vet lint fmt fmt-check tidy-check scan scan-commits size check image test-integration test-ecosystems
 
 help:
 	@echo "Targets:"
 	@echo "  help         show this list"
-	@echo "  build        build bin/cavu"
+	@echo "  build        build the web app, then bin/cavu with it embedded"
+	@echo "  build-go     build bin/cavu with the web app as it is built now, or the placeholder page when none is"
+	@echo "  web-install  install the web app's npm packages; needs the Node of the root .nvmrc"
+	@echo "  web-build    build the web app into web/dist/app"
+	@echo "  web-check    lint, test and build the web app"
 	@echo "  build-darwin cross-compile everything for darwin"
 	@echo "  test         run the tests"
 	@echo "  test-race    run the tests with the race detector"
@@ -12,15 +16,28 @@ help:
 	@echo "  fmt          format the code with golangci-lint fmt"
 	@echo "  fmt-check    fail and show the diff if formatting is needed"
 	@echo "  tidy-check   fail if go mod tidy would change go.mod or go.sum"
-	@echo "  scan         fail on em-dashes in Go, Markdown, YAML, TOML, shell and Dockerfile files"
+	@echo "  scan         fail on em-dashes in Go, Markdown, YAML, TOML, shell and Dockerfile files and in the web app's TypeScript, JavaScript, CSS, HTML and JSON files"
 	@echo "  scan-commits fail on session links, attribution, task or milestone numbers, em-dashes and big blobs in SCAN_BASE..SCAN_HEAD (origin/main..HEAD)"
-	@echo "  size         count the non-test Go lines"
+	@echo "  size         count the non-test Go lines and the non-test web lines"
 	@echo "  image        build the sandbox image cavu-sandbox:<version> with cavu image build, on the runtime and CA bundle the data directory's settings name"
 	@echo "  test-integration  run the tests that need a container runtime, including the checks against the real claude binary in the built image"
-	@echo "  check        build, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan, size"
+	@echo "  check        build-go, build-darwin, fmt-check, vet, lint, test-race, tidy-check, scan, size"
 	@echo "  test-ecosystems   run the tests that prepare a Go, a Node, a Python and a Rust repository (need the internet)"
 
-build:
+web-install:
+	cd web && npm ci
+
+web-build:
+	cd web && npm run build
+
+web-check:
+	cd web && npm run lint && npm test && npm run build
+
+# The web app first, even under make -j.
+build: web-build
+	$(MAKE) build-go
+
+build-go:
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/cavu ./cmd/cavu
 
 build-darwin:
@@ -71,7 +88,7 @@ image: build
 test-integration:
 	go test -tags integration -count=1 -timeout 30m ./...
 
-check: build build-darwin fmt-check vet lint test-race tidy-check scan size
+check: build-go build-darwin fmt-check vet lint test-race tidy-check scan size
 
 test-ecosystems:
 	go test -tags ecosystems -count=1 -timeout 60m ./internal/runner/

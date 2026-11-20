@@ -1,6 +1,7 @@
 #!/bin/sh
 # Fails on an em-dash in a tracked or untracked, unignored Go, Markdown, YAML,
-# TOML, shell or Dockerfile file.
+# TOML, shell or Dockerfile file, or TypeScript, JavaScript, CSS, HTML or JSON
+# file under web/ (node_modules and dist/app are ignored, so never read).
 # The list goes through a temp file so a failing git fails the scan; the canary
 # proves grep can match before an empty result is trusted; byte patterns under
 # LC_ALL=C because macOS grep has no -P.
@@ -13,7 +14,7 @@ trap 'rm -f "$list"' EXIT
 dash=$(printf '\342\200\224')
 printf '\342\200\224\n' | grep -qF "$dash" || { echo "scan: grep cannot match an em-dash"; exit 1; }
 
-git ls-files -z --cached --others --exclude-standard -- '*.go' '*.md' '*.yaml' '*.toml' '*.sh' '*Dockerfile' ':(exclude)docs/superpowers' > "$list" || exit 1
+git ls-files -z --cached --others --exclude-standard -- '*.go' '*.md' '*.yaml' '*.toml' '*.sh' '*Dockerfile' 'web/*.ts' 'web/*.tsx' 'web/*.js' 'web/*.css' 'web/*.html' 'web/*.json' ':(exclude)docs/superpowers' > "$list" || exit 1
 
 bad=$(xargs -0 grep -IlF "$dash" /dev/null < "$list") || :
 if [ -n "$bad" ]; then

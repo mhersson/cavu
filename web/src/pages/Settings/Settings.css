@@ -1,0 +1,35 @@
+.set > section {
+  border-top: 1px solid var(--bg2);
+  padding: 18px 0 22px;
+}
+
+.set h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.frow {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 8px 16px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.frow > label {
+  color: var(--grey2);
+}
+
+.set .sub {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+}
+
+@media (max-width: 720px) {
+  .frow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+}

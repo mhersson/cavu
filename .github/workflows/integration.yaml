@@ -23,6 +23,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # make image builds the web app into the binary.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: make web-install
+
       - name: pull the test image
         run: docker pull docker.io/library/busybox:1.37
 
