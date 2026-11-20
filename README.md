@@ -88,7 +88,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
    - With a subscription, paste the subscription's token into **The subscription's token**: the long-lived token that `claude setup-token` prints when you run it on your own machine.
    - With a key, fill in the **Endpoint address**, the **Auth header** that carries the key, such as `x-api-key`, and **The key**.
 
-   Then name the **Work model**, the Claude model the agent works with, such as `claude-haiku-5-5`, the model CAVU's live checks run. CAVU seals every secret: it stores it encrypted and never shows it again.
+   Then name the **Work model**, the Claude model the agent works with, such as `claude-sonnet-5-5`. CAVU seals every secret: it stores it encrypted and never shows it again.
 
 7. **GitHub.** Paste a personal access token into **A token for the repositories CAVU works on**, or press **Use a GitHub App instead** and give the **App id** and its **Private key**, a `.pem` file. [GitHub access](#github-access) says which permissions each needs, and why an App is recommended. Then fill in the **Name on commits** and **Email on commits**, which CAVU's commits carry.
 
