@@ -28,7 +28,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
   if (res.status >= 400) {
     // A refused sign-in is the sign-in page's to show.
     if (res.status === 401 && !(method === 'POST' && path === '/auth/login')) unauthorized()
-    let message = res.statusText
+    let message = res.statusText || `HTTP ${res.status}`
     try {
       const e = (await res.json()) as { error?: unknown }
       if (typeof e.error === 'string') message = e.error

@@ -49,6 +49,11 @@ test("client throws the server's line", async () => {
   expect(plain).toMatchObject({ status: 502, message: 'Status text' })
 })
 
+test('client names the status when a non-JSON body comes with no status text', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>Bad Gateway</html>', { status: 502 })))
+  await expect(api('GET', '/tasks')).rejects.toMatchObject({ status: 502, message: 'HTTP 502' })
+})
+
 test('a 401 calls the registered handler', async () => {
   const handler = vi.fn()
   onUnauthorized(handler)
