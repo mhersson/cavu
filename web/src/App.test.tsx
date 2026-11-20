@@ -30,7 +30,7 @@ test('the navigation shows the count of tasks that need you', async () => {
     if (needsYou(c)) return json({ tasks: rows(n) })
     if (c.path === '/api/health') return json({ status: 'ok', version: '1.2.3' })
   })
-  await show()
+  await show('/board')
   const link = () => screen.getByRole('link', { name: /needs you/i })
   expect(link()).toHaveTextContent('3')
   expect(calls.filter(needsYou)).toHaveLength(1)
@@ -54,7 +54,7 @@ test('the navigation shows the count of tasks that need you', async () => {
 test('the navigation reads the count again when the stream reconnects', async () => {
   let n = 1
   const calls = fakeServer((c) => (needsYou(c) ? json({ tasks: rows(n) }) : undefined))
-  await show()
+  await show('/board')
   const es = FakeEventSource.all[0]
   act(() => es.open())
   expect(calls.filter(needsYou)).toHaveLength(1)
