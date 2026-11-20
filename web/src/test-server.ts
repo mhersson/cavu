@@ -79,10 +79,11 @@ type PushOptions = {
   permission?: NotificationPermission
   answer?: NotificationPermission
   subscribed?: boolean
+  ready?: boolean
 }
 
-// A browser with Web Push, or with none (supported: false); returns what a test inspects.
-export function fakePush({ supported = true, secure = true, standalone, permission = 'default', answer = 'granted', subscribed = false }: PushOptions = {}) {
+// A browser with Web Push, or with none (supported: false), or whose worker is never ready; returns what a test inspects.
+export function fakePush({ supported = true, secure = true, standalone, permission = 'default', answer = 'granted', subscribed = false, ready = true }: PushOptions = {}) {
   vi.stubGlobal('isSecureContext', secure)
   Reflect.deleteProperty(navigator, 'serviceWorker')
   Reflect.deleteProperty(navigator, 'standalone')
@@ -103,7 +104,7 @@ export function fakePush({ supported = true, secure = true, standalone, permissi
   const register = vi.fn(() => Promise.resolve(registration))
   const requestPermission = vi.fn(() => Promise.resolve(answer))
   if (supported) {
-    Object.defineProperty(navigator, 'serviceWorker', { value: { register, ready: Promise.resolve(registration) }, configurable: true })
+    Object.defineProperty(navigator, 'serviceWorker', { value: { register, ready: ready ? Promise.resolve(registration) : new Promise(() => {}) }, configurable: true })
     vi.stubGlobal('PushManager', class {})
     vi.stubGlobal('Notification', { permission, requestPermission })
   }
