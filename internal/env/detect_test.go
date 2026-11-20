@@ -477,7 +477,7 @@ func TestDetectGolangci(t *testing.T) {
 		},
 		{name: "toml that does not parse", files: map[string]string{".golangci.toml": "version = "}, wantErrHas: ".golangci.toml"},
 		{name: "json that does not parse", files: map[string]string{".golangci.json": "{"}, wantErrHas: ".golangci.json"},
-		{name: "no configuration adds nothing", files: map[string]string{"README": ""}, wantTools: nil},
+		{name: "no configuration adds nothing", files: nil, wantTools: nil},
 	}
 
 	for _, tt := range tests {
@@ -486,6 +486,7 @@ func TestDetectGolangci(t *testing.T) {
 
 			files := map[string][]byte{}
 			for k, v := range tt.files {
+				require.Contains(t, VersionFiles(), k)
 				files[k] = []byte(v)
 			}
 
