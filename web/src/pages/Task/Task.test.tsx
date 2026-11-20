@@ -8,6 +8,7 @@ import { FakeEventSource, fakeServer, json, narrow, type Call } from '../../test
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 const base: Task = {
@@ -322,6 +323,101 @@ test.each([
   const post = calls.findIndex((c) => c.method === 'POST')
   expect(calls.slice(post + 1).some(isTask)).toBe(true)
   expect(reads(calls).length).toBeGreaterThan(before)
+})
+
+// jsdom lays nothing out: here a paragraph takes a line per 60 characters, and the fold shows six lines.
+function layOut() {
+  const line = 20
+  const height = (el: Element) =>
+    line * (el.textContent ?? '').split('\n').reduce((n, p) => n + Math.max(1, Math.ceil(p.length / 60)), 0)
+  vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) {
+    return height(this)
+  })
+  vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (this: Element) {
+    return this.classList.contains('fold') ? Math.min(height(this), 6 * line) : height(this)
+  })
+}
+
+const longBody = Array.from({ length: 12 }, (_, i) => `Step ${i + 1} of what done looks like.`).join('\n')
+const body = () => document.querySelector<HTMLElement>('.task-body p')!
+const hidden = () => body().scrollHeight - body().clientHeight
+const toggle = () => screen.queryAllByRole('button').find((b) => b.getAttribute('aria-controls') === body().id) ?? null
+
+test.each([
+  ['a desktop', false],
+  ['a phone', true],
+])('on %s a started task with a long body shows its first lines and a button that shows it whole and folds it again', async (_, phone) => {
+  layOut()
+  narrow(phone)
+  serve({ ...base, body: longBody })
+  await show()
+  expect(body()).toHaveTextContent('Step 12')
+  expect(hidden()).toBeGreaterThan(0)
+  expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+
+  toggle()!.focus()
+  expect(toggle()).toHaveFocus()
+  fireEvent.click(toggle()!)
+  expect(hidden()).toBe(0)
+  expect(toggle()).toHaveAttribute('aria-expanded', 'true')
+
+  fireEvent.click(toggle()!)
+  expect(hidden()).toBeGreaterThan(0)
+  expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+})
+
+test('a started task folds one long paragraph by the lines it wraps to', async () => {
+  layOut()
+  serve({ ...base, body: 'The footer is cut off on a phone. '.repeat(20) })
+  await show()
+  expect(hidden()).toBeGreaterThan(0)
+  expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+})
+
+test.each([
+  ['a started task with a short body', base],
+  ['a draft with a long body', { ...draft, body: longBody }],
+])('%s shows its whole body and no button for it', async (_, t) => {
+  layOut()
+  serve(t)
+  await show()
+  expect(body()).toHaveTextContent(t.body.split('\n').at(-1)!)
+  expect(hidden()).toBe(0)
+  expect(toggle()).toBeNull()
+  expect(screen.queryAllByRole('button').filter((b) => b.hasAttribute('aria-expanded'))).toEqual([])
+})
+
+test('a body shown whole stays whole while the task changes under the page, and a new visit starts folded', async () => {
+  layOut()
+  let now: Task = { ...base, body: longBody }
+  const calls = serve(now, (c) => (isTask(c) ? json(now) : undefined))
+  await show()
+  fireEvent.click(toggle()!)
+  now = { ...now, status: 'in_review', turns: 30 }
+  const before = reads(calls).length
+  act(() => FakeEventSource.all[0].send(1, { task_id: 7 }))
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  await settle()
+  expect(reads(calls)).toHaveLength(before + 1)
+  expect(hidden()).toBe(0)
+  expect(toggle()).toHaveAttribute('aria-expanded', 'true')
+
+  cleanup()
+  await show()
+  expect(hidden()).toBeGreaterThan(0)
+  expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+})
+
+test('a draft that starts folds its long body', async () => {
+  layOut()
+  const long = { ...draft, body: longBody }
+  serve(long, (c) => (c.method === 'POST' ? json({ ...long, status: 'queued' }) : undefined))
+  await show()
+  expect(toggle()).toBeNull()
+  fireEvent.click(button('Start')!)
+  await settle()
+  expect(hidden()).toBeGreaterThan(0)
+  expect(toggle()).toHaveAttribute('aria-expanded', 'false')
 })
 
 test('a task with no pull request shows no pull request section', async () => {

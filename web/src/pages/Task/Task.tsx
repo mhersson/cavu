@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { api } from '../../api/client.ts'
 import { useStream } from '../../api/stream.ts'
@@ -104,6 +104,40 @@ function Budget({ task }: { task: TaskView }) {
         </>
       )}
     </section>
+  )
+}
+
+// Once a task has started, its run is what the page is for: a body longer than the fold shows its first lines until asked.
+function Body({ text, folds }: { text: string; folds: boolean }) {
+  const id = useId()
+  const ref = useRef<HTMLParagraphElement>(null)
+  const [whole, setWhole] = useState(false)
+  const [cut, setCut] = useState(false)
+  const fold = folds && !whole
+
+  // Measured as rendered, so wrapped lines count, and again when a new width wraps them anew; a pixel is rounding.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || !fold) return
+    const measure = () => setCut(el.scrollHeight > el.clientHeight + 1)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [fold, text])
+
+  return (
+    <div className="task-body">
+      <p id={id} ref={ref} className={fold ? (cut ? 'fold cut' : 'fold') : undefined}>
+        {text}
+      </p>
+      {folds && cut && (
+        <button className="btn link" aria-expanded={whole} aria-controls={id} onClick={() => setWhole(!whole)}>
+          {whole ? 'Show less' : 'Show the whole task'}
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -310,7 +344,7 @@ function Page({ id }: { id: number }) {
           </Field>
         </div>
       ) : (
-        task.body && <p className="task-body">{task.body}</p>
+        task.body && <Body text={task.body} folds={!draft} />
       )}
       <NeedsBox task={task} onTask={(t) => setTask(t)} onPage />
       {!task.needs_you && task.waiting && (
