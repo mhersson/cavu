@@ -11,13 +11,18 @@
   margin-top: 6px;
 }
 
+.status-page .grp span {
+  color: var(--grey1);
+  font-weight: 400;
+}
+
 .status-page .grp .st {
   font-weight: 600;
 }
 
-.status-page .grp span:last-child {
-  color: var(--grey1);
-  font-weight: 400;
+.status-page .sub {
+  margin-bottom: 14px;
+  font-size: 13px;
 }
 
 .status-page .prow {

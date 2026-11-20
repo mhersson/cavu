@@ -21,7 +21,7 @@ export default function Status() {
   return (
     <div className="page status-page">
       <PageHead title="Status" />
-      <p className="sub">{rows ? `${rows.length} open ${rows.length === 1 ? 'task' : 'tasks'}.` : ' '}</p>
+      <p className="sub">{rows ? `${rows.length} open ${rows.length === 1 ? 'task' : 'tasks'}.` : '\u00a0'}</p>
       {groups.map((status) => {
         const here = (rows ?? []).filter((r) => r.status === status)
         if (here.length === 0) return null
