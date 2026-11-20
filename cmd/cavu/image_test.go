@@ -12,27 +12,50 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDefaultBinaryOnLinux(t *testing.T) {
-	self := func() (string, error) { return "/run/cavu", nil }
-
-	got, err := defaultBinary("linux", "", self)
+func TestDefaultBinary(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
-	assert.Equal(t, "/run/cavu", got)
 
-	got, err = defaultBinary("linux", "/x/cavu", self)
-	require.NoError(t, err)
-	assert.Equal(t, "/x/cavu", got)
+	cellar := filepath.Join(tmp, "Cellar", "cavu", "1")
+	require.NoError(t, os.MkdirAll(filepath.Join(cellar, "bin"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(cellar, "libexec"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cellar, "bin", "cavu"), []byte("x"), 0o755))
 
+	link := filepath.Join(tmp, "bin", "cavu")
+	require.NoError(t, os.Symlink(filepath.Join(cellar, "bin", "cavu"), link))
+
+	self := func() (string, error) { return link, nil }
+	linuxBuild := filepath.Join(cellar, "libexec", "cavu-linux")
+
+	// No libexec file yet.
 	_, err = defaultBinary("darwin", "", self)
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), linuxBuild)
 	assert.Contains(t, err.Error(), "--cavu-binary")
+
+	require.NoError(t, os.WriteFile(linuxBuild, []byte("x"), 0o755))
+
+	got, err := defaultBinary("darwin", "", self)
+	require.NoError(t, err)
+	assert.Equal(t, linuxBuild, got)
 
 	got, err = defaultBinary("darwin", "/x/cavu", self)
 	require.NoError(t, err)
 	assert.Equal(t, "/x/cavu", got)
 
-	_, err = defaultBinary("linux", "", func() (string, error) { return "", errors.New("no") })
-	require.Error(t, err)
+	got, err = defaultBinary("linux", "", self)
+	require.NoError(t, err)
+	assert.Equal(t, link, got)
+
+	got, err = defaultBinary("linux", "/x/cavu", self)
+	require.NoError(t, err)
+	assert.Equal(t, "/x/cavu", got)
+
+	for _, goos := range []string{"linux", "darwin"} {
+		_, err = defaultBinary(goos, "", func() (string, error) { return "", errors.New("no") })
+		require.Error(t, err)
+	}
 }
 
 func TestImageVerbRefusesOtherActions(t *testing.T) {
