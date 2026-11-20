@@ -4,8 +4,8 @@ import { pairs, type Edit, type Form } from './edit.ts'
 
 type Props = { project: Project; folded: boolean; onRemove: () => void; edit: Edit | null }
 type Row = [ReactNode, ReactNode]
-// The field a row's value becomes while editing, named as the row is.
-type Field = (label: string, e: Edit) => ReactNode
+// The control a row's value becomes while editing, named as the row is.
+type Control = (label: string, e: Edit) => ReactNode
 type Text = { [K in keyof Form]: Form[K] extends string ? K : never }[keyof Form]
 
 const small = (text: string) => <span className="small">{text}</span>
@@ -39,16 +39,17 @@ function kv(rows: Row[]) {
 }
 
 const input =
-  (key: Text, face = 'in mono'): Field =>
+  (key: Text, face = 'in mono'): Control =>
   (label, e) => <input className={face} aria-label={label} value={e.form[key]} onChange={(v) => e.set(key, v.target.value)} />
 
 // A row per entry, at least one, so an empty or one-line list looks like an input.
-const lines =
-  (key: Text, face = 'in mono'): Field =>
+const textarea =
+  (key: Text, placeholder: string, face = 'in mono'): Control =>
   (label, e) => (
     <textarea
       className={face}
       aria-label={label}
+      placeholder={placeholder}
       rows={Math.max(1, e.form[key].split('\n').length)}
       value={e.form[key]}
       onChange={(v) => e.set(key, v.target.value)}
@@ -56,7 +57,7 @@ const lines =
   )
 
 const cap =
-  (key: string): Field =>
+  (key: string): Control =>
   (label, e) => (
     <input
       className="in"
@@ -69,7 +70,7 @@ const cap =
 
 // The tick sets its one field: the server, not the page, refuses a waiver beside a verify command.
 const tick =
-  (key: 'verify_waived' | 'no_ci', text: string): Field =>
+  (key: 'verify_waived' | 'no_ci', text: string): Control =>
   (_, e) => (
     <label className="inline">
       <input type="checkbox" checked={e.form[key]} onChange={(v) => e.set(key, v.target.checked)} />
@@ -77,7 +78,7 @@ const tick =
     </label>
   )
 
-const credential: Field = (label, e) => (
+const credential: Control = (label, e) => (
   <select className="in" aria-label={label} value={e.form.forge_credential} onChange={(v) => e.set('forge_credential', v.target.value)}>
     <option value="">the default</option>
     {e.credentials.map((c) => (
@@ -94,17 +95,28 @@ function Secrets({ names, e }: { names: string[]; e: Edit }) {
   const put = (i: number, s: Partial<Form['added'][number]>) => e.set('added', added.map((x, j) => (j === i ? { ...x, ...s } : x)))
   return (
     <div className="secrets">
-      {names.map((n) => {
-        const gone = removed.includes(n)
-        return (
-          <div className="secret" key={n}>
-            <code className={gone ? 'gone' : undefined}>{n}</code>
-            <button className="btn" onClick={() => e.set('removed', gone ? removed.filter((x) => x !== n) : [...removed, n])}>
-              {gone ? 'Keep' : 'Remove'}
-            </button>
-          </div>
-        )
-      })}
+      {names.length > 0 ? (
+        <div className="names">
+          {names.map((n) => {
+            const gone = removed.includes(n)
+            return (
+              <span className="secret" key={n}>
+                <code className={gone ? 'gone' : undefined}>{n}</code>
+                <button
+                  className="btn"
+                  aria-label={`${gone ? 'Keep' : 'Remove'} ${n}`}
+                  onClick={() => e.set('removed', gone ? removed.filter((x) => x !== n) : [...removed, n])}
+                >
+                  {gone ? 'Keep' : 'Remove'}
+                </button>
+              </span>
+            )
+          })}
+          {small('set; a value is never shown')}
+        </div>
+      ) : (
+        small('none')
+      )}
       {added.map((s, i) => (
         <div className="pair" key={i}>
           <input className="in mono" aria-label="Secret name" placeholder="NAME" value={s.name} onChange={(v) => put(i, { name: v.target.value })} />
@@ -127,7 +139,7 @@ function Secrets({ names, e }: { names: string[]; e: Edit }) {
 
 // A desktop lays the sections in two columns; a phone folds each.
 export default function Sections({ project: p, folded, onRemove, edit: e }: Props) {
-  const row = (label: string, read: ReactNode, field?: Field): Row => [label, e && field ? field(label, e) : read]
+  const row = (label: string, read: ReactNode, control?: Control): Row => [label, e && control ? control(label, e) : read]
   const limit = (label: string, key: string) => row(label, p.caps[key] || small("the instance's setting"), cap(key))
   const checked = p.check.fault !== '' || p.check.failed_step !== '' || p.check.commit !== ''
   const sections: [string, ReactNode][] = [
@@ -144,14 +156,14 @@ export default function Sections({ project: p, folded, onRemove, edit: e }: Prop
       'Tools',
       kv([
         row('Found by the check', checked ? plain(p.check.tools) : small('not checked yet')),
-        row('Versions set here', list(pairs(p.tool_overrides)), lines('tool_overrides')),
+        row('Versions set here', list(pairs(p.tool_overrides)), textarea('tool_overrides', 'name=version, one a line')),
       ]),
     ],
     [
       'The sandbox',
       kv([
-        row('Hosts it may reach', list(p.egress_hosts, 'the package registries of its languages'), lines('egress_hosts')),
-        row('Environment', list(pairs(p.env)), lines('env')),
+        row('Hosts it may reach', list(p.egress_hosts, 'the package registries of its languages'), textarea('egress_hosts', 'one host a line')),
+        row('Environment', list(pairs(p.env)), textarea('env', 'NAME=value, one a line')),
         [
           'Secrets',
           e ? (
@@ -190,8 +202,8 @@ export default function Sections({ project: p, folded, onRemove, edit: e }: Prop
       kv([
         row('Credential', p.forge_credential ? <code>{p.forge_credential}</code> : 'the default', credential),
         row('Checks', p.no_ci ? 'This repository has no CI.' : 'Watched after every push.', tick('no_ci', 'This repository has no CI')),
-        row('Checks to ignore', plain(p.ignored_checks), lines('ignored_checks', 'in')),
-        row('Review bots', plain(p.review_bots), lines('review_bots', 'in')),
+        row('Checks to ignore', plain(p.ignored_checks), textarea('ignored_checks', 'one check a line', 'in')),
+        row('Review bots', plain(p.review_bots), textarea('review_bots', 'one login a line', 'in')),
       ]),
     ],
     [

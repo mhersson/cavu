@@ -138,8 +138,16 @@
   justify-self: stretch;
 }
 
-.projects-page .secret {
+.projects-page .secrets .names {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+  justify-self: stretch;
+}
+
+.projects-page .secret {
+  display: inline-flex;
   gap: 8px;
   align-items: center;
 }

@@ -44,7 +44,7 @@ export default function Detail({ project, folded, onProject, onRemove }: Props) 
     setSending(false)
     setEdit(null)
     onProject(p)
-    // An edit that cleared the baseline is checked again, as a new project is; a refused request leaves Check to the person.
+    // Saved unable to run, with no baseline and no check asked for, it is checked as a new project is; Check asks again if this fails.
     if (!p.runnable && p.baseline === null && p.check.requested_at === null)
       api<Project>('POST', `/projects/${project.id}/check`).then(onProject, () => {})
   }

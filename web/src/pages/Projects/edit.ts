@@ -48,16 +48,16 @@ export const formOf = (p: Project): Form => ({
 })
 
 // A name may hold spaces and commas, so only a line break separates entries.
-const lines = (text: string) =>
+const listOf = (text: string) =>
   text
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l !== '')
 
 // A map's line is NAME=value, split at the first =.
-const entries = (text: string): Record<string, string> =>
+const mapOf = (text: string): Record<string, string> =>
   Object.fromEntries(
-    lines(text).map((l) => {
+    listOf(text).map((l) => {
       const [k, ...v] = l.split('=')
       return [k, v.join('=')]
     }),
@@ -72,20 +72,20 @@ export function changes(was: Project, f: Form): Record<string, unknown> {
   for (const k of ['repo_url', 'base_branch', 'setup_command', 'verify_command', 'verify_waived', 'forge_credential', 'no_ci'] as const)
     if (f[k] !== was[k]) body[k] = f[k]
   for (const k of ['egress_hosts', 'ignored_checks', 'review_bots'] as const) {
-    const v = lines(f[k])
+    const v = listOf(f[k])
     if (JSON.stringify(v) !== JSON.stringify(was[k])) body[k] = v
   }
   for (const k of ['tool_overrides', 'env'] as const) {
-    const v = entries(f[k])
+    const v = mapOf(f[k])
     if (!sameMap(v, was[k])) body[k] = v
   }
   const merged = {
     switches: Object.fromEntries(Object.entries(f.switches).filter(([k, v]) => v !== was.switches[k])),
     caps: Object.fromEntries(Object.entries(f.caps).filter(([k, v]) => v !== (was.caps[k] ?? ''))),
-    // An added row left empty is no secret; a removed name is sent empty.
+    // A removed name is sent empty, so an added row goes only whole: an empty value would remove the secret.
     secrets: Object.fromEntries([
       ...f.removed.map((n) => [n, '']),
-      ...f.added.filter((s) => s.name || s.value).map((s) => [s.name, s.value]),
+      ...f.added.filter((s) => s.name && s.value).map((s) => [s.name, s.value]),
     ]),
   }
   for (const [k, m] of Object.entries(merged)) if (Object.keys(m).length > 0) body[k] = m

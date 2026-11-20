@@ -501,23 +501,27 @@ describe('editing', () => {
       json(project(1, 'web', { secret_vars: ['NPM_TOKEN', 'API_KEY'] })),
     )
     await show()
+    const secrets = () => screen.getByText('SENTRY_DSN').closest('dd')!
+    const note = secrets().querySelector('.small')!.textContent
     await press('Edit')
-    const secrets = screen.getByText('SENTRY_DSN').closest('dd')!
-    // Remove marks a name, and the mark can be taken back.
-    const [npm, sentry] = within(secrets).getAllByRole('button', { name: 'Remove' })
+    // Editing keeps the read view's note beside the names.
+    expect([...secrets().querySelectorAll('.small')].map((s) => s.textContent)).toEqual([note])
+    // Remove marks a name, and the mark can be taken back; each button names its secret.
+    const npm = within(secrets()).getByRole('button', { name: 'Remove NPM_TOKEN' })
     fireEvent.click(npm)
-    expect(within(secrets).getAllByRole('button', { name: 'Remove' })).toEqual([sentry])
+    expect(npm).toHaveAccessibleName('Keep NPM_TOKEN')
     fireEvent.click(npm)
-    fireEvent.click(sentry)
-    // Two added, one left empty.
-    fireEvent.click(screen.getByRole('button', { name: 'Add a secret' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Add a secret' }))
+    expect(npm).toHaveAccessibleName('Remove NPM_TOKEN')
+    fireEvent.click(within(secrets()).getByRole('button', { name: 'Remove SENTRY_DSN' }))
+    // Three added: one whole, one with a name and no value, one left empty; only the whole one is sent.
+    for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: 'Add a secret' }))
     const names = screen.getAllByLabelText('Secret name')
     const values = screen.getAllByLabelText('Secret value')
-    expect(names).toHaveLength(2)
-    expect(values.map((v) => v.getAttribute('type'))).toEqual(['password', 'password'])
+    expect(names).toHaveLength(3)
+    expect(values.map((v) => v.getAttribute('type'))).toEqual(['password', 'password', 'password'])
     fireEvent.change(names[0], { target: { value: 'API_KEY' } })
     fireEvent.change(values[0], { target: { value } })
+    fireEvent.change(names[1], { target: { value: 'NPM_TOKEN' } })
     await press('Save')
     expect(patches(calls)).toEqual([['/api/projects/1', { secrets: { SENTRY_DSN: '', API_KEY: value } }]])
     expect(editing()).toBe(false)
