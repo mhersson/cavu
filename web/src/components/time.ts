@@ -14,7 +14,14 @@ export function clock(iso: string): string {
   return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + time
 }
 
+// In the steps ago uses: a task that waited in review runs for hours or days.
 export function duration(ms: number): string {
   const s = Math.round(ms / 1000)
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`
+  if (s < 60) return `${s} s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} min ${s % 60} s`
+  const h = Math.floor(m / 60)
+  if (h < 48) return m % 60 ? `${h} h ${m % 60} min` : `${h} h`
+  const d = Math.floor(h / 24)
+  return h % 24 ? `${d} days ${h % 24} h` : `${d} days`
 }

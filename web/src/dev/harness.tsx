@@ -56,7 +56,12 @@ function answer(method: string, url: URL, body: string): Response {
   if (task) {
     const id = Number(task[1])
     if (task[2]) {
-      const events = (EVENTS[id] ?? []).filter((e) => q.get('agent') !== 'false' || e.actor !== 'agent')
+      // after=ID: the events above it, or below it under order=newest
+      const after = Number(q.get('after'))
+      const newest = q.get('order') === 'newest'
+      const events = (EVENTS[id] ?? []).filter(
+        (e) => (q.get('agent') !== 'false' || e.actor !== 'agent') && (!after || (newest ? e.id < after : e.id > after)),
+      )
       return json({ events: page(events, q) })
     }
     return VIEWS[id] ? json(VIEWS[id]) : json({ error: 'not found' }, 404)

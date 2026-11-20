@@ -1,0 +1,165 @@
+.task-page .crumb {
+  color: var(--grey1);
+  font-size: 12.5px;
+  margin-bottom: 2px;
+}
+
+.task-page .task-meta {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  color: var(--grey2);
+  margin: 6px 0 14px;
+  flex-wrap: wrap;
+}
+
+.task-page .task-body {
+  color: var(--grey2);
+  max-width: 74ch;
+  margin: 0 0 18px;
+  white-space: pre-wrap;
+}
+
+.task-page .waitline {
+  border-left: 3px solid var(--bg4);
+  padding: 4px 0 4px 12px;
+  color: var(--grey2);
+  margin: 0 0 18px;
+}
+
+.task-page .refused {
+  color: var(--red);
+  margin: 4px 0;
+}
+
+.task-page .task-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 350px;
+  gap: 34px;
+  align-items: start;
+}
+
+.task-page h2.sec {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 6px 0 10px;
+}
+
+.task-page .small {
+  color: var(--grey2);
+  font-size: 12.5px;
+}
+
+.task-page p.small {
+  margin: 6px 0 0;
+}
+
+.task-page .meter {
+  height: 4px;
+  background: var(--bg2);
+  border-radius: 2px;
+  margin: 3px 0 8px;
+}
+
+.task-page .meter i {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--aqua);
+}
+
+.task-page .usage {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.task-page .usage th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--grey1);
+  padding: 2px 0 2px 8px;
+}
+
+.task-page .usage td {
+  text-align: right;
+  padding: 2px 0 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0;
+}
+
+.task-page .usage th:first-child,
+.task-page .usage td:first-child {
+  text-align: left;
+  padding-left: 0;
+}
+
+.task-page .acc {
+  border-top: 1px solid var(--bg2);
+  padding: 9px 0;
+  margin: 0;
+}
+
+.task-page .acc > summary {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.task-page .acc > section {
+  padding: 8px 0 0;
+  border-top: 0;
+}
+
+.task-page .acc h3 {
+  display: none;
+}
+
+.task-page .acc + h2.sec {
+  border-top: 1px solid var(--bg2);
+  padding-top: 14px;
+  margin-top: 0;
+}
+
+.task-page .acc .kv {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.task-page .acc .kv dt {
+  font-size: 12.5px;
+}
+
+.task-page .acc .kv dd {
+  margin-bottom: 9px;
+}
+
+.task-page .cancel-row {
+  margin: 20px 0 0;
+}
+
+.task-page .cancel-row .btn {
+  width: 100%;
+  padding: 9px;
+}
+
+@media (max-width: 720px) {
+  .task-page .crumb {
+    margin-bottom: 4px;
+  }
+
+  .task-page .task-meta {
+    gap: 12px;
+    font-size: 13px;
+    margin: 4px 0 10px;
+  }
+
+  .task-page .task-body {
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+}
