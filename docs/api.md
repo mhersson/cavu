@@ -23,7 +23,7 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one, or is absent when the route requires it. |
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks, or a credential removal refused because a project names it; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one, or is absent when the route requires it. |
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone. |
@@ -95,6 +95,7 @@ Asks for an environment check, the one `cavu project check` runs, which the serv
               "verify_fix": true, "web_tools": false},
  "caps": {"task_timeout_minutes": "60"},
  "no_ci": false, "ignored_checks": ["lint"], "review_bots": ["copilot[bot]"],
+ "forge_credential": "",
  "runnable": true,
  "baseline": {"commit": "4b825dc", "passed": true, "at": "2030-01-02T03:04:05Z", "output": ""},
  "check": {"requested_at": null, "tools": ["node"], "ignored_tools": [], "failed_step": "",
@@ -119,6 +120,7 @@ A list is `[]` and a map `{}` when empty, never null. These fields are set by a 
 | `no_ci` | `true` when the repository has no CI. |
 | `ignored_checks` | The checks the project ignores, each by its name as GitHub shows it. |
 | `review_bots` | The project's review bots, each by its login as GitHub shows it: a GitHub App's bot is written `name[bot]`, and a name without `[bot]` is a user's account. |
+| `forge_credential` | The named GitHub credential the project's runs and calls use; `""` for the default (`forge_token`, or `forge_app_id` with `forge_app_key`). A name no credential has is refused. |
 | `secrets` | Variable to value, for the setup command. Each value is sealed as the secret `project.<name>.<VAR>` and the variable added to `secret_vars`; an empty value removes both. It is never given back. |
 
 The others are the server's:
@@ -134,26 +136,28 @@ The others are the server's:
 
 ### `GET /api/settings`
 
-Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every settable key's default and every switch's default:
+Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every named GitHub credential, every settable key's default and every switch's default:
 
 ```json
 {"settings": {"endpoint_mode": "subscription", "model_work": "sonnet"},
  "secrets": {"endpoint_credential": true, "forge_token": false, "forge_app_key": false},
+ "forge_credentials": [{"name": "acme-org", "kind": "token"}, {"name": "work-app", "kind": "app", "app_id": 482913}],
  "defaults": {"concurrency": "3", "verify_timeout_minutes": "10", "model_review": "", "...": "..."},
  "switches": {"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true}}
 ```
 
-A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default.
+A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `forge_credentials` lists the named credentials by name, each with its `kind` (`token` or `app`) and, for an App, its `app_id` as a number; it is `[]` when there are none, and a credential's secret is never given or shown as set. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default.
 
 ### `PATCH /api/settings`
 
-Sets settings and instance secrets; either part may be left out:
+Sets settings, instance secrets and named GitHub credentials; any part may be left out:
 
 ```json
-{"settings": {"model_work": "opus", "effort_work": null}, "secrets": {"forge_token": "..."}}
+{"settings": {"model_work": "opus", "effort_work": null}, "secrets": {"forge_token": "..."},
+ "forge_credentials": {"acme-org": {"token": "..."}, "work-app": {"app_id": 482913, "app_key": "..."}, "old": null}}
 ```
 
-A setting's value is a string, null or a JSON object, which is stored as its text; null or `""` unsets the key. A secret is `endpoint_credential`, `forge_token` or `forge_app_key`, sealed at rest; `""` removes it. Every value is checked before anything is written: a key that cannot be set, a value of another kind or one the server would not read, or another secret refuses the whole request with 400. Answers 200 with the settings as `GET` gives them.
+A setting's value is a string, null or a JSON object, which is stored as its text; null or `""` unsets the key. A secret is `endpoint_credential`, `forge_token` or `forge_app_key`, sealed at rest; `""` removes it. A credential's name is 1 to 40 of `a-z`, `0-9` and `-`. An object adds the credential or replaces it whole, and its kind follows from its fields: `token` alone is a token, and `app_id` of 1 or more with `app_key` is an App. `null` removes it, which is refused when no credential has the name or when a project names it, the line naming the projects. Every value is checked before anything is written: a key that cannot be set, a value of another kind or one the server would not read, another secret, or a credential change that is refused (a name outside the rule, an object that is neither a token nor an App id with its key, a removal refused) refuses the whole request with 400. Answers 200 with the settings as `GET` gives them.
 
 ### `GET /api/tasks`
 

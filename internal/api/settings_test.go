@@ -38,6 +38,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 
 	assert.JSONEq(t, `{"settings": {}, "secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false},
+		"forge_credentials": [],
 		"defaults": `+settingDefaults+`, "switches": `+settingSwitches+`}`, settings(t),
 		"a setting a person cannot set is not shown")
 
@@ -47,6 +48,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	want := `{"settings": {"endpoint_mode": "subscription", "model_work": "sonnet", "concurrency": "4",
 		"commit_name": {"b": 2, "a": [1, 2.50]}}, "secrets": {"endpoint_credential": false, "forge_token": true, "forge_app_key": false},
+		"forge_credentials": [],
 		"defaults": ` + settingDefaults + `, "switches": ` + settingSwitches + `}`
 	assert.JSONEq(t, want, body)
 	assert.JSONEq(t, want, settings(t))
@@ -100,6 +102,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	want = `{"settings": {"endpoint_mode": "subscription", "commit_name": {"b": 2, "a": [1, 2.50]}},
 		"secrets": {"endpoint_credential": false, "forge_token": false, "forge_app_key": false},
+		"forge_credentials": [],
 		"defaults": ` + settingDefaults + `, "switches": ` + settingSwitches + `}`
 	assert.JSONEq(t, want, body, "null and an empty value unset a key, and an empty secret removes it")
 	assert.JSONEq(t, want, settings(t))
@@ -208,4 +211,99 @@ func TestDefaultsCoverEverySettableKey(t *testing.T) {
 	defaults, ok := object(t, body)["defaults"].(map[string]any)
 	require.True(t, ok, body)
 	assert.ElementsMatch(t, engine.SettableKeys(), slices.Collect(maps.Keys(defaults)))
+}
+
+func TestCredentialsOverTheAPI(t *testing.T) {
+	const (
+		secret = "sealed-pat-value-1"
+		appKey = "sealed-app-key-material"
+	)
+
+	f := newServer(t)
+
+	credentials := func(t *testing.T) any {
+		t.Helper()
+
+		status, body := f.call(t, "GET /api/settings", "")
+		require.Equal(t, http.StatusOK, status, body)
+
+		return object(t, body)["forge_credentials"]
+	}
+
+	assert.Equal(t, []any{}, credentials(t), "no credential is [] and never null")
+
+	status, body := f.call(t, "PATCH /api/settings", `{"forge_credentials": {"acme-org": {"token": "`+secret+`"},
+		"work-app": {"app_id": 482913, "app_key": "`+appKey+`"}}}`)
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, []any{
+		map[string]any{"name": "acme-org", "kind": "token"},
+		map[string]any{"name": "work-app", "kind": "app", "app_id": float64(482913)},
+	}, object(t, body)["forge_credentials"])
+	assert.Equal(t, object(t, body)["forge_credentials"], credentials(t))
+	assert.NotContains(t, body, secret)
+	assert.NotContains(t, body, appKey)
+
+	status, body = f.call(t, "PATCH /api/settings", `{"forge_credentials": {"acme-org": {"app_id": 7, "app_key": "`+appKey+`"}}}`)
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, []any{
+		map[string]any{"name": "acme-org", "kind": "app", "app_id": float64(7)},
+		map[string]any{"name": "work-app", "kind": "app", "app_id": float64(482913)},
+	}, credentials(t), "a replace is whole and its kind follows its fields")
+
+	status, body = f.call(t, "PATCH /api/settings", `{"forge_credentials": {"work-app": null}}`)
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, []any{map[string]any{"name": "acme-org", "kind": "app", "app_id": float64(7)}}, credentials(t))
+
+	status, body = f.call(t, "POST /api/projects", `{"name": "web", "repo_url": "https://example.com/web.git", "forge_credential": "acme-org"}`)
+	require.Equal(t, http.StatusCreated, status, body)
+
+	status, body = f.call(t, "PATCH /api/settings", `{"forge_credentials": {"acme-org": null}}`)
+	require.Equal(t, http.StatusBadRequest, status, body)
+	assertError(t, body)
+	assert.Contains(t, body, "web", "the line names the project")
+	assert.Len(t, credentials(t), 1, "the credential stays")
+
+	for _, b := range f.bodies {
+		assert.NotContains(t, b, secret)
+		assert.NotContains(t, b, appKey)
+	}
+}
+
+func TestSettingsPatchRefusedWritesNothing(t *testing.T) {
+	f := newServer(t)
+
+	status, body := f.call(t, "PATCH /api/settings", `{"forge_credentials": {"keep": {"token": "t"}}}`)
+	require.Equal(t, http.StatusOK, status, body)
+
+	for _, tc := range []struct{ name, bad string }{
+		{"a bad name", `"Bad_Name": {"token": "t"}`},
+		{"an App id without a key", `"half": {"app_id": 5}`},
+		{"a removal of an unknown name", `"ghost": null`},
+		{"a token and an App key together", `"both": {"token": "t", "app_id": 5, "app_key": "k"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := f.call(t, "PATCH /api/settings", `{"settings": {"model_work": "opus"}, "secrets": {"forge_token": "s"},
+				"forge_credentials": {"fresh": {"token": "t"}, `+tc.bad+`}}`)
+			require.Equal(t, http.StatusBadRequest, status, body)
+			assertError(t, body)
+
+			settings, err := f.store.Settings(t.Context())
+			require.NoError(t, err)
+			assert.NotContains(t, settings, "model_work")
+
+			_, ok, err := f.vault.Get(t.Context(), "forge_token")
+			require.NoError(t, err)
+			assert.False(t, ok)
+
+			cs, err := f.store.Credentials(t.Context())
+			require.NoError(t, err)
+			require.Len(t, cs, 1)
+			assert.Equal(t, "keep", cs[0].Name)
+		})
+	}
+
+	for _, bad := range []string{`{"forge_credentials": {"x": {"kind": "token"}}}`, `{"forge_credentials": {"x": {"app_id": "5", "app_key": "k"}}}`} {
+		status, body := f.call(t, "PATCH /api/settings", bad)
+		assert.Equal(t, http.StatusBadRequest, status, body)
+	}
 }

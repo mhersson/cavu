@@ -27,7 +27,7 @@ func TestProjectsRoundTrip(t *testing.T) {
 	assert.JSONEq(t, fmt.Sprintf(`{"id": 1, "name": "web", "repo_url": "https://example.com/web.git", "base_branch": "main",
 		"setup_command": "", "verify_command": "make test", "verify_waived": false,
 		"tool_overrides": {}, "egress_hosts": [], "env": {}, "secret_vars": [], "switches": %s, "caps": {},
-		"no_ci": false, "ignored_checks": [], "review_bots": [], "runnable": false, "baseline": null,
+		"no_ci": false, "ignored_checks": [], "review_bots": [], "forge_credential": "", "runnable": false, "baseline": null,
 		"check": {"requested_at": null, "tools": [], "ignored_tools": [], "failed_step": "", "verify_suggestion": "",
 			"fault": "", "commit": "", "output": ""}}`, switches), created)
 
@@ -395,4 +395,68 @@ func TestRemoveProject(t *testing.T) {
 		status, _ = f.call(t, "GET /api/projects/1", "")
 		assert.Equal(t, http.StatusOK, status)
 	})
+}
+
+func (f *fixture) addCredential(t *testing.T, name string) {
+	t.Helper()
+
+	status, body := f.call(t, "PATCH /api/settings", `{"forge_credentials": {"`+name+`": {"token": "t"}}}`)
+	require.Equal(t, http.StatusOK, status, body)
+}
+
+func TestProjectTakesACredential(t *testing.T) {
+	f := newServer(t)
+	f.addCredential(t, "acme-org")
+
+	status, body := f.call(t, "POST /api/projects", `{"name": "web", "repo_url": "https://example.com/web.git", "forge_credential": "acme-org"}`)
+	require.Equal(t, http.StatusCreated, status, body)
+	assert.Equal(t, "acme-org", object(t, body)["forge_credential"])
+
+	status, body = f.call(t, "POST /api/projects", `{"name": "api", "repo_url": "https://example.com/api.git"}`)
+	require.Equal(t, http.StatusCreated, status, body)
+	assert.Empty(t, object(t, body)["forge_credential"], "a project made without one has the default")
+
+	_, body = f.call(t, "GET /api/projects/1", "")
+	assert.Equal(t, "acme-org", object(t, body)["forge_credential"])
+
+	_, body = f.call(t, "GET /api/projects", "")
+
+	var list struct {
+		Projects []struct {
+			ForgeCredential string `json:"forge_credential"`
+		}
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &list))
+	require.Len(t, list.Projects, 2)
+	assert.Equal(t, []string{"", "acme-org"}, []string{list.Projects[0].ForgeCredential, list.Projects[1].ForgeCredential}, "the list is by name")
+
+	status, body = f.call(t, "PATCH /api/projects/1", `{"base_branch": "dev"}`)
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, "acme-org", object(t, body)["forge_credential"], "a field left out keeps it")
+
+	status, body = f.call(t, "PATCH /api/projects/1", `{"forge_credential": ""}`)
+	require.Equal(t, http.StatusOK, status, body)
+
+	_, body = f.call(t, "GET /api/projects/1", "")
+	assert.Empty(t, object(t, body)["forge_credential"])
+}
+
+func TestProjectRefusesAnUnknownCredential(t *testing.T) {
+	f := newServer(t)
+	f.addCredential(t, "acme-org")
+
+	status, body := f.call(t, "POST /api/projects", `{"name": "web", "repo_url": "https://example.com/web.git", "forge_credential": "ghost"}`)
+	require.Equal(t, http.StatusBadRequest, status, body)
+	assertError(t, body)
+	assert.Zero(t, f.projects(t), "no project is created")
+
+	status, body = f.call(t, "POST /api/projects", `{"name": "web", "repo_url": "https://example.com/web.git", "forge_credential": "acme-org"}`)
+	require.Equal(t, http.StatusCreated, status, body)
+
+	status, body = f.call(t, "PATCH /api/projects/1", `{"forge_credential": "ghost"}`)
+	require.Equal(t, http.StatusBadRequest, status, body)
+	assertError(t, body)
+
+	_, body = f.call(t, "GET /api/projects/1", "")
+	assert.Equal(t, "acme-org", object(t, body)["forge_credential"], "the project keeps its value")
 }
