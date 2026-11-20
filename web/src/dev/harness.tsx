@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router'
 import '../theme/tokens.css'
 import '../theme/base.css'
 import App from '../App.tsx'
+import { api } from '../api/client.ts'
 import { useLook } from '../theme/theme.ts'
 import type { Look } from '../theme/theme.ts'
 import { EVENTS, HEALTH, PROJECTS, ROWS, SETTINGS, SETUP, VIEWS } from './fixtures.ts'
@@ -94,7 +95,17 @@ function answer(method: string, url: URL, body: string): Response {
   return json({ error: 'not found' }, 404)
 }
 
+// lapsed=1 ends the access a moment after the page loads: every later request is redirected, and one is made, as the next screen's would be.
+let lapsed = false
+if (query.get('lapsed') === '1') {
+  setTimeout(() => {
+    lapsed = true
+    api('GET', '/health').catch(() => {})
+  }, 500)
+}
+
 window.fetch = (input, init) => {
+  if (lapsed) return Promise.resolve(Object.defineProperties(new Response(null), { type: { value: 'opaqueredirect' }, status: { value: 0 } }))
   const url = new URL(String(input), window.location.origin)
   return Promise.resolve(answer(init?.method ?? 'GET', url, String(init?.body ?? '')))
 }

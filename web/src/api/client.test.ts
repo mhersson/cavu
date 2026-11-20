@@ -1,4 +1,5 @@
-import { ApiError, api, onUnauthorized } from './client.ts'
+import { redirected } from '../test-server.ts'
+import { ApiError, api, onRedirect, onUnauthorized } from './client.ts'
 
 function fakeServer(status: number, body?: unknown) {
   const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
@@ -17,6 +18,35 @@ function headersOf(fetchMock: ReturnType<typeof fakeServer>) {
 afterEach(() => {
   vi.unstubAllGlobals()
   onUnauthorized(() => {})
+  onRedirect(() => {})
+})
+
+test('client follows no redirect, on a read or a write', async () => {
+  const read = fakeServer(200, {})
+  await api('GET', '/tasks')
+  expect(read.mock.calls[0][1]?.redirect).toBe('manual')
+
+  const write = fakeServer(200, {})
+  await api('POST', '/tasks', { title: 'x' })
+  expect(write.mock.calls[0][1]?.redirect).toBe('manual')
+})
+
+test('a redirect calls its own handler and the caller gets an error', async () => {
+  const redirect = vi.fn()
+  const unauthorized = vi.fn()
+  onRedirect(redirect)
+  onUnauthorized(unauthorized)
+  vi.stubGlobal('fetch', vi.fn(async () => redirected()))
+  const err = await api('GET', '/tasks').catch((e: unknown) => e)
+  expect(err).toBeInstanceOf(ApiError)
+  expect(err).toMatchObject({ status: 0 })
+  expect(redirect).toHaveBeenCalledTimes(1)
+  expect(unauthorized).not.toHaveBeenCalled()
+
+  fakeServer(401, { error: 'sign in' })
+  await expect(api('GET', '/tasks')).rejects.toMatchObject({ status: 401 })
+  expect(unauthorized).toHaveBeenCalledTimes(1)
+  expect(redirect).toHaveBeenCalledTimes(1)
 })
 
 test('client sends the CSRF header on a write and not on a read', async () => {
