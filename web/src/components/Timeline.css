@@ -101,13 +101,21 @@
   font-size: 13px;
 }
 
-.tl .said p {
-  margin: 0;
-  white-space: pre-wrap;
+.tl .said > ul {
+  margin: 4px 0;
+  padding-left: 18px;
 }
 
-.tl .said ul {
-  margin: 4px 0;
+/* Rendered Markdown sits tighter in the timeline than in a task's body. */
+.tl .md > * + * {
+  margin-top: 4px;
+}
+
+.tl .md > * + :is(h2, h3, h4) {
+  margin-top: 8px;
+}
+
+.tl .md :is(ul, ol) {
   padding-left: 18px;
 }
 

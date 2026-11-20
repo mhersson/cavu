@@ -16,12 +16,7 @@
 .task-page .task-body {
   max-width: 74ch;
   margin: 0 0 18px;
-}
-
-.task-page .task-body p {
   color: var(--grey2);
-  margin: 0;
-  white-space: pre-wrap;
 }
 
 .task-page .task-body .fold {

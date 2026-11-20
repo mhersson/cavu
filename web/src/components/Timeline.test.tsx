@@ -207,13 +207,44 @@ test("the agent's own account is labelled as the agent's", async () => {
   expect(notes).toHaveLength(2)
   notes.forEach((n, i) => expect(n).toHaveAccessibleName(shown[i].querySelector('summary')!.textContent!))
   expect(notes[0]).toHaveTextContent('One line.')
-  expect(notes[0].querySelector('p')!.textContent).toBe('One line.\nAnother line.')
+  expect([...notes[0].querySelector('p')!.childNodes].map((n) => n.nodeName)).toEqual(['#text', 'BR', '#text'])
   expect(within(notes[0]).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
     expect.stringContaining('the footer is global'),
     expect.stringContaining('a.go'),
     expect.stringContaining('b.go'),
   ])
   expect(within(notes[1]).queryAllByRole('listitem')).toHaveLength(0)
+})
+
+test('an agent line renders inline code', () => {
+  const { root } = show([ev(1, 'agent_text', 'agent', {}, 'Read `a.go` and `b.go` first.')])
+  expect([...root.querySelectorAll('.ev code')].map((c) => c.textContent)).toEqual(['a.go', 'b.go'])
+  expect(root.querySelector('.ev')!.textContent).not.toContain('`')
+})
+
+test('verify output stays text', () => {
+  const said = '# FAIL\n- `a.test.ts` **failed**, see https://example.test/log'
+  const { root } = show([verify(1, 'failed', said), ev(2, 'prepare_failed', 'runner', { step: 'setup', output: said }), ev(3, 'stopped', 'engine', {}, said)])
+  expect([...root.querySelectorAll('pre')].map((b) => [b.textContent, b.childElementCount])).toEqual([
+    [said, 0],
+    [said, 0],
+  ])
+  expect(text(root.children[2])).toBe(said)
+  expect(root.querySelector('h2, h3, h4, ul, strong, a, br')).toBeNull()
+})
+
+test("the account's summary is Markdown, and each listed line takes the inline part after its lead", () => {
+  const { root } = show([
+    ev(1, 'session_ended', 'runner', { summary: 'Done:\n\n- `a.go`\n- `b.go`', assumptions: ['`x` is **global**'], where_to_look: ['`c.go`: the check'] }),
+  ])
+  const note = within(root).getByRole('note')
+  expect([...note.firstElementChild!.querySelectorAll('li > code')].map((c) => c.textContent)).toEqual(['a.go', 'b.go'])
+  const lines = [...note.querySelectorAll(':scope > ul > li')]
+  expect(lines.map((li) => [li.firstChild!.nodeType, li.querySelector('code')!.textContent])).toEqual([
+    [Node.TEXT_NODE, 'x'],
+    [Node.TEXT_NODE, 'c.go'],
+  ])
+  expect(lines[0].querySelector('strong')!.textContent).toBe('global')
 })
 
 test('runs are numbered and agent, stop and person rows carry their marks', () => {

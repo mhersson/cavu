@@ -339,7 +339,7 @@ function layOut() {
 }
 
 const longBody = Array.from({ length: 12 }, (_, i) => `Step ${i + 1} of what done looks like.`).join('\n')
-const body = () => document.querySelector<HTMLElement>('.task-body p')!
+const body = () => document.querySelector<HTMLElement>('.task-body > div')!
 const hidden = () => body().scrollHeight - body().clientHeight
 const toggle = () => screen.queryAllByRole('button').find((b) => b.getAttribute('aria-controls') === body().id) ?? null
 
@@ -406,6 +406,20 @@ test('a body shown whole stays whole while the task changes under the page, and 
   await show()
   expect(hidden()).toBeGreaterThan(0)
   expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+})
+
+test('the body renders headings and lists', async () => {
+  serve({ ...base, body: '# Goal\n\nThe footer is cut off.\n\n## Steps\n\n- one\n  - one and a half\n- two\n\n1. first\n2. second' })
+  await show()
+  const shown = document.querySelector<HTMLElement>('.task-body')!
+  expect(within(shown).getAllByRole('heading').map((h) => h.tagName)).toEqual(['H2', 'H3'])
+  const lists = within(shown).getAllByRole('list')
+  expect(lists.map((l) => [l.tagName, l.querySelectorAll(':scope > li').length])).toEqual([
+    ['UL', 2],
+    ['UL', 1],
+    ['OL', 2],
+  ])
+  expect(lists[1].parentElement!.tagName).toBe('LI')
 })
 
 test('a draft that starts folds its long body', async () => {
