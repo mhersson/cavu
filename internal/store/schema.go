@@ -207,8 +207,7 @@ CREATE TABLE push_subscriptions (
 	p256dh     TEXT NOT NULL,
 	auth       TEXT NOT NULL,
 	origin     TEXT NOT NULL,
-	created_at INTEGER NOT NULL,
-	last_ok_at INTEGER
+	created_at INTEGER NOT NULL
 );
 
 CREATE TABLE push_notified (

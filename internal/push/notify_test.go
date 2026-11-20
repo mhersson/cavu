@@ -32,10 +32,6 @@ func TestNotifierSendsEachNeedOnce(t *testing.T) {
 	assert.Len(t, phone.messages(t), 1)
 	assert.Len(t, laptop.messages(t), 1)
 
-	for _, s := range b.subscriptions(t) {
-		assert.NotNil(t, s.LastOKAt, "subscription %d delivered", s.ID)
-	}
-
 	n.Pass(t.Context())
 	assert.Empty(t, phone.messages(t), "notified already")
 	assert.Empty(t, laptop.messages(t), "notified already")

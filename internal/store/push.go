@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 )
@@ -12,7 +11,6 @@ type PushSubscription struct {
 	ID                             int64
 	Endpoint, P256DH, Auth, Origin string
 	CreatedAt                      time.Time
-	LastOKAt                       *time.Time
 }
 
 // Notified is the way a task needed a person, and since when, as last notified.
@@ -36,7 +34,7 @@ func (s *Store) PutPushSubscription(ctx context.Context, sub PushSubscription) (
 
 // PushSubscriptions returns every subscription, ordered by id.
 func (s *Store) PushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, endpoint, p256dh, auth, origin, created_at, last_ok_at FROM push_subscriptions ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, endpoint, p256dh, auth, origin, created_at FROM push_subscriptions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list push subscriptions: %w", err)
 	}
@@ -48,20 +46,13 @@ func (s *Store) PushSubscriptions(ctx context.Context) ([]PushSubscription, erro
 		var (
 			p       PushSubscription
 			created int64
-			lastOK  sql.NullInt64
 		)
 
-		if err := rows.Scan(&p.ID, &p.Endpoint, &p.P256DH, &p.Auth, &p.Origin, &created, &lastOK); err != nil {
+		if err := rows.Scan(&p.ID, &p.Endpoint, &p.P256DH, &p.Auth, &p.Origin, &created); err != nil {
 			return nil, fmt.Errorf("list push subscriptions: %w", err)
 		}
 
 		p.CreatedAt = time.UnixMilli(created)
-
-		if lastOK.Valid {
-			at := time.UnixMilli(lastOK.Int64)
-			p.LastOKAt = &at
-		}
-
 		out = append(out, p)
 	}
 
@@ -76,16 +67,6 @@ func (s *Store) RemovePushSubscription(ctx context.Context, id int64) error {
 	}
 
 	return rowsAffectedOrNotFound(res)
-}
-
-// PushDelivered records that the push service accepted a push for id at at.
-// An unknown id is a no-op: the subscription may be removed while a push is out.
-func (s *Store) PushDelivered(ctx context.Context, id int64, at time.Time) error {
-	if _, err := s.db.ExecContext(ctx, `UPDATE push_subscriptions SET last_ok_at = ? WHERE id = ?`, at.UnixMilli(), id); err != nil {
-		return fmt.Errorf("record push delivered: %w", err)
-	}
-
-	return nil
 }
 
 // PushNotified returns what each task was last notified of, by task id.

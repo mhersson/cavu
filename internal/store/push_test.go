@@ -13,7 +13,7 @@ func TestPushSubscriptions(t *testing.T) {
 
 	s := openTest(t)
 	ctx := context.Background()
-	created, delivered := time.UnixMilli(1_763_650_000_000), time.UnixMilli(1_763_650_060_000)
+	created, later := time.UnixMilli(1_763_650_000_000), time.UnixMilli(1_763_650_060_000)
 
 	phone := PushSubscription{Endpoint: "https://push.example.org/a", P256DH: "k1", Auth: "s1", Origin: "https://cavu.example.org", CreatedAt: created}
 	laptop := PushSubscription{Endpoint: "https://push.example.org/b", P256DH: "k2", Auth: "s2", Origin: "https://cavu.example.org", CreatedAt: created}
@@ -27,26 +27,23 @@ func TestPushSubscriptions(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, phone.ID, laptop.ID)
 
-	require.NoError(t, s.PushDelivered(ctx, phone.ID, delivered))
-
 	again := phone
-	again.P256DH, again.Auth, again.Origin, again.CreatedAt = "k3", "s3", "https://cavu.example.net", delivered
+	again.P256DH, again.Auth, again.Origin, again.CreatedAt = "k3", "s3", "https://cavu.example.net", later
 
 	id, err := s.PutPushSubscription(ctx, again)
 	require.NoError(t, err)
 	require.Equal(t, phone.ID, id, "the same endpoint is the same subscription")
 
-	phone.P256DH, phone.Auth, phone.Origin, phone.LastOKAt = "k3", "s3", "https://cavu.example.net", &delivered
+	phone.P256DH, phone.Auth, phone.Origin = "k3", "s3", "https://cavu.example.net"
 
 	got, err := s.PushSubscriptions(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []PushSubscription{phone, laptop}, got, "new keys and origin, the first creation and the last delivery kept")
+	require.Equal(t, []PushSubscription{phone, laptop}, got, "new keys and origin, the first creation kept")
 
 	require.NoError(t, s.RemovePushSubscription(ctx, laptop.ID))
 	require.ErrorIs(t, s.RemovePushSubscription(ctx, laptop.ID), ErrNotFound)
-	require.NoError(t, s.PushDelivered(ctx, laptop.ID, delivered), "a delivery to a subscription removed meanwhile")
 
-	tablet := PushSubscription{Endpoint: "https://push.example.org/c", P256DH: "k4", Auth: "s4", Origin: "https://cavu.example.org", CreatedAt: delivered}
+	tablet := PushSubscription{Endpoint: "https://push.example.org/c", P256DH: "k4", Auth: "s4", Origin: "https://cavu.example.org", CreatedAt: later}
 
 	tablet.ID, err = s.PutPushSubscription(ctx, tablet)
 	require.NoError(t, err)

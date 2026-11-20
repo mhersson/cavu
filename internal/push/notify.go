@@ -112,10 +112,6 @@ func (n *Notifier) send(ctx context.Context, r engine.Row, subs []store.PushSubs
 			continue
 		case err != nil:
 			n.report(ctx, fmt.Errorf("task %d: push subscription %d: %w", r.ID, sub.ID, err))
-		default:
-			if err := n.Store.PushDelivered(ctx, sub.ID, time.Now()); err != nil {
-				n.report(ctx, fmt.Errorf("push subscription %d: %w", sub.ID, err))
-			}
 		}
 
 		kept = append(kept, sub)
