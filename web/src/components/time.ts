@@ -6,9 +6,12 @@ export function ago(iso: string): string {
   return `${Math.floor(h / 24)} days ago`
 }
 
-// The local time as hours and minutes, on a 24 hour clock in every locale.
+// The local time as hours and minutes, on a 24 hour clock in every locale, after the day when it is not today.
 export function clock(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+  const d = new Date(iso)
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+  if (d.toDateString() === new Date().toDateString()) return time
+  return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + time
 }
 
 export function duration(ms: number): string {
