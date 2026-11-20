@@ -26,7 +26,7 @@ export const PROJECTS: Project[] = [
 export const SETTINGS: Settings = { settings: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: 'cavu', commit_email: 'cavu@example.com' },
   secrets: { endpoint_credential: true, forge_token: true, forge_app_key: false },
   defaults: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: '', commit_email: '' },
-  switches: SWITCHES };
+  switches: SWITCHES, forge_credentials: [] };
 
 // GET /api/tasks, oldest first
 export const ROWS: Row[] = [
