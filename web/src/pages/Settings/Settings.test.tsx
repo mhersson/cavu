@@ -265,7 +265,7 @@ test('a key is sent once and never shown', async () => {
   expect(document.body.innerHTML).not.toContain('MIIEpAIBAAKCAQEA')
 })
 
-test('a credential is sent only with its secret', async () => {
+test('a credential is sent only with its secret, and an App with its id', async () => {
   const calls = open(saved())
   const user = userEvent.setup()
   const gh = within(await section('GitHub'))
@@ -276,6 +276,7 @@ test('a credential is sent only with its secret', async () => {
   await user.type(gh.getByLabelText('Token'), 'ghp-new')
   expect(gh.getByRole('button', { name: 'Add' })).toBeEnabled()
   await user.click(gh.getByRole('radio', { name: 'A GitHub App' }))
+  await user.type(gh.getByLabelText('App id'), '9')
   expect(gh.getByRole('button', { name: 'Add' })).toBeDisabled()
   await user.upload(gh.getByLabelText('Private key'), pem())
   expect(gh.getByRole('button', { name: 'Add' })).toBeEnabled()
@@ -286,9 +287,9 @@ test('a credential is sent only with its secret', async () => {
 
   await user.click(within(gh.getAllByRole('row')[0]).getByRole('button', { name: 'Set' }))
   await user.click(gh.getByRole('radio', { name: 'A GitHub App' }))
-  await user.type(gh.getByLabelText('App id'), '8')
-  expect(send('Replace')).toBeDisabled()
   await user.upload(gh.getByLabelText('Private key'), pem())
+  expect(send('Replace')).toBeDisabled()
+  await user.type(gh.getByLabelText('App id'), '8')
   expect(send('Replace')).toBeEnabled()
   expect(patches(calls)).toEqual([])
 })

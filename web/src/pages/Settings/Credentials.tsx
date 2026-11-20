@@ -143,7 +143,7 @@ export default function Credentials({ saved, onSaved }: { saved: Saved; onSaved:
               </div>
             </>
           )}
-          <button className="btn primary" disabled={form.kind === 'token' ? !form.token : !form.chosen} onClick={() => void submit(form)}>
+          <button className="btn primary" disabled={form.kind === 'token' ? !form.token : !form.chosen || !form.appId} onClick={() => void submit(form)}>
             {form.add ? 'Add' : 'Replace'}
           </button>{' '}
           <button className="btn" onClick={() => setForm(null)}>
