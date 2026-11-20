@@ -1,3 +1,27 @@
+.set-page .col {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.set-grid {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 44px;
+  align-items: start;
+}
+
+.set-nav {
+  position: sticky;
+  top: 12px;
+  padding-top: 18px;
+}
+
+.set-nav a {
+  display: block;
+  padding: 4px 0;
+  color: var(--grey2);
+}
+
 .set > section {
   border-top: 1px solid var(--bg2);
   padding: 18px 0 22px;
@@ -21,6 +45,79 @@
   color: var(--grey2);
 }
 
+.frow.off {
+  opacity: 0.55;
+}
+
+.set-page .pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px;
+  gap: 8px;
+}
+
+.set-page .pair.small {
+  color: var(--grey1);
+  font-size: 12px;
+}
+
+.set-page .secret {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.set .btn.save {
+  margin-top: 6px;
+}
+
+.set-page .in {
+  background: var(--bg0);
+  color: var(--fg);
+  border: 1px solid var(--bg3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.set-page .in::placeholder {
+  color: var(--grey0);
+}
+
+.set-page .in.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.set-page .acc {
+  border-top: 1px solid var(--bg2);
+  padding: 9px 0;
+  margin: 0;
+}
+
+.set-page .acc > summary {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.set-page .acc > section {
+  padding-top: 8px;
+}
+
+.set-page .note {
+  color: var(--grey2);
+  font-size: 13px;
+  margin: 6px 0 0;
+}
+
+.set-page .note.err {
+  color: var(--red);
+}
+
 .set .sub {
   margin: 4px 0 0;
   font-size: 12.5px;
@@ -31,5 +128,9 @@
     grid-template-columns: minmax(0, 1fr);
     gap: 4px;
     margin-bottom: 12px;
+  }
+
+  .set-page .pair {
+    grid-template-columns: minmax(0, 1fr) 96px;
   }
 }
