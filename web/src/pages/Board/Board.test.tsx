@@ -143,3 +143,12 @@ test('a wait is shown with the time it lasts until', async () => {
   expect(item).toHaveTextContent('the wait as served')
   expect(item).toHaveTextContent(clock(until))
 })
+
+test('a full finished column says it shows the newest', async () => {
+  const done = Array.from({ length: 30 }, (_, i) => row(i + 1, 'done'))
+  serve({ tasks: [...done, row(31, 'cancelled'), row(32, 'cancelled')] })
+  await show('/board?finished=1')
+  expect(within(column('done')).getByRole('heading')).toHaveTextContent('newest 30')
+  expect(within(column('cancelled')).getByRole('heading')).not.toHaveTextContent('newest')
+  expect(within(column('cancelled')).getByRole('heading')).toHaveTextContent('2')
+})

@@ -82,11 +82,13 @@ function Columns({ finished, project }: { finished: boolean; project: string }) 
       <div className="board" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
         {columns.map((status) => {
           const here = shown.filter((r) => r.status === status)
+          // A finished column at its limit is the newest of more, so its count is not a total.
+          const count = !open.includes(status) && here.length === finishedLimit ? `newest ${finishedLimit}` : here.length
           return (
             <section className="bcol" key={status} aria-label={status}>
               <h2>
                 <StatusMark status={status} />
-                <span className="n">{rows && here.length}</span>
+                <span className="n">{rows && count}</span>
               </h2>
               {here.length === 0 && rows && <div className="none">None</div>}
               {here.map((r) => (
