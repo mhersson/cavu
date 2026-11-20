@@ -36,6 +36,10 @@ export class FakeEventSource {
 export const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
+// What fetch resolves with for a redirect it was told not to follow; no Response can be made with this type and status.
+export const redirected = () =>
+  Object.defineProperties(new Response(null), { type: { value: 'opaqueredirect' }, status: { value: 0 } })
+
 export const rows = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: i + 1, needs_you: true }))
 

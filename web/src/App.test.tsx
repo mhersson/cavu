@@ -1,9 +1,9 @@
 import { useEffect } from 'react'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router'
 import App from './App.tsx'
-import { FakeEventSource, fakePush, fakeServer, json, narrow, rows } from './test-server.ts'
+import { FakeEventSource, fakePush, fakeServer, json, narrow, redirected, rows } from './test-server.ts'
 
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => {
@@ -137,6 +137,7 @@ test('a 401 opens sign-in and returns to the page', async () => {
   await show('/board?x=1')
   expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: /board/i })).toBeNull()
+  expect(screen.queryByRole('alert')).toBeNull()
 
   const user = userEvent.setup()
   await user.type(screen.getByRole('textbox'), 'ada')
@@ -145,6 +146,39 @@ test('a 401 opens sign-in and returns to the page', async () => {
   expect(await screen.findByRole('link', { name: /board/i })).toHaveAttribute('aria-current', 'page')
   expect(password()).toBeNull()
   expect(calls.at(-1)?.path).not.toBe('/api/auth/login')
+})
+
+test('a redirect to another origin asks for a reload', async () => {
+  for (const phone of [false, true]) {
+    let lapsed = true
+    const calls = fakeServer((c) => (lapsed ? redirected() : needsYou(c) ? json({ tasks: [] }) : undefined))
+    narrow(phone)
+    const view = await show('/board')
+    const notice = screen.getByRole('alert')
+    expect(within(notice).getAllByRole('button')).toHaveLength(1)
+    expect(within(notice).getByRole('button', { name: 'Reload' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument()
+
+    lapsed = false
+    const before = calls.filter(needsYou).length
+    const es = FakeEventSource.all[0]
+    act(() => es.open())
+    act(() => es.fail())
+    act(() => es.open())
+    await act(() => vi.advanceTimersByTimeAsync(0))
+    expect(calls.filter(needsYou).length).toBeGreaterThan(before)
+    expect(screen.getByRole('alert')).toBe(notice)
+    view.unmount()
+  }
+})
+
+test('a network failure shows no notice', async () => {
+  vi.stubGlobal('EventSource', FakeEventSource)
+  const failing = vi.fn(() => Promise.reject(new TypeError('Failed to fetch')))
+  vi.stubGlobal('fetch', failing)
+  await show('/board')
+  expect(failing).toHaveBeenCalled()
+  expect(screen.queryByRole('alert')).toBeNull()
 })
 
 test('sign-out ends the session', async () => {

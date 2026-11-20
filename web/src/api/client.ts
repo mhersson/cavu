@@ -8,10 +8,16 @@ export class ApiError extends Error {
 }
 
 let unauthorized: () => void = () => {}
+let redirected: () => void = () => {}
 
 // One handler, replaced by a later call.
 export function onUnauthorized(handler: () => void) {
   unauthorized = handler
+}
+
+// One handler, replaced by a later call.
+export function onRedirect(handler: () => void) {
+  redirected = handler
 }
 
 export async function api<T>(method: string, path: string, body?: unknown, options: { keepalive?: boolean } = {}): Promise<T> {
@@ -22,9 +28,15 @@ export async function api<T>(method: string, path: string, body?: unknown, optio
     method,
     headers,
     credentials: 'same-origin',
+    // With the default follow, the page's policy refuses a redirect to another origin and fetch fails as if offline.
+    redirect: 'manual',
     keepalive: options.keepalive,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
+  if (res.type === 'opaqueredirect') {
+    redirected()
+    throw new ApiError(0, 'Access to this page has ended. Reload to sign in again.')
+  }
   if (res.status === 204) return undefined as T
   if (res.status >= 400) {
     // A refused sign-in is the sign-in page's to show.

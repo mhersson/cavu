@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
-import { api, onUnauthorized } from './api/client.ts'
+import { api, onRedirect, onUnauthorized } from './api/client.ts'
 import { useEvents, useStream } from './api/stream.ts'
 import type { Project, Row } from './api/types.ts'
+import AccessEnded from './components/AccessEnded.tsx'
 import Nav from './components/Nav.tsx'
 import PhoneTabs from './components/PhoneTabs.tsx'
 import { useNarrow } from './components/useNarrow.ts'
@@ -71,23 +72,29 @@ export default function App() {
       if (pathname !== '/login') navigate('/login', { replace: true, state: { from: pathname + search } })
     })
   }, [navigate])
+  // The API never redirects, so a redirect is taken as access to the page having ended; only a reload clears it.
+  const [ended, setEnded] = useState(false)
+  useEffect(() => onRedirect(() => setEnded(true)), [])
 
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/setup" element={<Setup />} />
-      <Route element={<Frame />}>
-        <Route path="/" element={<NeedsYou />} />
-        <Route path="/tasks/:id" element={<Task />} />
-        <Route path="/board" element={<Board />} />
-        <Route path="/projects" element={<Projects />} />
-        <Route path="/projects/:name" element={<Projects />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/new" element={<NewTask />} />
-        <Route path="/status" element={<Status />} />
-        <Route path="/more" element={<More />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <>
+      {ended && <AccessEnded />}
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/setup" element={<Setup />} />
+        <Route element={<Frame />}>
+          <Route path="/" element={<NeedsYou />} />
+          <Route path="/tasks/:id" element={<Task />} />
+          <Route path="/board" element={<Board />} />
+          <Route path="/projects" element={<Projects />} />
+          <Route path="/projects/:name" element={<Projects />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/new" element={<NewTask />} />
+          <Route path="/status" element={<Status />} />
+          <Route path="/more" element={<More />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   )
 }
