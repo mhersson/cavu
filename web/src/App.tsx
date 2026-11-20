@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { api, onUnauthorized } from './api/client.ts'
-import { useEvents } from './api/stream.ts'
+import { useEvents, useStream } from './api/stream.ts'
 import type { Row } from './api/types.ts'
 import Nav from './components/Nav.tsx'
 import PhoneTabs from './components/PhoneTabs.tsx'
@@ -19,38 +19,19 @@ import Status from './pages/Status/Status.tsx'
 import Task from './pages/Task/Task.tsx'
 import './App.css'
 
-const readGap = 2000
-
 function Frame() {
   const narrow = useNarrow()
   const version = useVersion()
   const [count, setCount] = useState(0)
-  const lastRead = useRef(0)
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const read = useCallback(() => {
-    lastRead.current = Date.now()
     api<{ tasks: Row[] }>('GET', '/tasks?needs_you=true')
       .then((r) => setCount(r.tasks.length))
       .catch(() => {}) // the next event or reconnect reads again
   }, [])
 
-  // A burst of events leads to one read.
-  const onEvent = useCallback(() => {
-    if (timer.current !== undefined) return
-    const wait = Math.max(0, lastRead.current + readGap - Date.now())
-    timer.current = setTimeout(() => {
-      timer.current = undefined
-      read()
-    }, wait)
-  }, [read])
-
-  useEffect(() => {
-    read()
-    return () => clearTimeout(timer.current)
-  }, [read])
-
-  const { live } = useEvents({ onEvent, onReconnect: read })
+  const { live } = useEvents()
+  useStream(read)
 
   return (
     <div className="frame">

@@ -24,31 +24,33 @@ export const PROJECTS: Project[] = [
 ];
 // GET /api/settings: only the keys that are set, and whether each secret is
 export const SETTINGS: Settings = { settings: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: 'cavu', commit_email: 'cavu@example.com' },
-  secrets: { endpoint_credential: true, forge_token: true, forge_app_key: false } };
+  secrets: { endpoint_credential: true, forge_token: true, forge_app_key: false },
+  defaults: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: '', commit_email: '' },
+  switches: SWITCHES };
 
 // GET /api/tasks, oldest first
 export const ROWS: Row[] = [
-  { id: 29, project: 'homelander', title: 'Try the new router', status: 'cancelled', needs_you: false, stop_reason: 'cancelled', waiting: '', pull_request_ready: false, created_at: '2026-11-18T09:12:00Z' },
-  { id: 30, project: 'cavu', title: 'Print the view of a task', status: 'done', needs_you: false, stop_reason: '', waiting: '', pull_request_ready: false, created_at: '2026-11-18T11:40:00Z' },
-  { id: 31, project: 'cavu', title: 'Check the image against the binary', status: 'done', needs_you: false, stop_reason: '', waiting: '', pull_request_ready: false, created_at: '2026-11-18T15:03:00Z' },
-  { id: 32, project: 'homelander', title: 'Sort the board by age', status: 'done', needs_you: false, stop_reason: '', waiting: '', pull_request_ready: false, created_at: '2026-11-19T08:30:00Z' },
-  { id: 33, project: 'homelander', title: "Rename the settings page's sections", status: 'in_review', needs_you: true, stop_reason: '', waiting: '', pull_request_ready: false, created_at: '2026-11-19T13:05:00Z' },
-  { id: 35, project: 'cavu', title: "Tell a rate limit's reset in local time", status: 'blocked', needs_you: true, stop_reason: 'ci_failed', waiting: 'The task is stopped until a person acts; its pull request is watched for a merge or a close.', pull_request_ready: false, created_at: '2026-11-19T14:20:00Z' },
-  { id: 36, project: 'homelander', title: 'Bump the Node toolchain to 24', status: 'blocked', needs_you: true, stop_reason: 'verify_failed', waiting: '', pull_request_ready: false, created_at: '2026-11-19T15:11:00Z' },
-  { id: 38, project: 'cavu', title: "Show the image's Claude Code version in the doctor", status: 'in_review', needs_you: true, stop_reason: '', waiting: 'The pull request waits for a person to merge it.', pull_request_ready: true, created_at: '2026-11-19T16:02:00Z' },
-  { id: 39, project: 'homelander', title: 'Add a health badge to the README', status: 'in_review', needs_you: false, stop_reason: '', waiting: "The pull request's checks are running.", pull_request_ready: false, created_at: '2026-11-19T16:30:00Z' },
-  { id: 40, project: 'homelander', title: 'Split the router into one file per page', status: 'blocked', needs_you: false, stop_reason: 'usage_limit', waiting: 'The usage limit has not reset yet.', pull_request_ready: false, created_at: '2026-11-19T16:44:00Z' },
-  { id: 41, project: 'homelander', title: 'Add a footer with the build version', status: 'blocked', needs_you: true, stop_reason: 'question', waiting: '', pull_request_ready: false, created_at: '2026-11-19T17:02:00Z' },
-  { id: 42, project: 'cavu', title: "Serve the web app's files from the binary", status: 'running', needs_you: false, stop_reason: '', waiting: '', pull_request_ready: false, created_at: '2026-11-19T19:21:00Z' },
-  { id: 43, project: 'cavu', title: 'Add a login page', status: 'queued', needs_you: false, stop_reason: '', waiting: 'Task 42, which this task depends on, is not done.', pull_request_ready: false, created_at: '2026-11-19T19:22:00Z' },
-  { id: 44, project: 'cavu', title: 'Write the web app into the README', status: 'draft', needs_you: false, stop_reason: '', waiting: '', pull_request_ready: false, created_at: '2026-11-19T19:30:00Z' },
+  { id: 29, project: 'homelander', title: 'Try the new router', status: 'cancelled', needs_you: false, needs: '', needs_you_since: null, stop_reason: 'cancelled', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-18T09:12:00Z' },
+  { id: 30, project: 'cavu', title: 'Print the view of a task', status: 'done', needs_you: false, needs: '', needs_you_since: null, stop_reason: '', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-18T11:40:00Z' },
+  { id: 31, project: 'cavu', title: 'Check the image against the binary', status: 'done', needs_you: false, needs: '', needs_you_since: null, stop_reason: '', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-18T15:03:00Z' },
+  { id: 32, project: 'homelander', title: 'Sort the board by age', status: 'done', needs_you: false, needs: '', needs_you_since: null, stop_reason: '', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-19T08:30:00Z' },
+  { id: 33, project: 'homelander', title: "Rename the settings page's sections", status: 'in_review', needs_you: true, needs: 'take', needs_you_since: '2026-11-19T13:41:00Z', stop_reason: '', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-19T13:05:00Z' },
+  { id: 35, project: 'cavu', title: "Tell a rate limit's reset in local time", status: 'blocked', needs_you: true, needs: 'retry', needs_you_since: '2026-11-19T15:38:00Z', stop_reason: 'ci_failed', waiting: 'The task is stopped until a person acts; its pull request is watched for a merge or a close.', waiting_until: null, pull_request_ready: false, created_at: '2026-11-19T14:20:00Z' },
+  { id: 36, project: 'homelander', title: 'Bump the Node toolchain to 24', status: 'blocked', needs_you: true, needs: 'retry', needs_you_since: '2026-11-19T15:52:00Z', stop_reason: 'verify_failed', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-19T15:11:00Z' },
+  { id: 38, project: 'cavu', title: "Show the image's Claude Code version in the doctor", status: 'in_review', needs_you: true, needs: 'review', needs_you_since: '2026-11-19T16:41:00Z', stop_reason: '', waiting: 'The pull request waits for a person to merge it.', waiting_until: null, pull_request_ready: true, created_at: '2026-11-19T16:02:00Z' },
+  { id: 39, project: 'homelander', title: 'Add a health badge to the README', status: 'in_review', needs_you: false, needs: '', needs_you_since: null, stop_reason: '', waiting: "The pull request's checks are running.", waiting_until: '2026-11-19T21:31:00Z', pull_request_ready: false, created_at: '2026-11-19T16:30:00Z' },
+  { id: 40, project: 'homelander', title: 'Split the router into one file per page', status: 'blocked', needs_you: false, needs: '', needs_you_since: null, stop_reason: 'usage_limit', waiting: 'The usage limit has not reset yet.', waiting_until: '2026-11-19T22:10:00Z', pull_request_ready: false, created_at: '2026-11-19T16:44:00Z' },
+  { id: 41, project: 'homelander', title: 'Add a footer with the build version', status: 'blocked', needs_you: true, needs: 'answer', needs_you_since: '2026-11-19T17:05:00Z', stop_reason: 'question', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-19T17:02:00Z' },
+  { id: 42, project: 'cavu', title: "Serve the web app's files from the binary", status: 'running', needs_you: false, needs: '', needs_you_since: null, stop_reason: '', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-19T19:21:00Z' },
+  { id: 43, project: 'cavu', title: 'Add a login page', status: 'queued', needs_you: false, needs: '', needs_you_since: null, stop_reason: '', waiting: 'Task 42, which this task depends on, is not done.', waiting_until: null, pull_request_ready: false, created_at: '2026-11-19T19:22:00Z' },
+  { id: 44, project: 'cavu', title: 'Write the web app into the README', status: 'draft', needs_you: false, needs: '', needs_you_since: null, stop_reason: '', waiting: '', waiting_until: null, pull_request_ready: false, created_at: '2026-11-19T19:30:00Z' },
 ];
 
 const usage = (model: string, input: number, output: number, cache_read: number, cache_write: number, cost: number): Usage => ({ source: 'agent', model, input, output, cache_read, cache_write, cost_estimate_usd: cost });
 const base = (id: number, more: Partial<Task>): Task => {
   const r = ROWS.find((x) => x.id === id)!
-  return { id, project: r.project, title: r.title, body: '', requester: 'api', created_at: r.created_at, status: r.status, needs_you: r.needs_you,
-    waiting: r.waiting, waiting_until: null, dependencies: [], stop: null, questions: [], review: null, pull_request: null, change: null,
+  return { id, project: r.project, title: r.title, body: '', requester: 'api', created_at: r.created_at, status: r.status, needs_you: r.needs_you, needs: r.needs, needs_you_since: r.needs_you_since,
+    waiting: r.waiting, waiting_until: r.waiting_until, dependencies: [], stop: null, questions: [], review: null, pull_request: null, change: null,
     turns: 0, duration_ms: 0, cost_estimate_usd: 0, cost_missing_sessions: 0, usage: [], budget: { turns: 0, max_turns: 1000, minutes: 0, max_minutes: 300 } , ...more }
 }
 
@@ -56,7 +58,7 @@ const base = (id: number, more: Partial<Task>): Task => {
 export const VIEWS: Record<number, Task> = {
   33: base(33, {
     body: 'Group the settings under "Model", "GitHub" and "Limits", in that order.', requester: 'cli',
-    change: { head_commit: '51f0c2a9d77e41b0a6c3', files_changed: 3, diff_stat: [' web/src/pages/Settings.tsx      | 64 ++++++++++++-----------', ' web/src/pages/Settings.test.tsx | 21 +++++--', ' web/src/i18n/en.json            |  9 ++-', ' 3 files changed, 55 insertions(+), 39 deletions(-)'].join('\n'), flagged: { workflows: [], instructions: [], large: [] } },
+    change: { head_commit: '51f0c2a9d77e41b0a6c3', files_changed: 3, diff_stat: [' web/src/pages/Settings.tsx      | 64 ++++++++++++-----------', ' web/src/pages/Settings.test.tsx | 21 +++++--', ' web/src/i18n/en.json            |  9 ++-', ' 3 files changed, 55 insertions(+), 39 deletions(-)'], flagged: { workflows: [], instructions: [], large: [] } },
     review: { rounds: 0, failed: '', open: [], minor: [] },
     turns: 27, duration_ms: 548000, cost_estimate_usd: 0.61, usage: [usage('claude-sonnet-5-5', 30100, 15800, 702000, 61000, 0.61)], budget: { turns: 27, max_turns: 1000, minutes: 8, max_minutes: 300 },
   }),
@@ -64,7 +66,7 @@ export const VIEWS: Record<number, Task> = {
     body: 'The stop for a usage limit prints the reset in UTC. Print it in the server\'s local time, as the wait line does.',
     stop: { reason: 'ci_failed', explanation: 'Checks failed on pull request https://github.com/mhersson/cavu/pull/56: go-checks.', action: 'retry', resets_at: null },
     pull_request: { number: 56, url: 'https://github.com/mhersson/cavu/pull/56', branch: 'cavu/tell-a-rate-limits-reset-in-local-time', head: '7d02b1e4c9a8f3306e15', state: 'open', checks: 'failed', failed_checks: ['go-checks'], ready: false },
-    change: { head_commit: '7d02b1e4c9a8f3306e15', files_changed: 2, diff_stat: [' internal/engine/tell.go      | 12 +++---', ' internal/engine/tell_test.go | 30 ++++++++++', ' 2 files changed, 36 insertions(+), 6 deletions(-)'].join('\n'), flagged: { workflows: [], instructions: [], large: [] } },
+    change: { head_commit: '7d02b1e4c9a8f3306e15', files_changed: 2, diff_stat: [' internal/engine/tell.go      | 12 +++---', ' internal/engine/tell_test.go | 30 ++++++++++', ' 2 files changed, 36 insertions(+), 6 deletions(-)'], flagged: { workflows: [], instructions: [], large: [] } },
     review: { rounds: 0, failed: '', open: [], minor: [] },
     turns: 71, duration_ms: 4680000, cost_estimate_usd: 2.07, usage: [usage('claude-sonnet-5-5', 88000, 51200, 2410000, 190000, 2.07)], budget: { turns: 71, max_turns: 1000, minutes: 31, max_minutes: 300 },
   }),
@@ -77,7 +79,7 @@ export const VIEWS: Record<number, Task> = {
     body: 'The doctor prints the Claude Code version the binary pins. Make it also read the version the image was built with, and say when the two differ.',
     waiting: 'The pull request waits for a person to merge it.', dependencies: [{ id: 31, status: 'done' }],
     pull_request: { number: 57, url: 'https://github.com/mhersson/cavu/pull/57', branch: 'cavu/show-the-images-claude-code-version-in-the-doctor', head: '9c1e44d07ab2f1e05b38', state: 'open', checks: 'passed', failed_checks: [], ready: true },
-    change: { head_commit: '9c1e44d07ab2f1e05b38', files_changed: 6, diff_stat: [' .github/workflows/ci.yaml      |  2 +-', ' README.md                      |  3 +', ' cmd/cavu/doctor.go             | 41 +++++++++++---', ' docs/cli.md                    |  6 +-', ' internal/sandbox/image.go      | 18 ++++++', ' internal/sandbox/image_test.go | 52 +++++++++++++++++', ' 6 files changed, 108 insertions(+), 14 deletions(-)'].join('\n'), flagged: { workflows: ['.github/workflows/ci.yaml'], instructions: [], large: [] } },
+    change: { head_commit: '9c1e44d07ab2f1e05b38', files_changed: 6, diff_stat: [' .github/workflows/ci.yaml      |  2 +-', ' README.md                      |  3 +', ' cmd/cavu/doctor.go             | 41 +++++++++++---', ' docs/cli.md                    |  6 +-', ' internal/sandbox/image.go      | 18 ++++++', ' internal/sandbox/image_test.go | 52 +++++++++++++++++', ' 6 files changed, 108 insertions(+), 14 deletions(-)'], flagged: { workflows: ['.github/workflows/ci.yaml'], instructions: [], large: [] } },
     review: { rounds: 1, failed: '', open: [], minor: [{ severity: 'minor', where: 'cmd/cavu/doctor.go:88', what: 'The image label is read twice.', why: 'One inspect call would give both values.' }] },
     turns: 58, duration_ms: 2330000, cost_estimate_usd: 1.84,
     usage: [usage('claude-sonnet-5-5', 61000, 42000, 1930000, 148000, 1.71), usage('claude-haiku-5-5', 18200, 6100, 240000, 22000, 0.13)],

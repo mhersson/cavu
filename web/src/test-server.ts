@@ -23,8 +23,8 @@ export class FakeEventSource {
     this.onopen?.()
   }
 
-  send(id: number) {
-    this.onmessage?.({ data: JSON.stringify({ id }) } as MessageEvent<string>)
+  send(id: number, more: object = {}) {
+    this.onmessage?.({ data: JSON.stringify({ id, ...more }) } as MessageEvent<string>)
   }
 
   fail() {
