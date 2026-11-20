@@ -33,6 +33,7 @@ type Project struct {
 	CheckRequestedAt            *time.Time        // set while a check is asked for or running
 	CheckResult                 CheckResult
 	Forge                       ForgePolicy
+	ForgeCredential             string     // a named credential's name; "" is the instance's default
 	RemovedAt                   *time.Time // set by RemoveProject only, never by a write of the project
 }
 
@@ -53,7 +54,7 @@ type CheckResult struct {
 const projectColumns = `id, name, repo_url, base_branch, setup_command, verify_command,
 	verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches,
 	baseline_commit, baseline_passed, baseline_at, baseline_output,
-	check_requested_at, check_result, caps, forge, removed_at`
+	check_requested_at, check_result, caps, forge, removed_at, forge_credential`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -64,14 +65,14 @@ func scanProject(sc scanner) (Project, error) {
 		p                                  Project
 		tools, egress, env, secretVars, sw string
 		checkResult, caps, forge           string
-		bCommit, bOutput                   sql.NullString
+		bCommit, bOutput, credential       sql.NullString
 		bPassed                            sql.NullBool
 		bAt, checkAt, removedAt            sql.NullInt64
 	)
 
 	if err := sc.Scan(&p.ID, &p.Name, &p.RepoURL, &p.BaseBranch, &p.SetupCommand, &p.VerifyCommand,
 		&p.VerifyWaived, &tools, &egress, &env, &secretVars, &sw,
-		&bCommit, &bPassed, &bAt, &bOutput, &checkAt, &checkResult, &caps, &forge, &removedAt); err != nil {
+		&bCommit, &bPassed, &bAt, &bOutput, &checkAt, &checkResult, &caps, &forge, &removedAt, &credential); err != nil {
 		return Project{}, err
 	}
 
@@ -107,6 +108,8 @@ func scanProject(sc scanner) (Project, error) {
 		p.CheckRequestedAt = &at
 	}
 
+	p.ForgeCredential = credential.String
+
 	if removedAt.Valid {
 		at := time.UnixMilli(removedAt.Int64)
 		p.RemovedAt = &at
@@ -138,10 +141,15 @@ func projectArgs(p Project) ([]any, error) {
 		checkAt = p.CheckRequestedAt.UnixMilli()
 	}
 
+	var credential any
+	if p.ForgeCredential != "" {
+		credential = p.ForgeCredential
+	}
+
 	return []any{
 		p.Name, p.RepoURL, p.BaseBranch, p.SetupCommand, p.VerifyCommand, p.VerifyWaived,
 		enc[0], enc[1], enc[2], enc[3], enc[4],
-		bCommit, bPassed, bAt, bOutput, checkAt, enc[5], enc[6], enc[7],
+		bCommit, bPassed, bAt, bOutput, checkAt, enc[5], enc[6], enc[7], credential,
 	}, nil
 }
 
@@ -155,8 +163,8 @@ func (s *Store) CreateProject(ctx context.Context, p Project) (Project, error) {
 	res, err := s.db.ExecContext(ctx, `INSERT INTO projects (name, repo_url, base_branch,
 		setup_command, verify_command, verify_waived, tool_overrides, egress_hosts, env,
 		secret_vars, switches, baseline_commit, baseline_passed, baseline_at, baseline_output,
-		check_requested_at, check_result, caps, forge)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
+		check_requested_at, check_result, caps, forge, forge_credential)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Project{}, fmt.Errorf("project name %q: %w", p.Name, ErrConflict)
@@ -185,7 +193,7 @@ func (s *Store) UpdateProject(ctx context.Context, p Project) error {
 		setup_command = ?, verify_command = ?, verify_waived = ?, tool_overrides = ?,
 		egress_hosts = ?, env = ?, secret_vars = ?, switches = ?, baseline_commit = ?,
 		baseline_passed = ?, baseline_at = ?, baseline_output = ?, check_requested_at = ?,
-		check_result = ?, caps = ?, forge = ? WHERE id = ?`, append(args, p.ID)...)
+		check_result = ?, caps = ?, forge = ?, forge_credential = ? WHERE id = ?`, append(args, p.ID)...)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("project name %q: %w", p.Name, ErrConflict)
@@ -267,7 +275,8 @@ func (s *Store) ProjectNames(ctx context.Context) (map[int64]string, error) {
 
 // RemoveProject marks the live project id removed at the given time and deletes
 // every secret whose name starts with secretPrefix, in one transaction. A
-// removed or unknown id returns ErrNotFound.
+// removed or unknown id returns ErrNotFound. It also clears the project's
+// credential, which a removed project would otherwise keep referenced.
 func (s *Store) RemoveProject(ctx context.Context, id int64, at time.Time, secretPrefix string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -275,7 +284,7 @@ func (s *Store) RemoveProject(ctx context.Context, id int64, at time.Time, secre
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.ExecContext(ctx, `UPDATE projects SET removed_at = ? WHERE id = ? AND removed_at IS NULL`, at.UnixMilli(), id)
+	res, err := tx.ExecContext(ctx, `UPDATE projects SET removed_at = ?, forge_credential = NULL WHERE id = ? AND removed_at IS NULL`, at.UnixMilli(), id)
 	if err != nil {
 		return fmt.Errorf("remove project: %w", err)
 	}

@@ -191,4 +191,13 @@ SELECT id, name, repo_url, base_branch, setup_command, verify_command, verify_wa
 DROP TABLE projects_old;
 CREATE UNIQUE INDEX projects_name ON projects (name) WHERE removed_at IS NULL;
 `},
+	{Version: 8, SQL: `
+CREATE TABLE forge_credentials (
+	name   TEXT PRIMARY KEY,
+	kind   TEXT NOT NULL,
+	app_id INTEGER NOT NULL DEFAULT 0
+);
+
+ALTER TABLE projects ADD COLUMN forge_credential TEXT REFERENCES forge_credentials (name);
+`},
 }
