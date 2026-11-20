@@ -52,7 +52,7 @@ func newHandler(api http.Handler, root fs.FS) http.Handler {
 		name := strings.TrimPrefix(r.URL.Path, "/")
 		if files != nil && name != "" && name != "index.html" {
 			if info, err := fs.Stat(files, name); err == nil && !info.IsDir() {
-				if strings.HasPrefix(r.URL.Path, "/assets/") {
+				if strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/fonts/") {
 					h.Set("Cache-Control", "public, max-age=31536000, immutable")
 				}
 

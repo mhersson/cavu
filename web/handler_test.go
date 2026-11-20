@@ -18,10 +18,11 @@ const (
 
 func withApp() fstest.MapFS {
 	return fstest.MapFS{
-		"app/index.html":   {Data: []byte(appPage)},
-		"app/assets/x.js":  {Data: []byte("export {}")},
-		"app/favicon.svg":  {Data: []byte("<svg/>")},
-		"placeholder.html": {Data: []byte(placeholder)},
+		"app/index.html":    {Data: []byte(appPage)},
+		"app/assets/x.js":   {Data: []byte("export {}")},
+		"app/favicon.svg":   {Data: []byte("<svg/>")},
+		"app/fonts/f.woff2": {Data: []byte("font")},
+		"placeholder.html":  {Data: []byte(placeholder)},
 	}
 }
 
@@ -113,7 +114,9 @@ func TestHandlerSendsThePolicy(t *testing.T) {
 		assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"), path)
 	}
 
-	assert.Equal(t, "public, max-age=31536000, immutable", do(h, http.MethodGet, "/assets/x.js").Header().Get("Cache-Control"))
+	for _, path := range []string{"/assets/x.js", "/fonts/f.woff2"} {
+		assert.Equal(t, "public, max-age=31536000, immutable", do(h, http.MethodGet, path).Header().Get("Cache-Control"), path)
+	}
 
 	for _, path := range []string{"/", "/board", "/favicon.svg"} {
 		assert.Equal(t, "no-cache", do(h, http.MethodGet, path).Header().Get("Cache-Control"), path)
