@@ -28,6 +28,7 @@
 }
 
 .task-page .refused {
+  color: var(--red);
   margin: 4px 0;
 }
 
