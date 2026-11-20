@@ -165,6 +165,17 @@ test('every switch is listed with its state', async () => {
   expect(screen.getByText('web_tools').tagName).toBe('CODE')
 })
 
+test('a project no check has ended for has its tools found told apart from none found', async () => {
+  serve({ projects: [stuck(1, 'new', { commit: '' }), project(2, 'old')] })
+  await show()
+  const found = () => screen.getByText('Found by the check').nextElementSibling!
+  const never = found().textContent
+  expect(found().querySelector('.small')).not.toBeNull()
+  fireEvent.click(rows()[1])
+  await settle()
+  expect(found().textContent).not.toBe(never)
+})
+
 test('an event reads the projects again', async () => {
   const world = { projects: [project(1, 'web')] }
   const calls = serve(world)
@@ -196,10 +207,13 @@ test('removing asks first, and a refusal names the open tasks', async () => {
   const dialog = screen.getByRole('dialog', { name: /web/ })
   expect(deletes(calls)).toEqual([])
 
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Remove project' }))
+  const remove = within(dialog).getByRole('button', { name: 'Remove project' })
+  fireEvent.click(remove)
+  expect(remove).toBeDisabled()
   await settle()
   expect(deletes(calls)).toEqual(['/api/projects/1'])
   expect(within(screen.getByRole('dialog')).getByRole('alert').textContent).toBe(line)
+  expect(remove).toBeEnabled()
 
   // It stays usable: removing again asks the server again.
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove project' }))

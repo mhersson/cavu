@@ -15,13 +15,16 @@ const square = (p: Project) => (p.runnable ? 'k-ready' : 'k-stop')
 // The server decides whether a project can go, and its refusal is shown here as it said it.
 function RemoveDialog({ project, onClose, onRemoved }: { project: Project; onClose: () => void; onRemoved: () => void }) {
   const [refused, setRefused] = useState('')
+  const [sending, setSending] = useState(false)
   async function remove() {
     setRefused('')
+    setSending(true)
     try {
       await api('DELETE', `/projects/${project.id}`)
       onRemoved()
     } catch (e) {
       setRefused(e instanceof Error ? e.message : String(e))
+      setSending(false)
     }
   }
   return (
@@ -35,7 +38,7 @@ function RemoveDialog({ project, onClose, onRemoved }: { project: Project; onClo
         <button className="btn" onClick={onClose}>
           Cancel
         </button>
-        <button className="btn danger" onClick={() => void remove()}>
+        <button className="btn danger" disabled={sending} onClick={() => void remove()}>
           Remove project
         </button>
       </div>

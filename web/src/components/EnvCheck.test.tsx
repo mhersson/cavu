@@ -142,7 +142,7 @@ describe('EnvCheck', () => {
 
   it('tools left out show beside the tools found', () => {
     render(<EnvCheck project={project({}, { ignored_tools: ['ruby'] })} onProject={() => {}} />)
-    expect(screen.getByRole('region')).toHaveTextContent('ruby')
+    expect(screen.getByText(/ruby/)).toHaveTextContent('node, go')
   })
 
   it('a refused check shows the server\'s line', async () => {

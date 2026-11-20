@@ -111,7 +111,7 @@
   margin: 0 0 10px;
 }
 
-.projects-page .refused {
+.projects-page .dialog .refused {
   color: var(--red);
   margin: 0 0 10px;
 }

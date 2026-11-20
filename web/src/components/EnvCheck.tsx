@@ -91,6 +91,12 @@ export default function EnvCheck({ project, onProject }: Props) {
   }
 
   const ended = check.fault !== '' || check.failed_step !== '' || check.commit !== ''
+  const tools = [
+    check.tools.length > 0 && `Tools found: ${check.tools.join(', ')}.`,
+    check.ignored_tools.length > 0 && `Left out: ${check.ignored_tools.join(', ')}.`,
+  ]
+    .filter(Boolean)
+    .join(' ')
   const suggested = check.verify_suggestion !== '' && check.verify_suggestion !== project.verify_command
   return (
     <section className={`envcheck ${project.runnable ? 'k-ready' : 'k-stop'}`} aria-label="Environment check">
@@ -102,8 +108,7 @@ export default function EnvCheck({ project, onProject }: Props) {
         </span>
       </p>
       {check.output && <pre className="out">{check.output}</pre>}
-      {check.tools.length > 0 && <div className="facts">Tools found: {check.tools.join(', ')}.</div>}
-      {check.ignored_tools.length > 0 && <div className="facts">Left out: {check.ignored_tools.join(', ')}.</div>}
+      {tools && <div className="facts">{tools}</div>}
       {suggested && (
         <div className="facts">
           The repository suggests <code>{check.verify_suggestion}</code> as the verify command.

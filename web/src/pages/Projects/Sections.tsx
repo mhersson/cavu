@@ -5,8 +5,8 @@ type Props = { project: Project; folded: boolean; onRemove: () => void }
 
 const small = (text: string) => <span className="small">{text}</span>
 
-// A value in the mono face, or the hint when there is none.
-const mono = (value: string, hint = 'none') => (value ? <code>{value}</code> : small(hint))
+// A value in the mono face, or "none" when it is empty.
+const mono = (value: string) => (value ? <code>{value}</code> : small('none'))
 
 function list(values: string[], hint = 'none') {
   if (values.length === 0) return small(hint)
@@ -17,6 +17,8 @@ function list(values: string[], hint = 'none') {
     </Fragment>
   ))
 }
+
+const plain = (values: string[]) => values.join(', ') || small('none')
 
 const pairs = (m: Record<string, string>) => Object.entries(m).map(([k, v]) => `${k}=${v}`)
 
@@ -36,6 +38,7 @@ function kv(rows: [ReactNode, ReactNode][]) {
 // A desktop lays the sections in two columns; a phone folds each.
 export default function Sections({ project: p, folded, onRemove }: Props) {
   const cap = (key: string) => p.caps[key] || small("the instance's setting")
+  const checked = p.check.fault !== '' || p.check.failed_step !== '' || p.check.commit !== ''
   const sections: [string, ReactNode][] = [
     ['Repository', kv([['Address', mono(p.repo_url)], ['Base branch', mono(p.base_branch)]])],
     [
@@ -48,8 +51,8 @@ export default function Sections({ project: p, folded, onRemove }: Props) {
     [
       'Tools',
       kv([
-        ['Found by the check', list(p.check.tools)],
-        ['Versions set here', list(pairs(p.tool_overrides), 'the versions the repository names')],
+        ['Found by the check', checked ? plain(p.check.tools) : small('not checked yet')],
+        ['Versions set here', list(pairs(p.tool_overrides))],
       ]),
     ],
     [
@@ -81,10 +84,10 @@ export default function Sections({ project: p, folded, onRemove }: Props) {
     [
       'GitHub',
       kv([
-        ['Credential', mono(p.forge_credential, 'the default')],
+        ['Credential', p.forge_credential ? <code>{p.forge_credential}</code> : 'the default'],
         ['Checks', p.no_ci ? 'This repository has no CI.' : 'Watched after every push.'],
-        ['Checks to ignore', list(p.ignored_checks)],
-        ['Review bots', list(p.review_bots)],
+        ['Checks to ignore', plain(p.ignored_checks)],
+        ['Review bots', plain(p.review_bots)],
       ]),
     ],
     [

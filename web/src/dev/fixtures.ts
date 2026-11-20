@@ -5,7 +5,6 @@ import type { Project, Row, Settings, Task, TaskEvent, Usage } from '../api/type
 export const HEALTH = { status: 'ok', version: '0.4.0' };                 // GET /api/health
 // GET /api/projects
 const SWITCHES: Record<string, boolean> = { continuations: true, publish: true, readiness: true, review: true, verify_fix: true, web_tools: false };
-const SETUP_FAILED = 'npm error code E401\nnpm error Unable to authenticate, need: Basic realm="GitHub Package Registry"\nnpm error A complete log of this run can be found in: /home/agent/.npm/_logs/2026-11-19T18_02_11_301Z-debug-0.log';
 export const PROJECTS: Project[] = [
   { id: 1, name: 'cavu', repo_url: 'https://github.com/mhersson/cavu.git', base_branch: 'main', setup_command: 'go mod download', verify_command: 'make check', verify_waived: false,
     tool_overrides: {}, egress_hosts: ['proxy.golang.org', 'sum.golang.org'], env: { CGO_ENABLED: '0' }, secret_vars: [], switches: SWITCHES,
@@ -19,10 +18,9 @@ export const PROJECTS: Project[] = [
     check: { requested_at: null, tools: ['node'], ignored_tools: [], failed_step: '', verify_suggestion: 'npm test', fault: '', commit: '0e41aa7c95d2', output: '' } },
   { id: 3, name: 'docs-site', repo_url: 'https://github.com/acme/docs-site.git', base_branch: 'main', setup_command: 'npm ci', verify_command: 'npm run build', verify_waived: false,
     tool_overrides: {}, egress_hosts: ['registry.npmjs.org', 'npm.pkg.github.com'], env: {}, secret_vars: [], switches: { ...SWITCHES, review: false },
-    caps: {}, no_ci: true, ignored_checks: [], review_bots: [], forge_credential: 'acme-org', runnable: false,
-    baseline: { commit: '77ab01c4de90', passed: false, at: '2026-11-19T18:02:00Z', output: SETUP_FAILED },
+    caps: {}, no_ci: true, ignored_checks: [], review_bots: [], forge_credential: 'acme-org', runnable: false, baseline: null,
     check: { requested_at: null, tools: ['node'], ignored_tools: ['ruby'], failed_step: 'setup', verify_suggestion: 'npm test', fault: '', commit: '77ab01c4de90',
-      output: SETUP_FAILED } },
+      output: 'npm error code E401\nnpm error Unable to authenticate, need: Basic realm="GitHub Package Registry"\nnpm error A complete log of this run can be found in: /home/agent/.npm/_logs/2026-11-19T18_02_11_301Z-debug-0.log' } },
 ];
 // GET /api/settings: only the keys that are set, and whether each secret is
 export const SETTINGS: Settings = { settings: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: 'cavu', commit_email: 'cavu@example.com' },
@@ -237,3 +235,6 @@ export const EVENTS: Record<number, TaskEvent[]> = {
 
 // GET /api/settings: the named GitHub credentials a project may use
 SETTINGS.forge_credentials = [{ name: 'acme-org', kind: 'token' }, { name: 'work-app', kind: 'app', app_id: 482913 }];
+
+// GET /api/projects: docs-site's check failed at setup with a verify command, so its baseline did not pass
+PROJECTS[2].baseline = { commit: PROJECTS[2].check.commit, passed: false, at: '2026-11-19T18:02:00Z', output: PROJECTS[2].check.output };
