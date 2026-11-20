@@ -48,7 +48,8 @@ export function useEvents(): { live: boolean } {
       if (lastId > 0) q.set('after', String(lastId))
       const d = device()
       if (d !== null) q.set('device', d)
-      const s = new EventSource('/api/events' + (q.size > 0 ? '?' + q : ''))
+      const qs = q.toString()
+      const s = new EventSource('/api/events' + (qs ? '?' + qs : ''))
       source = s
       s.onopen = () => {
         setLive(true)

@@ -24,5 +24,5 @@ self.addEventListener('notificationclick', (event) => {
   )
 })
 
-// A page that turned notifications on is controlled at once, so a click can navigate it.
+// Claims the pages already open, the one that turned notifications on among them, so the click above can navigate it.
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()))

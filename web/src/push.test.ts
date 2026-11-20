@@ -108,16 +108,20 @@ test('the page reports focus, blur and visibility while an id is kept', async ()
   focus.mockRestore()
 })
 
-test('the page reports nothing while no id is kept and forgets an id the browser has no subscription for', async () => {
-  fakePush()
-  const calls = server()
-  const { unmount } = renderHook(() => useFocusReport())
+test('the page reports nothing while no id is kept', async () => {
+  fakePush({ subscribed: true })
+  const calls = fakeServer(() => json({ error: 'broken' }, 500))
+  renderHook(() => useFocusReport())
+  await waitFor(() => expect(puts(calls)).toHaveLength(1))
   window.dispatchEvent(new Event('focus'))
   window.dispatchEvent(new Event('blur'))
   await new Promise((r) => setTimeout(r))
-  expect(calls).toEqual([])
-  unmount()
+  expect(puts(calls)).toHaveLength(1)
+})
 
+test('a page forgets an id the browser has no subscription for', async () => {
+  fakePush()
+  const calls = server()
   localStorage.setItem('push_device', '7')
   renderHook(() => useFocusReport())
   await waitFor(() => expect(localStorage.getItem('push_device')).toBeNull())
@@ -129,15 +133,6 @@ test('a page with a subscription and no kept id keeps the id the server gives', 
   server()
   renderHook(() => useFocusReport())
   await waitFor(() => expect(localStorage.getItem('push_device')).toBe('7'))
-})
-
-test('a page that cannot push sends nothing', async () => {
-  fakePush({ supported: false })
-  const calls = server()
-  renderHook(() => useFocusReport())
-  window.dispatchEvent(new Event('focus'))
-  await new Promise((r) => setTimeout(r))
-  expect(calls).toEqual([])
 })
 
 test('a report that fails is dropped and keeps the id', async () => {

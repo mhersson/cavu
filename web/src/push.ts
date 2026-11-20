@@ -23,7 +23,7 @@ export function pushState(): PushState {
 const subscription = async () => (await navigator.serviceWorker.ready).pushManager.getSubscription()
 
 async function send(s: PushSubscription, focused: boolean) {
-  // The server refuses unknown fields, and toJSON can carry more than these.
+  // The server refuses unknown fields, so only these are sent.
   const { endpoint, keys } = s.toJSON()
   const body = { endpoint, keys: { p256dh: keys?.p256dh, auth: keys?.auth }, origin: location.origin, focused }
   const { id } = await api<{ id: number }>('PUT', '/push', body)
