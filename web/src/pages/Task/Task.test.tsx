@@ -73,8 +73,18 @@ const toTake: Task = {
   change,
 }
 
+const draft: Task = {
+  ...base,
+  status: 'draft',
+  dependencies: [
+    { id: 3, status: 'done' },
+    { id: 5, status: 'running' },
+  ],
+}
+
 const isTask = (c: Call) => c.method === 'GET' && c.path === '/api/tasks/7'
 const reads = (calls: Call[]) => calls.filter(isTask)
+const patches = (calls: Call[]) => calls.filter((c) => c.method === 'PATCH')
 
 function serve(t: Task, more: (c: Call) => Response | undefined = () => undefined) {
   return fakeServer((c) => {
@@ -100,6 +110,11 @@ async function show() {
 }
 
 const cancelButton = () => screen.queryByRole('button', { name: 'Cancel task' })
+const button = (name: string) => screen.queryByRole('button', { name })
+const headButtons = () => within(document.querySelector<HTMLElement>('.page-head')!).queryAllByRole('button').map((b) => b.textContent)
+const field = (name: string) => screen.queryByRole('textbox', { name })
+const type = (name: string, value: string) => fireEvent.change(field(name)!, { target: { value } })
+const fields = () => ['Title', 'Details', 'Depends on'].map(field)
 
 test('the wait and its end are shown as served', async () => {
   const waiting = 'Waiting for the usage limit to reset'
@@ -141,7 +156,154 @@ test('the dialog closes with nothing sent by its other button and by Escape', as
   expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0)
 })
 
+test('a draft offers Edit and Start, and a started task neither', async () => {
+  serve(draft)
+  await show()
+  expect(headButtons()).toEqual(['Edit', 'Start', 'Cancel task'])
+  cleanup()
+
+  serve(base)
+  await show()
+  expect(headButtons()).toEqual(['Cancel task'])
+})
+
 test.each([
+  ['the title', () => type('Title', 'Fix the header'), { title: 'Fix the header' }],
+  ['the dependencies', () => type('Depends on', '3, 42'), { depends_on: [3, 42] }],
+  ['the body', () => type('Details', ''), { body: '' }],
+])('Edit sends only what changed and shows the task it gets back: %s', async (_, change, sent) => {
+  const answer = { ...draft, title: 'Fix the footer on every page' }
+  const calls = serve(draft, (c) => (c.method === 'PATCH' ? json(answer) : undefined))
+  await show()
+  fireEvent.click(button('Edit')!)
+  change()
+  fireEvent.click(button('Save')!)
+  await settle()
+  const sends = patches(calls)
+  expect(sends).toHaveLength(1)
+  expect(sends[0].path).toBe('/api/tasks/7')
+  expect(sends[0].body).toEqual(sent)
+  expect(sends[0].headers.get('X-CAVU-CSRF')).toBe('1')
+  expect(screen.getByRole('heading', { level: 1, name: answer.title })).toBeInTheDocument()
+  expect(fields()).toEqual([null, null, null])
+})
+
+test('Save with nothing changed and Cancel send nothing and end the edit', async () => {
+  const calls = serve(draft)
+  await show()
+  fireEvent.click(button('Edit')!)
+  expect(headButtons()).toEqual(['Cancel', 'Save'])
+  expect(field('Title')).toHaveValue(draft.title)
+  expect(field('Details')).toHaveValue(draft.body)
+  expect(field('Depends on')).toHaveValue('3, 5')
+  fireEvent.click(button('Save')!)
+  await settle()
+  expect(fields()).toEqual([null, null, null])
+  expect(headButtons()).toEqual(['Edit', 'Start', 'Cancel task'])
+
+  fireEvent.click(button('Edit')!)
+  type('Title', 'Fix the header')
+  type('Details', '')
+  fireEvent.click(button('Cancel')!)
+  expect(fields()).toEqual([null, null, null])
+  expect(screen.getByRole('heading', { level: 1, name: draft.title })).toBeInTheDocument()
+  expect(document.querySelector('.task-body')).toHaveTextContent('cut off.')
+  expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0)
+})
+
+test('a draft with no body shows the Details box when Edit is pressed', async () => {
+  serve({ ...draft, body: '' })
+  await show()
+  fireEvent.click(button('Edit')!)
+  expect(field('Details')).toHaveValue('')
+})
+
+test('the Details box opens twelve rows high on a desktop and eight on a phone, and taller for a longer body', async () => {
+  const rows = async (t: Task) => {
+    serve(t)
+    await show()
+    fireEvent.click(button('Edit')!)
+    const n = Number(field('Details')!.getAttribute('rows'))
+    cleanup()
+    return n
+  }
+  const long = { ...draft, body: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n') }
+  expect(await rows(draft)).toBe(12)
+  expect(await rows(long)).toBeGreaterThan(20)
+  narrow(true)
+  expect(await rows(draft)).toBe(8)
+  expect(await rows(long)).toBeGreaterThan(20)
+})
+
+test("a refused edit shows the server's line and keeps what was typed", async () => {
+  const line = 'task 42 does not exist'
+  const calls = serve(draft, (c) => (c.method === 'PATCH' ? json({ error: line }, 400) : undefined))
+  await show()
+  fireEvent.click(button('Edit')!)
+  type('Title', 'Fix the header')
+  type('Depends on', '42')
+  fireEvent.click(button('Save')!)
+  await settle()
+  expect(patches(calls)).toHaveLength(1)
+  expect(screen.getByRole('alert')).toHaveTextContent(line)
+  expect(field('Title')).toHaveValue('Fix the header')
+  expect(field('Depends on')).toHaveValue('42')
+  expect(button('Save')).toBeEnabled()
+})
+
+test('a read while editing keeps what was typed, and Save measures against the task Edit was pressed on', async () => {
+  let now = draft
+  const calls = serve(draft, (c) => (isTask(c) || c.method === 'PATCH' ? json(now) : undefined))
+  await show()
+  fireEvent.click(button('Edit')!)
+  type('Details', 'The footer is cut off on a phone.')
+  now = { ...draft, title: 'Fix the footer and the header' }
+  const before = reads(calls).length
+  act(() => FakeEventSource.all[0].send(1, { task_id: 7 }))
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  await settle()
+  expect(reads(calls)).toHaveLength(before + 1)
+  expect(field('Title')).toHaveValue(draft.title)
+  expect(field('Details')).toHaveValue('The footer is cut off on a phone.')
+
+  fireEvent.click(button('Save')!)
+  await settle()
+  expect(patches(calls).map((c) => c.body)).toEqual([{ body: 'The footer is cut off on a phone.' }])
+})
+
+test('Start sends start and shows the task it gets back', async () => {
+  const calls = serve(draft, (c) => (c.method === 'POST' ? json({ ...draft, status: 'queued' }) : undefined))
+  await show()
+  fireEvent.click(button('Start')!)
+  await settle()
+  const posts = calls.filter((c) => c.method === 'POST')
+  expect(posts).toHaveLength(1)
+  expect(posts[0].path).toBe('/api/tasks/7/actions')
+  expect(posts[0].body).toEqual({ action: 'start' })
+  expect(posts[0].headers.get('X-CAVU-CSRF')).toBe('1')
+  expect(headButtons()).toEqual(['Cancel task'])
+})
+
+test('on a phone a draft offers Start, Edit and Cancel task at the foot, and an edit Save and Cancel', async () => {
+  narrow(true)
+  serve(draft)
+  await show()
+  const offered = () =>
+    screen
+      .getAllByRole('button')
+      .map((b) => b.textContent)
+      .filter((n) => ['Start', 'Edit', 'Cancel task', 'Save', 'Cancel'].includes(n ?? ''))
+  expect(offered()).toEqual(['Start', 'Edit', 'Cancel task'])
+  expect(headButtons()).toEqual([])
+
+  fireEvent.click(button('Edit')!)
+  expect(offered()).toEqual(['Save', 'Cancel'])
+  expect(headButtons()).toEqual([])
+  expect(fields().every((f) => f !== null)).toBe(true)
+})
+
+test.each([
+  ['start', draft, () => fireEvent.click(button('Start')!)],
   ['retry', stoppedForRetry, () => fireEvent.click(screen.getByRole('button', { name: 'Retry' }))],
   ['cancel', base, () => {
     fireEvent.click(cancelButton()!)

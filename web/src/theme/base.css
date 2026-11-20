@@ -257,3 +257,12 @@ code,
     transition: background-color 0.12s;
   }
 }
+
+/* Safari on iOS zooms into a field whose text is under 16 px; the floor must win over the class rules that set smaller text. */
+@media (max-width: 720px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

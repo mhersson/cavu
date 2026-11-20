@@ -204,14 +204,15 @@ func (s *server) change(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// editTask changes only the fields the body names, over the stored task and
-// its stored dependencies.
+// taskEdit names the fields of a task a person may change; one left out keeps its value.
+type taskEdit struct {
+	Title     *string  `json:"title,omitempty" jsonschema:"the new title"`
+	Body      *string  `json:"body,omitempty" jsonschema:"the new body; an empty string empties it"`
+	DependsOn *[]int64 `json:"depends_on,omitempty" jsonschema:"the ids of the tasks it waits for, replacing the list; an empty list removes every dependency"`
+}
+
 func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
-	var in struct {
-		Title     *string  `json:"title"`
-		Body      *string  `json:"body"`
-		DependsOn *[]int64 `json:"depends_on"`
-	}
+	var in taskEdit
 
 	if err := decode(w, r, &in); err != nil {
 		return err
@@ -222,12 +223,21 @@ func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	t, err := s.Store.Task(r.Context(), id)
+	if err := s.edit(r.Context(), id, in); err != nil {
+		return err
+	}
+
+	return s.replyTask(w, r, id, http.StatusOK)
+}
+
+// edit changes only the fields that `in` sets, over the stored task and its dependencies.
+func (s *server) edit(ctx context.Context, id int64, in taskEdit) error {
+	t, err := s.Store.Task(ctx, id)
 	if err != nil {
 		return fmt.Errorf("task %d: %w", id, err)
 	}
 
-	deps, err := s.Store.TaskDeps(r.Context(), id)
+	deps, err := s.Store.TaskDeps(ctx, id)
 	if err != nil {
 		return fmt.Errorf("task %d: %w", id, err)
 	}
@@ -236,11 +246,7 @@ func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
 	set(&t.Body, in.Body)
 	set(&deps, in.DependsOn)
 
-	if err := engine.EditTask(r.Context(), s.Store, t, deps); err != nil {
-		return err
-	}
-
-	return s.replyTask(w, r, id, http.StatusOK)
+	return engine.EditTask(ctx, s.Store, t, deps)
 }
 
 func (s *server) act(w http.ResponseWriter, r *http.Request) error {

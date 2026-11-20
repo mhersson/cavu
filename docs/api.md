@@ -313,7 +313,7 @@ A task's pull request leaves these events: `publish_started` and `published` for
 
 ## MCP
 
-`POST /mcp` serves seven tools to an MCP client over the streamable HTTP transport. It takes only an API token, as `Authorization: Bearer <token>`: a request without a token the server knows is 401 with the JSON error above, whatever cookie it carries, and no request there needs `X-CAVU-CSRF`. The server is stateless: it keeps no session between requests and sets no `Mcp-Session-Id`. It advertises the tools and nothing else: no `listChanged`, no logging, no resources or prompts, so a client has no reason to open a stream and the server holds none. It answers each call with one JSON message, and any method but `POST` with 405.
+`POST /mcp` serves eight tools to an MCP client over the streamable HTTP transport. It takes only an API token, as `Authorization: Bearer <token>`: a request without a token the server knows is 401 with the JSON error above, whatever cookie it carries, and no request there needs `X-CAVU-CSRF`. The server is stateless: it keeps no session between requests and sets no `Mcp-Session-Id`. It advertises the tools and nothing else: no `listChanged`, no logging, no resources or prompts, so a client has no reason to open a stream and the server holds none. It answers each call with one JSON message, and any method but `POST` with 405.
 
 A tool that does what a REST route does calls that route's code, so it refuses what the route refuses, and every tool gives a task as [the task](#the-task) shows it:
 
@@ -322,6 +322,7 @@ A tool that does what a REST route does calls that route's code, so it refuses w
 | `create_task` | `project`, `title`, and optionally `body`, `depends_on` and `start` | Creates a task as `POST /api/tasks` does, with the requester `mcp`, and answers with the task. |
 | `get_task` | `id` | Answers with the task. |
 | `list_tasks` | optionally `project`, `status` and `needs_you` | Answers with the list `GET /api/tasks` gives for that query. |
+| `edit_task` | `id`, and any of `title`, `body` and `depends_on` | Changes the fields it is given as `PATCH /api/tasks/{id}` does, with the same refusals, and answers with the task. |
 | `run_task` | `id` | Records the action `start` for a task with no open stop, else the action `retry`, as `POST /api/tasks/{id}/actions` does, and answers with the task. A task stopped on a question is refused with a line saying it needs an answer, which the tool `answer_task`, the action `answer` or `cavu task answer ID` gives. |
 | `cancel_task` | `id` | Records the action `cancel` as `POST /api/tasks/{id}/actions` does, and answers with the task. |
 | `answer_task` | `id` and `answer` | Records the action `answer` with that text for a task whose open stop is a question, as `POST /api/tasks/{id}/actions` does, and answers with the task. Any other task is refused with a line naming the stop it has, or that it has none. |

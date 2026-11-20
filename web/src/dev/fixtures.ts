@@ -251,3 +251,12 @@ SETTINGS.defaults = {
 for (const [name, credential] of [['cavu', ''], ['homelander', ''], ['docs-site', 'acme-org']]) {
   Object.assign(PROJECTS.find((p) => p.name === name)!, { forge_credential: credential })
 }
+
+// A draft's page: a body of two short lines and two paragraphs that wrap, filed over MCP, and a dependency on a task that runs.
+VIEWS[44] = base(44, {
+  body: 'Add a section on the web app after the install steps.\nSay where it listens and how to sign in.\n\n' +
+    "The section tells a reader who has just installed the binary what the web app is for. The Needs you page lists every task that waits for a person, with the way it waits and since when; the board shows every open task by its status; a task's page shows what happened in its runs, what it cost and the change it made. Keep it to one screen of the README, say that a phone gets the same pages with tabs along the bottom, link the API document for the routes the app calls, and leave screenshots out, since they would go stale with every change of the look.\n\n" +
+    "Write it for a person who has never seen CAVU: say what a draft is and that it runs only when started, that a task stopped on a question waits for an answer on its page, and that a pull request is merged by a person and never by CAVU. Use the names the pages use, and check each sentence against the app as it is at the time.",
+  requester: 'mcp',
+  dependencies: [{ id: 42, status: 'running' }],
+})

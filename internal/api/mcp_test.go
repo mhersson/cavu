@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -90,7 +91,76 @@ func TestMCPTools(t *testing.T) {
 		names = append(names, tl.Name)
 	}
 
-	assert.ElementsMatch(t, []string{"create_task", "get_task", "list_tasks", "run_task", "cancel_task", "answer_task", "list_projects"}, names)
+	assert.ElementsMatch(t, []string{"create_task", "get_task", "list_tasks", "run_task", "cancel_task", "answer_task", "list_projects", "edit_task"}, names)
+}
+
+// depIDs lists the ids of a task's dependencies.
+func depIDs(task map[string]any) []int64 {
+	ids := []int64{}
+	for _, d := range task["dependencies"].([]any) {
+		ids = append(ids, int64(d.(map[string]any)["id"].(float64)))
+	}
+
+	return ids
+}
+
+func TestMCPEditTask(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	other := f.task(t, `{"project": "site", "title": "Other"}`)
+	another := f.task(t, `{"project": "site", "title": "Another"}`)
+	id := f.task(t, fmt.Sprintf(`{"project": "site", "title": "Draft", "body": "Original", "depends_on": [%d]}`, other))
+	cs := f.client(t)
+
+	edit := func(args map[string]any) map[string]any {
+		t.Helper()
+
+		args["id"] = id
+		got := tool(t, cs, "edit_task", args)
+		assert.Equal(t, f.view(t, id), got, "the task as REST shows it")
+
+		return got
+	}
+
+	got := edit(map[string]any{"title": "Renamed"})
+	assert.Equal(t, "Renamed", got["title"])
+	assert.Equal(t, "Original", got["body"])
+	assert.Equal(t, []int64{other}, depIDs(got))
+
+	got = edit(map[string]any{"body": "New body"})
+	assert.Equal(t, "Renamed", got["title"])
+	assert.Equal(t, "New body", got["body"])
+	assert.Equal(t, []int64{other}, depIDs(got))
+
+	got = edit(map[string]any{"body": ""})
+	assert.Equal(t, "Renamed", got["title"])
+	assert.Empty(t, got["body"])
+	assert.Equal(t, []int64{other}, depIDs(got))
+
+	got = edit(map[string]any{"depends_on": []int64{another}})
+	assert.Equal(t, "Renamed", got["title"])
+	assert.Equal(t, []int64{another}, depIDs(got))
+
+	got = edit(map[string]any{"depends_on": []int64{}})
+	assert.Equal(t, "Renamed", got["title"])
+	assert.Empty(t, depIDs(got))
+}
+
+func TestMCPEditTaskRefused(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	id := f.task(t, `{"project": "site", "title": "Running"}`)
+	f.add(t, id, engine.TaskStarted, struct{}{})
+	f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+
+	before := f.record(t)
+
+	res, err := f.client(t).CallTool(t.Context(), &mcp.CallToolParams{Name: "edit_task", Arguments: map[string]any{"id": id, "title": "Changed"}})
+	require.NoError(t, err)
+	refused(t, res)
+	assert.Equal(t, before, f.record(t))
 }
 
 func TestMCPCreateAndStart(t *testing.T) {
