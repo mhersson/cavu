@@ -2,6 +2,7 @@ package web
 
 import (
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -79,6 +80,27 @@ func TestHandlerServesAFile(t *testing.T) {
 	head := do(h, http.MethodHead, "/assets/x.js")
 	assert.Equal(t, http.StatusOK, head.Code)
 	assert.Empty(t, head.Body.String())
+}
+
+func TestHandlerServesTheManifest(t *testing.T) {
+	// The type would otherwise come from the host's mime.types, which may name another or none.
+	before := mime.TypeByExtension(".webmanifest")
+
+	require.NoError(t, mime.AddExtensionType(".webmanifest", "text/plain"))
+	t.Cleanup(func() {
+		if before != "" {
+			_ = mime.AddExtensionType(".webmanifest", before)
+		}
+	})
+
+	tree := withApp()
+	tree["app/manifest.webmanifest"] = &fstest.MapFile{Data: []byte(`{"name": "CAVU"}`)}
+
+	rec := do(newHandler(fakeAPI, tree), http.MethodGet, "/manifest.webmanifest")
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/manifest+json", rec.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"name": "CAVU"}`, rec.Body.String())
 }
 
 func TestHandlerFallsBackToThePage(t *testing.T) {

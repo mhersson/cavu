@@ -56,6 +56,11 @@ func newHandler(api http.Handler, root fs.FS) http.Handler {
 					h.Set("Cache-Control", "public, max-age=31536000, immutable")
 				}
 
+				// Go's own table lacks this extension, and the host's mime.types may too.
+				if name == "manifest.webmanifest" {
+					h.Set("Content-Type", "application/manifest+json")
+				}
+
 				http.ServeFileFS(w, r, files, name) //nolint:gosec // name is a file the app tree just stat-ed
 
 				return
