@@ -31,7 +31,7 @@ type credentialIn struct {
 
 // settings answers with every settable key whose value is not empty, a value
 // that is a JSON object as one, whether each instance secret is set, every
-// key's default and every switch's default.
+// named credential, every key's default and every switch's default.
 func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 	all, err := s.Store.Settings(r.Context())
 	if err != nil {
