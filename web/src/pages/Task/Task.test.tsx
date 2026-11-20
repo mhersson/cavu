@@ -265,3 +265,9 @@ test('on a phone the rail\'s sections fold and only those with something show', 
   expect(cancelButton()).not.toBeNull()
   expect(screen.getAllByRole('button', { name: 'Cancel task' })).toHaveLength(1)
 })
+
+test('the sessions without a cost are counted only when there are some', async () => {
+  serve({ ...base, cost_missing_sessions: 1 })
+  await show()
+  expect(document.querySelector('p.small')).toHaveTextContent('1')
+})

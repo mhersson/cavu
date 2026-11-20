@@ -42,7 +42,7 @@ function Cost({ task }: { task: TaskView }) {
         <dd>{duration(task.duration_ms)}</dd>
       </dl>
       {task.cost_missing_sessions > 0 && (
-        <p className="small">The estimate leaves out {task.cost_missing_sessions} sessions without a cost.</p>
+        <p className="small">The estimate leaves out {task.cost_missing_sessions} {task.cost_missing_sessions === 1 ? 'session' : 'sessions'} without a cost.</p>
       )}
       {task.usage.length > 0 && (
         <table className="usage">
