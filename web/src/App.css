@@ -37,6 +37,14 @@
   flex: 1;
 }
 
+.page-head .inline {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--grey2);
+  font-size: 13px;
+}
+
 .sub {
   color: var(--grey2);
   margin: 0 0 18px;

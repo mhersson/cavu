@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { Link } from 'react-router'
-import { api } from '../../api/client.ts'
+import { Link, useSearchParams } from 'react-router'
 import { useStream } from '../../api/stream.ts'
 import type { Row, Status as TaskStatus } from '../../api/types.ts'
+import { count, open, readLists } from '../../components/lists.ts'
 import PageHead from '../../components/PageHead.tsx'
 import StatusMark from '../../components/StatusMark.tsx'
 import './Status.css'
@@ -10,26 +10,53 @@ import './Status.css'
 const groups: TaskStatus[] = ['running', 'queued', 'blocked', 'in_review', 'draft']
 
 export default function Status() {
-  const [rows, setRows] = useState<Row[] | null>(null)
+  const [params, setParams] = useSearchParams()
+  const finished = params.get('finished') === '1'
 
-  useStream(() => {
-    api<{ tasks: Row[] }>('GET', '/tasks?status=draft,queued,running,blocked,in_review')
-      .then((r) => setRows(r.tasks))
-      .catch(() => {}) // the next event or reconnect reads again
-  })
+  const tick = (on: boolean) =>
+    setParams((p) => {
+      const next = new URLSearchParams(p)
+      if (on) next.set('finished', '1')
+      else next.delete('finished')
+      return next
+    })
 
   return (
     <div className="page status-page">
-      <PageHead title="Status" />
-      <p className="sub">{rows ? `${rows.length} open ${rows.length === 1 ? 'task' : 'tasks'}.` : '\u00a0'}</p>
-      {groups.map((status) => {
+      <PageHead title="Status">
+        <label className="inline">
+          <input type="checkbox" checked={finished} onChange={(e) => tick(e.target.checked)} />
+          Done and cancelled
+        </label>
+      </PageHead>
+      {/* Keyed on the tick, so a change of it subscribes, and so reads, afresh. */}
+      <Groups key={String(finished)} finished={finished} />
+    </div>
+  )
+}
+
+function Groups({ finished }: { finished: boolean }) {
+  const [rows, setRows] = useState<Row[] | null>(null)
+  const shownGroups: TaskStatus[] = finished ? [...groups, 'done', 'cancelled'] : groups
+
+  useStream(() => {
+    readLists(finished)
+      .then(setRows)
+      .catch(() => {}) // the next event or reconnect reads again
+  })
+
+  const openCount = (rows ?? []).filter((r) => open.includes(r.status)).length
+  return (
+    <>
+      <p className="sub">{rows ? `${openCount} open ${openCount === 1 ? 'task' : 'tasks'}.` : '\u00a0'}</p>
+      {shownGroups.map((status) => {
         const here = (rows ?? []).filter((r) => r.status === status)
         if (here.length === 0) return null
         return (
           <section key={status} aria-label={status}>
             <h2 className="grp">
               <StatusMark status={status} />
-              <span>{here.length}</span>
+              <span>{count(status, here.length)}</span>
             </h2>
             {here.map((r) => (
               <Link className="prow" key={r.id} to={`/tasks/${r.id}`}>
@@ -48,6 +75,6 @@ export default function Status() {
           </section>
         )
       })}
-    </div>
+    </>
   )
 }
