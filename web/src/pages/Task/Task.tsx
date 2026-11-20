@@ -1,13 +1,14 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { api } from '../../api/client.ts'
 import { useStream } from '../../api/stream.ts'
-import type { Task as TaskView } from '../../api/types.ts'
+import type { TaskEvent, Task as TaskView } from '../../api/types.ts'
 import Dialog from '../../components/Dialog.tsx'
 import { ChangeFacts, PullRequestFacts, ReviewFacts } from '../../components/Facts.tsx'
 import NeedsBox from '../../components/NeedsBox.tsx'
 import PageHead from '../../components/PageHead.tsx'
 import StatusMark from '../../components/StatusMark.tsx'
+import Timeline from '../../components/Timeline.tsx'
 import { clock, duration } from '../../components/time.ts'
 import { useNarrow } from '../../components/useNarrow.ts'
 import './Task.css'
@@ -111,6 +112,9 @@ function Page({ id }: { id: number }) {
   const [missing, setMissing] = useState('')
   const [asking, setAsking] = useState(false)
   const [refused, setRefused] = useState('')
+  const [events, setEvents] = useState<TaskEvent[]>([])
+  const [stretches, setStretches] = useState<ReadonlySet<number>>(() => new Set())
+  const asked = useRef(new Set<number>())
 
   const read = () =>
     api<TaskView>('GET', `/tasks/${id}`).then(
@@ -121,9 +125,43 @@ function Page({ id }: { id: number }) {
       (e: Error) => setMissing(e.message), // only shown while there is no task
     )
 
+  // Reads on while a page comes back full and its last id is below end.
+  async function walk(query: Record<string, string>, size: number, end = Infinity) {
+    const q = new URLSearchParams(query)
+    const got: TaskEvent[] = []
+    for (;;) {
+      const page = (await api<{ events: TaskEvent[] }>('GET', `/tasks/${id}/events?${q}`)).events
+      got.push(...page)
+      if (page.length < size || page[size - 1].id >= end) return got
+      q.set('after', String(page[size - 1].id))
+    }
+  }
+
+  // Reads may overlap: the list keeps each event once, in id order.
+  const add = (more: TaskEvent[]) =>
+    setEvents((list) => [...new Map([...list, ...more].map((e) => [e.id, e])).values()].sort((a, b) => a.id - b.id))
+
   useStream((ids) => {
-    if (!ids || ids.has(id)) void read()
+    if (ids && !ids.has(id)) return
+    void read()
+    // Events never change and ids only rise, so only those after the newest can be new.
+    // A failed read is made good by the next burst or reconnect, which reads from the same newest.
+    const newest = events.at(-1)?.id
+    walk(newest === undefined ? { agent: 'false', limit: '1000' } : { after: String(newest), limit: '1000' }, 1000).then(add, () => {})
   })
+
+  const stretch = (start: number, end = Infinity) => {
+    if (asked.current.has(start)) return
+    asked.current.add(start)
+    walk({ after: String(start) }, 200, end).then(
+      (got) => {
+        add(got.filter((e) => e.id < end))
+        setStretches((s) => new Set(s).add(start))
+      },
+      () => asked.current.delete(start), // asked again at its next opening
+    )
+  }
+  const timeline = <Timeline events={events} read={stretches} onStretch={stretch} />
 
   if (!task) return <div className="page task-page">{missing && <p>{missing}</p>}</div>
 
@@ -185,12 +223,14 @@ function Page({ id }: { id: number }) {
           {fold('Review', task.review, <ReviewFacts review={task.review} />)}
           {fold('Cost and use', true, <Cost task={task} />)}
           <h2 className="sec">What happened</h2>
+          {timeline}
           {open && <p className="cancel-row">{button}</p>}
         </>
       ) : (
         <div className="task-grid">
           <div>
             <h2 className="sec">What happened</h2>
+            {timeline}
           </div>
           <aside className="rail">
             <PullRequestFacts pr={task.pull_request} />

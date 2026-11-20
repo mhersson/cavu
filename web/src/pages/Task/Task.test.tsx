@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import App from '../../App.tsx'
-import type { Task } from '../../api/types.ts'
+import type { Task, TaskEvent } from '../../api/types.ts'
 import { clock } from '../../components/time.ts'
 import { FakeEventSource, fakeServer, json, narrow, type Call } from '../../test-server.ts'
 
@@ -270,4 +270,105 @@ test('the sessions without a cost are counted only when there are some', async (
   serve({ ...base, cost_missing_sessions: 1 })
   await show()
   expect(document.querySelector('p.small')).toHaveTextContent('1')
+})
+
+const ev = (id: number, type: string, actor: TaskEvent['actor'] = 'engine'): TaskEvent => ({
+  id,
+  task_id: 7,
+  run_id: 1,
+  at: '2030-01-02T03:04:05Z',
+  type,
+  actor,
+  payload: {},
+  text: `${type} ${id}`,
+})
+
+const eventsQuery = (c: Call) => {
+  const u = new URL(c.path, 'http://cavu.test')
+  return u.pathname === '/api/tasks/7/events' ? Object.fromEntries(u.searchParams) : null
+}
+// The query of each request for the task's events, in order.
+const eventReads = (calls: Call[]) => calls.map(eventsQuery).filter((q) => q !== null)
+
+// answer gives the events for a request's query.
+function serveEvents(answer: (q: Record<string, string>) => TaskEvent[]) {
+  return serve(base, (c) => {
+    const q = eventsQuery(c)
+    return q ? json({ events: answer(q) }) : undefined
+  })
+}
+
+const foldOf = () => document.querySelector<HTMLDetailsElement>('.tl > details')!
+
+test("the page asks for events without the agent's steps first", async () => {
+  const full = Array.from({ length: 1000 }, (_, i) => ev(i + 1, 'pr_observed', 'runner'))
+  const calls = serveEvents((q) => (q.after === undefined ? full : q.after === '1000' ? [ev(1001, 'pr_observed', 'runner')] : []))
+  await show()
+  expect(eventReads(calls)).toEqual([
+    { agent: 'false', limit: '1000' },
+    { agent: 'false', limit: '1000', after: '1000' },
+  ])
+  expect(screen.getByText('pr_observed 1001')).toBeInTheDocument()
+})
+
+test("opening a fold reads the agent's steps of that stretch", async () => {
+  const opening = [ev(1, 'run_started'), ev(10, 'session_started'), ev(500, 'session_ended', 'runner'), ev(501, 'verify_started')]
+  // every event after the start: the agent's steps, the session's end, and more past it
+  const after = Array.from({ length: 600 }, (_, i) => i + 11).map((id) => opening.find((e) => e.id === id) ?? ev(id, 'agent_tool', 'agent'))
+  const calls = serveEvents((q) => (q.agent === 'false' ? opening : after.filter((e) => e.id > Number(q.after)).slice(0, 200)))
+  await show()
+  expect(eventReads(calls)).toHaveLength(1)
+  expect(foldOf().open).toBe(false)
+
+  const toggle = () => fireEvent.click(foldOf().querySelector('summary')!)
+  toggle()
+  await settle()
+  expect(eventReads(calls).slice(1)).toEqual([{ after: '10' }, { after: '210' }, { after: '410' }])
+  expect(foldOf().querySelectorAll('.ev')).toHaveLength(489)
+  expect(foldOf().querySelector('summary')).toHaveTextContent(/^489 /)
+  expect(screen.queryByText('agent_tool 502')).toBeNull()
+
+  toggle()
+  toggle()
+  await settle()
+  expect(foldOf().open).toBe(true)
+  expect(eventReads(calls)).toHaveLength(4)
+})
+
+test("the live session's steps are read with the page", async () => {
+  const calls = serveEvents((q) =>
+    q.agent === 'false' ? [ev(1, 'run_started'), ev(5, 'session_started')] : q.after === '5' ? [ev(6, 'agent_tool', 'agent'), ev(7, 'agent_text', 'agent')] : [],
+  )
+  await show()
+  expect(eventReads(calls)).toEqual([{ agent: 'false', limit: '1000' }, { after: '5' }])
+  expect(foldOf().open).toBe(true)
+  expect(within(foldOf()).getByText('agent_text 7')).toBeInTheDocument()
+})
+
+test('a new event appears without a reload', async () => {
+  const calls = serveEvents((q) => (q.agent === 'false' ? [ev(1, 'run_started'), ev(2, 'prepared', 'runner')] : q.after === '2' ? [ev(4, 'verify_started')] : []))
+  await show()
+  act(() => FakeEventSource.all[0].send(3, { task_id: 8 }))
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  await settle()
+  expect(eventReads(calls)).toHaveLength(1)
+
+  const before = reads(calls).length
+  act(() => FakeEventSource.all[0].send(4, { task_id: 7 }))
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  await settle()
+  expect(reads(calls)).toHaveLength(before + 1)
+  expect(eventReads(calls).slice(1)).toEqual([{ after: '2', limit: '1000' }])
+  expect(screen.getByText('verify_started 4')).toBeInTheDocument()
+})
+
+test('a reconnect reads the events after the newest', async () => {
+  const calls = serveEvents((q) => (q.agent === 'false' ? [ev(1, 'run_started'), ev(2, 'prepared', 'runner')] : q.after === '2' ? [ev(3, 'verify_started')] : []))
+  await show()
+  const es = FakeEventSource.all[0]
+  act(() => es.open())
+  act(() => es.open())
+  await settle()
+  expect(eventReads(calls)).toEqual([{ agent: 'false', limit: '1000' }, { after: '2', limit: '1000' }])
+  expect(screen.getByText('verify_started 3')).toBeInTheDocument()
 })

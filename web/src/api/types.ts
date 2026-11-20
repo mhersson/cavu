@@ -144,6 +144,17 @@ export type TaskEvent = {
   text: string
 }
 
+// The payload fields a client may rely on, of the two types a screen reads.
+export type VerifyEnded = {
+  result: 'passed' | 'failed' | 'timeout' | 'waived'
+  command: string
+  exit_code: number
+  output: string
+  duration_ms: number
+}
+
+export type SessionEnded = { summary: string; assumptions: string[] | null; where_to_look?: string[] }
+
 export type Project = {
   id: number
   name: string
