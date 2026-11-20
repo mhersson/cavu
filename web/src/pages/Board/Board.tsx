@@ -77,7 +77,7 @@ function Columns({ finished, project }: { finished: boolean; project: string }) 
   return (
     <>
       <p className="sub">
-        {rows ? `${rows.length} tasks, each where CAVU has it now. Nothing here is dragged.` : ' '}
+        {rows ? `${rows.length} ${rows.length === 1 ? 'task' : 'tasks'}, each where CAVU has it now. Nothing here is dragged.` : '\u00a0'}
       </p>
       <div className="board" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
         {columns.map((status) => {
