@@ -166,6 +166,22 @@ test('the chosen task leaving the list chooses the first row', async () => {
   expect(reads(calls, 3)).toHaveLength(1)
 })
 
+test('the chosen task holds when a new one arrives at the top', async () => {
+  vi.useFakeTimers()
+  const world = { needing: [row(1), stopped(2, '2030-01-02T05:00:00Z')], working: [] }
+  serve(world)
+  await show()
+  expect(chosen()).toHaveTextContent('Task 2')
+
+  world.needing = [...world.needing, ready(3, '2030-01-02T06:00:00Z')]
+  act(() => FakeEventSource.all[0].send(1, { task_id: 3 }))
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  await settle()
+  expect(listed()[0]).toHaveTextContent('Task 3')
+  expect(chosen()).toHaveTextContent('Task 2')
+  expect(beside()).toHaveTextContent('Task 2')
+})
+
 test('an event for a shown task reads it again', async () => {
   vi.useFakeTimers()
   const calls = serve({ needing: [row(1), stopped(2, '2030-01-02T05:00:00Z')], working: [] })
