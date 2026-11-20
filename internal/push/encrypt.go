@@ -1,4 +1,5 @@
-// Package push sends Web Push notifications: it encrypts a message for a
+// Package push notifies a person's browsers of each way a task comes to need
+// them, once, skipping the device being looked at: it encrypts a message for a
 // browser's subscription and posts it, signed as the instance, to the push
 // service the subscription names.
 package push

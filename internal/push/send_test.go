@@ -133,7 +133,7 @@ type sent struct {
 func pushService(t *testing.T, status int, reply string) (*httptest.Server, <-chan sent) {
 	t.Helper()
 
-	got := make(chan sent, 1)
+	got := make(chan sent, 8)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		got <- sent{method: r.Method, path: r.URL.Path, header: r.Header.Clone(), body: body}
