@@ -437,3 +437,70 @@ func TestDetectUv(t *testing.T) {
 		})
 	}
 }
+
+func TestDetectGolangci(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		files      map[string]string
+		overrides  map[string]string
+		wantTools  []Tool
+		wantErrHas string
+	}{
+		{name: "yaml", files: map[string]string{".golangci.yaml": "version: \"2\"\nlinters:\n  default: none\n"}, wantTools: []Tool{{"golangci-lint", "2"}}},
+		{name: "yml unquoted with comment", files: map[string]string{".golangci.yml": "version: 2 # v2\n"}, wantTools: []Tool{{"golangci-lint", "2"}}},
+		{name: "yaml single quotes", files: map[string]string{".golangci.yaml": "version: '2'\n"}, wantTools: []Tool{{"golangci-lint", "2"}}},
+		{name: "toml", files: map[string]string{".golangci.toml": "version = \"2\"\n\n[linters]\ndefault = \"none\"\n"}, wantTools: []Tool{{"golangci-lint", "2"}}},
+		{name: "toml number", files: map[string]string{".golangci.toml": "version = 2\n"}, wantTools: []Tool{{"golangci-lint", "2"}}},
+		{name: "json", files: map[string]string{".golangci.json": `{"version": "2", "linters": {}}`}, wantTools: []Tool{{"golangci-lint", "2"}}},
+		{name: "json number", files: map[string]string{".golangci.json": `{"version": 2}`}, wantTools: []Tool{{"golangci-lint", "2"}}},
+		{name: "yaml without version is 1", files: map[string]string{".golangci.yml": "linters:\n  enable:\n    - govet\n"}, wantTools: []Tool{{"golangci-lint", "1"}}},
+		{name: "yaml nested version is not the field", files: map[string]string{".golangci.yml": "run:\n  version: 2\n"}, wantTools: []Tool{{"golangci-lint", "1"}}},
+		{name: "toml without version is 1", files: map[string]string{".golangci.toml": "[linters]\n"}, wantTools: []Tool{{"golangci-lint", "1"}}},
+		{name: "json without version is 1", files: map[string]string{".golangci.json": "{}"}, wantTools: []Tool{{"golangci-lint", "1"}}},
+		{
+			name:      "tool-versions wins",
+			files:     map[string]string{".golangci.yml": "version: \"2\"\n", ".tool-versions": "golangci-lint 2.5.0\n"},
+			wantTools: []Tool{{"golangci-lint", "2.5.0"}},
+		},
+		{
+			name:      "mise wins",
+			files:     map[string]string{".golangci.yml": "version: \"2\"\n", "mise.toml": "[tools]\ngolangci-lint = \"2.4.0\"\n"},
+			wantTools: []Tool{{"golangci-lint", "2.4.0"}},
+		},
+		{
+			name:      "override wins",
+			files:     map[string]string{".golangci.yml": "version: \"2\"\n", ".tool-versions": "golangci-lint 2.5.0\n"},
+			overrides: map[string]string{"golangci-lint": "2.6.1"},
+			wantTools: []Tool{{"golangci-lint", "2.6.1"}},
+		},
+		{name: "toml that does not parse", files: map[string]string{".golangci.toml": "version = "}, wantErrHas: ".golangci.toml"},
+		{name: "json that does not parse", files: map[string]string{".golangci.json": "{"}, wantErrHas: ".golangci.json"},
+		{name: "no configuration adds nothing", files: nil, wantTools: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			files := map[string][]byte{}
+			for k, v := range tt.files {
+				require.Contains(t, VersionFiles(), k)
+				files[k] = []byte(v)
+			}
+
+			got, err := Detect(files, tt.overrides)
+			if tt.wantErrHas != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErrHas)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantTools, got.Tools)
+			assert.Empty(t, got.Ecosystems)
+		})
+	}
+}

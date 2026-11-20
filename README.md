@@ -101,7 +101,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
 
    Press **Create and check**.
 
-9. **The environment check.** CAVU now prepares the project the way each task's run does: it clones the repository in a sandbox, installs the tools that the version files at the repository's root name (such as `go.mod` or `.nvmrc`), runs the setup command, and runs the verify command once on the base branch. The result is the project's baseline: tasks run only on a project whose baseline passed, or whose verify command is waived. The page waits for the check, which downloads the project's tools the first time, and then shows its result and output.
+9. **The environment check.** CAVU now prepares the project the way each task's run does: it clones the repository in a sandbox, installs the tools that the files at the repository's root name (such as `go.mod`, `.nvmrc` or `.golangci.yml`), runs the setup command, and runs the verify command once on the base branch. The result is the project's baseline: tasks run only on a project whose baseline passed, or whose verify command is waived. The page waits for the check, which downloads the project's tools the first time, and then shows its result and output.
    - **It can run tasks.** The check passed: press **Create the first task**.
    - **It cannot run tasks yet.** The line names the step that failed, and the output under it shows why: `clone` points at the repository address, the base branch or the GitHub token; `toolchain` at the tool versions the repository's files name; `setup` at the setup command; `baseline` at the verify command, or at code on the base branch that does not pass it. Press **Open the project**, then **Edit**, correct what the output points at, and **Save**: CAVU checks the project again. **Check again** asks for a new check without a change, for instance after you changed the token under **Settings** or fixed the repository itself.
 
@@ -413,6 +413,8 @@ A replayed task starts as a new task does, so its project needs a passed baselin
 Download the modules in the setup command (`go mod download`): the setup phase reaches `storage.googleapis.com`, where the module proxy sends large modules, and the agent phase reads the modules from the project's cache. A task that needs a large module the setup did not fetch is refused with the denied-host line; `cavu project set NAME --egress storage.googleapis.com` allows that host for the project; `--egress` sets the whole list, so repeat it for every host the project already allows.
 
 A task's first build starts from the build cache of the project's newest passed check. Go's test results travel with that cache, so a verify command that must rerun every test says `-count=1` (`go test -count=1 ./...`).
+
+A `.golangci.yml`, `.golangci.yaml`, `.golangci.toml` or `.golangci.json` at the repository's root installs golangci-lint, at the newest release of the major version its `version` field names, or of 1 when it has none. A newer release can report what an older one does not, so a repository whose CI pins golangci-lint pins the same version in the project: `cavu project set NAME --tool golangci-lint=VERSION`, or a line under **Versions set here** on the project's page. `--tool` sets the whole list, so repeat it for every version the project already sets.
 
 ### Python projects
 
