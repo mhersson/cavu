@@ -62,6 +62,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/setup" element={<Setup />} />
       <Route element={<Frame />}>
         <Route path="/" element={<NeedsYou />} />
         <Route path="/tasks/:id" element={<Task />} />
@@ -69,7 +70,6 @@ export default function App() {
         <Route path="/projects" element={<Projects />} />
         <Route path="/projects/:name" element={<Projects />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="/setup" element={<Setup />} />
         <Route path="/new" element={<NewTask />} />
         <Route path="/status" element={<Status />} />
         <Route path="/more" element={<More />} />

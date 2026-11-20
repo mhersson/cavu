@@ -7,7 +7,7 @@ import '../theme/base.css'
 import App from '../App.tsx'
 import { useLook } from '../theme/theme.ts'
 import type { Look } from '../theme/theme.ts'
-import { EVENTS, HEALTH, PROJECTS, ROWS, SETTINGS, VIEWS } from './fixtures.ts'
+import { EVENTS, HEALTH, PROJECTS, ROWS, SETTINGS, SETUP, VIEWS } from './fixtures.ts'
 
 const query = new URLSearchParams(window.location.search)
 // empty=1 serves no task that needs a person.
@@ -111,6 +111,13 @@ if (click) {
     target?.click()
     if (target || ++tries === 20) clearInterval(timer)
   }, 100)
+}
+
+// setup=1|2|3|4|failed serves a fresh instance at that point of its setup.
+const setup = SETUP[query.get('setup') ?? '']
+if (setup) {
+  Object.assign(SETTINGS, { settings: setup.settings, secrets: setup.secrets, forge_credentials: [] })
+  PROJECTS.splice(0, PROJECTS.length, ...setup.projects)
 }
 
 createRoot(document.getElementById('root')!).render(
