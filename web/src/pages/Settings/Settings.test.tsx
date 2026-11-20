@@ -265,6 +265,47 @@ test('a key is sent once and never shown', async () => {
   expect(document.body.innerHTML).not.toContain('MIIEpAIBAAKCAQEA')
 })
 
+test('a credential is sent only with its secret', async () => {
+  const calls = open(saved())
+  const user = userEvent.setup()
+  const gh = within(await section('GitHub'))
+
+  await user.click(gh.getByRole('button', { name: 'Add a credential' }))
+  await user.type(gh.getByLabelText('Name'), 'new-org')
+  expect(gh.getByRole('button', { name: 'Add' })).toBeDisabled()
+  await user.type(gh.getByLabelText('Token'), 'ghp-new')
+  expect(gh.getByRole('button', { name: 'Add' })).toBeEnabled()
+  await user.click(gh.getByRole('radio', { name: 'A GitHub App' }))
+  expect(gh.getByRole('button', { name: 'Add' })).toBeDisabled()
+  await user.upload(gh.getByLabelText('Private key'), pem())
+  expect(gh.getByRole('button', { name: 'Add' })).toBeEnabled()
+  await user.click(gh.getByRole('radio', { name: 'A token' }))
+  await user.click(gh.getByRole('radio', { name: 'A GitHub App' }))
+  expect(gh.getByRole('button', { name: 'Add' })).toBeDisabled()
+  await user.click(gh.getByRole('button', { name: 'Cancel' }))
+
+  await user.click(within(gh.getAllByRole('row')[0]).getByRole('button', { name: 'Set' }))
+  await user.click(gh.getByRole('radio', { name: 'A GitHub App' }))
+  await user.type(gh.getByLabelText('App id'), '8')
+  expect(send('Replace')).toBeDisabled()
+  await user.upload(gh.getByLabelText('Private key'), pem())
+  expect(send('Replace')).toBeEnabled()
+  expect(patches(calls)).toEqual([])
+})
+
+test('a file chosen for one credential is never sent for another', async () => {
+  open({ ...saved(), forge_credentials: [...NAMED, { name: 'ci-app', kind: 'app', app_id: 7 }] })
+  const user = userEvent.setup()
+  const gh = within(await section('GitHub'))
+  await user.click(cred('work-app').getByRole('button', { name: 'Replace' }))
+  await user.upload(gh.getByLabelText('Private key'), pem())
+  expect((gh.getByLabelText('Private key') as HTMLInputElement).files).toHaveLength(1)
+  await user.click(cred('ci-app').getByRole('button', { name: 'Replace' }))
+  expect(gh.getByLabelText('App id')).toHaveValue('7')
+  expect((gh.getByLabelText('Private key') as HTMLInputElement).files).toHaveLength(0)
+  expect(send('Replace')).toBeDisabled()
+})
+
 test('a narrow window shows each section as a fold, the first open', async () => {
   narrow(true)
   open(saved())

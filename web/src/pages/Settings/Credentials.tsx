@@ -10,7 +10,8 @@ type Kind = 'token' | 'app'
 type Used = { name: string; forge_credential: string }
 
 // One form for Add and every Replace; the default's Replace has the name "".
-type Form = { add: boolean; name: string; kind: Kind; token: string; appId: string }
+// chosen says a key file is chosen; its text is read only as it is sent.
+type Form = { add: boolean; name: string; kind: Kind; token: string; appId: string; chosen: boolean }
 
 const kinds: [Kind, string][] = [
   ['token', 'A token'],
@@ -90,7 +91,7 @@ export default function Credentials({ saved, onSaved }: { saved: Saved; onSaved:
                 </td>
                 <td className="wait">{users && (users.length ? 'Used by ' + users.join(', ') : 'No project uses it')}</td>
                 <td className="cacts">
-                  <button className="btn" onClick={() => setForm({ add: false, name: c.name, kind: c.kind ?? 'token', token: '', appId: String(c.app_id ?? '') })}>
+                  <button className="btn" onClick={() => setForm({ add: false, name: c.name, kind: c.kind ?? 'token', token: '', appId: String(c.app_id ?? ''), chosen: false })}>
                     {c.kind ? 'Replace' : 'Set'}
                   </button>
                   {c.name && users?.length === 0 && (
@@ -105,7 +106,8 @@ export default function Credentials({ saved, onSaved }: { saved: Saved; onSaved:
         </tbody>
       </table>
       {form ? (
-        <div className="addcred">
+        // A new target is a new form, so a file chosen for one is never sent for another.
+        <div className="addcred" key={form.add ? 'add' : 'replace-' + form.name}>
           <div className="frow">
             <label htmlFor="cred-name">Name</label>
             {form.add ? (
@@ -123,7 +125,7 @@ export default function Credentials({ saved, onSaved }: { saved: Saved; onSaved:
               <span className="mono">{form.name || 'default'}</span>
             )}
           </div>
-          <Choice id="cred-kind" label="Kind" options={kinds} value={form.kind} onChange={(kind) => edit({ kind })} />
+          <Choice id="cred-kind" label="Kind" options={kinds} value={form.kind} onChange={(kind) => edit(kind === form.kind ? {} : { kind, chosen: false })} />
           {form.kind === 'token' ? (
             <div className="frow">
               <label htmlFor="cred-token">Token</label>
@@ -137,11 +139,11 @@ export default function Credentials({ saved, onSaved }: { saved: Saved; onSaved:
               </div>
               <div className="frow">
                 <label htmlFor="cred-key">Private key</label>
-                <input id="cred-key" type="file" accept=".pem" className="in" ref={file} />
+                <input id="cred-key" type="file" accept=".pem" className="in" ref={file} onChange={(e) => edit({ chosen: !!e.target.files?.length })} />
               </div>
             </>
           )}
-          <button className="btn primary" onClick={() => void submit(form)}>
+          <button className="btn primary" disabled={form.kind === 'token' ? !form.token : !form.chosen} onClick={() => void submit(form)}>
             {form.add ? 'Add' : 'Replace'}
           </button>{' '}
           <button className="btn" onClick={() => setForm(null)}>
@@ -149,7 +151,7 @@ export default function Credentials({ saved, onSaved }: { saved: Saved; onSaved:
           </button>
         </div>
       ) : (
-        <button className="btn" onClick={() => setForm({ add: true, name: '', kind: 'token', token: '', appId: '' })}>
+        <button className="btn" onClick={() => setForm({ add: true, name: '', kind: 'token', token: '', appId: '', chosen: false })}>
           Add a credential
         </button>
       )}

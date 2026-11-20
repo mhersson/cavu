@@ -70,7 +70,7 @@
   margin-top: 6px;
 }
 
-.set .btn.save:disabled {
+.set .btn:disabled {
   opacity: 0.55;
   cursor: default;
 }
