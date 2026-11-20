@@ -211,10 +211,10 @@ function Box({ task, onTask, onPage = false, flat = false }: Props) {
       acts = (
         <>
           <a className="btn" href={`/api/tasks/${task.id}/change?format=bundle`} download>
-            Download the change
+            Download the bundle
           </a>
-          <a className="btn link" href={`/api/tasks/${task.id}/change?format=diff`} download>
-            Diff
+          <a className="btn" href={`/api/tasks/${task.id}/change?format=diff`} download>
+            Download the diff
           </a>
           {button('Record the merge', () => void act({ action: 'done' }), true)}
         </>

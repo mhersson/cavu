@@ -161,10 +161,10 @@ test('a ready pull request links to its address', () => {
 test('a change to take offers the download and the recorded merge', async () => {
   const calls = serve(done, () => json(done))
   const { onTask } = show(task({ status: 'in_review', needs: 'take', change }))
-  expect(link('Download the change')).toHaveAttribute('href', '/api/tasks/7/change?format=bundle')
-  expect(link('Download the change')).toHaveAttribute('download')
-  expect(link('Diff')).toHaveAttribute('href', '/api/tasks/7/change?format=diff')
-  expect(link('Diff')).toHaveAttribute('download')
+  expect(link('Download the bundle')).toHaveAttribute('href', '/api/tasks/7/change?format=bundle')
+  expect(link('Download the bundle')).toHaveAttribute('download')
+  expect(link('Download the diff')).toHaveAttribute('href', '/api/tasks/7/change?format=diff')
+  expect(link('Download the diff')).toHaveAttribute('download')
   await userEvent.setup().click(button('Record the merge'))
   await waitFor(() => expect(onTask).toHaveBeenCalledWith(done))
   expect(actions(calls)).toEqual([{ action: 'done' }])
@@ -246,7 +246,7 @@ test('the box follows needs', () => {
     }),
   )
   expect(button('Record the merge')).toBeInTheDocument()
-  expect(link('Download the change')).toBeInTheDocument()
+  expect(link('Download the bundle')).toBeInTheDocument()
   for (const name of ['Retry', 'Answer', 'Use its assumptions']) {
     expect(screen.queryByRole('button', { name })).toBeNull()
   }
