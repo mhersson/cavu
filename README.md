@@ -169,7 +169,7 @@ Every step above can be done with commands instead, for those who prefer a termi
 - [Configuration](docs/configuration.md): building from source, settings and secrets, projects, the doctor, skills, Go and Python projects and replaying.
 - [Security](docs/security.md): what stays outside the sandbox, who may steer the agent, and what a pull request and the network reveal.
 - [API](docs/api.md): the HTTP API and the MCP tools.
-- [Assumptions](docs/assumptions.md): what CAVU assumes of today's models, and the test that tells when to delete each part.
+- [Assumptions](docs/assumptions.md): what CAVU assumes of today's models and of the pinned Claude Code, and the test that tells when to change or delete each part.
 
 ## Licence
 
