@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import type { Change, PullRequest, Question, Stop, Task } from '../api/types.ts'
 import { fakeServer, json, type Call } from '../test-server.ts'
@@ -177,12 +178,38 @@ test("a refused action shows the server's line and reads the task again", async 
   const user = userEvent.setup()
   await user.click(button('Retry'))
   expect(await screen.findByRole('alert')).toHaveTextContent(line)
-  await waitFor(() => expect(onTask).toHaveBeenCalledWith(reread))
+  await waitFor(() => expect(onTask).toHaveBeenCalledWith(reread, true))
   const post = calls.findIndex(isAction)
   expect(calls.findIndex((c, i) => i > post && c.method === 'GET' && c.path === '/api/tasks/7')).toBeGreaterThan(post)
   await waitFor(() => expect(button('Retry')).toBeEnabled())
   await user.click(button('Retry'))
   await waitFor(() => expect(actions(calls)).toHaveLength(2))
+})
+
+test('a refusal stays in view when the task needs nothing more', async () => {
+  const line = 'the question was answered a moment ago'
+  const answered = { ...done, id: 8 }
+  serve(answered, () => json({ error: line }, 400))
+  const onTask = vi.fn()
+  // The box's parent shows the task it is handed, as a page does.
+  function Live() {
+    const [t, setT] = useState(asking(8, [{ question: 'Which pages?', suggested_answer: '' }]))
+    const hand = (next: Task, refused?: boolean) => {
+      onTask(next, refused)
+      setT(next)
+    }
+    return <NeedsBox flat task={t} onTask={hand} />
+  }
+  render(
+    <MemoryRouter>
+      <Live />
+    </MemoryRouter>,
+  )
+  await userEvent.setup().click(button('Answer'))
+  await waitFor(() => expect(onTask).toHaveBeenCalledWith(answered, true))
+  expect(screen.getByRole('alert')).toHaveTextContent(line)
+  expect(link(answered.title)).toHaveAttribute('href', '/tasks/8')
+  expect(screen.queryByRole('button')).toBeNull()
 })
 
 test('a typed answer survives a failed send', async () => {

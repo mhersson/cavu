@@ -200,6 +200,65 @@ test('after an answer the next row is chosen without waiting for an event', asyn
   expect(beside()).toHaveTextContent('Task 1')
 })
 
+// Task 2 is answered elsewhere a moment before Answer: the action is refused and task 2 needs nothing more.
+function answeredElsewhere(world: World, line: string) {
+  let gone = false
+  return serve(world, (c) => {
+    if (c.path === '/api/tasks/2/actions') {
+      gone = true
+      world.needing = [row(1)]
+      return json({ error: line }, 400)
+    }
+    if (gone && c.path === '/api/tasks/2') {
+      return json(task(row(2, { status: 'queued', needs_you: false, needs: '', needs_you_since: null, stop_reason: '' })))
+    }
+  })
+}
+
+async function burst(task_id: number) {
+  act(() => FakeEventSource.all[0].send(1, { task_id }))
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  await settle()
+}
+
+test('a refused action whose task needs nothing more stays beside the list until another row is chosen', async () => {
+  vi.useFakeTimers()
+  const line = 'the question was answered a moment ago'
+  answeredElsewhere({ needing: [row(1), row(2, { needs_you_since: '2030-01-02T05:00:00Z' })], working: [] }, line)
+  await show()
+  fireEvent.click(screen.getByRole('button', { name: 'Answer' }))
+  await settle()
+  await burst(2)
+  expect(listed()).toHaveLength(1)
+  expect(beside()).toHaveTextContent('Task 2')
+  expect(screen.getByRole('alert')).toHaveTextContent(line)
+
+  fireEvent.click(screen.getByRole('button', { name: /^Task 1/ }))
+  await settle()
+  expect(beside()).toHaveTextContent('Task 1')
+  expect(screen.queryByRole('alert')).toBeNull()
+})
+
+test('on a phone a refused action whose task needs nothing more keeps its box', async () => {
+  vi.useFakeTimers()
+  narrow(true)
+  const line = 'the question was answered a moment ago'
+  const calls = answeredElsewhere(
+    { needing: [row(1), row(2, { needs_you_since: '2030-01-02T05:00:00Z' })], working: [] },
+    line,
+  )
+  await show()
+  fireEvent.click(within(screen.getAllByRole('article')[0]).getByRole('button', { name: 'Answer' }))
+  await settle()
+  const before = reads(calls, 2).length
+  await burst(2)
+  expect(reads(calls, 2)).toHaveLength(before + 1)
+  const boxes = screen.getAllByRole('article')
+  expect(boxes).toHaveLength(2)
+  expect(within(boxes[0]).getByRole('link', { name: 'Task 2' })).toBeInTheDocument()
+  expect(within(boxes[0]).getByRole('alert')).toHaveTextContent(line)
+})
+
 test('an event for a shown task reads it again', async () => {
   vi.useFakeTimers()
   const calls = serve({ needing: [row(1), stopped(2, '2030-01-02T05:00:00Z')], working: [] })

@@ -33,10 +33,14 @@ export default function NeedsYou() {
   const [views, setViews] = useState(new Map<number, Task>())
   const [chosen, setChosen] = useState(0)
   const [creating, setCreating] = useState(false)
+  // A refused task that needs nothing more stays in view with the refusal until the person moves on.
+  const [held, setHeld] = useState(0)
 
   const needing = lists?.needing ?? []
   const working = lists?.working ?? []
-  const shown = narrow ? needing.map((r) => r.id) : chosen ? [chosen] : []
+  const listed = needing.map((r) => r.id)
+  const boxes = held && !listed.includes(held) ? [held, ...listed] : listed
+  const shown = narrow ? boxes : chosen ? [chosen] : []
 
   const keep = (t: Task) => setViews((m) => new Map(m).set(t.id, t))
   const read = (id: number) => {
@@ -54,14 +58,15 @@ export default function NeedsYou() {
         const rows = n.tasks.toSorted((a, b) => Date.parse(since(b)) - Date.parse(since(a)))
         setLists({ needing: rows, working: w.tasks.filter((r) => !r.needs_you) })
         // The choice holds while its task is listed, so a task that comes in does not take it away.
-        setChosen((c) => (rows.some((r) => r.id === c) ? c : (rows[0]?.id ?? 0)))
+        setChosen((c) => ((held > 0 && c === held) || rows.some((r) => r.id === c) ? c : (rows[0]?.id ?? 0)))
       })
       .catch(() => {})
   }
   // A task that no longer needs a person leaves the list now, not at the next burst of events.
-  const acted = (t: Task) => {
+  const acted = (t: Task, refused = false) => {
     keep(t)
-    if (!t.needs) readLists()
+    setHeld(refused && !t.needs ? t.id : 0)
+    if (!t.needs && !refused) readLists()
   }
 
   useStream((ids) => {
@@ -84,7 +89,7 @@ export default function NeedsYou() {
   }, [])
 
   const n = needing.length
-  const empty = lists !== null && n === 0
+  const empty = lists !== null && n === 0 && !held
   const sub = n ? tasks(n, 'waits', 'wait') + ' for you' + (narrow ? '.' : ', the most recent first.') : '\u00a0'
   const nobody = tasks(working.length, 'is', 'are') + ' working without you.'
 
@@ -99,9 +104,9 @@ export default function NeedsYou() {
             {nobody}
           </div>
         ) : (
-          needing.map((r) => {
-            const t = views.get(r.id)
-            return t && <NeedsBox key={r.id} task={t} onTask={acted} />
+          boxes.map((id) => {
+            const t = views.get(id)
+            return t && <NeedsBox key={id} task={t} onTask={acted} />
           })
         )}
       </div>
@@ -150,7 +155,7 @@ export default function NeedsYou() {
           )}
         </>
       )}
-      {n > 0 && (
+      {(n > 0 || held > 0) && (
         <div className="panes">
           <div className="plist">
             {needing.map((r) => (
@@ -158,7 +163,10 @@ export default function NeedsYou() {
                 key={r.id}
                 className={`pitem k-${r.needs}`}
                 aria-current={r.id === chosen || undefined}
-                onClick={() => setChosen(r.id)}
+                onClick={() => {
+                  setChosen(r.id)
+                  setHeld(0)
+                }}
               >
                 <i className="mk" />
                 <span>

@@ -6,7 +6,8 @@ import { ChangeFacts, PullRequestFacts, ReviewFacts } from './Facts.tsx'
 import { ago, duration } from './time.ts'
 import './NeedsBox.css'
 
-type Props = { task: Task; onTask: (t: Task) => void; onPage?: boolean; flat?: boolean }
+// refused is true for the task read again after the server refused an action.
+type Props = { task: Task; onTask: (t: Task, refused?: boolean) => void; onPage?: boolean; flat?: boolean }
 type Action = { action: 'answer'; text: string } | { action: 'retry' | 'done' }
 type Verify = { result: string; command: string; exit_code: number; duration_ms: number; output: string }
 
@@ -56,7 +57,8 @@ function Box({ task, onTask, onPage = false, flat = false }: Props) {
       .catch(() => {})
   }, [readVerify, task.id, task.needs_you_since])
 
-  if (!task.needs) return null
+  // A refusal stays in view with its task, even when the task needs nothing more.
+  if (!task.needs && !refused) return null
 
   async function act(a: Action) {
     setBusy(true)
@@ -70,7 +72,7 @@ function Box({ task, onTask, onPage = false, flat = false }: Props) {
       onTask(t)
     } catch (e) {
       setRefused(e instanceof Error ? e.message : String(e))
-      await api<Task>('GET', `/tasks/${task.id}`).then(onTask, () => {}) // the line shown is the refusal's
+      await api<Task>('GET', `/tasks/${task.id}`).then((t) => onTask(t, true), () => {}) // the line shown is the refusal's
     }
     setBusy(false)
   }
@@ -229,15 +231,18 @@ function Box({ task, onTask, onPage = false, flat = false }: Props) {
   if (flat) {
     return (
       <div className={`needs flat k-${task.needs}`}>
-        <div className="kind">
-          <i className="mk" />
-          {label}
-        </div>
+        {label && (
+          <div className="kind">
+            <i className="mk" />
+            {label}
+          </div>
+        )}
         <h2>
           <Link to={page}>{task.title}</Link>
         </h2>
         <div className="meta">
-          Task {task.id} in {task.project}, {since}
+          Task {task.id} in {task.project}
+          {since && `, ${since}`}
         </div>
         {lead && <div className="lead">{lead}</div>}
         {field}
@@ -250,11 +255,13 @@ function Box({ task, onTask, onPage = false, flat = false }: Props) {
 
   return (
     <article className={`needs strip k-${task.needs}`}>
-      <div className="l0">
-        <i className="mk" />
-        <span className="kind">{label}</span>
-        <span className="age">{since}</span>
-      </div>
+      {label && (
+        <div className="l0">
+          <i className="mk" />
+          <span className="kind">{label}</span>
+          <span className="age">{since}</span>
+        </div>
+      )}
       {!onPage && (
         <div className="l1">
           <span className="mono">{task.id}</span>
