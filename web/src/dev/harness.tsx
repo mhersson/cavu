@@ -9,15 +9,30 @@ import { useLook } from '../theme/theme.ts'
 import type { Look } from '../theme/theme.ts'
 import { EVENTS, HEALTH, PROJECTS, ROWS, SETTINGS, VIEWS } from './fixtures.ts'
 
+const query = new URLSearchParams(window.location.search)
+// empty=1 serves no task that needs a person.
+const rows = query.get('empty') === '1' ? ROWS.filter((r) => !r.needs_you) : ROWS
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
-function answer(method: string, url: URL): Response {
+// order=newest and limit, as the server pages a list; a limit of 0 is all of it.
+function page<T>(list: T[], q: URLSearchParams): T[] {
+  return (q.get('order') === 'newest' ? [...list].reverse() : list).slice(0, Number(q.get('limit')) || undefined)
+}
+
+function answer(method: string, url: URL, body: string): Response {
   const path = url.pathname
   const q = url.searchParams
   if (method === 'POST' && (path === '/api/auth/login' || path === '/api/auth/logout')) {
     return new Response(null, { status: 204 })
   }
+  if (method === 'POST' && path === '/api/tasks') {
+    const t = JSON.parse(body) as { project: string; title: string; body: string }
+    return json({ ...VIEWS[42], id: 45, project: t.project, title: t.title, body: t.body, status: 'draft' }, 201)
+  }
+  const acted = path.match(/^\/api\/tasks\/(\d+)\/actions$/)
+  if (method === 'POST' && acted && VIEWS[Number(acted[1])]) return json(VIEWS[Number(acted[1])])
   if (method !== 'GET') return json({ error: 'not found' }, 404)
   if (path === '/api/health') return json(HEALTH)
   if (path === '/api/settings') return json(SETTINGS)
@@ -28,20 +43,22 @@ function answer(method: string, url: URL): Response {
     return p ? json(p) : json({ error: 'not found' }, 404)
   }
   if (path === '/api/tasks') {
-    let rows = ROWS.filter(
+    const statuses = q.get('status')?.split(',')
+    const kept = rows.filter(
       (r) =>
         (q.get('needs_you') !== 'true' || r.needs_you) &&
         (!q.get('project') || r.project === q.get('project')) &&
-        (!q.get('status') || r.status === q.get('status')),
+        (!statuses || statuses.includes(r.status)),
     )
-    if (q.get('order') === 'newest') rows = [...rows].reverse()
-    if (q.get('limit')) rows = rows.slice(0, Number(q.get('limit')))
-    return json({ tasks: rows })
+    return json({ tasks: page(kept, q) })
   }
   const task = path.match(/^\/api\/tasks\/(\d+)(\/events)?$/)
   if (task) {
     const id = Number(task[1])
-    if (task[2]) return json({ events: EVENTS[id] ?? [] })
+    if (task[2]) {
+      const events = (EVENTS[id] ?? []).filter((e) => q.get('agent') !== 'false' || e.actor !== 'agent')
+      return json({ events: page(events, q) })
+    }
     return VIEWS[id] ? json(VIEWS[id]) : json({ error: 'not found' }, 404)
   }
   return json({ error: 'not found' }, 404)
@@ -49,7 +66,7 @@ function answer(method: string, url: URL): Response {
 
 window.fetch = (input, init) => {
   const url = new URL(String(input), window.location.origin)
-  return Promise.resolve(answer(init?.method ?? 'GET', url))
+  return Promise.resolve(answer(init?.method ?? 'GET', url, String(init?.body ?? '')))
 }
 
 // A stream that opens and stays live.
@@ -66,7 +83,6 @@ class LiveEventSource {
 }
 window.EventSource = LiveEventSource as unknown as typeof EventSource
 
-const query = new URLSearchParams(window.location.search)
 const look: Look = {
   theme: ['dark', 'light'].includes(query.get('theme') ?? '') ? (query.get('theme') as Look['theme']) : 'system',
   palette: query.get('palette') === 'catppuccin' ? 'catppuccin' : 'copper',
@@ -76,6 +92,17 @@ export function Apply() {
   const [, setLook] = useLook()
   useEffect(() => setLook(look), [setLook])
   return null
+}
+
+// click=TEXT clicks the first button or link whose text starts with TEXT, once the page shows it.
+const click = query.get('click')
+if (click) {
+  let tries = 0
+  const timer = setInterval(() => {
+    const target = [...document.querySelectorAll<HTMLElement>('button, a')].find((e) => e.textContent?.startsWith(click))
+    target?.click()
+    if (target || ++tries === 20) clearInterval(timer)
+  }, 100)
 }
 
 createRoot(document.getElementById('root')!).render(
