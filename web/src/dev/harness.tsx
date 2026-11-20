@@ -36,6 +36,18 @@ function answer(method: string, url: URL, body: string): Response {
   }
   const acted = path.match(/^\/api\/tasks\/(\d+)\/actions$/)
   if (method === 'POST' && acted && VIEWS[Number(acted[1])]) return json(VIEWS[Number(acted[1])])
+
+  // PATCH /api/tasks/{id}: the view with the sent fields; a dependency takes its row's status, and one with no row is refused.
+  const edited = path.match(/^\/api\/tasks\/(\d+)$/)
+  if (method === 'PATCH' && edited && VIEWS[Number(edited[1])]) {
+    const view = VIEWS[Number(edited[1])]
+    const e = JSON.parse(body) as { title?: string; body?: string; depends_on?: number[] }
+    const dependencies = e.depends_on?.map((d) => ({ id: d, status: ROWS.find((r) => r.id === d)?.status }))
+    const none = dependencies?.find((d) => !d.status)
+    if (none) return json({ error: `task ${none.id} does not exist` }, 400)
+    return json({ ...view, title: e.title ?? view.title, body: e.body ?? view.body, dependencies: dependencies ?? view.dependencies })
+  }
+
   if (method !== 'GET') return json({ error: 'not found' }, 404)
   if (path === '/api/health') return json(HEALTH)
   if (path === '/api/settings') return json(SETTINGS)

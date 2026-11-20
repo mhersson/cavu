@@ -245,3 +245,9 @@ SETTINGS.defaults = {
 for (const [name, credential] of [['cavu', ''], ['homelander', ''], ['docs-site', 'acme-org']]) {
   Object.assign(PROJECTS.find((p) => p.name === name)!, { forge_credential: credential })
 }
+
+// A draft's page: a body over two lines, filed over MCP, and a dependency on a task that runs.
+VIEWS[44] = base(44, {
+  body: 'Add a section on the web app after the install steps.\nSay where it listens and how to sign in.', requester: 'mcp',
+  dependencies: [{ id: 42, status: 'running' }],
+})
