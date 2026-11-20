@@ -27,15 +27,16 @@ const (
 
 // Deps is what the handler works on.
 type Deps struct {
-	Store   *store.Store
-	Vault   *auth.Vault
-	Auth    *auth.Service
-	Loop    *engine.Loop              // records a person's actions; its runner removes a project's volumes and does nothing else
-	Nudge   func()                    // the scheduler's
-	Waiting func(taskID int64) string // the scheduler's
-	Version string
-	Stop    <-chan struct{} // closed when the server stops, which ends the open streams
-	Poll    time.Duration   // how often a stream asks the store for new events; 0 is a second
+	Store        *store.Store
+	Vault        *auth.Vault
+	Auth         *auth.Service
+	Loop         *engine.Loop                    // records a person's actions; its runner removes a project's volumes and does nothing else
+	Nudge        func()                          // the scheduler's
+	Waiting      func(taskID int64) string       // the scheduler's
+	CheckStarted func(projectID int64) time.Time // the scheduler's
+	Version      string
+	Stop         <-chan struct{} // closed when the server stops, which ends the open streams
+	Poll         time.Duration   // how often a stream asks the store for new events; 0 is a second
 }
 
 // route is one REST route. Only an open route is served without authority.

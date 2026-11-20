@@ -653,6 +653,42 @@ func TestSchedulerRunsRequestedChecks(t *testing.T) {
 	assert.Empty(t, s.errs())
 }
 
+// A check's start is told while it runs, and only for its project; once it is
+// no longer told, its result is stored.
+func TestSchedulerTellsWhenACheckStarted(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+	web := h.project()
+
+	api, err := h.store.CreateProject(ctx, store.Project{
+		Name: "api", RepoURL: "https://example.com/api.git", BaseBranch: "main", VerifyCommand: "make test",
+	})
+	require.NoError(t, err)
+
+	h.runner.prepares = []step[engine.PrepareResult]{{res: preparedOK}}
+	require.NoError(t, h.loop.RequestCheck(ctx, web.ID))
+	h.clock.Advance(time.Minute)
+
+	g := h.gate("check")
+	s := h.schedule(func(s *engine.Scheduler) {
+		s.Checks = true
+		s.Only = func(store.Task) bool { return false }
+	})
+
+	h.eventually(func() bool { return slices.Equal(g.held("check"), []int64{web.ID}) })
+	started := h.clock.Now()
+	h.clock.Advance(time.Minute)
+	assert.Equal(t, started, s.CheckStarted(web.ID))
+	assert.Zero(t, s.CheckStarted(api.ID), "the other project's check does not run")
+	assert.False(t, h.checkCleared(web.ID))
+
+	g.let(t, "check", web.ID)
+	h.eventually(func() bool { return s.CheckStarted(web.ID).IsZero() })
+	assert.True(t, h.checkCleared(web.ID))
+	assert.Equal(t, preparedOK.BaseCommit, h.project().CheckResult.BaseCommit)
+	assert.Empty(t, s.errs())
+}
+
 func TestSchedulerOnly(t *testing.T) {
 	h := newHarness(t)
 	second := h.started()

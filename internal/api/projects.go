@@ -45,6 +45,7 @@ type baselineJSON struct {
 
 type checkJSON struct {
 	RequestedAt      *time.Time `json:"requested_at"`
+	StartedAt        *time.Time `json:"started_at"`
 	Tools            []string   `json:"tools"`
 	IgnoredTools     []string   `json:"ignored_tools"`
 	FailedStep       string     `json:"failed_step"`
@@ -54,7 +55,7 @@ type checkJSON struct {
 	Output           string     `json:"output"`
 }
 
-func projectView(p store.Project) projectJSON {
+func (s *server) projectView(p store.Project) projectJSON {
 	c := p.CheckResult
 	v := projectJSON{
 		ID: p.ID, Name: p.Name, RepoURL: p.RepoURL, BaseBranch: p.BaseBranch,
@@ -76,6 +77,10 @@ func projectView(p store.Project) projectJSON {
 
 	if at := p.CheckRequestedAt; at != nil {
 		v.Check.RequestedAt = new(at.UTC())
+	}
+
+	if at := s.CheckStarted(p.ID); !at.IsZero() {
+		v.Check.StartedAt = new(at.UTC())
 	}
 
 	return v
@@ -151,7 +156,7 @@ func (s *server) projects(w http.ResponseWriter, r *http.Request) error {
 
 	out := make([]projectJSON, len(ps))
 	for i, p := range ps {
-		out[i] = projectView(p)
+		out[i] = s.projectView(p)
 	}
 
 	reply(w, http.StatusOK, map[string][]projectJSON{"projects": out})
@@ -182,7 +187,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	reply(w, http.StatusCreated, projectView(p))
+	reply(w, http.StatusCreated, s.projectView(p))
 
 	return nil
 }
@@ -272,7 +277,7 @@ func (s *server) replyProject(w http.ResponseWriter, r *http.Request, status int
 		return err
 	}
 
-	reply(w, status, projectView(p))
+	reply(w, status, s.projectView(p))
 
 	return nil
 }

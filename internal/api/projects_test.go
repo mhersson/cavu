@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -28,7 +29,7 @@ func TestProjectsRoundTrip(t *testing.T) {
 		"setup_command": "", "verify_command": "make test", "verify_waived": false,
 		"tool_overrides": {}, "egress_hosts": [], "env": {}, "secret_vars": [], "switches": %s, "caps": {},
 		"no_ci": false, "ignored_checks": [], "review_bots": [], "forge_credential": "", "runnable": false, "baseline": null,
-		"check": {"requested_at": null, "tools": [], "ignored_tools": [], "failed_step": "", "verify_suggestion": "",
+		"check": {"requested_at": null, "started_at": null, "tools": [], "ignored_tools": [], "failed_step": "", "verify_suggestion": "",
 			"fault": "", "commit": "", "output": ""}}`, switches), created)
 
 	status, body := f.call(t, "GET /api/projects", "")
@@ -264,6 +265,51 @@ func TestCheckIsRequested(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, p.CheckRequestedAt)
 	assert.True(t, p.CheckRequestedAt.Equal(f.clock.Now()))
+}
+
+// A project's check.started_at is the scheduler's start of its running check,
+// in UTC, and null for a project whose check does not run.
+func TestCheckStartedIsServed(t *testing.T) {
+	f := newServer(t)
+
+	for _, p := range []string{web, `{"name": "api", "repo_url": "https://example.com/api.git", "verify_command": "make test"}`} {
+		status, body := f.call(t, "POST /api/projects", p)
+		require.Equal(t, http.StatusCreated, status, body)
+	}
+
+	checkOf := func(project any) map[string]any {
+		t.Helper()
+
+		check, ok := project.(map[string]any)["check"].(map[string]any)
+		require.True(t, ok, project)
+
+		return check
+	}
+
+	f.checks.Store(int64(1), time.Date(2030, 1, 2, 4, 5, 0, 0, time.FixedZone("CET", 3600)))
+
+	status, body := f.call(t, "POST /api/projects/1/check", "")
+	require.Equal(t, http.StatusAccepted, status, body)
+	assert.Equal(t, "2030-01-02T03:05:00Z", checkOf(object(t, body))["started_at"])
+
+	status, body = f.call(t, "GET /api/projects", "")
+	require.Equal(t, http.StatusOK, status, body)
+
+	projects, ok := object(t, body)["projects"].([]any)
+	require.True(t, ok, body)
+
+	started := map[string]any{}
+	for _, p := range projects {
+		started[p.(map[string]any)["name"].(string)] = checkOf(p)["started_at"]
+	}
+
+	assert.Equal(t, map[string]any{"web": "2030-01-02T03:05:00Z", "api": nil}, started)
+
+	f.checks.Delete(int64(1))
+
+	status, body = f.call(t, "GET /api/projects/1", "")
+	require.Equal(t, http.StatusOK, status, body)
+	assert.Nil(t, checkOf(object(t, body))["started_at"], "no check runs")
 }
 
 func TestProjectForgePolicyOverREST(t *testing.T) {

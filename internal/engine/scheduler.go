@@ -41,8 +41,9 @@ const (
 // a time, and runs requested environment checks one at a time, each in a slot.
 // It looks at the pull request of each task Decide watches on a clock of its
 // own, and reads a task whose drive or read failed again on another; neither
-// decides anything, and both are kept in memory only. What else it keeps is a
-// cache of the store, so a new Scheduler carries on where an old one stopped.
+// decides anything, and both are kept in memory only, as is the check it runs.
+// What else it keeps is a cache of the store, so a new Scheduler carries on
+// where an old one stopped.
 type Scheduler struct {
 	Loop    *Loop
 	Tick    time.Duration                 // 0 means 2 seconds
@@ -55,9 +56,16 @@ type Scheduler struct {
 	passed  func()       // a test's hook, called at the end of each pass
 	driving atomic.Int64 // drives in flight
 
-	mu      sync.Mutex
-	waiting map[int64]string   // why a task does not act
-	stops   map[int64]StopFact // a task's open stop, as the newest pass to read the task saw it
+	mu       sync.Mutex
+	waiting  map[int64]string   // why a task does not act
+	stops    map[int64]StopFact // a task's open stop, as the newest pass to read the task saw it
+	checkRun runningCheck
+}
+
+// runningCheck is the environment check a scheduler runs, if any.
+type runningCheck struct {
+	project int64 // 0 when no check runs
+	since   time.Time
 }
 
 // round is what one Run keeps. Only Run's goroutine touches it.
@@ -215,6 +223,19 @@ func (s *Scheduler) Waiting(taskID int64) string {
 	defer s.mu.Unlock()
 
 	return s.waiting[taskID]
+}
+
+// CheckStarted is when the project's environment check that runs now started,
+// or the zero time. It stays set until the check has stored its result.
+func (s *Scheduler) CheckStarted(projectID int64) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.checkRun.project != projectID {
+		return time.Time{}
+	}
+
+	return s.checkRun.since
 }
 
 // Paused answers Loop.Paused from the open stops the scheduler's passes saw.
@@ -510,11 +531,20 @@ func (s *Scheduler) check(ctx context.Context, r *round) {
 	r.checking = true
 	checked := r.checked
 
+	s.mu.Lock()
+	s.checkRun = runningCheck{project: next.ID, since: s.Loop.Now()}
+	s.mu.Unlock()
+
 	// CheckProject's two halves, so only a failure to store is reported: the
 	// check's own error is the fault it stores.
 	go func() {
 		started, res, suggestion, err := s.Loop.checkEnvironment(ctx, next.ID)
 		err = s.Loop.storeCheck(ctx, started, *next.CheckRequestedAt, res, suggestion, err)
+
+		// Cleared after the store, so a reader always sees the check or its result.
+		s.mu.Lock()
+		s.checkRun = runningCheck{}
+		s.mu.Unlock()
 
 		if errors.Is(err, errChangedDuringCheck) {
 			err = nil // the request stays, so the next pass checks again

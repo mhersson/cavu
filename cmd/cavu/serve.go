@@ -99,7 +99,7 @@ func (a *app) serve(ctx context.Context, ln net.Listener, rt containerRuntime, s
 	srv := &http.Server{
 		Handler: web.Handler(api.New(api.Deps{
 			Store: a.store, Vault: a.vault, Auth: auth.NewService(a.store, time.Now), Loop: l,
-			Nudge: s.Nudge, Waiting: s.Waiting, Version: version, Stop: stopped,
+			Nudge: s.Nudge, Waiting: s.Waiting, CheckStarted: s.CheckStarted, Version: version, Stop: stopped,
 		})),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

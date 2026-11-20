@@ -64,6 +64,7 @@ type fixture struct {
 	token   string
 	nudges  atomic.Int32
 	waiting sync.Map // task id to the scheduler's reason it is not acting
+	checks  sync.Map // project id to when the scheduler started its running check
 	bodies  []string // every body call got
 }
 
@@ -104,7 +105,7 @@ func newServerRunning(t *testing.T, runner engine.Runner, wrap ...func(*store.St
 	stop := make(chan struct{})
 	f.srv = httptest.NewUnstartedServer(api.New(api.Deps{
 		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: records, Vault: vault, Now: c.Now, Runner: runner},
-		Nudge: func() { f.nudges.Add(1) }, Waiting: f.why, Version: "1.2.3", Stop: stop, Poll: 10 * time.Millisecond,
+		Nudge: func() { f.nudges.Add(1) }, Waiting: f.why, CheckStarted: f.started, Version: "1.2.3", Stop: stop, Poll: 10 * time.Millisecond,
 	}))
 	// As cavu serve does, so that Shutdown ends the open streams.
 	f.srv.Config.RegisterOnShutdown(func() { close(stop) })
@@ -113,6 +114,14 @@ func newServerRunning(t *testing.T, runner engine.Runner, wrap ...func(*store.St
 	f.url = f.srv.URL
 
 	return f
+}
+
+// started answers Deps.CheckStarted from what the test stored.
+func (f *fixture) started(projectID int64) time.Time {
+	v, _ := f.checks.Load(projectID)
+	at, _ := v.(time.Time)
+
+	return at
 }
 
 // why answers Deps.Waiting from what the test stored.
