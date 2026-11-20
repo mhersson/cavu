@@ -696,3 +696,25 @@ func TestProjectRemove(t *testing.T) {
 		assert.Len(t, storedProjects(t, dir), 1)
 	})
 }
+
+func TestProjectForgeCredential(t *testing.T) {
+	dir := t.TempDir()
+
+	code, _, stderr := runWithStdin("ghp_token\n", "credential", "set", "acme", "--data-dir", dir)
+	require.Equal(t, 0, code, stderr)
+
+	cavuIn(t, dir, "project", "add", "web", "--repo", "https://github.com/o/r.git", "--no-verify", "--forge-credential", "acme")
+	require.Equal(t, "acme", storedProjects(t, dir)[0].ForgeCredential)
+	assert.Contains(t, cavuIn(t, dir, "project", "show", "web"), "acme")
+
+	code, _, _ = runCavu("project", "set", "web", "--forge-credential", "nobody", "--data-dir", dir)
+	assert.NotEqual(t, 0, code)
+	assert.Equal(t, "acme", storedProjects(t, dir)[0].ForgeCredential)
+
+	cavuIn(t, dir, "project", "set", "web", "--forge-credential", "")
+	assert.Empty(t, storedProjects(t, dir)[0].ForgeCredential)
+
+	code, _, _ = runCavu("project", "add", "other", "--repo", "https://github.com/o/s.git", "--no-verify", "--forge-credential", "nobody", "--data-dir", dir)
+	assert.NotEqual(t, 0, code)
+	assert.Len(t, storedProjects(t, dir), 1)
+}
