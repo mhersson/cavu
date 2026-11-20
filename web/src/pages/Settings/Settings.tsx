@@ -5,6 +5,8 @@ import PageHead from '../../components/PageHead.tsx'
 import { useNarrow } from '../../components/useNarrow.ts'
 import { useLook } from '../../theme/theme.ts'
 import type { Look } from '../../theme/theme.ts'
+import Choice from './Choice.tsx'
+import Credentials from './Credentials.tsx'
 import './Settings.css'
 
 const palettes: [Look['palette'], string][] = [
@@ -22,8 +24,9 @@ const themes: [Look['theme'], string][] = [
 // A keyOnly row is dimmed unless the mode is a key and an endpoint.
 type Row = { label: string; keys: string[]; mono?: boolean; keyOnly?: boolean; options?: [string, string][]; secret?: boolean }
 
-// head draws "Model" and "Effort" over the pairs; rest takes every key no section places.
-type Section = { id: string; title: string; rows: Row[]; head?: boolean; note?: ReactNode; rest?: boolean }
+// head draws "Model" and "Effort" over the pairs; rest takes every key no section places;
+// credentials is the GitHub table, which has no Save.
+type Section = { id: string; title: string; rows: Row[]; head?: boolean; note?: ReactNode; rest?: boolean; credentials?: boolean }
 
 type Patch = { settings?: Record<string, string | null>; secrets?: Record<string, string> }
 
@@ -63,6 +66,7 @@ const layout: Section[] = [
     ],
     note: 'The three limits in dollars hold only with a key and an endpoint.',
   },
+  { id: 'github', title: 'GitHub', rows: [], credentials: true },
   {
     id: 'commits',
     title: 'Commits',
@@ -123,27 +127,6 @@ function sections(defaults: Record<string, string>): Section[] {
 }
 
 const line = (e: unknown) => (e instanceof Error ? e.message : String(e))
-
-function Choice<T extends string>({ id, label, options, value, onChange }: {
-  id: string
-  label: string
-  options: [T, string][]
-  value: T
-  onChange: (v: T) => void
-}) {
-  return (
-    <div className="frow">
-      <label id={id}>{label}</label>
-      <div className="seg" role="radiogroup" aria-labelledby={id}>
-        {options.map(([v, text]) => (
-          <button key={v} role="radio" aria-checked={v === value} className={v === value ? 'on' : ''} onClick={() => onChange(v)}>
-            {text}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 export default function Settings() {
   const [look, setLook] = useLook()
@@ -275,7 +258,13 @@ export default function Settings() {
   }
 
   const parts = [
-    ...(saved ? sections(saved.defaults).map((s) => ({ id: s.id, title: s.title, body: body(saved, s) })) : []),
+    ...(saved
+      ? sections(saved.defaults).map((s) => ({
+          id: s.id,
+          title: s.title,
+          body: s.credentials ? <Credentials saved={saved} onSaved={setSaved} /> : body(saved, s),
+        }))
+      : []),
     {
       id: 'browser',
       title: 'This browser',
