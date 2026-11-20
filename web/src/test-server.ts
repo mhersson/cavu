@@ -39,7 +39,7 @@ export const json = (body: unknown, status = 200) =>
 export const rows = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: i + 1, needs_you: true }))
 
-export type Call = { method: string; path: string; body: unknown; headers: Headers }
+export type Call = { method: string; path: string; body: unknown; headers: Headers; keepalive?: boolean }
 
 // answer maps a request to its response; every request is recorded.
 export function fakeServer(answer: (c: Call) => Response | undefined) {
@@ -54,6 +54,7 @@ export function fakeServer(answer: (c: Call) => Response | undefined) {
         path,
         body: init.body === undefined ? undefined : JSON.parse(init.body as string),
         headers: new Headers(init.headers),
+        keepalive: init.keepalive,
       }
       calls.push(call)
       return Promise.resolve(answer(call) ?? json({ error: 'not found' }, 404))

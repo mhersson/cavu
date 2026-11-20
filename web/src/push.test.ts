@@ -1,11 +1,13 @@
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import worker from '../public/sw.js?raw'
-import { fakePush, fakeServer, json, type Call } from './test-server.ts'
+import { useEvents } from './api/stream.ts'
+import { FakeEventSource, fakePush, fakeServer, json, type Call } from './test-server.ts'
 import { pushState, turnOff, turnOn, useFocusReport } from './push.ts'
 
 afterEach(() => vi.unstubAllGlobals())
 
-const puts = (calls: Call[]) => calls.filter((c) => c.method === 'PUT' && c.path === '/api/push').map((c) => c.body)
+const putCalls = (calls: Call[]) => calls.filter((c) => c.method === 'PUT' && c.path === '/api/push')
+const puts = (calls: Call[]) => putCalls(calls).map((c) => c.body)
 
 function server() {
   return fakeServer((c) => {
@@ -84,7 +86,7 @@ test('turnOff counts a 404 as removed and keeps the id after another failure', a
   expect(localStorage.getItem('push_device')).toBe('7')
 })
 
-test('the page reports focus, blur and visibility while an id is kept', async () => {
+test('the page reports focus gained and regained while an id is kept', async () => {
   fakePush({ subscribed: true })
   localStorage.setItem('push_device', '7')
   const calls = server()
@@ -93,19 +95,83 @@ test('the page reports focus, blur and visibility while an id is kept', async ()
   await waitFor(() => expect(puts(calls)).toHaveLength(1))
   expect(puts(calls)[0]).toMatchObject({ endpoint: 'https://push.example/s1', focused: false })
 
+  focus.mockReturnValue(true)
   window.dispatchEvent(new Event('focus'))
   await waitFor(() => expect(puts(calls)).toHaveLength(2))
   expect(puts(calls)[1]).toMatchObject({ focused: true })
 
-  window.dispatchEvent(new Event('blur'))
-  await waitFor(() => expect(puts(calls)).toHaveLength(3))
-  expect(puts(calls)[2]).toMatchObject({ focused: false })
-
-  focus.mockReturnValue(true)
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+  document.dispatchEvent(new Event('visibilitychange'))
+  visibility.mockReturnValue('visible')
   document.dispatchEvent(new Event('visibilitychange'))
   await waitFor(() => expect(puts(calls)).toHaveLength(4))
   expect(puts(calls)[3]).toMatchObject({ focused: true })
+  visibility.mockRestore()
   focus.mockRestore()
+})
+
+test('losing focus or being hidden calls fetch at once, with the body last sent and keepalive', async () => {
+  fakePush({ subscribed: true })
+  localStorage.setItem('push_device', '7')
+  const calls = server()
+  renderHook(() => useFocusReport())
+  await waitFor(() => expect(puts(calls)).toHaveLength(1))
+  const body = puts(calls)[0] as object
+
+  window.dispatchEvent(new Event('blur'))
+  expect(putCalls(calls)).toHaveLength(2)
+  expect(putCalls(calls)[1].keepalive).toBe(true)
+  expect(putCalls(calls)[1].body).toEqual({ ...body, focused: false })
+
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+  document.dispatchEvent(new Event('visibilitychange'))
+  expect(putCalls(calls)).toHaveLength(3)
+  expect(putCalls(calls)[2].keepalive).toBe(true)
+  expect(putCalls(calls)[2].body).toEqual({ ...body, focused: false })
+  visibility.mockRestore()
+})
+
+test('reports go out in order: a focus waits for the load to be answered', async () => {
+  fakePush({ subscribed: true })
+  localStorage.setItem('push_device', '7')
+  fakeServer((c) => (c.method === 'PUT' ? json({ id: 7 }) : undefined))
+  const answer = fetch
+  let release: () => void = () => {}
+  const held = new Promise<void>((r) => (release = r))
+  const seen: unknown[] = []
+  vi.stubGlobal('fetch', (path: string, init: RequestInit) => {
+    seen.push(JSON.parse(init.body as string))
+    return seen.length === 1 ? held.then(() => answer(path, init)) : answer(path, init)
+  })
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+  renderHook(() => useFocusReport())
+  await waitFor(() => expect(seen).toHaveLength(1))
+
+  window.dispatchEvent(new Event('focus'))
+  await new Promise((r) => setTimeout(r))
+  expect(seen).toHaveLength(1)
+
+  release()
+  await waitFor(() => expect(seen).toHaveLength(2))
+  expect(seen[1]).toMatchObject({ focused: true })
+})
+
+test('a reopened stream sends the subscription again, the first opening does not', async () => {
+  fakePush({ subscribed: true })
+  const calls = server()
+  renderHook(() => {
+    useEvents()
+    useFocusReport()
+  })
+  await waitFor(() => expect(puts(calls)).toHaveLength(1))
+  const source = FakeEventSource.all[0]
+  act(() => source.open())
+  await new Promise((r) => setTimeout(r))
+  expect(puts(calls)).toHaveLength(1)
+
+  act(() => source.fail())
+  act(() => source.open())
+  await waitFor(() => expect(puts(calls)).toHaveLength(2))
 })
 
 test('the page reports nothing while no id is kept', async () => {

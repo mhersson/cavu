@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { keepDevice, useEvents, useStream } from './stream.ts'
+import { keepDevice, onReopen, useEvents, useStream } from './stream.ts'
 
 class FakeEventSource {
   static CONNECTING = 0
@@ -220,4 +220,21 @@ test('the stream carries the kept device and opens again when it changes', () =>
 
   act(() => keepDevice(null))
   expect(FakeEventSource.all).toHaveLength(3)
+})
+
+test('onReopen runs on a reopened stream, not on the first opening and not once removed', () => {
+  const f = vi.fn()
+  const remove = onReopen(f)
+  renderHook(() => useEvents())
+  act(() => last().open())
+  expect(f).not.toHaveBeenCalled()
+
+  act(() => last().fail(false))
+  act(() => last().open())
+  expect(f).toHaveBeenCalledTimes(1)
+
+  remove()
+  act(() => last().fail(false))
+  act(() => last().open())
+  expect(f).toHaveBeenCalledTimes(1)
 })

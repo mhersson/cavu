@@ -14,7 +14,7 @@ export function onUnauthorized(handler: () => void) {
   unauthorized = handler
 }
 
-export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function api<T>(method: string, path: string, body?: unknown, options: { keepalive?: boolean } = {}): Promise<T> {
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (method !== 'GET' && method !== 'HEAD') headers['X-CAVU-CSRF'] = '1'
@@ -22,6 +22,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
     method,
     headers,
     credentials: 'same-origin',
+    keepalive: options.keepalive,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (res.status === 204) return undefined as T

@@ -88,6 +88,15 @@ export function useEvents(): { live: boolean } {
   return { live }
 }
 
+// f runs each time the stream opens again after its first opening; the result removes it.
+export function onReopen(f: () => void): () => void {
+  const sub: Subscriber = { event: () => {}, reconnect: f }
+  subscribers.add(sub)
+  return () => {
+    subscribers.delete(sub)
+  }
+}
+
 // read gets null for everything, or the ids of the tasks a burst of events was about.
 export function useStream(read: (tasks: Set<number> | null) => void): void {
   // A new read between renders is used without resubscribing.
