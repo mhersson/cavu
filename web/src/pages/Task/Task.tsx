@@ -5,6 +5,7 @@ import { useStream } from '../../api/stream.ts'
 import type { TaskEvent, Task as TaskView } from '../../api/types.ts'
 import Dialog from '../../components/Dialog.tsx'
 import { ChangeFacts, PullRequestFacts, ReviewFacts } from '../../components/Facts.tsx'
+import Field from '../../components/Field.tsx'
 import NeedsBox from '../../components/NeedsBox.tsx'
 import PageHead from '../../components/PageHead.tsx'
 import StatusMark from '../../components/StatusMark.tsx'
@@ -106,12 +107,16 @@ function Budget({ task }: { task: TaskView }) {
   )
 }
 
+type Editing = { was: TaskView; title: string; body: string; depends: string }
+
 function Page({ id }: { id: number }) {
   const narrow = useNarrow()
   const [task, setTask] = useState<TaskView | null>(null)
   const [missing, setMissing] = useState('')
   const [asking, setAsking] = useState(false)
   const [refused, setRefused] = useState('')
+  const [edit, setEdit] = useState<Editing | null>(null)
+  const [sending, setSending] = useState(false)
   const [events, setEvents] = useState<TaskEvent[]>([])
   const [stretches, setStretches] = useState<ReadonlySet<number>>(() => new Set())
   const asked = useRef(new Set<number>())
@@ -165,10 +170,10 @@ function Page({ id }: { id: number }) {
 
   if (!task) return <div className="page task-page">{missing && <p>{missing}</p>}</div>
 
-  async function cancel() {
+  async function act(action: 'start' | 'cancel') {
     setAsking(false)
     try {
-      setTask(await api<TaskView>('POST', `/tasks/${id}/actions`, { action: 'cancel' }))
+      setTask(await api<TaskView>('POST', `/tasks/${id}/actions`, { action }))
       setRefused('')
     } catch (e) {
       setRefused(e instanceof Error ? e.message : String(e))
@@ -176,12 +181,63 @@ function Page({ id }: { id: number }) {
     }
   }
 
+  const close = () => {
+    setEdit(null)
+    setRefused('')
+  }
+
+  // The fields keep what was typed while reads go on; what is sent is measured against the task when Edit was pressed.
+  async function save(e: Editing) {
+    const ids = (e.depends.match(/\d+/g) ?? []).map(Number)
+    const change: { title?: string; body?: string; depends_on?: number[] } = {}
+    if (e.title !== e.was.title) change.title = e.title
+    if (e.body !== e.was.body) change.body = e.body
+    if (String(ids) !== String(e.was.dependencies.map((d) => d.id))) change.depends_on = ids
+    if (Object.keys(change).length === 0) return close()
+    setSending(true)
+    try {
+      setTask(await api<TaskView>('PATCH', `/tasks/${id}`, change))
+      close()
+    } catch (err) {
+      setRefused(err instanceof Error ? err.message : String(err))
+    }
+    setSending(false)
+  }
+
   const open = task.status !== 'done' && task.status !== 'cancelled'
-  const button = (
+  const draft = task.status === 'draft'
+  const cancelButton = (
     <button className="btn danger" onClick={() => setAsking(true)}>
       Cancel task
     </button>
   )
+  const editButton = (
+    <button
+      className="btn"
+      onClick={() => {
+        setRefused('')
+        setEdit({ was: task, title: task.title, body: task.body, depends: task.dependencies.map((d) => d.id).join(', ') })
+      }}
+    >
+      Edit
+    </button>
+  )
+  const startButton = (
+    <button className="btn primary" onClick={() => void act('start')}>
+      Start
+    </button>
+  )
+  const saveButton = edit && (
+    <button className="btn primary" disabled={sending} onClick={() => void save(edit)}>
+      Save
+    </button>
+  )
+  const dropButton = (
+    <button className="btn" onClick={close}>
+      Cancel
+    </button>
+  )
+  const set = (key: 'title' | 'body' | 'depends', value: string) => setEdit((e) => e && { ...e, [key]: value })
   const cost = usd(task.cost_estimate_usd) + ' estimated'
   const fold = (title: string, has: unknown, facts: ReactNode) =>
     has ? (
@@ -196,7 +252,30 @@ function Page({ id }: { id: number }) {
       <div className="crumb">
         <Link to="/">Needs you</Link> / {task.project} / task {task.id}
       </div>
-      <PageHead title={task.title}>{!narrow && open && button}</PageHead>
+      {edit ? (
+        <div className="page-head">
+          <span className="field title-field">
+            <input aria-label="Title" value={edit.title} onChange={(e) => set('title', e.target.value)} />
+          </span>
+          {!narrow && (
+            <>
+              <span className="spacer" />
+              {dropButton}
+              {saveButton}
+            </>
+          )}
+        </div>
+      ) : (
+        <PageHead title={task.title}>
+          {!narrow && open && (
+            <>
+              {draft && editButton}
+              {draft && startButton}
+              {cancelButton}
+            </>
+          )}
+        </PageHead>
+      )}
       {refused && <p role="alert" className="refused">{refused}</p>}
       <div className="task-meta">
         <StatusMark status={task.status} />
@@ -208,7 +287,18 @@ function Page({ id }: { id: number }) {
         <span>{task.turns} turns</span>
         <span>{cost}</span>
       </div>
-      {task.body && <p className="task-body">{task.body}</p>}
+      {edit ? (
+        <div className="task-edit">
+          <div className="field">
+            <textarea aria-label="Details" rows={Math.max(4, edit.body.split('\n').length + 1)} value={edit.body} onChange={(e) => set('body', e.target.value)} />
+          </div>
+          <Field label="Depends on">
+            <input placeholder="Task numbers, such as 42" value={edit.depends} onChange={(e) => set('depends', e.target.value)} />
+          </Field>
+        </div>
+      ) : (
+        task.body && <p className="task-body">{task.body}</p>
+      )}
       <NeedsBox task={task} onTask={(t) => setTask(t)} onPage />
       {!task.needs_you && task.waiting && (
         <p className="waitline">
@@ -224,7 +314,22 @@ function Page({ id }: { id: number }) {
           {fold('Cost and use', true, <Cost task={task} />)}
           <h2 className="sec">What happened</h2>
           {timeline}
-          {open && <p className="cancel-row">{button}</p>}
+          {(edit || open) && (
+            <div className="foot-acts">
+              {edit ? (
+                <>
+                  {saveButton}
+                  {dropButton}
+                </>
+              ) : (
+                <>
+                  {draft && startButton}
+                  {draft && editButton}
+                  {cancelButton}
+                </>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <div className="task-grid">
@@ -257,7 +362,7 @@ function Page({ id }: { id: number }) {
             <button className="btn" onClick={() => setAsking(false)}>
               Keep the task
             </button>
-            <button className="btn danger" onClick={() => void cancel()}>
+            <button className="btn danger" onClick={() => void act('cancel')}>
               Cancel the task
             </button>
           </div>
