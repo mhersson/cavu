@@ -128,7 +128,7 @@ function Endpoint({ saved, onSaved }: StepProps) {
       </Field>
       <p className="small">CAVU seals a secret and never shows it again.</p>
       <p className="small">
-        <code>cavu doctor</code> on the server tests the endpoint.
+        <code>cavu doctor</code> on the server tests the endpoint while <code>cavu serve</code> is stopped.
       </p>
     </StepForm>
   )
