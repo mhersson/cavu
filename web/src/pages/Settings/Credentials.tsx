@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client.ts'
-import type { Settings as Saved } from '../../api/types.ts'
+import type { Project, Settings as Saved } from '../../api/types.ts'
 import Dialog from '../../components/Dialog.tsx'
 import Choice from './Choice.tsx'
 
 type Kind = 'token' | 'app'
-
-// Its own type until the shared Project type carries forge_credential.
-type Used = { name: string; forge_credential: string }
 
 // One form for Add and every Replace; the default's Replace has the name "".
 // chosen says a key file is chosen; its text is read only as it is sent.
@@ -30,14 +27,14 @@ function request(f: Form, key: string) {
 }
 
 export default function Credentials({ saved, onSaved }: { saved: Saved; onSaved: (s: Saved) => void }) {
-  const [used, setUsed] = useState<Used[] | null>(null)
+  const [used, setUsed] = useState<Project[] | null>(null)
   const [form, setForm] = useState<Form | null>(null)
   const [removing, setRemoving] = useState('')
   const [refused, setRefused] = useState('')
   const file = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    api<{ projects: Used[] }>('GET', '/projects').then((r) => setUsed(r.projects), (e: unknown) => setRefused(line(e)))
+    api<{ projects: Project[] }>('GET', '/projects').then((r) => setUsed(r.projects), (e: unknown) => setRefused(line(e)))
   }, [])
 
   const edit = (p: Partial<Form>) => setForm((f) => f && { ...f, ...p })

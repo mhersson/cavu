@@ -174,6 +174,7 @@ export type Project = {
   no_ci: boolean
   ignored_checks: string[]
   review_bots: string[]
+  forge_credential: string
   runnable: boolean
   baseline: { commit: string; passed: boolean; at: string; output: string } | null
   check: {

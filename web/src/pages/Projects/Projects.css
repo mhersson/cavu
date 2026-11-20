@@ -1,0 +1,255 @@
+.projects-page .panes {
+  display: grid;
+  grid-template-columns: 186px minmax(0, 1fr);
+  border-top: 1px solid var(--bg2);
+  min-height: 540px;
+}
+
+.projects-page .plist {
+  border-right: 1px solid var(--bg2);
+  padding: 10px 12px 10px 0;
+}
+
+.projects-page .pitem {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--fg);
+}
+
+.projects-page .pitem:hover {
+  text-decoration: none;
+  background: var(--bg0);
+}
+
+.projects-page .pitem[aria-current='page'] {
+  background: var(--bg2);
+}
+
+.projects-page .pitem.k-ready {
+  --k: var(--green);
+}
+
+.projects-page .pitem.k-stop {
+  --k: var(--red);
+}
+
+.projects-page .pitem .t1 {
+  display: block;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projects-page .pitem[aria-current='page'] .t1 {
+  font-weight: 600;
+}
+
+.projects-page .pitem .t2 {
+  display: block;
+  color: var(--grey1);
+  font-size: 12.5px;
+}
+
+.projects-page .detail {
+  padding: 16px 0 14px 32px;
+  min-width: 0;
+}
+
+.projects-page .phead {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0 0 2px;
+}
+
+.projects-page .phead h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.projects-page .phead .repo {
+  color: var(--grey1);
+  overflow-wrap: anywhere;
+}
+
+.projects-page .phead .spacer {
+  flex: 1;
+}
+
+.projects-page .phead .refused {
+  color: var(--red);
+  margin: 0;
+}
+
+.projects-page .in {
+  background: var(--bg0);
+  color: var(--fg);
+  border: 1px solid var(--bg3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.projects-page .in::placeholder {
+  color: var(--grey0);
+}
+
+.projects-page .in.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.projects-page select.in {
+  width: auto;
+}
+
+.projects-page textarea.in {
+  display: block;
+  resize: vertical;
+}
+
+.projects-page .inline {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--grey2);
+  font-size: 13px;
+}
+
+.projects-page .secrets {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.projects-page .secrets .pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  justify-self: stretch;
+}
+
+.projects-page .secrets .names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+  justify-self: stretch;
+}
+
+.projects-page .secret {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.projects-page .secret .btn {
+  padding: 1px 8px;
+  font-size: 12px;
+}
+
+.projects-page .secret .gone {
+  color: var(--grey0);
+  text-decoration: line-through;
+}
+
+.projects-page .two {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 48px;
+  align-items: start;
+}
+
+.projects-page .sections > section {
+  border-top: 1px solid var(--bg2);
+  padding: 14px 0 16px;
+}
+
+.projects-page .sections h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.projects-page .sections .kv {
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 6px 16px;
+  align-items: center;
+}
+
+.projects-page .small {
+  color: var(--grey1);
+  font-size: 12px;
+}
+
+.projects-page p.small {
+  margin: 0 0 10px;
+}
+
+.projects-page .dialog .refused {
+  color: var(--red);
+  margin: 0 0 10px;
+}
+
+.projects-page .crumb {
+  color: var(--grey1);
+  font-size: 12.5px;
+  margin-bottom: 4px;
+}
+
+.projects-page .plist.flat {
+  border-right: 0;
+  padding: 0;
+}
+
+.projects-page .plist.flat .pitem {
+  padding: 11px 4px;
+  border-top: 1px solid var(--bg2);
+  border-radius: 0;
+}
+
+.projects-page .acc {
+  border-top: 1px solid var(--bg2);
+  padding: 9px 0;
+  margin: 0;
+}
+
+.projects-page .acc > summary {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.projects-page .acc > section {
+  padding: 8px 0 0;
+}
+
+.projects-page .acc .kv {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.projects-page .acc .kv dt {
+  font-size: 12.5px;
+}
+
+.projects-page .acc .kv dd {
+  margin-bottom: 9px;
+}
+
+@media (max-width: 720px) {
+  .projects-page .sub {
+    margin-bottom: 14px;
+    font-size: 13px;
+  }
+}
