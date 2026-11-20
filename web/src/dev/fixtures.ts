@@ -15,7 +15,7 @@ export const PROJECTS: Project[] = [
     tool_overrides: { node: '24' }, egress_hosts: ['registry.npmjs.org'], env: { CI: '1' }, secret_vars: [], switches: SWITCHES,
     caps: {}, no_ci: false, ignored_checks: [], review_bots: ['copilot[bot]'], forge_credential: '', runnable: true,
     baseline: { commit: '0e41aa7c95d2', passed: true, at: '2026-11-19T14:40:00Z', output: '' },
-    check: { requested_at: null, started_at: null, tools: ['node'], ignored_tools: [], failed_step: '', verify_suggestion: 'npm test', fault: '', commit: '0e41aa7c95d2', output: '' } },
+    check: { requested_at: '2026-11-19T16:30:00Z', started_at: '2026-11-19T16:31:10Z', tools: ['node'], ignored_tools: [], failed_step: '', verify_suggestion: 'npm test', fault: '', commit: '0e41aa7c95d2', output: '' } },
   { id: 3, name: 'docs-site', repo_url: 'https://github.com/acme/docs-site.git', base_branch: 'main', setup_command: 'npm ci', verify_command: 'npm run build', verify_waived: false,
     tool_overrides: {}, egress_hosts: ['registry.npmjs.org', 'npm.pkg.github.com'], env: {}, secret_vars: [], switches: { ...SWITCHES, review: false },
     caps: {}, no_ci: true, ignored_checks: [], review_bots: [], forge_credential: 'acme-org', runnable: false, baseline: null,

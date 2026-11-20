@@ -14,7 +14,7 @@
 }
 
 .st.running {
-  --s: var(--aqua);
+  --s: var(--purple);
 }
 
 .st.queued {

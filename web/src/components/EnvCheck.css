@@ -15,7 +15,7 @@
 }
 
 .envcheck.k-run {
-  --k: var(--aqua);
+  --k: var(--purple);
 }
 
 .envcheck.k-wait {
