@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 
@@ -150,6 +152,56 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	return s.replyTask(w, r, id, http.StatusOK)
+}
+
+// change hands over the task's exported change, as a diff or a git bundle,
+// streamed from the file the export wrote.
+func (s *server) change(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r)
+	if err != nil {
+		return err
+	}
+
+	format := r.URL.Query().Get("format")
+	if format != "diff" && format != "bundle" {
+		return &apiError{http.StatusBadRequest, `format is required: "diff" or "bundle"`}
+	}
+
+	v, err := s.Loop.View(r.Context(), id, nil)
+	if err != nil {
+		return err
+	}
+
+	if v.Change == nil {
+		return &apiError{http.StatusNotFound, "the task shows no change"}
+	}
+
+	path, typ := v.Change.DiffPath, "text/x-diff"
+	if format == "bundle" {
+		path, typ = v.Change.BundlePath, "application/octet-stream"
+	}
+
+	file, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return &apiError{http.StatusNotFound, "the change's file is gone"}
+	}
+
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", typ)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="task-%d.%s"`, id, format))
+	http.ServeContent(w, r, "", info.ModTime(), file)
+
+	return nil
 }
 
 // editTask changes only the fields the body names, over the stored task and

@@ -261,6 +261,10 @@ Answers 200 with a page of the task's events, oldest first, or newest first with
 
 The query `after=ID` starts the page after the event with that id, or under `order=newest` below it, and `limit=N` sets how many events the page holds at most: 200 when it is left out or 0, and never more than 1000. `agent=false` leaves out the events whose `actor` is `agent`, the agent's progress (`agent_text`, `agent_tool` and `rate_limit`); `agent=true` is the default. A client pages in either order by sending the id of the last event it got as `after`, until a page comes back empty. An `after` or `limit` that is not a whole number, an `order` that is neither `oldest` nor `newest`, or an `agent` that is not a boolean is 400.
 
+### `GET /api/tasks/{id}/change`
+
+Answers 200 with the task's exported change as a file, the one `change` shows (for a task with a pull request, the export CAVU published last). The query `format` is required: `diff` answers the diff (`git diff --binary`) as `text/x-diff` with `Content-Disposition: attachment; filename="task-ID.diff"`, and `bundle` answers the git bundle as `application/octet-stream` with `filename="task-ID.bundle"`. The file is streamed, never read whole, and the route honours `Range` and `HEAD`. A GET needs no CSRF header, so a link carrying the session's cookie downloads it. A `format` that is absent or neither is 400; a task that does not exist, or shows no change, or whose file is gone, is 404.
+
 ### `GET /api/events`
 
 Answers 200 with a stream of [server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html) (`Content-Type: text/event-stream`) that carries the events of every task as they are recorded, or those of one task with the query `task=ID`. Each event is one message: `id:` the event's id, `data:` the event as one line of JSON, then a blank line.

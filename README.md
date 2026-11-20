@@ -124,7 +124,7 @@ CAVU needs Docker or Podman and a Linux or macOS host. Linux with Docker and wit
 
    `task run` drives only the task it names, so run a dependency first: on a task that waits for one, `task run` prints why and waits until that task is done or you interrupt it.
 
-   With the switch `publish` on, `task run` ends where the pull request opens, and `cavu serve` records its merge, which makes the task `done`; `cavu task done` is refused for a task with a pull request. With `cavu project set web --switch publish=off`, a task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
+   With the switch `publish` on, `task run` ends where the pull request opens, and `cavu serve` records its merge, which makes the task `done`; `cavu task done` is refused for a task with a pull request. With `cavu project set web --switch publish=off`, a task in `in_review` has its change ready: read the diff, fetch its branch into your clone from the bundle `task show` prints (`git fetch BUNDLE 'refs/heads/cavu/*:refs/heads/cavu/*'`; `GET /api/tasks/ID/change?format=bundle` hands over the same bundle, and `format=diff` the diff), then push the branch and merge it yourself. Then record the merge, which makes the task `done`:
 
    ```
    cavu task done ID

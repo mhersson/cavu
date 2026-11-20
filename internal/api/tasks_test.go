@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -936,4 +938,62 @@ func TestTaskListWithoutLimitIsUnchanged(t *testing.T) {
 			assert.Equal(t, tc.want, f.listed(t, "?"+tc.query+"&limit=0&order=oldest"))
 		})
 	}
+}
+
+func TestChangeDownload(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+
+	dir := t.TempDir()
+	diffPath, bundlePath := filepath.Join(dir, "change.diff"), filepath.Join(dir, "change.bundle")
+	require.NoError(t, os.WriteFile(diffPath, []byte("diff --git a/footer.html b/footer.html\n"), 0o600))
+	require.NoError(t, os.WriteFile(bundlePath, []byte("# v2 git bundle\n\x00\x01binary"), 0o600))
+
+	id := f.task(t, `{"project": "site", "title": "Add a footer"}`)
+	f.add(t, id, engine.TaskStarted, struct{}{})
+	f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+	f.add(t, id, engine.Exported, engine.ExportedPayload{HeadCommit: "4b825dc", DiffPath: diffPath, BundlePath: bundlePath})
+	f.add(t, id, engine.RunEnded, engine.RunEndedPayload{Outcome: engine.RunExported})
+
+	get := func(route string, bearer bool) (*http.Response, string) {
+		r := f.request(t, route, "")
+		if bearer {
+			r.Header.Set("Authorization", "Bearer "+f.token)
+		}
+
+		return send(t, r)
+	}
+	url := fmt.Sprintf("GET /api/tasks/%d/change?format=", id)
+
+	resp, body := get(url+"diff", true)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	assert.Equal(t, "diff --git a/footer.html b/footer.html\n", body)
+	assert.Equal(t, fmt.Sprintf(`attachment; filename="task-%d.diff"`, id), resp.Header.Get("Content-Disposition"))
+	assert.Equal(t, "text/x-diff", resp.Header.Get("Content-Type"))
+
+	resp, body = get(url+"bundle", true)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "# v2 git bundle\n\x00\x01binary", body)
+	assert.Equal(t, fmt.Sprintf(`attachment; filename="task-%d.bundle"`, id), resp.Header.Get("Content-Disposition"))
+	assert.Equal(t, "application/octet-stream", resp.Header.Get("Content-Type"))
+
+	for _, q := range []string{"", "patch"} {
+		resp, _ = get(url+q, true)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "format %q", q)
+	}
+
+	resp, _ = get(url+"diff", false)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	resp, _ = get("GET /api/tasks/999/change?format=diff", true)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "an unknown task")
+
+	none := f.task(t, `{"project": "site", "title": "Nothing yet"}`)
+	resp, _ = get(fmt.Sprintf("GET /api/tasks/%d/change?format=diff", none), true)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "a task with no change")
+
+	require.NoError(t, os.Remove(diffPath))
+
+	resp, _ = get(url+"diff", true)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "a file that is gone")
 }
