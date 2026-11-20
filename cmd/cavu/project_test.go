@@ -700,7 +700,7 @@ func TestProjectRemove(t *testing.T) {
 func TestProjectForgeCredential(t *testing.T) {
 	dir := t.TempDir()
 
-	code, _, stderr := runWithStdin("ghp_token\n", "credential", "set", "acme", "--data-dir", dir)
+	code, _, stderr := withStdin("ghp_token\n", "credential", "set", "acme", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
 
 	cavuIn(t, dir, "project", "add", "web", "--repo", "https://github.com/o/r.git", "--no-verify", "--forge-credential", "acme")

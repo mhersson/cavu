@@ -172,10 +172,10 @@ func TestDoctorDepsResolvesEachProjectsCredential(t *testing.T) {
 		require.Equal(t, 0, code, stderr)
 	}
 
-	code, _, stderr := runWithStdin("acme-tok\n", "credential", "set", "acme", "--data-dir", dir)
+	code, _, stderr := withStdin("acme-tok\n", "credential", "set", "acme", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
 
-	code, _, stderr = runWithStdin("app-key\n", "credential", "set", "work", "--app-id", "7", "--data-dir", dir)
+	code, _, stderr = withStdin("app-key\n", "credential", "set", "work", "--app-id", "7", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
 
 	cavuIn(t, dir, "project", "add", "plain", "--repo", repo, "--no-verify")

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"io"
 	"os"
 	"strings"
@@ -13,23 +12,15 @@ import (
 	"github.com/mhersson/cavu/internal/engine"
 )
 
-func runWithStdin(stdin string, args ...string) (code int, stdout, stderr string) {
-	var out, errOut bytes.Buffer
-
-	code = run(args, strings.NewReader(stdin), &out, &errOut)
-
-	return code, out.String(), errOut.String()
-}
-
 func TestCredentialSetListRemove(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
 
-	code, stdout, stderr := runWithStdin("ghp_tokenvalue\n", "credential", "set", "acme", "--data-dir", dir)
+	code, stdout, stderr := withStdin("ghp_tokenvalue\n", "credential", "set", "acme", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
 	assert.Empty(t, stdout)
 
-	code, stdout, stderr = runWithStdin("-----BEGIN KEY-----\nappkeyvalue\n-----END KEY-----\n", "credential", "set", "work", "--app-id", "482913", "--data-dir", dir)
+	code, stdout, stderr = withStdin("-----BEGIN KEY-----\nappkeyvalue\n-----END KEY-----\n", "credential", "set", "work", "--app-id", "482913", "--data-dir", dir)
 	require.Equal(t, 0, code, stderr)
 	assert.Empty(t, stdout)
 
@@ -97,7 +88,7 @@ func TestCredentialSetRefusesAnEmptyValueAndATerminal(t *testing.T) {
 func TestCredentialAppIdZeroIsRefused(t *testing.T) {
 	dir := t.TempDir()
 
-	code, _, _ := runWithStdin("pem\n", "credential", "set", "work", "--app-id", "0", "--data-dir", dir)
+	code, _, _ := withStdin("pem\n", "credential", "set", "work", "--app-id", "0", "--data-dir", dir)
 	assert.Equal(t, 1, code)
 	assert.NotContains(t, cavuIn(t, dir, "credential", "list"), "work")
 }
@@ -114,7 +105,7 @@ func TestCredentialUsageErrors(t *testing.T) {
 		{"credential", "frobnicate"},
 		{"credential"},
 	} {
-		code, _, _ := runWithStdin("value\n", append(args, "--data-dir", dir)...)
+		code, _, _ := withStdin("value\n", append(args, "--data-dir", dir)...)
 		assert.Equal(t, 2, code, args)
 	}
 }
