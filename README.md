@@ -36,7 +36,7 @@ You describe a task in plain words, on a web page or on the command line. CAVU h
 - A computer with Linux or macOS. Linux with Docker and with Podman is tested; on macOS only the unit tests run, in CI, and nothing has run there with a container runtime.
 - A container runtime, Docker or Podman: the program that runs containers. CAVU starts every sandbox with it, and uses the one its `runtime` setting names, else Docker, else Podman.
 - What builds CAVU, since this repository publishes no built binary: Go (`go.mod` names the version, 1.27.4), Node (the version in `.nvmrc`, 26) with npm, `make`, and a copy of this repository.
-- A Claude subscription, or an API key for a model endpoint together with that endpoint's address.
+- A Claude subscription, with Claude Code on your own machine to make the token CAVU uses (step 6), or an API key for a model endpoint together with that endpoint's address.
 - A repository on GitHub, on github.com or GitHub Enterprise, for CAVU to work on, and a way for CAVU to act on it there: a personal access token, a secret that lets CAVU act on GitHub with the access the token was given, or a GitHub App installed on the repository. [GitHub access](#github-access) lists the permissions each needs.
 
 ### Getting started
@@ -88,7 +88,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
    - With a subscription, paste the subscription's token into **The subscription's token**: the long-lived token that `claude setup-token` prints when you run it on your own machine.
    - With a key, fill in the **Endpoint address**, the **Auth header** that carries the key, such as `x-api-key`, and **The key**.
 
-   Then name the **Work model**, the model the agent works with. CAVU seals every secret: it stores it encrypted and never shows it again.
+   Then name the **Work model**, the Claude model the agent works with, such as `claude-haiku-5-5`, the model CAVU's live checks run. CAVU seals every secret: it stores it encrypted and never shows it again.
 
 7. **GitHub.** Paste a personal access token into **A token for the repositories CAVU works on**, or press **Use a GitHub App instead** and give the **App id** and its **Private key**, a `.pem` file. [GitHub access](#github-access) says which permissions each needs, and why an App is recommended. Then fill in the **Name on commits** and **Email on commits**, which CAVU's commits carry.
 
@@ -103,14 +103,14 @@ Each step says what to do and what you then see. Type the commands in a terminal
 
 9. **The environment check.** CAVU now prepares the project the way each task's run does: it clones the repository in a sandbox, installs the tools that the version files at the repository's root name (such as `go.mod` or `.nvmrc`), runs the setup command, and runs the verify command once on the base branch. The result is the project's baseline: tasks run only on a project whose baseline passed, or whose verify command is waived. The page waits for the check, which downloads the project's tools the first time, and then shows its result and output.
    - **It can run tasks.** The check passed: press **Create the first task**.
-   - **It cannot run tasks yet.** The line names the step that failed (`clone`, `toolchain`, `setup`, or `baseline` for the verify command), and the output under it shows why. Press **Open the project**, then **Edit**, correct the setup or verify command, and **Save**: CAVU checks the project again. **Check again** asks for a new check without a change, for instance after you fixed the repository itself.
+   - **It cannot run tasks yet.** The line names the step that failed, and the output under it shows why: `clone` points at the repository address, the base branch or the GitHub token; `toolchain` at the tool versions the repository's files name; `setup` at the setup command; `baseline` at the verify command, or at code on the base branch that does not pass it. Press **Open the project**, then **Edit**, correct what the output points at, and **Save**: CAVU checks the project again. **Check again** asks for a new check without a change, for instance after you changed the token under **Settings** or fixed the repository itself.
 
-10. **Your first task.** Press **Create the first task**, choose the **Project**, write in one line **What should be done?**, which is the task's title, and under **Details** what done looks like and what to leave alone. Tick **Start it now**: it is not ticked at first, and a task created without it stays a draft until you press **Start** on its page. Press **Create**.
+10. **Your first task.** Press **Create the first task**, or, when you are on the project's page after a check that passed there, **New task** on **Needs you** (on a phone, the **New task** tab). Choose the **Project**, write in one line **What should be done?**, which is the task's title, and under **Details** what done looks like and what to leave alone. Tick **Start it now**: it is not ticked at first, and a task created without it stays a draft until you press **Start** on its page. Press **Create**.
 
     The task's page opens. Under **What happened** it shows each step as CAVU records it:
     - The agent first reads the task and the repository and changes nothing. When a fact it needs is in neither, the task stops with its questions (step 11).
     - The agent makes the change, CAVU runs your verify command on it, and a fresh agent session reviews it; a critical or important finding sends the change back for a fix.
-    - CAVU pushes a branch and opens a draft pull request on GitHub. Once the pull request's checks pass, CAVU marks it ready for review. When the repository runs no checks on pull requests, tick **This repository has no CI** on the project's page, or the task stops as `no_checks`.
+    - CAVU pushes a branch and opens a draft pull request on GitHub. Once the pull request's checks pass, CAVU marks it ready for review: the checks are what the repository's CI, its automatic builds and tests, reports on the pull request. When the repository has no CI, CAVU marks the pull request ready after 3 minutes and stops the task as `no_checks` 3 minutes later; to have it marked ready at once, press **Edit** on the project's page, tick **This repository has no CI** and **Save**.
     - You read the pull request and merge it on GitHub. When CAVU sees the merge, the task is done.
 
     <picture>
@@ -120,7 +120,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
 
 11. **When CAVU needs you.** **Needs you**, the first page, lists the tasks that wait for you, the most recent first, and on a desktop the navigation shows how many. Each says what it needs:
     - **A question from the agent**: write your answer and press **Answer**; **Use its assumptions** fills in the answers the agent would assume. The task goes on with your answer.
-    - **Stopped**: the line says why. Clear the cause, then press **Retry**. [Tasks](#tasks) and [The pull request](#the-pull-request) explain each stop.
+    - **Stopped**: the box gives CAVU's explanation of the stop. Clear the cause, then press **Retry**. [The pull request](#the-pull-request) and [Budgets](#budgets) say more about their stops.
     - **Ready for your review**: **Open pull request** opens it on GitHub, where you read it and merge it.
     - **A change to take by hand**, only for a project with the switch `publish` off, which opens no pull request: **Download the bundle** or **Download the diff**, merge the change yourself, then press **Record the merge**.
 
@@ -130,6 +130,13 @@ Each step says what to do and what you then see. Type the commands in a terminal
       <source media="(prefers-color-scheme: dark)" srcset="docs/images/board-dark.png">
       <img src="docs/images/board-light.png" width="720" alt="The board: ten open tasks in five columns, draft, queued, running, blocked and in review; each card has the task's number, project and title, why it waits, and a needs you mark on those that need a person.">
     </picture>
+
+The same app works on a phone, with four tabs at the bottom; [Running the server](#running-the-server) says how a phone reaches CAVU.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/phone-needs-you-and-task-page-dark.png">
+  <img src="docs/images/phone-needs-you-and-task-page-light.png" width="402" alt="CAVU on a phone, two screens side by side: Needs you, with a task's two questions from the agent and a pull request ready for review, and a running task's page with its timeline; each has the tabs Needs you, New task, Status and More at the bottom.">
+</picture>
 
 ### With the command line
 
@@ -143,7 +150,7 @@ Every step above can be done with commands instead, for those who prefer a termi
 
 ## Using CAVU
 
-The sections below are the reference: each setting, command and rule in full.
+The sections below are the reference.
 
 The commands below keep their data in one directory: the default is created on first use, and `CAVU_DATA_DIR` puts it elsewhere. Every `cavu` verb but `cavu service uninstall` also takes `--data-dir DIR`; `make image` takes only the variable.
 
@@ -365,11 +372,6 @@ cavu settings set listen_address 0.0.0.0:7117
 ```
 
 CAVU serves plain HTTP, so what passes between the phone and CAVU, the password at sign-in included, travels unencrypted: do this only on a network you trust, or put a proxy that serves HTTPS in front of CAVU. When that proxy sends `X-Forwarded-Proto: https`, CAVU marks the session cookie `Secure`.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/phone-needs-you-and-task-page-dark.png">
-  <img src="docs/images/phone-needs-you-and-task-page-light.png" width="402" alt="CAVU on a phone, two screens side by side: Needs you, with a task's two questions from the agent and a pull request ready for review, and a running task's page with its timeline; each has the tabs Needs you, New task, Status and More at the bottom.">
-</picture>
 
 To keep it running without a terminal, install it as a service of your login with `cavu service install`. It writes `~/.config/systemd/user/cavu.service` on Linux, a systemd user unit, or `~/Library/LaunchAgents/com.github.mhersson.cavu.plist` on macOS, a launchd agent, and starts the service from it at once and again when it fails. The file names the `cavu` binary that installed it by its absolute path and sets your `PATH`, so the service finds the `docker` or `podman` your shell finds; `CAVU_DATA_DIR`, the absolute path of the data directory chosen as for every verb (`--data-dir`, else `CAVU_DATA_DIR`, else `$XDG_DATA_HOME/cavu`, else `~/.local/share/cavu`); `DOCKER_HOST`, only when your Docker context's endpoint is not `unix:///var/run/docker.sock`; and `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, their lower-case forms, `SSL_CERT_FILE` and `SSL_CERT_DIR`, each only when your shell sets it. The macOS agent also sets `HOME`. CAVU's secrets stay in the data directory, where `cavu secret set` stored them; the file is readable by you alone, since a proxy address in it may hold a password. As in a terminal, set the user and build the image first. On Linux, `--linger` also runs `loginctl enable-linger`, for a host nobody stays logged in to.
 
