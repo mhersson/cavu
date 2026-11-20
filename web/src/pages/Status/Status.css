@@ -1,5 +1,5 @@
 .status-page .grp {
-  font-size: inherit;
+  font-size: 12px;
   font-weight: 600;
   margin: 16px 0 2px;
   display: flex;
@@ -18,7 +18,6 @@
 .status-page .grp span:last-child {
   color: var(--grey1);
   font-weight: 400;
-  font-size: 12px;
 }
 
 .status-page .prow {
