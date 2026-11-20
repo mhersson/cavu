@@ -1,6 +1,7 @@
+import { useEffect } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import App from './App.tsx'
 import { FakeEventSource, fakeServer, json, narrow, rows } from './test-server.ts'
 
@@ -10,10 +11,20 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+let here = ''
+function Here() {
+  const { pathname } = useLocation()
+  useEffect(() => {
+    here = pathname
+  })
+  return null
+}
+
 async function show(path = '/') {
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <App />
+      <Here />
     </MemoryRouter>,
   )
   await act(async () => {
@@ -140,7 +151,7 @@ test('sign-out ends the session', async () => {
   vi.useRealTimers()
   const calls = fakeServer((c) => {
     if (needsYou(c)) return json({ tasks: [] })
-    if (c.path === '/api/projects') return json({ projects: [] })
+    if (c.path === '/api/projects') return json({ projects: [{ runnable: true }] })
     if (c.path === '/api/auth/logout') return new Response(null, { status: 204 })
   })
   const user = userEvent.setup()
@@ -159,4 +170,41 @@ test('sign-out ends the session', async () => {
   await user.click(screen.getByRole('button', { name: 'Sign out' }))
   expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
   expect(logouts()).toHaveLength(2)
+})
+
+const projects = (c: { path: string }) => c.path === '/api/projects'
+
+test('an instance with no project is sent to setup', async () => {
+  fakeServer((c) => {
+    if (projects(c)) return json({ projects: [] })
+    if (needsYou(c)) return json({ tasks: [] })
+  })
+  await show('/board')
+  expect(here).toBe('/setup')
+  expect(screen.queryByRole('link', { name: /needs you/i })).toBeNull()
+})
+
+test('one with a project and a passed check does not open at all', async () => {
+  vi.useRealTimers()
+  const user = userEvent.setup()
+  const calls = fakeServer((c) => {
+    if (projects(c)) return json({ projects: [{ runnable: true, baseline: { passed: true } }] })
+    if (needsYou(c)) return json({ tasks: [] })
+  })
+  narrow(true)
+  await show('/')
+  expect(here).toBe('/')
+  await user.click(screen.getByRole('link', { name: /status/i }))
+  await user.click(screen.getByRole('link', { name: /needs you/i }))
+  expect(here).toBe('/')
+  expect(calls.filter(projects)).toHaveLength(1)
+})
+
+test('a failed read of the projects sends nowhere', async () => {
+  fakeServer((c) => {
+    if (projects(c)) return json({ error: 'boom' }, 500)
+    if (needsYou(c)) return json({ tasks: [] })
+  })
+  await show('/board')
+  expect(screen.getByRole('link', { name: /board/i })).toHaveAttribute('aria-current', 'page')
 })

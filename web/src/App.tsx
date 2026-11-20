@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { api, onUnauthorized } from './api/client.ts'
 import { useEvents, useStream } from './api/stream.ts'
-import type { Row } from './api/types.ts'
+import type { Project, Row } from './api/types.ts'
 import Nav from './components/Nav.tsx'
 import PhoneTabs from './components/PhoneTabs.tsx'
 import { useNarrow } from './components/useNarrow.ts'
@@ -23,6 +23,15 @@ function Frame() {
   const narrow = useNarrow()
   const version = useVersion()
   const [count, setCount] = useState(0)
+  const [empty, setEmpty] = useState(false)
+
+  // Each mount of the frame on an instance with no project goes to setup; moving between its pages does not.
+  useEffect(() => {
+    api<{ projects: Project[] }>('GET', '/projects').then(
+      (r) => setEmpty(r.projects.length === 0),
+      () => {},
+    )
+  }, [])
 
   const read = useCallback(() => {
     api<{ tasks: Row[] }>('GET', '/tasks?needs_you=true')
@@ -32,6 +41,8 @@ function Frame() {
 
   const { live } = useEvents()
   useStream(read)
+
+  if (empty) return <Navigate to="/setup" replace />
 
   return (
     <div className="frame">
@@ -62,6 +73,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/setup" element={<Setup />} />
       <Route element={<Frame />}>
         <Route path="/" element={<NeedsYou />} />
         <Route path="/tasks/:id" element={<Task />} />
@@ -69,7 +81,6 @@ export default function App() {
         <Route path="/projects" element={<Projects />} />
         <Route path="/projects/:name" element={<Projects />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="/setup" element={<Setup />} />
         <Route path="/new" element={<NewTask />} />
         <Route path="/status" element={<Status />} />
         <Route path="/more" element={<More />} />

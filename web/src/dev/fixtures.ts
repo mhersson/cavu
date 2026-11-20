@@ -252,6 +252,18 @@ for (const [name, credential] of [['cavu', ''], ['homelander', ''], ['docs-site'
   Object.assign(PROJECTS.find((p) => p.name === name)!, { forge_credential: credential })
 }
 
+// The setup page's: a fresh instance at each point of its setup, which the harness serves for setup=1|2|3|4|failed.
+const UNSET = { endpoint_credential: false, forge_token: false, forge_app_key: false }
+const ENDPOINT = { endpoint_mode: 'subscription', model_work: 'sonnet' }
+const GITHUB = { settings: { ...ENDPOINT, commit_name: 'cavu', commit_email: 'cavu@example.com' }, secrets: { ...UNSET, endpoint_credential: true, forge_token: true } }
+export const SETUP: Record<string, { settings: Settings['settings']; secrets: Settings['secrets']; projects: Project[] }> = {
+  1: { settings: {}, secrets: UNSET, projects: [] },
+  2: { settings: ENDPOINT, secrets: { ...UNSET, endpoint_credential: true }, projects: [] },
+  3: { ...GITHUB, projects: [] },
+  4: { ...GITHUB, projects: [{ ...PROJECTS[0], forge_credential: '' }] },
+  failed: { ...GITHUB, projects: [{ ...PROJECTS[2], forge_credential: '' }] },
+}
+
 // A draft's page: a body of two short lines and two paragraphs that wrap, filed over MCP, and a dependency on a task that runs.
 VIEWS[44] = base(44, {
   body: 'Add a section on the web app after the install steps.\nSay where it listens and how to sign in.\n\n' +

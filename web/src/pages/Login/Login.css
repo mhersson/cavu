@@ -1,14 +1,3 @@
-.login-bar {
-  background: var(--bg0);
-  border-bottom: 1px solid var(--bg2);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 20px;
-  color: var(--grey1);
-  font-size: 12px;
-}
-
 .login {
   width: 100%;
   max-width: 330px;

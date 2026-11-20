@@ -25,7 +25,7 @@ export default function Login() {
 
   return (
     <>
-      <div className="login-bar">
+      <div className="brand-bar">
         <span className="brand">CAVU</span>
         <span>{version}</span>
       </div>

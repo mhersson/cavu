@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { useEffect } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import App from '../../App.tsx'
-import type { Project } from '../../api/types.ts'
+import type { Project, Settings } from '../../api/types.ts'
 import { FakeEventSource, fakeServer, json, narrow, type Call } from '../../test-server.ts'
 
 afterEach(() => {
@@ -84,7 +84,12 @@ async function show(path = '/projects', phone = false) {
 const settle = () => act(() => vi.advanceTimersByTimeAsync(0))
 const rows = () => within(screen.getByRole('navigation', { name: 'Projects' })).getAllByRole('link')
 const current = () => rows().filter((r) => r.getAttribute('aria-current') === 'page').map((r) => r.textContent)
-const reads = (calls: Call[]) => calls.filter((c) => c.method === 'GET' && c.path.startsWith('/api/projects'))
+// The page's reads of the projects: the frame's own read of the list, made once at mount, is left out.
+const reads = (calls: Call[]) => {
+  const all = calls.filter((c) => c.method === 'GET' && c.path.startsWith('/api/projects'))
+  all.splice(all.findIndex((c) => c.path === '/api/projects'), 1)
+  return all
+}
 const deletes = (calls: Call[]) => calls.filter((c) => c.method === 'DELETE').map((c) => c.path)
 const check = () => screen.getByRole('region', { name: 'Environment check' })
 // The key and value list a value is in, as its keys with their values.
@@ -336,6 +341,20 @@ test('the credential picker lists the default and the named ones', async () => {
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create' }))
   await settle()
   expect((posts(calls)[0][1] as { forge_credential: string }).forge_credential).toBe('work-app')
+})
+
+test('the credential picker shows only when a named credential exists', async () => {
+  const cases: [Settings['forge_credentials'], boolean][] = [
+    [[], false],
+    [[CREDENTIALS[0]], true],
+  ]
+  for (const [credentials, shown] of cases) {
+    serve({ projects: [project(1, 'api')] }, (c) => (c.method === 'GET' && c.path === '/api/settings' ? json({ forge_credentials: credentials }) : undefined))
+    await show()
+    await openNew()
+    expect(within(screen.getByRole('dialog')).queryByLabelText('GitHub credential') !== null).toBe(shown)
+    cleanup()
+  }
 })
 
 test('a refused project shows the server\'s line and keeps what was typed', async () => {
