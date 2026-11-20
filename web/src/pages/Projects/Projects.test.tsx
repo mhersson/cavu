@@ -397,3 +397,244 @@ test('a phone shows no New project button', async () => {
   await show('/projects', true)
   expect(screen.queryByRole('button', { name: 'New project' })).toBeNull()
 })
+
+describe('editing', () => {
+  // GET /api/settings names the two credentials; answer answers a PATCH of project 1, and checked a check request.
+  function serveEdit(world: { projects: Project[] }, answer: (c: Call) => Response, checked?: Project) {
+    return serve(world, (c) => {
+      if (c.method === 'GET' && c.path === '/api/settings') return json({ forge_credentials: CREDENTIALS })
+      if (c.method === 'PATCH' && c.path === '/api/projects/1') return answer(c)
+      if (c.method === 'POST' && c.path === '/api/projects/1/check' && checked) return json(checked, 202)
+      return undefined
+    })
+  }
+  const patches = (calls: Call[]) => calls.filter((c) => c.method === 'PATCH').map((c) => [c.path, c.body])
+  const writes = (calls: Call[]) => calls.filter((c) => c.method !== 'GET')
+  const field = (name: string) => screen.getByRole('textbox', { name }) as HTMLTextAreaElement
+  const write = (name: string, value: string) => fireEvent.change(field(name), { target: { value } })
+  const press = async (name: string) => {
+    fireEvent.click(screen.getByRole('button', { name }))
+    await settle()
+  }
+  const editing = () => screen.queryByRole('button', { name: 'Save' }) !== null
+  const WAIVED = 'No verify command: a person checks every change'
+
+  test('Edit is on the desktop and not on a phone', async () => {
+    serve({ projects: [project(1, 'web')] })
+    await show('/projects/web')
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+    cleanup()
+    serve({ projects: [project(1, 'web')] })
+    await show('/projects/web', true)
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+
+  test('Save sends only what changed', async () => {
+    const was = project(1, 'web', {
+      switches: { continuations: true, publish: true, web_tools: false },
+      caps: { task_timeout_minutes: '60', task_max_turns: '40' },
+    })
+    const saved = { ...was, verify_command: 'make test' }
+    const calls = serveEdit({ projects: [was] }, () => json(saved))
+    await show()
+    await press('Edit')
+    expect(editing()).toBe(true)
+    write('Verify', 'make test')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'publish' }))
+    write('Dollars', '5')
+    write('Turns', '')
+    await press('Save')
+    expect(patches(calls)).toEqual([
+      ['/api/projects/1', { verify_command: 'make test', switches: { publish: false }, caps: { task_budget_usd: '5', task_max_turns: '' } }],
+    ])
+    // The project the server gave back is the one shown, and editing has ended.
+    expect(editing()).toBe(false)
+    expect(screen.getByText('make test').tagName).toBe('CODE')
+  })
+
+  test('nothing changed sends nothing', async () => {
+    const world = { projects: [project(1, 'web', { env: { A: '1', B: '2' } })] }
+    const calls = serveEdit(world, () => json(world.projects[0]))
+    await show()
+    await press('Edit')
+    // A map's lines in another order, and a value typed and typed back.
+    write('Environment', 'B=2\nA=1')
+    write('Verify', 'make test')
+    write('Verify', 'npm test')
+    // A read while editing leaves the fields as typed, and the edit is against the project as it was.
+    world.projects = [project(1, 'web', { env: { A: '1', B: '2' }, verify_command: 'go test ./...' })]
+    act(() => FakeEventSource.all[0].send(1, { task_id: 1 }))
+    await act(() => vi.advanceTimersByTimeAsync(2000))
+    expect(reads(calls)).toHaveLength(2)
+    expect(field('Verify').value).toBe('npm test')
+    await press('Save')
+    expect(writes(calls)).toEqual([])
+    expect(editing()).toBe(false)
+  })
+
+  test("a refused save shows the server's line and keeps what was typed", async () => {
+    const line = 'verify_command and verify_waived: a project may not have both'
+    const calls = serveEdit({ projects: [project(1, 'web')] }, () => json({ error: line }, 400))
+    await show()
+    await press('Edit')
+    write('Verify', 'make test')
+    write('Hosts it may reach', 'a.example\nb.example')
+    fireEvent.click(screen.getByRole('checkbox', { name: WAIVED }))
+    const save = screen.getByRole('button', { name: 'Save' })
+    fireEvent.click(save)
+    expect(save).toBeDisabled()
+    await settle()
+    expect(screen.getByRole('alert').textContent).toBe(line)
+    expect(editing()).toBe(true)
+    expect(field('Verify').value).toBe('make test')
+    expect(field('Hosts it may reach').value).toBe('a.example\nb.example')
+    expect(screen.getByRole('checkbox', { name: WAIVED })).toBeChecked()
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await settle()
+    expect(patches(calls)).toHaveLength(2)
+  })
+
+  test('a secret shows its name and never a value', async () => {
+    const value = 'hunter2-not-shown'
+    const calls = serveEdit({ projects: [project(1, 'web', { secret_vars: ['NPM_TOKEN', 'SENTRY_DSN'] })] }, () =>
+      json(project(1, 'web', { secret_vars: ['NPM_TOKEN', 'API_KEY'] })),
+    )
+    await show()
+    await press('Edit')
+    const secrets = screen.getByText('SENTRY_DSN').closest('dd')!
+    // Remove marks a name, and the mark can be taken back.
+    const [npm, sentry] = within(secrets).getAllByRole('button', { name: 'Remove' })
+    fireEvent.click(npm)
+    expect(within(secrets).getAllByRole('button', { name: 'Remove' })).toEqual([sentry])
+    fireEvent.click(npm)
+    fireEvent.click(sentry)
+    // Two added, one left empty.
+    fireEvent.click(screen.getByRole('button', { name: 'Add a secret' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add a secret' }))
+    const names = screen.getAllByLabelText('Secret name')
+    const values = screen.getAllByLabelText('Secret value')
+    expect(names).toHaveLength(2)
+    expect(values.map((v) => v.getAttribute('type'))).toEqual(['password', 'password'])
+    fireEvent.change(names[0], { target: { value: 'API_KEY' } })
+    fireEvent.change(values[0], { target: { value } })
+    await press('Save')
+    expect(patches(calls)).toEqual([['/api/projects/1', { secrets: { SENTRY_DSN: '', API_KEY: value } }]])
+    expect(editing()).toBe(false)
+    expect(screen.getByText('API_KEY')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain(value)
+    expect([...document.querySelectorAll('input')].map((i) => i.value)).not.toContain(value)
+  })
+
+  test('the credential picker lists the default and the named ones', async () => {
+    const calls = serveEdit({ projects: [project(1, 'web', { forge_credential: 'acme-org' })] }, () =>
+      json(project(1, 'web', { forge_credential: 'work-app' })),
+    )
+    await show()
+    expect(calls.filter((c) => c.path === '/api/settings')).toEqual([])
+    await press('Edit')
+    expect(calls.filter((c) => c.path === '/api/settings')).toHaveLength(1)
+    const pick = screen.getByRole('combobox', { name: 'Credential' }) as HTMLSelectElement
+    expect([...pick.options].map((o) => o.value)).toEqual(['', 'acme-org', 'work-app'])
+    expect(pick.value).toBe('acme-org')
+    fireEvent.change(pick, { target: { value: 'work-app' } })
+    await press('Save')
+    expect(patches(calls)).toEqual([['/api/projects/1', { forge_credential: 'work-app' }]])
+  })
+
+  test('Save asks for a check when the project it gets back cannot run and has no baseline', async () => {
+    const asked = '2030-01-02T04:00:00Z'
+    const notPassed = { commit: 'c0ffee1', passed: false, at: '2030-01-02T03:04:05Z', output: '' }
+    const cases: [Project, boolean][] = [
+      [stuck(1, 'web'), true],
+      [project(1, 'web'), false],
+      [stuck(1, 'web', { requested_at: asked }), false],
+      [{ ...stuck(1, 'web'), baseline: notPassed }, false],
+    ]
+    for (const [answer, asks] of cases) {
+      const calls = serveEdit({ projects: [project(1, 'web')] }, () => json(answer), stuck(1, 'web', { requested_at: asked }))
+      await show()
+      await press('Edit')
+      write('Verify', 'make test')
+      await press('Save')
+      expect(writes(calls).map((c) => [c.method, c.path])).toEqual([
+        ['PATCH', '/api/projects/1'],
+        ...(asks ? [['POST', '/api/projects/1/check']] : []),
+      ])
+      if (asks) {
+        // The page took the 202's project, whose asked-for check it reads until it ends.
+        await act(() => vi.advanceTimersByTimeAsync(3000))
+        expect(reads(calls).map((c) => c.path)).toContain('/api/projects/1')
+      }
+      cleanup()
+    }
+  })
+
+  test('lists are sent one entry per line', async () => {
+    const calls = serveEdit({ projects: [project(1, 'web', { ignored_checks: ['lint'] })] }, () => json(project(1, 'web')))
+    await show()
+    await press('Edit')
+    // A textarea holds a row per entry, at least one.
+    expect(field('Hosts it may reach').rows).toBe(1)
+    expect(field('Checks to ignore').rows).toBe(1)
+    write('Hosts it may reach', 'a.example\nb.example')
+    expect(field('Hosts it may reach').rows).toBe(2)
+    write('Environment', 'A=b=c')
+    write('Versions set here', 'go=1.24')
+    write('Checks to ignore', 'lint\nci / test, fast')
+    write('Review bots', 'copilot[bot]')
+    await press('Save')
+    expect(patches(calls)).toEqual([
+      [
+        '/api/projects/1',
+        {
+          egress_hosts: ['a.example', 'b.example'],
+          env: { A: 'b=c' },
+          tool_overrides: { go: '1.24' },
+          ignored_checks: ['lint', 'ci / test, fast'],
+          review_bots: ['copilot[bot]'],
+        },
+      ],
+    ])
+  })
+
+  test('the ticks send verify_waived and no_ci and change no other field', async () => {
+    const calls = serveEdit({ projects: [project(1, 'web')] }, () => json(project(1, 'web')))
+    await show()
+    await press('Edit')
+    fireEvent.click(screen.getByRole('checkbox', { name: WAIVED }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'This repository has no CI' }))
+    expect(field('Verify')).toBeEnabled()
+    expect(field('Verify').value).toBe('npm test')
+    await press('Save')
+    expect(patches(calls)).toEqual([['/api/projects/1', { verify_waived: true, no_ci: true }]])
+  })
+
+  test('Cancel drops what was typed', async () => {
+    const calls = serveEdit({ projects: [project(1, 'web')] }, () => json(project(1, 'web')))
+    await show()
+    await press('Edit')
+    write('Verify', 'make test')
+    await press('Cancel')
+    expect(editing()).toBe(false)
+    expect(writes(calls)).toEqual([])
+    expect(screen.getByText('npm test').tagName).toBe('CODE')
+    await press('Edit')
+    expect(field('Verify').value).toBe('npm test')
+  })
+
+  test('choosing another project leaves editing', async () => {
+    serveEdit({ projects: [project(1, 'api'), project(2, 'web')] }, () => json(project(1, 'api')))
+    await show()
+    await press('Edit')
+    write('Verify', 'make test')
+    fireEvent.click(rows()[1])
+    await settle()
+    expect(editing()).toBe(false)
+    fireEvent.click(rows()[0])
+    await settle()
+    expect(editing()).toBe(false)
+    await press('Edit')
+    expect(field('Verify').value).toBe('npm test')
+  })
+})

@@ -78,6 +78,82 @@
   overflow-wrap: anywhere;
 }
 
+.projects-page .phead .spacer {
+  flex: 1;
+}
+
+.projects-page .phead .refused {
+  color: var(--red);
+  margin: 0;
+}
+
+.projects-page .in {
+  background: var(--bg0);
+  color: var(--fg);
+  border: 1px solid var(--bg3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.projects-page .in::placeholder {
+  color: var(--grey0);
+}
+
+.projects-page .in.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.projects-page select.in {
+  width: auto;
+}
+
+.projects-page textarea.in {
+  display: block;
+  resize: vertical;
+}
+
+.projects-page .inline {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--grey2);
+  font-size: 13px;
+}
+
+.projects-page .secrets {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.projects-page .secrets .pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  justify-self: stretch;
+}
+
+.projects-page .secret {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.projects-page .secret .btn {
+  padding: 1px 8px;
+  font-size: 12px;
+}
+
+.projects-page .secret .gone {
+  color: var(--grey0);
+  text-decoration: line-through;
+}
+
 .projects-page .two {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

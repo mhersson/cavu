@@ -4,11 +4,10 @@ import { api } from '../../api/client.ts'
 import { useStream } from '../../api/stream.ts'
 import type { Project } from '../../api/types.ts'
 import Dialog from '../../components/Dialog.tsx'
-import EnvCheck from '../../components/EnvCheck.tsx'
 import PageHead from '../../components/PageHead.tsx'
 import { useNarrow } from '../../components/useNarrow.ts'
+import Detail from './Detail.tsx'
 import NewProject from './NewProject.tsx'
-import Sections from './Sections.tsx'
 import './Projects.css'
 
 const square = (p: Project) => (p.runnable ? 'k-ready' : 'k-stop')
@@ -65,7 +64,7 @@ export default function Projects() {
 
   const list = projects ?? []
   const project = name === undefined ? list[0] : list.find((p) => p.name === name)
-  // A project a check gives back takes the place of the one with its id.
+  // A project a check or a save gives back takes the place of the one with its id.
   const put = (p: Project) => setProjects((l) => l && l.map((x) => (x.id === p.id ? p : x)))
   const removed = () => {
     setRemoving(0)
@@ -81,8 +80,7 @@ export default function Projects() {
 
   const view = project && (
     <>
-      <EnvCheck key={project.id} project={project} onProject={put} />
-      <Sections project={project} folded={narrow} onRemove={() => setRemoving(project.id)} />
+      <Detail key={project.id} project={project} folded={narrow} onProject={put} onRemove={() => setRemoving(project.id)} />
       {removing === project.id && <RemoveDialog project={project} onClose={() => setRemoving(0)} onRemoved={removed} />}
     </>
   )
@@ -135,17 +133,7 @@ export default function Projects() {
             </Link>
           ))}
         </nav>
-        <div className="detail">
-          {project && (
-            <>
-              <div className="phead">
-                <h2>{project.name}</h2>
-                <span className="repo mono">{project.repo_url}</span>
-              </div>
-              {view}
-            </>
-          )}
-        </div>
+        <div className="detail">{view}</div>
       </div>
     </div>
   )
