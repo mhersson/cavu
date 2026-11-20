@@ -3,10 +3,12 @@
 package sandbox_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"os/exec"
@@ -217,4 +219,52 @@ func TestImageCarriesSandboxMarker(t *testing.T) {
 	// The rm and the test share one container, so the test sees what the rm left.
 	out, err = sandboxtest.RunInImage(t, r, image, "sh", "-c", `rm -f "$1" 2>/dev/null; test -f "$1"`, "sh", proc.SandboxMarker)
 	require.NoError(t, err, out)
+}
+
+// TestImageTakesAScreenshot has the browser in the image photograph a page
+// served on loopback inside a hardened, network-less container.
+func TestImageTakesAScreenshot(t *testing.T) {
+	r := sandboxtest.Runtime(t)
+	c := startContainer(t, r, sandboxImage(t, r, nil), nil)
+
+	// The server forks only once it listens, so the page is up when the shell returns.
+	serve := `perl -MIO::Socket::INET -e '
+		my $s = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 8080, Listen => 5, ReuseAddr => 1) or die $!;
+		fork and exit;
+		while (my $c = $s->accept) {
+			while (defined(my $l = <$c>)) { last if $l =~ /^\r?\n$/ }
+			print $c "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Hello from the sandbox</h1><p>" . ("some text " x 200) . "</p>";
+			close $c;
+		}' </dev/null >/dev/null 2>&1`
+	require.Equal(t, 0, run(t, c, "sh", "-c", serve).ExitCode)
+
+	env := []string{
+		"HTTP_PROXY=" + sandbox.BridgeURL, "HTTPS_PROXY=" + sandbox.BridgeURL, "http_proxy=" + sandbox.BridgeURL, "https_proxy=" + sandbox.BridgeURL,
+		"NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1",
+	}
+
+	shoot := func(path, url string) []byte {
+		res, err := c.Run(t.Context(), proc.Command{Env: env, Argv: []string{
+			"chromium", "--headless", "--no-sandbox", "--no-proxy-server", "--hide-scrollbars",
+			"--window-size=1280,900", "--virtual-time-budget=5000", "--screenshot=" + path, url,
+		}}, time.Minute)
+		require.NoError(t, err)
+		require.False(t, res.TimedOut)
+		require.Equal(t, 0, res.ExitCode, res.Output)
+
+		var out bytes.Buffer
+		require.NoError(t, c.CopyOut(t.Context(), path, &out))
+
+		return out.Bytes()
+	}
+
+	page := shoot("/tmp/page.png", "http://127.0.0.1:8080/")
+	blank := shoot("/tmp/blank.png", "about:blank")
+	t.Logf("page %d bytes, blank %d bytes", len(page), len(blank))
+
+	cfg, err := png.DecodeConfig(bytes.NewReader(page))
+	require.NoError(t, err)
+	assert.Equal(t, 1280, cfg.Width)
+	assert.Equal(t, 900, cfg.Height)
+	assert.Greater(t, len(page), len(blank))
 }
