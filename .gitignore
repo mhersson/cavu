@@ -1,5 +1,6 @@
 bin/
 node_modules/
 /web/dist/app/
+/dist/
 /cmd/cavu/cavu
 /cavu
