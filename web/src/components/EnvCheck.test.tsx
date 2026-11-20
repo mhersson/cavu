@@ -174,6 +174,17 @@ describe('EnvCheck', () => {
     expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
   })
 
+  it('a failed clone names no commit', () => {
+    const clone = project(
+      { runnable: false, baseline: { commit: '', passed: false, at: '2030-01-02T03:04:05Z', output: '' } },
+      { failed_step: 'clone', commit: '' },
+    )
+    render(<EnvCheck project={clone} onProject={() => {}} />)
+    const codes = [...screen.getByRole('region').querySelectorAll('code')]
+    expect(codes.map((c) => c.textContent)).toEqual(['clone'])
+    expect(screen.getByRole('region').textContent).toContain(clock('2030-01-02T03:04:05Z'))
+  })
+
   it('the output is shown as text', () => {
     render(<EnvCheck project={project({}, { failed_step: 'setup', output: '<b>x</b>' })} onProject={() => {}} />)
     const out = screen.getByRole('region').querySelector('pre.out')!

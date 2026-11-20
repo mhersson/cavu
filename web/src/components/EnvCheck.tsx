@@ -13,7 +13,11 @@ function Verify({ p }: { p: Project }) {
   if (b)
     return (
       <>
-        The verify command {b.passed ? 'passed' : 'has not passed'} on base commit <code>{b.commit}</code> at {clock(b.at)}.
+        The verify command {b.passed ? 'passed' : 'has not passed'}{b.commit && (
+          <>
+            {' '}on base commit <code>{b.commit}</code>
+          </>
+        )}{' '}at {clock(b.at)}.
       </>
     )
   if (!p.verify_command) return <>There is no verify command.</>
@@ -32,7 +36,13 @@ function Newest({ p }: { p: Project }) {
   if (c.failed_step)
     return (
       <>
-        The environment check failed at the step <code>{c.failed_step}</code>, on commit <code>{c.commit}</code>.
+        The environment check failed at the step <code>{c.failed_step}</code>
+        {c.commit && (
+          <>
+            , on commit <code>{c.commit}</code>
+          </>
+        )}
+        .
       </>
     )
   if (c.commit) {
