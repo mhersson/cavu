@@ -60,7 +60,7 @@ export function NewTaskForm({ onCancel }: { onCancel?: () => void }) {
       <Field label="Start it now" check>
         <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} />
       </Field>
-      <p className="new-task-hint">{start ? 'It starts as soon as a slot is free.' : 'It is kept as a draft until you start it.'}</p>
+      <p className="new-task-hint">{start ? 'It is started when you create it.' : 'It is kept as a draft until you start it.'}</p>
       {error && (
         <p role="alert" className="new-task-error">
           {error}
