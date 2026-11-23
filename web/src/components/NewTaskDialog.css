@@ -15,10 +15,10 @@
   outline-offset: -1px;
 }
 
-.dialog > .dropping {
+.dialog > .new-task.dropping {
   outline: none;
 }
 
-.dialog:has(> .dropping) > h2 {
+.dialog:has(> .new-task.dropping) > h2 {
   opacity: 0.2;
 }

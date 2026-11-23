@@ -1,5 +1,5 @@
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { Link, useLocation, useParams } from 'react-router'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { api } from '../../api/client.ts'
 import { useDrop, useUploads } from '../../api/images.ts'
 import { useStream } from '../../api/stream.ts'
@@ -152,8 +152,13 @@ function grow(el: HTMLTextAreaElement | null) {
 
 function Page({ id }: { id: number }) {
   const narrow = useNarrow()
+  const navigate = useNavigate()
   // The new-task form hands over what it could not do once the task existed: images it could not attach, or the start.
+  // Taken once: the history entry would hand it over again on Back, Forward or a reload.
   const handed = useLocation().state as { images?: string; refused?: string } | null
+  useEffect(() => {
+    if (handed) navigate('.', { replace: true })
+  }, [handed, navigate])
   const [task, setTask] = useState<TaskView | null>(null)
   const [missing, setMissing] = useState('')
   const [asking, setAsking] = useState(false)

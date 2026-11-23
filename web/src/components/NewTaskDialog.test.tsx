@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import type { Task } from '../api/types.ts'
 import { fakeServer, json, narrow, type Call } from '../test-server.ts'
 import NewTask from '../pages/NewTask/NewTask.tsx'
@@ -180,6 +180,17 @@ test('a second click while a create is pending sends no second request', async (
   expect(calls.filter(isCreate)).toHaveLength(1)
 })
 
+// What the history entry holds, which Back, Forward and a reload hand to the page again.
+function Entry() {
+  return <output data-testid="entry">{JSON.stringify(useLocation().state)}</output>
+}
+const opened = (
+  <>
+    <TaskPage />
+    <Entry />
+  </>
+)
+
 // What the task's page reads once the form has opened it.
 const draft: Task = {
   id: 7,
@@ -263,6 +274,9 @@ test('the form starts the task only after every upload', async () => {
   expect(calls.filter(isCreate)[0].body).toMatchObject({ start: false })
   expect(calls.filter(isUpload).map((c) => [c.path, c.body])).toEqual([['/api/tasks/7/images?name=a.png', a]])
   expect(busy()).toHaveLength(2)
+  fireEvent.paste(screen.getByLabelText('Details'), { clipboardData: { files: [png('late.png')], types: ['Files'] } })
+  dropOn(form(), [png('dropped.png')])
+  expect(busy()).toHaveLength(2)
   await act(async () => answers[0]())
   await waitFor(() => expect(calls.filter(isUpload)).toHaveLength(2))
   expect(calls.filter(isUpload)[1].body).toBe(b)
@@ -301,7 +315,7 @@ test("when an upload fails, no start is sent and the task's page opens naming th
     if (c.path === '/api/tasks/7/images?name=a.png') return json({ error: 'the image is not one CAVU keeps' }, 415)
     if (c.method === 'GET' && c.path === '/api/tasks/7') return json(draft)
   })
-  open(vi.fn(), <TaskPage />)
+  open(vi.fn(), opened)
   const user = userEvent.setup()
   await user.type(await field('What should be done?'), 'Fix it')
   await user.upload(picker(), [png('a.png'), png('b.png')])
@@ -311,6 +325,8 @@ test("when an upload fails, no start is sent and the task's page opens naming th
   const line = await waitFor(() => within(document.querySelector<HTMLElement>('.task-page .sect')!).getByRole('alert'))
   expect(line).toHaveTextContent('a.png')
   expect(line).not.toHaveTextContent('b.png')
+  await waitFor(() => expect(screen.getByTestId('entry')).toHaveTextContent('null'))
+  expect(line).toBeInTheDocument()
   expect(sent(calls)).toEqual([
     ['POST', '/api/tasks'],
     ['POST', '/api/tasks/7/images?name=a.png'],
@@ -324,14 +340,17 @@ test("a start the server refuses after the uploads opens the task's page with it
     if (isStart(c)) return json({ error: 'the project is not runnable' }, 409)
     if (c.method === 'GET' && c.path === '/api/tasks/7') return json(draft)
   })
-  open(vi.fn(), <TaskPage />)
+  open(vi.fn(), opened)
   const user = userEvent.setup()
   await user.type(await field('What should be done?'), 'Fix it')
   await user.upload(picker(), png('b.png'))
   await user.click(screen.getByRole('checkbox'))
   await user.click(screen.getByRole('button', { name: 'Create' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent('the project is not runnable')
+  const line = await screen.findByRole('alert')
+  expect(line).toHaveTextContent('the project is not runnable')
   expect(document.querySelector('.task-page')).not.toBeNull()
+  await waitFor(() => expect(screen.getByTestId('entry')).toHaveTextContent('null'))
+  expect(line).toBeInTheDocument()
 })
 
 test('a HEIC photo is refused before it is sent', async () => {
