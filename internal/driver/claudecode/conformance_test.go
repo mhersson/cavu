@@ -1556,7 +1556,7 @@ func TestConformanceSendsAnOpenedImage(t *testing.T) {
 		assert.Equal(t, "image/"+format, mediaType, img.path)
 		assert.InEpsilon(t, float64(sent.Width)/float64(sent.Height), float64(got.Width)/float64(got.Height), 0.01,
 			"%s arrived as another image", img.path)
-		t.Logf("%s: sent %d bytes, %dx%d; arrived %s, %d bytes, %dx%d, the bytes sent %v", img.path,
+		t.Logf("%s: sent %d bytes, %dx%d; arrived %s, %d bytes, %dx%d, unchanged %v", img.path,
 			len(img.data), sent.Width, sent.Height, mediaType, len(data), got.Width, got.Height, bytes.Equal(data, img.data))
 	}
 }
@@ -1590,7 +1590,6 @@ func noisePNG(t *testing.T, w, h, rows int) []byte {
 func openedImage(t *testing.T, r mockapi.Request) (string, []byte) {
 	t.Helper()
 
-	require.NotEmpty(t, r.Messages)
 	last := r.Messages[len(r.Messages)-1]
 
 	var msg struct {
@@ -1628,11 +1627,7 @@ func openedImage(t *testing.T, r mockapi.Request) (string, []byte) {
 		}
 	}
 
-	// Not require.Len, which would print the images.
-	if len(found) != 1 {
-		t.Fatalf("%d images in the tool results of the last message: %.2000s", len(found), last)
-	}
-
+	require.Len(t, found, 1, "the last message: %.2000s", last)
 	require.Equal(t, "base64", found[0].Type)
 
 	data, err := base64.StdEncoding.DecodeString(found[0].Data)
