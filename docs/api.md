@@ -25,7 +25,7 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks, or a credential removal refused because a project names it; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one, or is absent when the route requires it; or an image's `name` is not 1 to 255 bytes once cleaned, or its upload ended before its body did. |
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks, or a credential removal refused because a project names it; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one, or is absent when the route requires it; or an image's `name` is not 1 to 255 bytes once cleaned, or is `.` or `..`, or its upload ended before its body did. |
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone; or the task has no image with the id. |
@@ -284,13 +284,13 @@ Answers 200 with the task's exported change as a file, the one `change` shows (f
 
 ### `POST /api/tasks/{id}/images`
 
-Adds an image to the task. The body is the file itself, and the query `name` its file name: `POST /api/tasks/7/images?name=save-button.png`. The type is read from the file's first bytes, whatever its name or the request's `Content-Type` says, and must be `image/png`, `image/jpeg`, `image/gif` or `image/webp`; any other is 415. The file is kept as it is sent, never decoded or changed, and is at most `image_max_bytes` (10 MiB): a larger one is 413. The name is the part after the last `/` or `\`, without control characters, and must then be 1 to 255 bytes, else 400. Images are added until the task's first run starts, unless it is cancelled; after that, or for a cancelled task, the upload is 409. Answers 201 with the image as the task's `images` shows it:
+Adds an image to the task. The body is the file itself, and the query `name` its file name: `POST /api/tasks/7/images?name=save-button.png`. The type is read from the file's first bytes, whatever its name or the request's `Content-Type` says, and must be `image/png`, `image/jpeg`, `image/gif` or `image/webp`; any other is 415. The file is kept as it is sent, never decoded or changed, and is at most `image_max_bytes` (10 MiB): a larger one is 413. The name is the part after the last `/` or `\`, without control characters, and must then be 1 to 255 bytes and not `.` or `..`, else 400. Images are added until the task's first run starts, unless it is cancelled; after that, or for a cancelled task, the upload is 409. Answers 201 with the image as the task's `images` shows it:
 
 ```json
 {"id": 4, "name": "save-button.png", "type": "image/png", "size": 48213}
 ```
 
-The same file sent twice is two images, which share what is kept on disk. Only this route adds an image: no MCP tool or `cavu` verb takes one, and `PATCH /api/tasks/{id}` and `edit_task` only remove them.
+The same file sent twice is two images, which share what is kept on disk. No MCP tool or `cavu` verb takes an image, and `PATCH /api/tasks/{id}` and `edit_task` only remove them.
 
 ### `GET /api/tasks/{id}/images/{image}`
 
