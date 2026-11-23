@@ -295,8 +295,9 @@ function Page({ id }: { id: number }) {
       Edit
     </button>
   )
+  // An image still uploading would be refused once the run starts, so Start waits for it.
   const startButton = (
-    <button className="btn primary" onClick={() => void act('start')}>
+    <button className="btn primary" disabled={up.going.length > 0} onClick={() => void act('start')}>
       Start
     </button>
   )

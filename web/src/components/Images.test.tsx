@@ -126,7 +126,7 @@ test('a task past its draft shows its images with nothing to attach or remove, t
   expect(section()).toBeNull()
 })
 
-test('a chosen image is sent as the body under its name, shows a moving bar until the server answers, then shows as a tile', async () => {
+test('a chosen image is sent as the body under its name, shows a moving bar and holds Start until the server answers, then shows as a tile', async () => {
   narrow(false)
   const t = task()
   let answer = () => {}
@@ -142,11 +142,13 @@ test('a chosen image is sent as the body under its name, shows a moving bar unti
   expect(picker().value).toBe('')
   expect(busy()).toHaveLength(1)
   expect(sources()).toEqual([])
+  expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
 
   const before = reads(calls)
   await act(async () => answer())
   await waitFor(() => expect(sources()).toEqual(['/api/tasks/7/images/100']))
   expect(busy()).toHaveLength(0)
+  expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled()
   expect(reads(calls)).toBe(before + 1)
 })
 
@@ -173,16 +175,21 @@ test('an image over the cap, or of a type other than the four, is refused before
 
 test("the server's refusal of an upload or a removal shows as its line, and the images stay as the server has them", async () => {
   narrow(false)
-  const calls = serve(task({ images: [shot] }), (c) => (isUpload(c) || c.method === 'PATCH' ? json({ error: 'the task has started' }, 409) : undefined))
+  serve(task({ images: [shot] }), (c) => (isUpload(c) ? json({ error: 'the task has started' }, 409) : undefined))
   open()
   await waitFor(() => expect(tiles()).toHaveLength(1))
   await userEvent.upload(picker(), png('late.png', 4))
   await waitFor(() => expect(alert()).not.toBeNull())
   expect(tiles()).toHaveLength(1)
 
+  cleanup()
+  const removals = serve(task({ images: [shot] }), (c) => (c.method === 'PATCH' ? json({ error: 'the task has started' }, 409) : undefined))
+  open()
+  await waitFor(() => expect(tiles()).toHaveLength(1))
+  expect(alert()).toBeNull()
   await userEvent.click(within(tiles()[0]).getAllByRole('button').at(-1)!)
   await userEvent.click(within(screen.getByRole('dialog')).getAllByRole('button')[1])
-  expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1)
+  expect(removals.filter((c) => c.method === 'PATCH')).toHaveLength(1)
   await waitFor(() => expect(alert()).not.toBeNull())
   expect(tiles()).toHaveLength(1)
 })
@@ -220,6 +227,21 @@ test('on a desktop a file dropped on the page and an image pasted are attached, 
   })
   expect(uploads(calls).map((c) => c.body)).toEqual([dropped, pasted])
   expect([text, cells]).toEqual([true, true])
+})
+
+test('on a desktop Attach an image opens the picker of the four types', async () => {
+  narrow(false)
+  serve(task())
+  open()
+  const clicked = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {})
+  try {
+    await userEvent.click(await waitFor(() => within(section()!).getByRole('button', { name: 'Attach an image' })))
+    expect(clicked.mock.contexts.map((i) => [(i as HTMLInputElement).accept, (i as HTMLInputElement).getAttribute('capture')])).toEqual([
+      ['image/png,image/jpeg,image/gif,image/webp', null],
+    ])
+  } finally {
+    clicked.mockRestore()
+  }
 })
 
 test('on a phone Take a photo opens the camera and Choose an image the picker of the four types, and a paste attaches nothing', async () => {
