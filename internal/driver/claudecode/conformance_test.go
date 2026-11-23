@@ -6,8 +6,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg" // a shrunk image may arrive as a JPEG
+	"image/png"
 	"math/big"
 	"net/http"
 	"os"
@@ -1509,6 +1513,132 @@ func TestInstructionsAndEffort(t *testing.T) {
 
 	require.NoError(t, json.Unmarshal(calls[0].Body, &body))
 	assert.Equal(t, "high", body.OutputConfig.Effort)
+}
+
+// TestConformanceSendsAnOpenedImage: an image the agent reads from outside the
+// workspace reaches the next model call in the Read call's tool result, with
+// the media type of its bytes. It logs what arrives of a screenshot-sized PNG
+// and of a noise PNG near 10 MiB with a long side above 2,576 px.
+func TestConformanceSendsAnOpenedImage(t *testing.T) {
+	images := []struct {
+		path string
+		data []byte
+	}{
+		{"/run/cavu/images/1-screenshot.png", noisePNG(t, 1200, 800, 80)},
+		{"/run/cavu/images/2-noise.png", noisePNG(t, 3200, 1090, 1090)},
+	}
+
+	files := map[string][]byte{}
+	steps := make([]mockapi.Step, 0, len(images)+1)
+
+	for _, img := range images {
+		files[img.path] = img.data
+		steps = append(steps, mockapi.Step{Tool: "Read", Input: map[string]any{"file_path": img.path}})
+	}
+
+	b := keyBox(t, append(steps, mockapi.Step{Text: "done"})...)
+	require.NoError(t, b.c.CopyIn(t.Context(), files))
+
+	requireDone(t, b.run(conformanceDriver(), b.spec()))
+
+	calls := modelCalls(b.mock)
+	require.Len(t, calls, len(images)+1)
+
+	for i, img := range images {
+		sent, _, err := image.DecodeConfig(bytes.NewReader(img.data))
+		require.NoError(t, err)
+
+		mediaType, data := openedImage(t, calls[i+1])
+
+		got, format, err := image.DecodeConfig(bytes.NewReader(data))
+		require.NoError(t, err, "%s arrived as %s and does not decode", img.path, mediaType)
+
+		assert.Equal(t, "image/"+format, mediaType, img.path)
+		assert.InEpsilon(t, float64(sent.Width)/float64(sent.Height), float64(got.Width)/float64(got.Height), 0.01,
+			"%s arrived as another image", img.path)
+		t.Logf("%s: sent %d bytes, %dx%d; arrived %s, %d bytes, %dx%d, the bytes sent %v", img.path,
+			len(img.data), sent.Width, sent.Height, mediaType, len(data), got.Width, got.Height, bytes.Equal(data, img.data))
+	}
+}
+
+// noisePNG encodes a w by h opaque PNG whose first rows rows are noise, which
+// does not compress, and whose others are one grey.
+func noisePNG(t *testing.T, w, h, rows int) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	_, err := rand.Read(img.Pix[:rows*img.Stride])
+	require.NoError(t, err)
+
+	for i := range img.Pix {
+		switch {
+		case i%4 == 3:
+			img.Pix[i] = 0xff
+		case i >= rows*img.Stride:
+			img.Pix[i] = 0xe0
+		}
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+
+	return buf.Bytes()
+}
+
+// openedImage returns the media type and the decoded bytes of the one image in
+// the tool results of r's last message.
+func openedImage(t *testing.T, r mockapi.Request) (string, []byte) {
+	t.Helper()
+
+	require.NotEmpty(t, r.Messages)
+	last := r.Messages[len(r.Messages)-1]
+
+	var msg struct {
+		Content []struct {
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
+		} `json:"content"`
+	}
+
+	require.NoError(t, json.Unmarshal(last, &msg), "the last message: %.2000s", last)
+
+	type source struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	}
+
+	var found []source
+
+	for _, block := range msg.Content {
+		var parts []struct {
+			Type   string `json:"type"`
+			Source source `json:"source"`
+		}
+
+		// A tool result given as a string holds no image.
+		if block.Type != "tool_result" || json.Unmarshal(block.Content, &parts) != nil {
+			continue
+		}
+
+		for _, p := range parts {
+			if p.Type == "image" {
+				found = append(found, p.Source)
+			}
+		}
+	}
+
+	// Not require.Len, which would print the images.
+	if len(found) != 1 {
+		t.Fatalf("%d images in the tool results of the last message: %.2000s", len(found), last)
+	}
+
+	require.Equal(t, "base64", found[0].Type)
+
+	data, err := base64.StdEncoding.DecodeString(found[0].Data)
+	require.NoError(t, err)
+
+	return found[0].MediaType, data
 }
 
 // requireNoSecretOutput fails if claude wrote secret on stdout or stderr,
