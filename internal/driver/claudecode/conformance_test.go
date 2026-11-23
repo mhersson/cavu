@@ -1586,20 +1586,10 @@ func noisePNG(t *testing.T, w, h, rows int) []byte {
 }
 
 // openedImage returns the media type and the decoded bytes of the one image in
-// the tool results of r's last message.
+// the tool results of r's newest message that holds any. Messages may follow
+// it: the pinned release ends a request with a system message.
 func openedImage(t *testing.T, r mockapi.Request) (string, []byte) {
 	t.Helper()
-
-	last := r.Messages[len(r.Messages)-1]
-
-	var msg struct {
-		Content []struct {
-			Type    string          `json:"type"`
-			Content json.RawMessage `json:"content"`
-		} `json:"content"`
-	}
-
-	require.NoError(t, json.Unmarshal(last, &msg), "the last message: %.2000s", last)
 
 	type source struct {
 		Type      string `json:"type"`
@@ -1607,27 +1597,44 @@ func openedImage(t *testing.T, r mockapi.Request) (string, []byte) {
 		Data      string `json:"data"`
 	}
 
-	var found []source
+	var (
+		newest json.RawMessage
+		found  []source
+	)
 
-	for _, block := range msg.Content {
-		var parts []struct {
-			Type   string `json:"type"`
-			Source source `json:"source"`
+	for i := len(r.Messages) - 1; i >= 0 && newest == nil; i-- {
+		var msg struct {
+			Content []struct {
+				Type    string          `json:"type"`
+				Content json.RawMessage `json:"content"`
+			} `json:"content"`
 		}
 
-		// A tool result given as a string holds no image.
-		if block.Type != "tool_result" || json.Unmarshal(block.Content, &parts) != nil {
-			continue
-		}
+		// Content given as a string holds no tool result and no image.
+		_ = json.Unmarshal(r.Messages[i], &msg)
 
-		for _, p := range parts {
-			if p.Type == "image" {
-				found = append(found, p.Source)
+		for _, block := range msg.Content {
+			if block.Type != "tool_result" {
+				continue
+			}
+
+			var parts []struct {
+				Type   string `json:"type"`
+				Source source `json:"source"`
+			}
+
+			newest = r.Messages[i]
+			_ = json.Unmarshal(block.Content, &parts)
+
+			for _, p := range parts {
+				if p.Type == "image" {
+					found = append(found, p.Source)
+				}
 			}
 		}
 	}
 
-	require.Len(t, found, 1, "the last message: %.2000s", last)
+	require.Len(t, found, 1, "the newest message with tool results: %.2000s", newest)
 	require.Equal(t, "base64", found[0].Type)
 
 	data, err := base64.StdEncoding.DecodeString(found[0].Data)
