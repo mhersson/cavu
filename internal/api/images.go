@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -31,7 +30,7 @@ func (s *server) uploadImage(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	body := bufio.NewReaderSize(http.MaxBytesReader(w, r.Body, engine.ImageMaxBytes), sniffLen)
+	body := bufio.NewReader(http.MaxBytesReader(w, r.Body, engine.ImageMaxBytes))
 	head, _ := body.Peek(sniffLen) // a read that failed fails again in AddImage
 
 	typ := http.DetectContentType(head)
@@ -62,7 +61,7 @@ func (s *server) uploadImage(w http.ResponseWriter, r *http.Request) error {
 // refuses one with nothing left, one that names a directory, and one over 255 bytes.
 func imageName(given string) (string, error) {
 	name := strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || r == utf8.RuneError {
+		if unicode.IsControl(r) {
 			return -1
 		}
 
@@ -70,7 +69,7 @@ func imageName(given string) (string, error) {
 	}, given[strings.LastIndexAny(given, `/\`)+1:])
 
 	if name == "" || name == "." || name == ".." || len(name) > 255 {
-		return "", &apiError{http.StatusBadRequest, "name is the image's file name, 1 to 255 bytes"}
+		return "", &apiError{http.StatusBadRequest, "name is the image's file name, 1 to 255 bytes and not . or .."}
 	}
 
 	return name, nil
