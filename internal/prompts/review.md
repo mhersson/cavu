@@ -3,6 +3,13 @@ You review a change an agent made for the task below. You work unattended: nobod
 # {{.Title}}
 
 {{.Body}}
+{{- if .Images}}
+
+These images are part of the task. Open each one to see what it shows:
+{{range .Images}}
+- `{{.}}`
+{{- end}}
+{{- end}}
 {{- if .Answers}}
 
 A person answered the agent's questions:

@@ -22,6 +22,7 @@ func TestEveryPromptRenders(t *testing.T) {
 	partial := struct {
 		Title, Body, DiffFile, FixDiffFile string
 		Findings                           []struct{ Number int }
+		Images                             []string
 	}{Findings: []struct{ Number int }{{Number: 1}}}
 	// A comment with its body alone.
 	bodyOnly := struct{ Comments []struct{ Body string } }{Comments: []struct{ Body string }{{Body: "body"}}}
@@ -135,6 +136,75 @@ func TestEveryPromptRenders(t *testing.T) {
 		_, err := prompts.Render("result.schema", nil)
 		require.Error(t, err)
 	})
+}
+
+// Each prompt that carries the task lists its images' paths when it has some;
+// without images it renders as it did before they existed.
+func TestPromptsListImages(t *testing.T) {
+	paths := []string{"/images/1-one-57.png", "/images/2-two-58.png"}
+	findings := []prompts.ReviewFinding{{Number: 1, Severity: "minor", Where: "where", What: "what", Why: "why"}}
+
+	for _, tt := range []struct {
+		name string
+		data func(images []string) any
+	}{
+		{prompts.Work, func(images []string) any { return prompts.WorkData{Title: "title", Body: "body", Images: images} }},
+		{prompts.Readiness, func(images []string) any { return prompts.WorkData{Title: "title", Body: "body", Images: images} }},
+		{prompts.FixReviewFresh, func(images []string) any {
+			return prompts.FixReviewFreshData{Title: "title", Body: "body", Findings: findings, DiffFile: "/diff", Images: images}
+		}},
+		{prompts.Review, func(images []string) any {
+			return prompts.ReviewData{
+				Title: "title", Body: "body", Answers: []string{"answer"}, Summary: "summary", DiffFile: "/diff", VerifyCommand: "verify",
+				Images: images,
+			}
+		}},
+		{prompts.Rereview, func(images []string) any {
+			return prompts.RereviewData{
+				Title: "title", Body: "body", Findings: findings, DiffFile: "/diff", FixDiffFile: "/fix", VerifyCommand: "verify",
+				Images: images,
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			with, err := prompts.Render(tt.name, tt.data(paths))
+			require.NoError(t, err)
+
+			without, err := prompts.Render(tt.name, tt.data(nil))
+			require.NoError(t, err)
+
+			empty, err := prompts.Render(tt.name, tt.data([]string{}))
+			require.NoError(t, err)
+			assert.Equal(t, without, empty)
+
+			added := strings.Join(inserted(t, with, without), "")
+			for _, p := range paths {
+				assert.Contains(t, added, p)
+			}
+		})
+	}
+}
+
+// inserted is what with holds and without lacks, which must be one run of
+// whole lines: the images change no other line.
+func inserted(t *testing.T, with, without string) []string {
+	t.Helper()
+
+	w, o := strings.SplitAfter(with, "\n"), strings.SplitAfter(without, "\n")
+
+	head := 0
+	for head < len(o) && head < len(w) && w[head] == o[head] {
+		head++
+	}
+
+	tail := 0
+	for tail < len(o)-head && tail < len(w)-head && w[len(w)-1-tail] == o[len(o)-1-tail] {
+		tail++
+	}
+
+	require.Equal(t, len(o), head+tail, "lines besides the images' own differ")
+
+	return w[head : len(w)-tail]
 }
 
 func TestResultSchemaIsValidJSON(t *testing.T) {
