@@ -152,7 +152,7 @@ func TestTasksRoundTrip(t *testing.T) {
 	assert.Equal(t, "api", stored.Requester)
 
 	at := rfc3339(stored.CreatedAt)
-	assert.JSONEq(t, `{"id": 1, "project": "site", "title": "Add a footer", "body": "Below the fold.", "requester": "api",
+	assert.JSONEq(t, `{"id": 1, "project": "site", "title": "Add a footer", "body": "Below the fold.", "images": [], "requester": "api",
 		"created_at": "`+at+`", "status": "draft", "needs_you": false, "needs": "", "needs_you_since": null, "waiting": "", "waiting_until": null,
 		"dependencies": [],
 		"stop": null, "questions": [], "review": null, "pull_request": null, "change": null, "turns": 0, "duration_ms": 0,

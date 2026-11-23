@@ -148,6 +148,10 @@ func runOne(ctx context.Context, s *store.Store, l *engine.Loop, r store.Replay,
 		return store.ReplayItem{}, fmt.Errorf("replay: shadow of task %d: %w", src.ID, err)
 	}
 
+	if err := s.CopyImages(ctx, src.ID, shadow.ID); err != nil {
+		return store.ReplayItem{}, fmt.Errorf("replay: shadow %d of task %d: %w", shadow.ID, src.ID, err)
+	}
+
 	if err := l.Start(ctx, shadow.ID); err != nil {
 		return store.ReplayItem{}, fmt.Errorf("replay: start shadow %d of task %d: %w", shadow.ID, src.ID, err)
 	}
