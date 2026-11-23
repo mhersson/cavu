@@ -1517,8 +1517,9 @@ func TestInstructionsAndEffort(t *testing.T) {
 
 // TestConformanceSendsAnOpenedImage: an image the agent reads from outside the
 // workspace reaches the next model call in the Read call's tool result, with
-// the media type of its bytes. It logs what arrives of a screenshot-sized PNG
-// and of a noise PNG near 10 MiB with a long side above 2,576 px.
+// the media type of its bytes, and the run still ends with its result. It logs
+// what arrives of each image, and whether the driver sent each read's tool
+// result event, whose stdout line may pass the mapper's limit.
 func TestConformanceSendsAnOpenedImage(t *testing.T) {
 	images := []struct {
 		path string
@@ -1526,6 +1527,8 @@ func TestConformanceSendsAnOpenedImage(t *testing.T) {
 	}{
 		{"/run/cavu/images/1-screenshot.png", noisePNG(t, 1200, 800, 80)},
 		{"/run/cavu/images/2-noise.png", noisePNG(t, 3200, 1090, 1090)},
+		// A third of it noise: about 3 to 1, as a busy screenshot compresses.
+		{"/run/cavu/images/3-full-hd.png", noisePNG(t, 1920, 1080, 360)},
 	}
 
 	files := map[string][]byte{}
@@ -1539,7 +1542,8 @@ func TestConformanceSendsAnOpenedImage(t *testing.T) {
 	b := keyBox(t, append(steps, mockapi.Step{Text: "done"})...)
 	require.NoError(t, b.c.CopyIn(t.Context(), files))
 
-	requireDone(t, b.run(conformanceDriver(), b.spec()))
+	o := b.run(conformanceDriver(), b.spec())
+	requireDone(t, o)
 
 	calls := modelCalls(b.mock)
 	require.Len(t, calls, len(images)+1)
@@ -1558,7 +1562,38 @@ func TestConformanceSendsAnOpenedImage(t *testing.T) {
 			"%s arrived as another image", img.path)
 		t.Logf("%s: sent %d bytes, %dx%d; arrived %s, %d bytes, %dx%d, unchanged %v", img.path,
 			len(img.data), sent.Width, sent.Height, mediaType, len(data), got.Width, got.Height, bytes.Equal(data, img.data))
+
+		id, event, longest := toolResultRecord(o, img.path)
+		t.Logf("%s: call %q, its tool result event sent %v, the longest stdout line naming it %d bytes (the mapper skips over %d)",
+			img.path, id, event, longest, maxLine)
 	}
+}
+
+// toolResultRecord finds the tool use event that names p: its call's id,
+// whether a tool result event for it followed, and the longest stdout line
+// that names the call.
+func toolResultRecord(o outcome, p string) (id string, event bool, longest int) {
+	for _, ev := range o.events {
+		if ev.Kind == driver.KindToolUse && bytes.Contains(ev.ToolInput, []byte(p)) {
+			id = ev.ToolID
+		}
+	}
+
+	if id == "" {
+		return "", false, 0
+	}
+
+	for _, ev := range o.events {
+		event = event || ev.Kind == driver.KindToolResult && ev.ToolID == id
+	}
+
+	for _, l := range o.lines {
+		if bytes.Contains(l, []byte(id)) {
+			longest = max(longest, len(l))
+		}
+	}
+
+	return id, event, longest
 }
 
 // noisePNG encodes a w by h opaque PNG whose first rows rows are noise, which
