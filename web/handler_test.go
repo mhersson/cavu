@@ -5,6 +5,7 @@ import (
 	"mime"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -143,6 +144,16 @@ func TestHandlerSendsThePolicy(t *testing.T) {
 	for _, path := range []string{"/", "/board", "/favicon.svg"} {
 		assert.Equal(t, "no-cache", do(h, http.MethodGet, path).Header().Get("Cache-Control"), path)
 	}
+}
+
+// A thumbnail of a file the person holds, before the task exists, is a blob: address the page made.
+func TestPolicyAllowsBlobImages(t *testing.T) {
+	csp := do(newHandler(fakeAPI, withApp()), http.MethodGet, "/").Header().Get("Content-Security-Policy")
+
+	assert.ElementsMatch(t, []string{
+		"default-src 'self'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'", "object-src 'none'",
+		"img-src 'self' blob:",
+	}, strings.Split(csp, "; "))
 }
 
 func TestHandlerWithoutAnApp(t *testing.T) {

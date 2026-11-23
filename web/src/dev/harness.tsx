@@ -46,10 +46,13 @@ function answer(method: string, url: URL, body: string): Response | undefined {
   }
   if (method === 'POST' && path === '/api/tasks') {
     const t = JSON.parse(body) as { project: string; title: string; body: string }
-    return json({ ...VIEWS[42], id: 45, project: t.project, title: t.title, body: t.body, status: 'draft' }, 201)
+    VIEWS[45] = { ...VIEWS[42], id: 45, project: t.project, title: t.title, body: t.body, status: 'draft', images: [] }
+    return json(VIEWS[45], 201)
   }
-  // An upload is never answered, so its tile stays under way.
-  if (method === 'POST' && /^\/api\/tasks\/\d+\/images$/.test(path)) return undefined
+  // An upload is never answered, so its tile stays under way; with upload=fail it is refused.
+  if (method === 'POST' && /^\/api\/tasks\/\d+\/images$/.test(path)) {
+    return query.get('upload') === 'fail' ? json({ error: 'the network connection was lost' }, 502) : undefined
+  }
   const acted = path.match(/^\/api\/tasks\/(\d+)\/actions$/)
   if (method === 'POST' && acted && VIEWS[Number(acted[1])]) return json(VIEWS[Number(acted[1])])
 
@@ -142,15 +145,40 @@ export function Apply() {
   return null
 }
 
-// click=TEXT clicks the first button, link or summary whose text, or label when it has no text, starts with TEXT, once the page shows it.
-const click = query.get('click')
-if (click) {
+// click=TEXT[|TEXT] clicks in turn the first button, link or summary whose text, or label when it has no text, starts
+// with each TEXT, once the page shows it; each waits a second first, for what fill=, attach= or the one before brought.
+const clicks = query.get('click')?.split('|') ?? []
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+void (async () => {
+  for (const text of clicks) {
+    await wait(1000)
+    for (let tries = 0; tries < 20; tries++) {
+      const target = [...document.querySelectorAll<HTMLElement>('button, a, summary')].find((e) => (e.textContent || e.getAttribute('aria-label'))?.startsWith(text))
+      if (target) {
+        target.click()
+        target.scrollIntoView()
+        break
+      }
+      await wait(100)
+    }
+  }
+})()
+
+// fill=1 writes a task into the new-task form's title and details once it shows, as a person types.
+if (query.get('fill') === '1') {
+  const typed = (el: HTMLInputElement | HTMLTextAreaElement | null, value: string) => {
+    if (!el) return
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')!.set!.call(el, value)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  }
   let tries = 0
   const timer = setInterval(() => {
-    const target = [...document.querySelectorAll<HTMLElement>('button, a, summary')].find((e) => (e.textContent || e.getAttribute('aria-label'))?.startsWith(click))
-    target?.click()
-    target?.scrollIntoView()
-    if (target || ++tries === 20) clearInterval(timer)
+    const form = document.querySelector('form.new-task')
+    if (form) {
+      typed(form.querySelector('input:not([type])'), 'Fix the Save button hidden under its label')
+      typed(form.querySelector('textarea'), 'On the profile page the Saved label sits on top of the Save button, so a click on the button lands on the label and nothing is saved. The first image shows it.')
+    }
+    if (form || ++tries === 40) clearInterval(timer)
   }, 100)
 }
 
@@ -228,27 +256,44 @@ Object.defineProperty(HTMLImageElement.prototype, 'src', {
   },
 })
 
-// attach=image.png|shot.heic|big.png gives the page's image picker that file once it shows one: a screenshot, which the
-// harness never finishes uploading, an iPhone's photo of a type CAVU does not keep, or a screenshot over the cap.
-// drag=1 drags a file over the page.
+// attach=NAME[,NAME] gives the page's image picker those files a moment after it shows one, once the page has read the
+// cap: save-button.png and settings-clipped.png the two pictures as PNG, image.png a screenshot, shot.heic an iPhone's
+// photo of a type CAVU does not keep, big.png a screenshot over the cap. drag=1 drags a file over the task's page or the
+// new-task form.
 const files: Record<string, [string, number]> = { 'image.png': ['image/png', 219136], 'shot.heic': ['image/heic', 2_400_000], 'big.png': ['image/png', 14_890_000] }
-const attaching = files[query.get('attach') ?? '']
+const pictures: Record<string, number> = { 'save-button.png': 1, 'settings-clipped.png': 2 }
+async function made(name: string): Promise<File> {
+  if (!pictures[name]) {
+    const [type, bytes] = files[name] ?? ['image/png', 4]
+    return new File([new Uint8Array(bytes)], name, { type })
+  }
+  const img = new Image()
+  img.src = picture(pictures[name])
+  await img.decode()
+  const canvas = Object.assign(document.createElement('canvas'), { width: img.naturalWidth, height: img.naturalHeight })
+  canvas.getContext('2d')!.drawImage(img, 0, 0)
+  const png = await new Promise<Blob>((r) => canvas.toBlob((b) => r(b!), 'image/png'))
+  return new File([png], name, { type: 'image/png' })
+}
+const attaching = query.get('attach')?.split(',') ?? []
 const dragging = query.get('drag') === '1'
-if (attaching || dragging) {
+void (async () => {
+  if (attaching.length === 0 && !dragging) return
   const dt = new DataTransfer()
-  dt.items.add(new File([new Uint8Array(attaching?.[1] ?? 4)], query.get('attach') ?? 'image.png', { type: attaching?.[0] ?? 'image/png' }))
-  let tries = 0
-  const timer = setInterval(() => {
+  for (const f of await Promise.all((attaching.length ? attaching : ['image.png']).map(made))) dt.items.add(f)
+  for (let tries = 0; tries < 40; tries++) {
     const picker = document.querySelector<HTMLInputElement>('input[type=file]:not([capture])')
-    const page = document.querySelector('.task-page')
-    if (attaching && picker) {
+    const target = document.querySelector('.task-page, form.new-task')
+    if (attaching.length && picker) {
+      await wait(300)
       picker.files = dt.files
       picker.dispatchEvent(new Event('change', { bubbles: true }))
     }
-    if (dragging && page) page.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }))
-    if ((attaching ? picker : page) || ++tries === 20) clearInterval(timer)
-  }, 100)
-}
+    if (dragging && target) target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }))
+    if (attaching.length ? picker : target) return
+    await wait(100)
+  }
+})()
 
 // setup=1|2|3|4|failed serves a fresh instance at that point of its setup.
 const setup = SETUP[query.get('setup') ?? '']

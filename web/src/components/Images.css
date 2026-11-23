@@ -70,6 +70,7 @@ details.sect[open] {
   font-size: 13px;
   margin: 10px 0 8px;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .sect .dialog > .note {

@@ -1,5 +1,5 @@
-import { useRef, useState, type ChangeEvent } from 'react'
-import { ext, imageTypes, imageURL, removeImage, size, type Uploads } from '../api/images.ts'
+import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+import { ext, imageTypes, imageURL, removeImage, size, type Upload, type Uploads } from '../api/images.ts'
 import type { Image, Task } from '../api/types.ts'
 import Dialog from './Dialog.tsx'
 import ImageViewer from './ImageViewer.tsx'
@@ -7,68 +7,83 @@ import { AttachIcon, CameraIcon, XIcon } from './icons.tsx'
 import { useNarrow } from './useNarrow.ts'
 import './Images.css'
 
-type Props = { task: Task; up: Uploads; onTask: (t: Task) => void }
+// Where a section is: what a drop goes on, and what stops an upload.
+const target = { task: 'the task', dialog: 'the form', page: 'the form' }
+const leaving = { task: 'Leaving the task', dialog: 'Closing the form', page: 'Leaving the page' }
 
-// Over a task a file is dragged across: where it goes, and what it may be.
-export function DropBox({ cap }: { cap: number }) {
+// Over what a file is dragged across: where it goes, and what it may be.
+export function DropBox({ what, cap }: { what: string; cap: number }) {
   return (
     <div className="drop">
       <div>
         <AttachIcon />
-        Drop to attach it to this task
+        Drop to attach it to {what}
         <span>PNG, JPEG, GIF or WebP{cap > 0 && `, at most ${size(cap)}`}.</span>
       </div>
     </div>
   )
 }
 
-// A task's images, each opening to fill the window. A draft's take more and lose one asked first; any other task's are
-// read only, and show only when there are some or an upload has news. On a phone the section folds, open at first.
-export default function Images({ task, up, onTask }: Props) {
+type TileProps = { name: string; onOpen?: () => void; onRemove?: () => void; children: ReactNode }
+
+// One image: its picture and name, which open it when onOpen is given, and an × when onRemove is.
+export function Tile({ name, onOpen, onRemove, children }: TileProps) {
+  const face = (
+    <>
+      {children}
+      <span className="nm">{name}</span>
+    </>
+  )
+  return (
+    <div className="tile">
+      {onOpen ? (
+        <button type="button" className="tile-open" onClick={onOpen}>
+          {face}
+        </button>
+      ) : (
+        face
+      )}
+      {onRemove && (
+        <button type="button" className="x" aria-label={`Remove ${name}`} onClick={onRemove}>
+          <XIcon />
+        </button>
+      )}
+    </div>
+  )
+}
+
+type SectionProps = {
+  where: keyof typeof leaving
+  tiles: ReactNode[]
+  going: Upload[]
+  refused: string
+  cap: number
+  onAdd?: (files: File[]) => void
+  children?: ReactNode
+}
+
+// Images as tiles under a head with their count, those under way with a moving bar, and what attaches more when onAdd
+// is given. On a phone the section folds, open at first.
+export function ImagesSection({ where, tiles, going, refused, cap, onAdd, children }: SectionProps) {
   const narrow = useNarrow()
-  const [opened, setOpened] = useState<Image>()
-  const [removing, setRemoving] = useState<Image>()
   const picker = useRef<HTMLInputElement>(null)
   const camera = useRef<HTMLInputElement>(null)
-  const draft = task.status === 'draft'
-  const n = up.going.length
+  const n = going.length
   // Emptied, so the same file can be chosen again.
   const chosen = (e: ChangeEvent<HTMLInputElement>) => {
-    up.send([...(e.target.files ?? [])])
+    onAdd!([...(e.target.files ?? [])])
     e.target.value = ''
   }
-  const remove = (img: Image) =>
-    removeImage(task.id, img.id).then(
-      (t) => {
-        up.refuse('')
-        onTask(t)
-      },
-      (e: unknown) => up.refuse(e instanceof Error ? e.message : String(e)),
-    )
-
-  if (!draft && task.images.length + n === 0 && !up.refused) return null
   const head = (
     <>
-      Images <span className="dim">{task.images.length + n}</span>
+      Images <span className="dim">{tiles.length + n}</span>
     </>
   )
   const body = (
     <>
       <div className="tiles">
-        {task.images.map((img) => (
-          <div key={img.id} className="tile">
-            <button className="tile-open" onClick={() => setOpened(img)}>
-              <img src={imageURL(task.id, img.id)} alt="" loading="lazy" />
-              <span className="nm">{img.name}</span>
-            </button>
-            {draft && (
-              <button className="x" aria-label={`Remove ${img.name}`} onClick={() => setRemoving(img)}>
-                <XIcon />
-              </button>
-            )}
-          </div>
-        ))}
-        {up.going.map((u) => (
+        {tiles}
+        {going.map((u) => (
           <div key={u.key} className="tile up" aria-busy="true">
             <span className="doc">
               {ext(u.name)} · {size(u.size)}
@@ -81,35 +96,92 @@ export default function Images({ task, up, onTask }: Props) {
       {n > 0 && (
         <p className="fline">
           <AttachIcon />
-          {n === 1 ? 'Uploading 1 image. Leaving the task stops it.' : `Uploading ${n} images. Leaving the task stops them.`}
+          {n === 1 ? `Uploading 1 image. ${leaving[where]} stops it.` : `Uploading ${n} images. ${leaving[where]} stops them.`}
         </p>
       )}
-      {up.refused && (
+      {refused && (
         <p role="alert" className="err">
-          {up.refused}
+          {refused}
         </p>
       )}
-      {draft &&
+      {onAdd &&
         (narrow ? (
           <div className="acts two">
-            <button className="btn" onClick={() => camera.current!.click()}>
+            <button type="button" className="btn" onClick={() => camera.current!.click()}>
               <CameraIcon />
               Take a photo
             </button>
-            <button className="btn" onClick={() => picker.current!.click()}>
+            <button type="button" className="btn" onClick={() => picker.current!.click()}>
               <AttachIcon />
               Choose an image
             </button>
           </div>
         ) : (
-          <p className="note">Drop an image on the task, or paste one, to attach it.{up.cap > 0 && ` At most ${size(up.cap)} each.`}</p>
+          <p className="note">
+            Drop an image on {target[where]}, or paste one, to attach it.{cap > 0 && ` At most ${size(cap)} each.`}
+          </p>
         ))}
-      {draft && (
+      {onAdd && (
         <>
           <input ref={picker} type="file" accept={imageTypes.join(',')} multiple hidden onChange={chosen} />
           {narrow && <input ref={camera} type="file" accept="image/*" capture="environment" hidden onChange={chosen} />}
         </>
       )}
+      {children}
+    </>
+  )
+  return narrow ? (
+    <details className="sect" open>
+      <summary>{head}</summary>
+      {body}
+    </details>
+  ) : (
+    <section className="sect">
+      <div className="sect-head">
+        <h2>{head}</h2>
+        {onAdd && (
+          <button type="button" className="btn link" onClick={() => picker.current!.click()}>
+            <AttachIcon />
+            Attach an image
+          </button>
+        )}
+      </div>
+      {body}
+    </section>
+  )
+}
+
+type Props = { task: Task; up: Uploads; onTask: (t: Task) => void }
+
+// A task's images, each opening to fill the window. A draft's take more and lose one asked first; any other task's are
+// read only, and show only when there are some or an upload has news.
+export default function Images({ task, up, onTask }: Props) {
+  const [opened, setOpened] = useState<Image>()
+  const [removing, setRemoving] = useState<Image>()
+  const draft = task.status === 'draft'
+  const remove = (img: Image) =>
+    removeImage(task.id, img.id).then(
+      (t) => {
+        up.refuse('')
+        onTask(t)
+      },
+      (e: unknown) => up.refuse(e instanceof Error ? e.message : String(e)),
+    )
+
+  if (!draft && task.images.length + up.going.length === 0 && !up.refused) return null
+  return (
+    <ImagesSection
+      where="task"
+      tiles={task.images.map((img) => (
+        <Tile key={img.id} name={img.name} onOpen={() => setOpened(img)} onRemove={draft ? () => setRemoving(img) : undefined}>
+          <img src={imageURL(task.id, img.id)} alt="" loading="lazy" />
+        </Tile>
+      ))}
+      going={up.going}
+      refused={up.refused}
+      cap={up.cap}
+      onAdd={draft ? up.send : undefined}
+    >
       {opened && (
         <ImageViewer
           name={opened.name}
@@ -138,25 +210,6 @@ export default function Images({ task, up, onTask }: Props) {
           </div>
         </Dialog>
       )}
-    </>
-  )
-  return narrow ? (
-    <details className="sect" open>
-      <summary>{head}</summary>
-      {body}
-    </details>
-  ) : (
-    <section className="sect">
-      <div className="sect-head">
-        <h2>{head}</h2>
-        {draft && (
-          <button className="btn link" onClick={() => picker.current!.click()}>
-            <AttachIcon />
-            Attach an image
-          </button>
-        )}
-      </div>
-      {body}
-    </section>
+    </ImagesSection>
   )
 }
