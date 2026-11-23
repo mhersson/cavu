@@ -1,6 +1,6 @@
 # HTTP API
 
-`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP: the REST routes under `/api/`, and the [MCP tools](#mcp) at `/mcp`. Under `/api/`, request and response bodies are JSON, but for the event stream's and the change route's file. A request body is read up to 1 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
+`cavu serve` serves this API on the `listen_address` setting (default `127.0.0.1:7117`), over plain HTTP: the REST routes under `/api/`, and the [MCP tools](#mcp) at `/mcp`. Under `/api/`, request and response bodies are JSON, but for the event stream, the change route's file, and an image's upload and file. A request body is read up to 1 MiB, an image's upload up to 10 MiB, and a field the route does not take is refused. Times are RFC 3339 in UTC. No response holds a secret's value.
 
 On the same address `cavu serve` serves the web app, whose files are not routes of this API. A `GET` or `HEAD` of a path outside `/api/` and `/mcp` answers the app's file that the path names, else the app's page; a path under `/assets/` that names no file is 404. These answers need no authentication, and their `Content-Security-Policy` allows content and connections from the app's own origin only. A request with any other method goes to this API, whatever its path. The app signs in with `POST /api/auth/login` and works through the routes below, as any client may. A binary built without the web app answers with a page that says so in place of the app's, and serves this API as usual.
 
@@ -25,12 +25,13 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 
 | Status | Meaning |
 |--------|---------|
-| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks, or a credential removal refused because a project names it; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one, or is absent when the route requires it. |
+| 400 | The body is not the JSON the route takes (not JSON, the wrong shape, a field the route does not take, or more than one value), or what it holds is refused, such as a project field that holds what a project may not, which the line names, or an action the task's state makes meaningless, or a project removal refused because the project has open tasks, or a credential removal refused because a project names it; or the query names a project or a status that does not exist; or a query value or header that must be a whole number, a boolean or one of the words its route names is not one, or is absent when the route requires it; or an image's `name` is not 1 to 255 bytes once cleaned, or its upload ended before its body did. |
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
-| 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone. |
-| 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Or the container runtime would not remove a project's volumes, with its error in the line. Nothing was written; send it again. |
-| 413 | The body is larger than 1 MiB. |
+| 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone; or the task has no image with the id. |
+| 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Or the container runtime would not remove a project's volumes, with its error in the line. Nothing was written; send it again. Or an image was sent to a task whose first run has started, or that is cancelled, and is not kept. |
+| 413 | The body is larger than 1 MiB, or an image's is larger than 10 MiB. |
+| 415 | An image's first bytes are not those of a PNG, JPEG, GIF or WebP. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
 | 500 | The server failed. It logs the cause; the answer holds no detail. |
 
@@ -138,7 +139,7 @@ The others are the server's:
 
 ### `GET /api/settings`
 
-Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every named GitHub credential, the key a browser subscribes to notifications with, every settable key's default and every switch's default:
+Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every named GitHub credential, the key a browser subscribes to notifications with, every settable key's default, every switch's default, and the most an image of a task may hold:
 
 ```json
 {"settings": {"endpoint_mode": "subscription", "model_work": "sonnet"},
@@ -146,10 +147,11 @@ Answers 200 with every key `cavu settings set` takes whose value is not empty, w
  "forge_credentials": [{"name": "acme-org", "kind": "token"}, {"name": "work-app", "kind": "app", "app_id": 482913}],
  "push_key": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
  "defaults": {"concurrency": "3", "verify_timeout_minutes": "10", "model_review": "", "...": "..."},
- "switches": {"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true}}
+ "switches": {"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true},
+ "image_max_bytes": 10485760}
 ```
 
-A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `forge_credentials` lists the named credentials by name, each with its `kind` (`token` or `app`) and, for an App, its `app_id` as a number; it is `[]` when there are none, and a credential's secret is never given or shown as set. `push_key` is the public half of the instance's VAPID key (RFC 8292), the uncompressed P-256 point in base64url, for a page to subscribe with as its `applicationServerKey`. CAVU makes the key once, when it opens a data directory that has none, and keeps it, sealed, as the secret `push.vapid_key`. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default.
+A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `forge_credentials` lists the named credentials by name, each with its `kind` (`token` or `app`) and, for an App, its `app_id` as a number; it is `[]` when there are none, and a credential's secret is never given or shown as set. `push_key` is the public half of the instance's VAPID key (RFC 8292), the uncompressed P-256 point in base64url, for a page to subscribe with as its `applicationServerKey`. CAVU makes the key once, when it opens a data directory that has none, and keeps it, sealed, as the secret `push.vapid_key`. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default. `image_max_bytes` is the size in bytes over which `POST /api/tasks/{id}/images` refuses an image.
 
 ### `PATCH /api/settings`
 
@@ -190,7 +192,13 @@ Answers 200 with the task.
 
 ### `PATCH /api/tasks/{id}`
 
-Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. A task can be edited until its first run starts, unless it is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. Answers 200 with the task.
+Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. `remove_images` names the ids of the task's images to remove:
+
+```json
+{"title": "Fix the save button", "remove_images": [4]}
+```
+
+A task can be edited until its first run starts, unless it is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. The images are removed once the other fields are written: an id the task has no image with is 404, and then no image is removed. Answers 200 with the task.
 
 ### `POST /api/tasks/{id}/actions`
 
@@ -224,6 +232,7 @@ Only `answer` reads `text`. Answers 200 with the task, 400 for an unknown action
             "open": [{"severity": "important", "where": "footer.html:10", "what": "The footer covers the cookie banner.",
                       "why": "A visitor cannot dismiss the banner."}],
             "minor": []},
+ "images": [{"id": 4, "name": "save-button.png", "type": "image/png", "size": 48213}],
  "pull_request": null, "change": null, "turns": 33, "duration_ms": 226000, "cost_estimate_usd": 0.325, "cost_missing_sessions": 0,
  "usage": [{"source": "proxy", "model": "claude-haiku-5-5", "input": 21000, "output": 18000, "cache_read": 160000,
             "cache_write": 9000, "cost_estimate_usd": 0.325}],
@@ -237,6 +246,7 @@ A list is `[]` when empty, never null.
 | `id` | The task's id. |
 | `project` | The name of the task's project. |
 | `title`, `body` | What the task asks for. |
+| `images` | The task's images, in the order they were added, each with its `id`, its `name`, its `type` (`image/png`, `image/jpeg`, `image/gif` or `image/webp`) and its `size` in bytes. `GET /api/tasks/{id}/images/{image}` serves one. |
 | `requester` | What created the task: `cli` for a `cavu task add`, `api` for `POST /api/tasks`, `mcp` for the MCP tool `create_task`. |
 | `created_at` | When the task was created. |
 | `status` | Where the task stands: `cancelled` once cancelled, started or not; else `draft` until started; `done` once its change is merged; `blocked` while a stop is open; `in_review` once its change is exported, or while it has a pull request and no run is open; `queued` while no run is open; else `running`. |
@@ -271,6 +281,20 @@ The query `after=ID` starts the page after the event with that id, or under `ord
 ### `GET /api/tasks/{id}/change`
 
 Answers 200 with the task's exported change as a file, the one `change` shows (for a task with a pull request, the export CAVU published last). The query `format` is required: `diff` answers the diff (`git diff --binary`) as `text/x-diff` with `Content-Disposition: attachment; filename="task-ID.diff"`, and `bundle` answers the git bundle as `application/octet-stream` with `filename="task-ID.bundle"`. The file is streamed, never read whole, and the route honours `Range` and `HEAD`. A GET needs no CSRF header, so a link carrying the session's cookie downloads it. A `format` that is absent or neither is 400; a task that does not exist, or shows no change, or whose file is gone, is 404.
+
+### `POST /api/tasks/{id}/images`
+
+Adds an image to the task. The body is the file itself, and the query `name` its file name: `POST /api/tasks/7/images?name=save-button.png`. The type is read from the file's first bytes, whatever its name or the request's `Content-Type` says, and must be `image/png`, `image/jpeg`, `image/gif` or `image/webp`; any other is 415. The file is kept as it is sent, never decoded or changed, and is at most `image_max_bytes` (10 MiB): a larger one is 413. The name is the part after the last `/` or `\`, without control characters, and must then be 1 to 255 bytes, else 400. Images are added until the task's first run starts, unless it is cancelled; after that, or for a cancelled task, the upload is 409. Answers 201 with the image as the task's `images` shows it:
+
+```json
+{"id": 4, "name": "save-button.png", "type": "image/png", "size": 48213}
+```
+
+The same file sent twice is two images, which share what is kept on disk. Only this route adds an image: no MCP tool or `cavu` verb takes one, and `PATCH /api/tasks/{id}` and `edit_task` only remove them.
+
+### `GET /api/tasks/{id}/images/{image}`
+
+Answers 200 with the image's file, as its stored `type`, with `X-Content-Type-Options: nosniff` and `Content-Disposition: inline` with its name; with the query `download=1`, `Content-Disposition: attachment` with its name, so a browser saves it. The route honours `Range` and `HEAD`, and a GET needs no CSRF header, so an `<img>` on a page with the session's cookie shows it. A task that does not exist, or has no image with the id, is 404.
 
 ### `GET /api/events`
 
@@ -348,7 +372,7 @@ A tool that does what a REST route does calls that route's code, so it refuses w
 | `create_task` | `project`, `title`, and optionally `body`, `depends_on` and `start` | Creates a task as `POST /api/tasks` does, with the requester `mcp`, and answers with the task. |
 | `get_task` | `id` | Answers with the task. |
 | `list_tasks` | optionally `project`, `status` and `needs_you` | Answers with the list `GET /api/tasks` gives for that query. |
-| `edit_task` | `id`, and any of `title`, `body` and `depends_on` | Changes the fields it is given as `PATCH /api/tasks/{id}` does, with the same refusals, and answers with the task. |
+| `edit_task` | `id`, and any of `title`, `body`, `depends_on` and `remove_images` | Changes the fields it is given and removes the images it names as `PATCH /api/tasks/{id}` does, with the same refusals, and answers with the task. No tool adds an image. |
 | `run_task` | `id` | Records the action `start` for a task with no open stop, else the action `retry`, as `POST /api/tasks/{id}/actions` does, and answers with the task. A task stopped on a question is refused with a line saying it needs an answer, which the tool `answer_task`, the action `answer` or `cavu task answer ID` gives. |
 | `cancel_task` | `id` | Records the action `cancel` as `POST /api/tasks/{id}/actions` does, and answers with the task. |
 | `answer_task` | `id` and `answer` | Records the action `answer` with that text for a task whose open stop is a question, as `POST /api/tasks/{id}/actions` does, and answers with the task. Any other task is refused with a line naming the stop it has, or that it has none. |

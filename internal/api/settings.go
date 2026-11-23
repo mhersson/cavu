@@ -31,8 +31,8 @@ type credentialIn struct {
 
 // settings answers with every settable key whose value is not empty, a value
 // that is a JSON object as one, whether each instance secret is set, every
-// named credential, the VAPID public key, every key's default and every
-// switch's default.
+// named credential, the VAPID public key, every key's default, every switch's
+// default and the most an image of a task may hold.
 func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 	all, err := s.Store.Settings(r.Context())
 	if err != nil {
@@ -73,6 +73,7 @@ func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 	reply(w, http.StatusOK, map[string]any{
 		"settings": settings, "secrets": secrets, "forge_credentials": named, "push_key": s.PushKey,
 		"defaults": engine.SettingDefaults(), "switches": engine.ProjectSwitches(store.Project{}),
+		"image_max_bytes": engine.ImageMaxBytes,
 	})
 
 	return nil

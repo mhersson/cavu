@@ -68,6 +68,8 @@ var routes = []route{
 	{"POST /api/tasks/{id}/actions", false, (*server).act},
 	{"GET /api/tasks/{id}/events", false, (*server).events},
 	{"GET /api/tasks/{id}/change", false, (*server).change},
+	{"POST /api/tasks/{id}/images", false, (*server).uploadImage},
+	{"GET /api/tasks/{id}/images/{image}", false, (*server).image},
 	{"GET /api/events", false, (*server).stream},
 	{"PUT /api/push", false, (*server).putPush},
 	{"DELETE /api/push/{id}", false, (*server).removePush},
