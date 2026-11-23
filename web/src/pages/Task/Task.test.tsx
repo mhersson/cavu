@@ -36,6 +36,7 @@ const base: Task = {
   cost_missing_sessions: 0,
   usage: [],
   budget: { turns: 12, max_turns: 100, minutes: 4, max_minutes: 300 },
+  images: [],
 }
 
 const pull = {

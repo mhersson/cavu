@@ -10,7 +10,7 @@ afterEach(() => vi.unstubAllGlobals())
 const unset = { endpoint_credential: false, forge_token: false, forge_app_key: false }
 
 function saved(settings: Settings['settings'] = {}, secrets: Partial<typeof unset> = {}, forge_credentials: Settings['forge_credentials'] = []): Settings {
-  return { settings, secrets: { ...unset, ...secrets }, defaults: {}, switches: {}, forge_credentials, push_key: 'KEY' }
+  return { settings, secrets: { ...unset, ...secrets }, defaults: {}, switches: {}, forge_credentials, push_key: 'KEY', image_max_bytes: 0 }
 }
 
 const ENDPOINT = { endpoint_mode: 'subscription', model_work: 'sonnet' }

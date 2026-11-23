@@ -1,11 +1,13 @@
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { api } from '../../api/client.ts'
+import { useUploads } from '../../api/images.ts'
 import { useStream } from '../../api/stream.ts'
 import type { TaskEvent, Task as TaskView } from '../../api/types.ts'
 import Dialog from '../../components/Dialog.tsx'
 import { ChangeFacts, PullRequestFacts, ReviewFacts } from '../../components/Facts.tsx'
 import Field from '../../components/Field.tsx'
+import Images, { DropBox } from '../../components/Images.tsx'
 import { Markdown } from '../../components/Markdown.tsx'
 import NeedsBox from '../../components/NeedsBox.tsx'
 import PageHead from '../../components/PageHead.tsx'
@@ -168,6 +170,38 @@ function Page({ id }: { id: number }) {
       },
       (e: Error) => setMissing(e.message), // only shown while there is no task
     )
+  // At the page's level: paste and drop on the page and the section's own controls share it.
+  const up = useUploads(id, read)
+
+  // On a desktop a draft takes a file dropped on its page, or an image pasted anywhere but into a field's text.
+  const attachable = !narrow && task?.status === 'draft'
+  const [over, setOver] = useState(false)
+  const pasted = useEffectEvent((e: ClipboardEvent) => {
+    // Cells copied from a spreadsheet come as text and as a picture of them, and in a field the text is what was meant.
+    const at = e.target instanceof Element ? e.target : null
+    if (at?.closest('input, textarea') && e.clipboardData?.types.includes('text/plain')) return
+    const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/'))
+    if (files.length === 0) return
+    e.preventDefault()
+    up.send(files)
+  })
+  useEffect(() => {
+    if (!attachable) return
+    // A file dropped beside the page would have the browser leave the app to show it.
+    const keep = (e: globalThis.DragEvent) => {
+      if (e.defaultPrevented || !e.dataTransfer?.types.includes('Files')) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'none'
+    }
+    document.addEventListener('paste', pasted)
+    document.addEventListener('dragover', keep)
+    document.addEventListener('drop', keep)
+    return () => {
+      document.removeEventListener('paste', pasted)
+      document.removeEventListener('dragover', keep)
+      document.removeEventListener('drop', keep)
+    }
+  }, [attachable])
 
   // Reads on while a page comes back full and its last id is below end.
   async function walk(query: Record<string, string>, size: number, end = Infinity) {
@@ -286,8 +320,24 @@ function Page({ id }: { id: number }) {
       </details>
     ) : null
 
+  const files = (e: DragEvent) => e.dataTransfer.types.includes('Files')
+  const drop = attachable && {
+    onDragOver: (e: DragEvent) => {
+      if (!files(e)) return
+      e.preventDefault()
+      setOver(true)
+    },
+    onDragLeave: (e: DragEvent) => !e.currentTarget.contains(e.relatedTarget as Node) && setOver(false),
+    onDrop: (e: DragEvent) => {
+      if (!files(e)) return
+      e.preventDefault()
+      setOver(false)
+      up.send([...e.dataTransfer.files])
+    },
+  }
   return (
-    <div className="page task-page">
+    <div className={drop && over ? 'page task-page dropping' : 'page task-page'} {...drop}>
+      {drop && over && <DropBox cap={up.cap} />}
       <div className="crumb">
         <Link to="/">Needs you</Link> / {task.project} / task {task.id}
       </div>
@@ -346,6 +396,7 @@ function Page({ id }: { id: number }) {
       ) : (
         task.body && <Body text={task.body} folds={!draft} />
       )}
+      <Images task={task} up={up} onTask={setTask} />
       <NeedsBox task={task} onTask={(t) => setTask(t)} onPage />
       {!task.needs_you && task.waiting && (
         <p className="waitline">

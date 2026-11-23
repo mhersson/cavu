@@ -204,3 +204,9 @@
     font-size: 20px !important;
   }
 }
+
+/* The images under the body, as wide as the body. */
+.task-page > .sect {
+  max-width: 74ch;
+  margin: -4px 0 18px;
+}

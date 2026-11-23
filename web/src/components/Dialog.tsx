@@ -1,10 +1,10 @@
 import { useEffect, useId, type ReactNode } from 'react'
 import './Dialog.css'
 
-type Props = { title: string; onClose: () => void; children: ReactNode }
+type Props = { title: string; onClose: () => void; className?: string; children: ReactNode }
 
 // The scrim ignores clicks: a stray one must not lose a typed task.
-export default function Dialog({ title, onClose, children }: Props) {
+export default function Dialog({ title, onClose, className, children }: Props) {
   const titleId = useId()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -15,7 +15,7 @@ export default function Dialog({ title, onClose, children }: Props) {
   }, [onClose])
   return (
     <div className="scrim">
-      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div className={className ? `dialog ${className}` : 'dialog'} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <h2 id={titleId}>{title}</h2>
         {children}
       </div>

@@ -34,6 +34,7 @@ function task(more: Partial<Task>): Task {
     cost_missing_sessions: 0,
     usage: [],
     budget: { turns: 0, max_turns: 0, minutes: 0, max_minutes: 0 },
+    images: [],
     ...more,
   }
 }
