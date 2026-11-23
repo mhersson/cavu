@@ -341,6 +341,10 @@ func TestEditRemovesImages(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, status, "one the task lacks: %s", body)
 		assert.Equal(t, []int64{kept}, imageIDs(f.view(t, id)), "removes none")
 
+		status, body = f.call(t, fmt.Sprintf("PATCH /api/tasks/%d", id), fmt.Sprintf(`{"title": "", "remove_images": [%d]}`, kept))
+		require.Equal(t, http.StatusBadRequest, status, "a title the edit refuses: %s", body)
+		assert.Equal(t, []int64{kept}, imageIDs(f.view(t, id)), "the fields are written before any image is removed")
+
 		f.add(t, id, engine.TaskStarted, struct{}{})
 		f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
 
