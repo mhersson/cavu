@@ -1526,6 +1526,7 @@ func TestConformanceSendsAnOpenedImage(t *testing.T) {
 		data []byte
 	}{
 		{"/run/cavu/images/1-screenshot.png", noisePNG(t, 1200, 800, 80)},
+		// Near the 10 MiB cap, with a long side above 2,576 px.
 		{"/run/cavu/images/2-noise.png", noisePNG(t, 3200, 1090, 1090)},
 		// A third of it noise: about 3 to 1, as a busy screenshot compresses.
 		{"/run/cavu/images/3-full-hd.png", noisePNG(t, 1920, 1080, 360)},
