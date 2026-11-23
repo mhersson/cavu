@@ -218,7 +218,7 @@ func (s *Store) unlink(ctx context.Context, sums ...string) {
 	}
 }
 
-// CopyImages adds to the task to the images of the task from, in their order,
+// CopyImages copies the images of task from to task to, in their order,
 // sharing their contents. It needs no lock: it names only contents rows name.
 func (s *Store) CopyImages(ctx context.Context, from, to int64) error {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO task_images (task_id, name, type, size, sha256, created_at)
