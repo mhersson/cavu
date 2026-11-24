@@ -1072,7 +1072,7 @@ func TestImageNamesInTheContainer(t *testing.T) {
 	long := strings.Repeat("a", 251) + ".png"
 	c := workConfig()
 	c.Task.Images = []engine.TaskImage{
-		{Name: "Screenshot 2026-11-24 at 10.15.32 AM.png", Type: "image/png", Data: []byte("png")},
+		{Name: "Screenshot 2026-11-24 at 10.15.32\u202fAM.png", Type: "image/png", Data: []byte("png")},
 		{Name: "photo.png", Type: "image/jpeg", Data: []byte("jpeg")},
 		{Name: "lagre-knapp-ø", Type: "image/webp", Data: []byte("webp")},
 		{Name: long, Type: "image/gif", Data: []byte("gif")},
