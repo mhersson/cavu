@@ -6,8 +6,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg" // a shrunk image may arrive as a JPEG
+	"image/png"
 	"math/big"
 	"net/http"
 	"os"
@@ -1509,6 +1513,170 @@ func TestInstructionsAndEffort(t *testing.T) {
 
 	require.NoError(t, json.Unmarshal(calls[0].Body, &body))
 	assert.Equal(t, "high", body.OutputConfig.Effort)
+}
+
+// TestConformanceSendsAnOpenedImage: an image the agent reads from outside the
+// workspace reaches the next model call in the Read call's tool result, with
+// the media type of its bytes, and the run still ends with its result. It logs
+// what arrives of each image, and whether the driver sent each read's tool
+// result event, whose stdout line may pass the mapper's limit.
+func TestConformanceSendsAnOpenedImage(t *testing.T) {
+	images := []struct {
+		path string
+		data []byte
+	}{
+		{"/run/cavu/images/1-screenshot.png", noisePNG(t, 1200, 800, 80)},
+		// Near the 10 MiB cap, with a long side above 2,576 px.
+		{"/run/cavu/images/2-noise.png", noisePNG(t, 3200, 1090, 1090)},
+		// A third of it noise: about 3 to 1, as a busy screenshot compresses.
+		{"/run/cavu/images/3-full-hd.png", noisePNG(t, 1920, 1080, 360)},
+	}
+
+	files := map[string][]byte{}
+	steps := make([]mockapi.Step, 0, len(images)+1)
+
+	for _, img := range images {
+		files[img.path] = img.data
+		steps = append(steps, mockapi.Step{Tool: "Read", Input: map[string]any{"file_path": img.path}})
+	}
+
+	b := keyBox(t, append(steps, mockapi.Step{Text: "done"})...)
+	require.NoError(t, b.c.CopyIn(t.Context(), files))
+
+	o := b.run(conformanceDriver(), b.spec())
+	requireDone(t, o)
+
+	calls := modelCalls(b.mock)
+	require.Len(t, calls, len(images)+1)
+
+	for i, img := range images {
+		sent, _, err := image.DecodeConfig(bytes.NewReader(img.data))
+		require.NoError(t, err)
+
+		mediaType, data := openedImage(t, calls[i+1])
+
+		got, format, err := image.DecodeConfig(bytes.NewReader(data))
+		require.NoError(t, err, "%s arrived as %s and does not decode", img.path, mediaType)
+
+		assert.Equal(t, "image/"+format, mediaType, img.path)
+		assert.InEpsilon(t, float64(sent.Width)/float64(sent.Height), float64(got.Width)/float64(got.Height), 0.01,
+			"%s arrived as another image", img.path)
+		t.Logf("%s: sent %d bytes, %dx%d; arrived %s, %d bytes, %dx%d, unchanged %v", img.path,
+			len(img.data), sent.Width, sent.Height, mediaType, len(data), got.Width, got.Height, bytes.Equal(data, img.data))
+
+		id, event, longest := toolResultRecord(o, img.path)
+		t.Logf("%s: call %q, its tool result event sent %v, the longest stdout line naming it %d bytes (the mapper skips over %d)",
+			img.path, id, event, longest, maxLine)
+	}
+}
+
+// toolResultRecord finds the tool use event that names p: its call's id,
+// whether a tool result event for it followed, and the longest stdout line
+// that names the call.
+func toolResultRecord(o outcome, p string) (id string, event bool, longest int) {
+	for _, ev := range o.events {
+		if ev.Kind == driver.KindToolUse && bytes.Contains(ev.ToolInput, []byte(p)) {
+			id = ev.ToolID
+		}
+	}
+
+	if id == "" {
+		return "", false, 0
+	}
+
+	for _, ev := range o.events {
+		event = event || ev.Kind == driver.KindToolResult && ev.ToolID == id
+	}
+
+	for _, l := range o.lines {
+		if bytes.Contains(l, []byte(id)) {
+			longest = max(longest, len(l))
+		}
+	}
+
+	return id, event, longest
+}
+
+// noisePNG encodes a w by h opaque PNG whose first rows rows are noise, which
+// does not compress, and whose others are one grey.
+func noisePNG(t *testing.T, w, h, rows int) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	_, err := rand.Read(img.Pix[:rows*img.Stride])
+	require.NoError(t, err)
+
+	for i := range img.Pix {
+		switch {
+		case i%4 == 3:
+			img.Pix[i] = 0xff
+		case i >= rows*img.Stride:
+			img.Pix[i] = 0xe0
+		}
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+
+	return buf.Bytes()
+}
+
+// openedImage returns the media type and the decoded bytes of the one image in
+// the tool results of r's newest message that holds any. Messages may follow
+// it: the pinned release ends a request with a system message.
+func openedImage(t *testing.T, r mockapi.Request) (string, []byte) {
+	t.Helper()
+
+	type source struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	}
+
+	var (
+		newest json.RawMessage
+		found  []source
+	)
+
+	for i := len(r.Messages) - 1; i >= 0 && newest == nil; i-- {
+		var msg struct {
+			Content []struct {
+				Type    string          `json:"type"`
+				Content json.RawMessage `json:"content"`
+			} `json:"content"`
+		}
+
+		// Content given as a string holds no tool result and no image.
+		_ = json.Unmarshal(r.Messages[i], &msg)
+
+		for _, block := range msg.Content {
+			if block.Type != "tool_result" {
+				continue
+			}
+
+			var parts []struct {
+				Type   string `json:"type"`
+				Source source `json:"source"`
+			}
+
+			newest = r.Messages[i]
+			_ = json.Unmarshal(block.Content, &parts)
+
+			for _, p := range parts {
+				if p.Type == "image" {
+					found = append(found, p.Source)
+				}
+			}
+		}
+	}
+
+	require.Len(t, found, 1, "the newest message with tool results: %.2000s", newest)
+	require.Equal(t, "base64", found[0].Type)
+
+	data, err := base64.StdEncoding.DecodeString(found[0].Data)
+	require.NoError(t, err)
+
+	return found[0].MediaType, data
 }
 
 // requireNoSecretOutput fails if claude wrote secret on stdout or stderr,

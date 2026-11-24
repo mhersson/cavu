@@ -3,6 +3,13 @@ Another agent did this task, and a review of its work found problems it did not 
 # {{.Title}}
 
 {{.Body}}
+{{- if .Images}}
+
+These images are part of the task. Open each one to see what it shows:
+{{range .Images}}
+- `{{.}}`
+{{- end}}
+{{- end}}
 
 # The work so far
 

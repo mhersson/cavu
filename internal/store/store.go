@@ -1,7 +1,7 @@
 // Package store persists CAVU's state in one SQLite file: projects, tasks,
 // runs, an append-only event log, usage, replays, settings, sealed secrets, the
 // user, their sessions and API tokens, browsers' push subscriptions and what
-// each task was last notified of.
+// each task was last notified of; and beside it the contents of tasks' images.
 package store
 
 import (
@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"modernc.org/sqlite"
 )
@@ -30,6 +31,9 @@ const (
 // Store is a handle on the database. It is safe for concurrent use.
 type Store struct {
 	db *sql.DB
+
+	images   string     // the directory of the images' contents
+	imagesMu sync.Mutex // held while contents are placed and rows name them, and while removed rows' contents go
 }
 
 // dsn builds a file: URI by concatenation because url.URL puts a relative
@@ -80,7 +84,7 @@ func open(ctx context.Context, path string, ms []Migration) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{db: db}, nil
+	return &Store{db: db, images: filepath.Join(filepath.Dir(path), "images")}, nil
 }
 
 // Close releases the database.

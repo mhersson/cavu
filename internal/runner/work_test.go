@@ -1,10 +1,13 @@
 package runner
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -989,5 +992,111 @@ func TestSessionsCarryTheInstanceFiles(t *testing.T) {
 			assert.Equal(t, c.Agent.Instance.Instructions, d.specs[0].InstanceInstructions)
 			assert.Equal(t, want, d.specs[0].InstanceSkills)
 		})
+	}
+}
+
+// Every session gets the task's images as files outside the workspace, in
+// place before it starts, a resumed one too, whose container may not be the
+// one an earlier session read them in; a prompt that carries the task names
+// the paths they were copied to.
+func TestImagesStayOutOfTheWorkspace(t *testing.T) {
+	c := workConfig()
+	c.Task.Images = []engine.TaskImage{
+		{Name: "save-button.png", Type: "image/png", Data: []byte("png-1")}, {Name: "save-button.png", Type: "image/png", Data: []byte("png-2")},
+	}
+	want := map[string][]byte{"/run/cavu/images/1-save-button.png": []byte("png-1"), "/run/cavu/images/2-save-button.png": []byte("png-2")}
+
+	work := func(w engine.WorkRequest) func(ctx context.Context, r *Runner) error {
+		return func(ctx context.Context, r *Runner) error {
+			_, err := r.Work(ctx, c, w, noProgress)
+
+			return err
+		}
+	}
+
+	review := func(rq engine.ReviewRequest) func(ctx context.Context, r *Runner) error {
+		return func(ctx context.Context, r *Runner) error {
+			_, err := r.Review(ctx, c, rq, noProgress)
+
+			return err
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		session func(ctx context.Context, r *Runner) error
+		named   bool // the prompt carries the task
+	}{
+		{"readiness", work(readinessWork), true},
+		{"work", work(startWork), true},
+		{"the work after a readiness turn", work(engine.WorkRequest{Mode: engine.ModeStart, SessionID: sessionUUID, Resume: true}), false},
+		{"the fix after a review", work(engine.WorkRequest{Mode: engine.ModeFixReview, SessionID: sessionUUID, Findings: []engine.Finding{trimmed}}), true},
+		{"review", review(fullReview()), true},
+		{"scoped review", review(scopedReview()), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := reviewed()
+
+			var before map[string][]byte
+
+			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}, during: func(context.Context, func(driver.Event)) {
+				f.mu.Lock()
+				before = maps.Clone(f.copied)
+				f.mu.Unlock()
+			}}
+
+			require.NoError(t, tc.session(t.Context(), f.workRunner(d)))
+			require.Len(t, d.specs, 1)
+
+			got := map[string][]byte{}
+
+			for p, data := range before {
+				if slices.ContainsFunc(c.Task.Images, func(img engine.TaskImage) bool { return bytes.Equal(img.Data, data) }) {
+					got[p] = data
+				}
+			}
+
+			assert.Equal(t, want, got, "each image is in place before the session, at its path and nowhere else")
+
+			for p := range want {
+				assert.Equal(t, tc.named, strings.Contains(d.specs[0].Prompt, p), p)
+			}
+		})
+	}
+}
+
+// An image's name in the container is plain ASCII, cut short, and ends in its
+// type's extension, so the agent types the path back as the prompt gives it
+// and opens the file as the image it is.
+func TestImageNamesInTheContainer(t *testing.T) {
+	long := strings.Repeat("a", 251) + ".png"
+	c := workConfig()
+	c.Task.Images = []engine.TaskImage{
+		{Name: "Screenshot 2026-11-24 at 10.15.32\u202fAM.png", Type: "image/png", Data: []byte("png")},
+		{Name: "photo.png", Type: "image/jpeg", Data: []byte("jpeg")},
+		{Name: "lagre-knapp-ø", Type: "image/webp", Data: []byte("webp")},
+		{Name: long, Type: "image/gif", Data: []byte("gif")},
+	}
+	want := map[string][]byte{
+		"/run/cavu/images/1-Screenshot-2026-11-24-at-10.15.32-AM.png": []byte("png"),
+		"/run/cavu/images/2-photo.jpg":                                []byte("jpeg"),
+		"/run/cavu/images/3-lagre-knapp--.webp":                       []byte("webp"),
+		"/run/cavu/images/4-" + long[:200] + ".gif":                   []byte("gif"),
+	}
+
+	f := newFake()
+	d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}
+
+	_, err := f.workRunner(d).Work(t.Context(), c, startWork, noProgress)
+	require.NoError(t, err)
+	assert.Equal(t, want, f.copied)
+	require.Len(t, d.specs, 1)
+
+	for p := range want {
+		assert.Contains(t, d.specs[0].Prompt, p)
+	}
+
+	for _, typ := range engine.ImageTypes {
+		assert.Contains(t, imageExt, typ, "every type an upload takes has its extension")
 	}
 }

@@ -459,7 +459,12 @@ func (c fakeContainer) Run(ctx context.Context, cmd proc.Command, timeout time.D
 	return sandbox.Result{Output: "ok\n"}, nil
 }
 
+// CopyIn records nothing for no files, for which the real one runs no exec.
 func (c fakeContainer) CopyIn(_ context.Context, files map[string][]byte) error {
+	if len(files) == 0 {
+		return nil
+	}
+
 	c.f.record(c.at("copy"))
 
 	c.f.mu.Lock()

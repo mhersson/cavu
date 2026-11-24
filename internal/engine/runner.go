@@ -47,7 +47,10 @@ type RunConfig struct {
 		}
 	}
 	Identity struct{ Name, Email string }
-	Task     struct{ Title, Body string }
+	Task     struct {
+		Title, Body string
+		Images      []TaskImage // in the order added
+	}
 	// Budget is what the run's model calls may still spend, set in key mode
 	// while a money cap is in force; the proxy counts it against Prices.
 	Budget struct {
@@ -84,6 +87,13 @@ type Comment struct {
 type File struct {
 	Data       []byte
 	Executable bool
+}
+
+// TaskImage is an image of the task, by the name it was given, with its
+// stored type.
+type TaskImage struct {
+	Name, Type string
+	Data       []byte
 }
 
 // RunRef names a run's containers and volumes. It holds no secret and no

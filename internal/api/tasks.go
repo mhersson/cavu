@@ -209,6 +209,8 @@ type taskEdit struct {
 	Title     *string  `json:"title,omitempty" jsonschema:"the new title"`
 	Body      *string  `json:"body,omitempty" jsonschema:"the new body; an empty string empties it"`
 	DependsOn *[]int64 `json:"depends_on,omitempty" jsonschema:"the ids of the tasks it waits for, replacing the list; an empty list removes every dependency"`
+	// Images are added only by the upload route, which takes the file as its body.
+	RemoveImages *[]int64 `json:"remove_images,omitempty" jsonschema:"the ids of the task's images to remove"`
 }
 
 func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
@@ -230,7 +232,8 @@ func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
 	return s.replyTask(w, r, id, http.StatusOK)
 }
 
-// edit changes only the fields that `in` sets, over the stored task and its dependencies.
+// edit changes only the fields that `in` sets, over the stored task and its
+// dependencies, then removes the images it names.
 func (s *server) edit(ctx context.Context, id int64, in taskEdit) error {
 	t, err := s.Store.Task(ctx, id)
 	if err != nil {
@@ -246,7 +249,11 @@ func (s *server) edit(ctx context.Context, id int64, in taskEdit) error {
 	set(&t.Body, in.Body)
 	set(&deps, in.DependsOn)
 
-	return engine.EditTask(ctx, s.Store, t, deps)
+	if err := engine.EditTask(ctx, s.Store, t, deps); err != nil || in.RemoveImages == nil {
+		return err
+	}
+
+	return engine.RemoveImages(ctx, s.Store, id, *in.RemoveImages)
 }
 
 func (s *server) act(w http.ResponseWriter, r *http.Request) error {

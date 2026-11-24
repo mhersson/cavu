@@ -216,4 +216,16 @@ CREATE TABLE push_notified (
 	since   INTEGER NOT NULL
 );
 `},
+	{Version: 10, SQL: `
+CREATE TABLE task_images (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id    INTEGER NOT NULL REFERENCES tasks(id),
+	name       TEXT NOT NULL,
+	type       TEXT NOT NULL,
+	size       INTEGER NOT NULL,
+	sha256     TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX task_images_task ON task_images (task_id);
+`},
 }

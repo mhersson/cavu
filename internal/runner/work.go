@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -75,7 +77,7 @@ func (r *Runner) Work(ctx context.Context, c engine.RunConfig, w engine.WorkRequ
 			logs = mask(logs)
 		}
 
-		res, usage, err := runSession(st, c, mask, progress, func(s *session) (engine.WorkResult, []driver.Usage, error) {
+		res, usage, err := runSession(ctx, st, c, mask, progress, func(s *session) (engine.WorkResult, []driver.Usage, error) {
 			return s.run(ctx, r.driver, w, logs)
 		})
 		res.Usage = usage
@@ -95,10 +97,52 @@ func (r *Runner) failedLogs(ctx context.Context, c engine.RunConfig) (string, er
 	return r.forge.FailedLogs(ctx, repo, forge.Access(c.Repo.Access), c.Repo.Head, c.Repo.IgnoredChecks)
 }
 
-// runSession builds a session, runs it with the sidecar's lines watched, and
-// returns its result with the usage it reported, also with an error, so what
-// a cut session used is recorded.
-func runSession[T any](st *run, c engine.RunConfig, mask func(string) string, progress func(engine.Progress), do func(*session) (T, []driver.Usage, error)) (T, []store.Usage, error) {
+// imagesDir holds the task's images in a session's container, on its tmpfs
+// and outside the workspace, whose every file the freeze commits.
+const imagesDir = "/run/cavu/images"
+
+// imageExt is the file extension of each image type.
+var imageExt = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
+
+// imagePaths are the paths of the task's images in a session's container, in
+// the task's order: the number, which keeps apart two names that clean alike,
+// the given stem in plain ASCII cut to 200 bytes, so the agent types the path
+// back exactly, and the type's extension, by which its tools open the image.
+func imagePaths(c engine.RunConfig) []string {
+	var paths []string
+
+	for i, img := range c.Task.Images {
+		stem := strings.Map(func(r rune) rune {
+			if 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == '.' || r == '_' || r == '-' {
+				return r
+			}
+
+			return '-'
+		}, strings.TrimSuffix(img.Name, path.Ext(img.Name)))
+
+		paths = append(paths, fmt.Sprintf("%s/%d-%s%s", imagesDir, i+1, stem[:min(len(stem), 200)], imageExt[img.Type]))
+	}
+
+	return paths
+}
+
+// runSession copies the task's images into the session's container, builds a
+// session, runs it with the sidecar's lines watched, and returns its result
+// with the usage it reported, also with an error, so what a cut session used
+// is recorded. A resumed session gets the images again: its container's tmpfs
+// may not be the one it first read them in.
+func runSession[T any](ctx context.Context, st *run, c engine.RunConfig, mask func(string) string, progress func(engine.Progress), do func(*session) (T, []driver.Usage, error)) (T, []store.Usage, error) {
+	images := map[string][]byte{}
+	for i, p := range imagePaths(c) {
+		images[p] = c.Task.Images[i].Data
+	}
+
+	if err := st.agent.CopyIn(ctx, images); err != nil {
+		var zero T
+
+		return zero, nil, err
+	}
+
 	s := &session{c: c, st: st, mask: mask, progress: progress, proxied: map[string]store.Usage{}}
 
 	st.watching(s.line)
@@ -341,7 +385,7 @@ func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (drive
 // w's detail is the verify output of a fix and the text of an answer, and
 // logs what the failed checks printed for a fix of them.
 func prompt(c engine.RunConfig, w engine.WorkRequest, logs string) (string, error) {
-	task := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}
+	task := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body, Images: imagePaths(c)}
 
 	switch w.Mode {
 	case engine.ModeReadiness:
@@ -363,7 +407,7 @@ func prompt(c engine.RunConfig, w engine.WorkRequest, logs string) (string, erro
 		}
 
 		return prompts.Render(prompts.FixReviewFresh, prompts.FixReviewFreshData{
-			Title: c.Task.Title, Body: c.Task.Body, Findings: numberFindings(w.Findings), DiffFile: reviewPatch,
+			Title: c.Task.Title, Body: c.Task.Body, Images: task.Images, Findings: numberFindings(w.Findings), DiffFile: reviewPatch,
 		})
 	case engine.ModeFixCI:
 		return prompts.Render(prompts.FixCI, prompts.FixCIData{Logs: logs})

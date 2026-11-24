@@ -45,7 +45,7 @@ func (r *Runner) Review(ctx context.Context, c engine.RunConfig, rq engine.Revie
 			return engine.ReviewResult{Outcome: engine.ReviewFailed, Detail: mask(problem)}, err
 		}
 
-		res, usage, err := runSession(st, c, mask, progress, func(s *session) (engine.ReviewResult, []driver.Usage, error) {
+		res, usage, err := runSession(ctx, st, c, mask, progress, func(s *session) (engine.ReviewResult, []driver.Usage, error) {
 			return s.review(ctx, r.driver, rq)
 		})
 		res.Usage = usage
@@ -147,14 +147,14 @@ func (s *session) review(ctx context.Context, d driver.Driver, rq engine.ReviewR
 func reviewPrompt(c engine.RunConfig, rq engine.ReviewRequest) (string, error) {
 	if scoped(rq) {
 		return prompts.Render(prompts.Rereview, prompts.RereviewData{
-			Title: c.Task.Title, Body: c.Task.Body, Findings: numberFindings(rq.Findings), DiffFile: reviewPatch, FixDiffFile: fixPatch,
-			VerifyCommand: c.Verify.Command, VerifyWaived: c.Verify.Waived,
+			Title: c.Task.Title, Body: c.Task.Body, Images: imagePaths(c), Findings: numberFindings(rq.Findings), DiffFile: reviewPatch,
+			FixDiffFile: fixPatch, VerifyCommand: c.Verify.Command, VerifyWaived: c.Verify.Waived,
 		})
 	}
 
 	return prompts.Render(prompts.Review, prompts.ReviewData{
-		Title: c.Task.Title, Body: c.Task.Body, Answers: rq.Answers, Assumptions: rq.Assumptions, Summary: rq.Summary, DiffFile: reviewPatch,
-		VerifyCommand: c.Verify.Command, VerifyWaived: c.Verify.Waived,
+		Title: c.Task.Title, Body: c.Task.Body, Images: imagePaths(c), Answers: rq.Answers, Assumptions: rq.Assumptions, Summary: rq.Summary,
+		DiffFile: reviewPatch, VerifyCommand: c.Verify.Command, VerifyWaived: c.Verify.Waived,
 	})
 }
 
