@@ -1,11 +1,13 @@
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { Link, useParams } from 'react-router'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { api } from '../../api/client.ts'
+import { useDrop, useUploads } from '../../api/images.ts'
 import { useStream } from '../../api/stream.ts'
 import type { TaskEvent, Task as TaskView } from '../../api/types.ts'
 import Dialog from '../../components/Dialog.tsx'
 import { ChangeFacts, PullRequestFacts, ReviewFacts } from '../../components/Facts.tsx'
 import Field from '../../components/Field.tsx'
+import Images, { DropBox } from '../../components/Images.tsx'
 import { Markdown } from '../../components/Markdown.tsx'
 import NeedsBox from '../../components/NeedsBox.tsx'
 import PageHead from '../../components/PageHead.tsx'
@@ -150,10 +152,17 @@ function grow(el: HTMLTextAreaElement | null) {
 
 function Page({ id }: { id: number }) {
   const narrow = useNarrow()
+  const navigate = useNavigate()
+  // The new-task form hands over what it could not do once the task existed: images it could not attach, or the start.
+  // Taken once: the history entry would hand it over again on Back, Forward or a reload.
+  const handed = useLocation().state as { images?: string; refused?: string } | null
+  useEffect(() => {
+    if (handed) navigate('.', { replace: true })
+  }, [handed, navigate])
   const [task, setTask] = useState<TaskView | null>(null)
   const [missing, setMissing] = useState('')
   const [asking, setAsking] = useState(false)
-  const [refused, setRefused] = useState('')
+  const [refused, setRefused] = useState(handed?.refused ?? '')
   const [edit, setEdit] = useState<Editing | null>(null)
   const [sending, setSending] = useState(false)
   const [events, setEvents] = useState<TaskEvent[]>([])
@@ -168,6 +177,10 @@ function Page({ id }: { id: number }) {
       },
       (e: Error) => setMissing(e.message), // only shown while there is no task
     )
+  // At the page's level: paste and drop on the page and the section's own controls share it.
+  const up = useUploads(id, read, handed?.images)
+  // On a desktop a draft takes a file dropped on its page, or an image pasted anywhere but into a field's text.
+  const drop = useDrop(!narrow && task?.status === 'draft', up.send)
 
   // Reads on while a page comes back full and its last id is below end.
   async function walk(query: Record<string, string>, size: number, end = Infinity) {
@@ -261,8 +274,9 @@ function Page({ id }: { id: number }) {
       Edit
     </button>
   )
+  // An image still uploading would be refused once the run starts, so Start waits for it.
   const startButton = (
-    <button className="btn primary" onClick={() => void act('start')}>
+    <button className="btn primary" disabled={up.going.length > 0} onClick={() => void act('start')}>
       Start
     </button>
   )
@@ -287,7 +301,8 @@ function Page({ id }: { id: number }) {
     ) : null
 
   return (
-    <div className="page task-page">
+    <div className={drop.over ? 'page task-page dropping' : 'page task-page'} {...drop.handlers}>
+      {drop.over && <DropBox what="this task" cap={up.cap} />}
       <div className="crumb">
         <Link to="/">Needs you</Link> / {task.project} / task {task.id}
       </div>
@@ -346,6 +361,7 @@ function Page({ id }: { id: number }) {
       ) : (
         task.body && <Body text={task.body} folds={!draft} />
       )}
+      <Images task={task} up={up} onTask={setTask} />
       <NeedsBox task={task} onTask={(t) => setTask(t)} onPage />
       {!task.needs_you && task.waiting && (
         <p className="waitline">

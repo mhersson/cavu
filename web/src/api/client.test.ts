@@ -68,6 +68,22 @@ test('client sends the CSRF header on a write and not on a read', async () => {
   expect(headersOf(del).get('X-CAVU-CSRF')).toBeTruthy()
 })
 
+test('a file is sent as itself under its own type, and a signal ends the request', async () => {
+  const write = fakeServer(201, {})
+  const file = new File(['png'], 'shot.png', { type: 'image/png' })
+  const ends = new AbortController()
+  await api('POST', '/tasks/7/images?name=shot.png', file, { signal: ends.signal })
+  const init = write.mock.calls[0][1]
+  expect(init?.body).toBe(file)
+  expect(headersOf(write).get('Content-Type')).toBe('image/png')
+  expect(headersOf(write).get('X-CAVU-CSRF')).toBeTruthy()
+  expect(init?.signal).toBe(ends.signal)
+
+  const untyped = fakeServer(201, {})
+  await api('POST', '/tasks/7/images?name=shot', new Blob(['png']))
+  expect(headersOf(untyped).get('Content-Type')).toBe('application/octet-stream')
+})
+
 test("client throws the server's line", async () => {
   fakeServer(400, { error: 'title is required' })
   const err = await api('POST', '/tasks', {}).catch((e: unknown) => e)

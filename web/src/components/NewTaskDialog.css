@@ -8,3 +8,17 @@
   color: var(--grey1);
   font-size: 12px;
 }
+
+/* A file dragged over the form: the dialog it is in says so, as a task's page does. */
+.dialog:has(> .new-task.dropping) {
+  outline: 2px dashed var(--aqua);
+  outline-offset: -1px;
+}
+
+.dialog > .new-task.dropping {
+  outline: none;
+}
+
+.dialog:has(> .new-task.dropping) > h2 {
+  opacity: 0.2;
+}

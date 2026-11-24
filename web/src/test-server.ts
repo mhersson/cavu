@@ -43,10 +43,10 @@ export const redirected = () =>
 export const rows = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: i + 1, needs_you: true }))
 
-export type Call = { method: string; path: string; body: unknown; headers: Headers; keepalive?: boolean }
+export type Call = { method: string; path: string; body: unknown; headers: Headers; keepalive?: boolean; signal?: AbortSignal }
 
-// answer maps a request to its response; every request is recorded.
-export function fakeServer(answer: (c: Call) => Response | undefined) {
+// answer maps a request to its response, which may come later; every request is recorded, a file or blob body as it is.
+export function fakeServer(answer: (c: Call) => Response | Promise<Response> | undefined) {
   const calls: Call[] = []
   vi.stubGlobal('EventSource', FakeEventSource)
   FakeEventSource.all = []
@@ -56,9 +56,10 @@ export function fakeServer(answer: (c: Call) => Response | undefined) {
       const call: Call = {
         method: init.method ?? 'GET',
         path,
-        body: init.body === undefined ? undefined : JSON.parse(init.body as string),
+        body: init.body === undefined || init.body instanceof Blob ? init.body : JSON.parse(init.body as string),
         headers: new Headers(init.headers),
         keepalive: init.keepalive,
+        signal: init.signal ?? undefined,
       }
       calls.push(call)
       return Promise.resolve(answer(call) ?? json({ error: 'not found' }, 404))

@@ -20,9 +20,11 @@ export function onRedirect(handler: () => void) {
   redirected = handler
 }
 
-export async function api<T>(method: string, path: string, body?: unknown, options: { keepalive?: boolean } = {}): Promise<T> {
+// A file or a blob is sent as it is, under its own type; any other body as JSON.
+export async function api<T>(method: string, path: string, body?: unknown, options: { keepalive?: boolean; signal?: AbortSignal } = {}): Promise<T> {
   const headers: Record<string, string> = {}
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const raw = body instanceof Blob
+  if (body !== undefined) headers['Content-Type'] = raw ? body.type || 'application/octet-stream' : 'application/json'
   if (method !== 'GET' && method !== 'HEAD') headers['X-CAVU-CSRF'] = '1'
   const res = await fetch('/api' + path, {
     method,
@@ -31,7 +33,8 @@ export async function api<T>(method: string, path: string, body?: unknown, optio
     // With the default follow, the page's policy refuses a redirect to another origin and fetch fails as if offline.
     redirect: 'manual',
     keepalive: options.keepalive,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: options.signal,
+    body: raw ? body : body === undefined ? undefined : JSON.stringify(body),
   })
   if (res.type === 'opaqueredirect') {
     redirected()

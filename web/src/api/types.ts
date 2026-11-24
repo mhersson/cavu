@@ -90,6 +90,9 @@ export type Budget = {
   max_day_usd?: number
 }
 
+// An image attached to a task; GET /api/tasks/{id}/images/{image} serves it.
+export type Image = { id: number; name: string; type: string; size: number }
+
 export type Task = {
   id: number
   project: string
@@ -115,6 +118,7 @@ export type Task = {
   cost_missing_sessions: number
   usage: Usage[]
   budget: Budget
+  images: Image[]
 }
 
 // An item of GET /api/tasks: some of the task's fields.
@@ -197,4 +201,5 @@ export type Settings = {
   switches: Record<string, boolean>
   forge_credentials: { name: string; kind: 'token' | 'app'; app_id?: number }[]
   push_key: string
+  image_max_bytes: number
 }

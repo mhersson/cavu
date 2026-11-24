@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const policy = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+const policy = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' blob:"
 
 // Handler serves /api/ and /mcp through to api, a built file when the path names one, and the page for
 // every other GET, with the headers a page needs. With no app built in, it serves one page that says so.

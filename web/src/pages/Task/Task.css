@@ -204,3 +204,15 @@
     font-size: 20px !important;
   }
 }
+
+/* Start while an image uploads, and Save while an edit is sent. */
+.task-page .btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* The images under the body, as wide as the body. */
+.task-page > .sect {
+  max-width: 74ch;
+  margin: -4px 0 18px;
+}

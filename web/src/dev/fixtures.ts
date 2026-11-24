@@ -1,4 +1,4 @@
-import type { Project, Row, Settings, Task, TaskEvent, Usage } from '../api/types.ts'
+import type { Image, Project, Row, Settings, Task, TaskEvent, Usage } from '../api/types.ts'
 
 // What the API serves, in its shapes; the harness answers from it. A screen's own
 // states are added here as the screen is built.
@@ -26,7 +26,7 @@ export const PROJECTS: Project[] = [
 export const SETTINGS: Settings = { settings: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: 'cavu', commit_email: 'cavu@example.com' },
   secrets: { endpoint_credential: true, forge_token: true, forge_app_key: false },
   defaults: { endpoint_mode: 'subscription', model_work: 'sonnet', effort_work: 'high', model_review: 'sonnet', model_strong: 'opus', concurrency: '2', commit_name: '', commit_email: '' },
-  switches: SWITCHES, forge_credentials: [], push_key: 'BPd2VZ8vJ0wq6mR1nTt3kUo5xYc7LhGfIe9sAaQbDjKiMlNpOrSuWvXyZ0123456789abcdefghijklmnopqrstuvwxyzAB' };
+  switches: SWITCHES, forge_credentials: [], push_key: 'BPd2VZ8vJ0wq6mR1nTt3kUo5xYc7LhGfIe9sAaQbDjKiMlNpOrSuWvXyZ0123456789abcdefghijklmnopqrstuvwxyzAB', image_max_bytes: 10 << 20 };
 
 // GET /api/tasks, oldest first
 export const ROWS: Row[] = [
@@ -51,8 +51,14 @@ const base = (id: number, more: Partial<Task>): Task => {
   const r = ROWS.find((x) => x.id === id)!
   return { id, project: r.project, title: r.title, body: '', requester: 'api', created_at: r.created_at, status: r.status, needs_you: r.needs_you, needs: r.needs, needs_you_since: r.needs_you_since,
     waiting: r.waiting, waiting_until: r.waiting_until, dependencies: [], stop: null, questions: [], review: null, pull_request: null, change: null,
-    turns: 0, duration_ms: 0, cost_estimate_usd: 0, cost_missing_sessions: 0, usage: [], budget: { turns: 0, max_turns: 1000, minutes: 0, max_minutes: 300 } , ...more }
+    turns: 0, duration_ms: 0, cost_estimate_usd: 0, cost_missing_sessions: 0, usage: [], budget: { turns: 0, max_turns: 1000, minutes: 0, max_minutes: 300 }, images: [], ...more }
 }
+
+// A task's two screenshots from the id of the first: the harness draws an odd id as a profile page, an even as a settings panel.
+const shots = (id: number): Image[] => [
+  { id, name: 'save-button.png', type: 'image/png', size: 190464 },
+  { id: id + 1, name: 'settings-clipped.png', type: 'image/png', size: 94208 },
+];
 
 // GET /api/tasks/{id}
 export const VIEWS: Record<number, Task> = {
@@ -99,6 +105,7 @@ export const VIEWS: Record<number, Task> = {
   }),
   42: base(42, {
     body: 'Embed the built web app and serve it from cavu serve, with the single page as the fallback for a path that is no file.',
+    images: shots(3),
     turns: 18, duration_ms: 1130000, cost_estimate_usd: 0.42, usage: [usage('claude-sonnet-5-5', 22000, 9800, 410000, 52000, 0.42)], budget: { turns: 18, max_turns: 1000, minutes: 16, max_minutes: 300 },
   }),
 };
@@ -274,4 +281,5 @@ VIEWS[44] = base(44, {
     "Write it for a person who has never seen CAVU: say what a draft is and that it runs only when started, that a task stopped on a question waits for an answer on its page, and that a pull request is merged by a person and never by CAVU. Use the names the pages use, and check each sentence against the app as it is at the time.",
   requester: 'mcp',
   dependencies: [{ id: 42, status: 'running' }],
+  images: shots(1),
 })

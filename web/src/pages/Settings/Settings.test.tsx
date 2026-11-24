@@ -18,7 +18,7 @@ const DEFAULTS: Record<string, string> = {
 const unset = { endpoint_credential: false, forge_token: false, forge_app_key: false }
 
 const saved = (settings: Saved['settings'] = {}, secrets = unset): Saved => ({
-  settings, secrets, defaults: DEFAULTS, switches: {}, forge_credentials: [], push_key: 'KEY',
+  settings, secrets, defaults: DEFAULTS, switches: {}, forge_credentials: [], push_key: 'KEY', image_max_bytes: 0,
 })
 
 const isPatch = (c: Call) => c.method === 'PATCH' && c.path === '/api/settings'
