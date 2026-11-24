@@ -105,9 +105,9 @@ const imagesDir = "/run/cavu/images"
 var imageExt = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
 
 // imagePaths are the paths of the task's images in a session's container, in
-// the task's order: the number, the given stem in plain ASCII cut to 200 bytes,
-// which the agent types back exactly, and the type's extension, by which its
-// tools open the file as the image it is.
+// the task's order: the number, which keeps apart two names that clean alike,
+// the given stem in plain ASCII cut to 200 bytes, so the agent types the path
+// back exactly, and the type's extension, by which its tools open the image.
 func imagePaths(c engine.RunConfig) []string {
 	var paths []string
 
