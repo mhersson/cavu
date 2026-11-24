@@ -599,6 +599,35 @@ func TestCheckSettingInstancePaths(t *testing.T) {
 	}
 }
 
+// Each action reads the task's images, in the order added, as it builds its
+// config, so a session gets one kept while the prepare ran, after its claim.
+func TestRunConfigCarriesImages(t *testing.T) {
+	h := newHarness(t)
+	h.withReview()
+	h.putImage(h.task.ID, "one.png")
+	h.runner.onCall = func(c call) {
+		if c.method == "prepare" {
+			h.putImage(h.task.ID, "two.png")
+		}
+	}
+
+	_, err := h.run(t.Context())
+	require.NoError(t, err)
+
+	want := []engine.TaskImage{
+		{Name: "one.png", Type: "image/png", Data: []byte("one.png")}, {Name: "two.png", Type: "image/png", Data: []byte("two.png")},
+	}
+
+	for _, method := range []string{"work", "review"} {
+		calls := h.runner.callsOf(method)
+		require.NotEmpty(t, calls, method)
+
+		for _, c := range calls {
+			assert.Equal(t, want, c.cfg.Task.Images, method)
+		}
+	}
+}
+
 func TestBuildRunConfigInstanceFiles(t *testing.T) {
 	build := func(t *testing.T, set map[string]string) (engine.RunConfig, error) {
 		t.Helper()

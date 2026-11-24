@@ -3,6 +3,13 @@ You check a fix an agent made for the task below. You work unattended: nobody wa
 # {{.Title}}
 
 {{.Body}}
+{{- if .Images}}
+
+These images are part of the task. Open each one to see what it shows:
+{{range .Images}}
+- `{{.}}`
+{{- end}}
+{{- end}}
 
 # The findings
 

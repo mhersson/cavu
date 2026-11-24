@@ -74,21 +74,9 @@ func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) err
 		return err
 	}
 
-	stored, err := s.Task(ctx, t.ID)
+	stored, err := editable(ctx, s, t.ID)
 	if err != nil {
-		return fmt.Errorf("task %d: %w", t.ID, err)
-	}
-
-	events, err := s.EventsOmitting(ctx, t.ID, ProgressTypes...)
-	if err != nil {
-		return fmt.Errorf("task %d: %w", t.ID, err)
-	}
-
-	switch {
-	case hadRun(events):
-		return refuse("task %d has started a run", t.ID)
-	case Reduce(events).Cancelled:
-		return refuse("task %d is cancelled", t.ID)
+		return err
 	}
 
 	if err := checkDeps(ctx, s, t.ID, dependsOn); err != nil {
@@ -105,6 +93,29 @@ func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) err
 	}
 
 	return nil
+}
+
+// editable gives the task while its title, body, dependencies and images may
+// change: until its first run starts, and never once it is cancelled.
+func editable(ctx context.Context, s Store, id int64) (store.Task, error) {
+	t, err := s.Task(ctx, id)
+	if err != nil {
+		return store.Task{}, fmt.Errorf("task %d: %w", id, err)
+	}
+
+	events, err := s.EventsOmitting(ctx, id, ProgressTypes...)
+	if err != nil {
+		return store.Task{}, fmt.Errorf("task %d: %w", id, err)
+	}
+
+	switch {
+	case hadRun(events):
+		return store.Task{}, refuse("task %d has started a run", id)
+	case Reduce(events).Cancelled:
+		return store.Task{}, refuse("task %d is cancelled", id)
+	}
+
+	return t, nil
 }
 
 func checkTitle(title string) error {

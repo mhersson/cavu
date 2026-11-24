@@ -17,6 +17,7 @@ type View struct {
 	Project             string       `json:"project"`
 	Title               string       `json:"title"`
 	Body                string       `json:"body"`
+	Images              []Image      `json:"images"`
 	Requester           string       `json:"requester"`
 	CreatedAt           time.Time    `json:"created_at"`
 	Status              Status       `json:"status"`
@@ -37,6 +38,14 @@ type View struct {
 	CostMissingSessions int          `json:"cost_missing_sessions"`
 	Usage               []UsageRow   `json:"usage"`
 	Budget              Budget       `json:"budget"`
+}
+
+// Image is one image of a task as a person sees it.
+type Image struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Size int64  `json:"size"`
 }
 
 // Stop is a task's open stop as a person sees it.
@@ -134,10 +143,15 @@ func (l *Loop) View(ctx context.Context, taskID int64, waiting func(int64) strin
 		return View{}, fmt.Errorf("task %d: %w", taskID, err)
 	}
 
+	images, err := l.Store.TaskImages(ctx, taskID)
+	if err != nil {
+		return View{}, fmt.Errorf("task %d: %w", taskID, err)
+	}
+
 	turns, d := TurnsAndDuration(events)
 	v := View{
-		ID: t.ID, Project: p.Name, Title: t.Title, Body: t.Body, Requester: t.Requester, CreatedAt: t.CreatedAt.UTC(),
-		Status: StatusOf(f), Dependencies: s.Deps, Questions: []Question{},
+		ID: t.ID, Project: p.Name, Title: t.Title, Body: t.Body, Images: make([]Image, len(images)), Requester: t.Requester,
+		CreatedAt: t.CreatedAt.UTC(), Status: StatusOf(f), Dependencies: s.Deps, Questions: []Question{},
 		Turns: turns, DurationMS: d.Milliseconds(), CostMissingSessions: f.CostMissing,
 		Usage: make([]UsageRow, len(usage)), Budget: budgetOf(s),
 	}
@@ -187,6 +201,10 @@ func (l *Loop) View(ctx context.Context, taskID int64, waiting func(int64) strin
 			},
 			DiffPath: x.DiffPath, BundlePath: x.BundlePath,
 		}
+	}
+
+	for i, img := range images {
+		v.Images[i] = Image{img.ID, img.Name, img.Type, img.Size}
 	}
 
 	for i, u := range usage {

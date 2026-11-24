@@ -519,6 +519,50 @@ func TestReplayExcludedFromTaskList(t *testing.T) {
 	assert.Len(t, e.shadows(t), 1)
 }
 
+func TestReplayCarriesImages(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	src := e.task(t, "one", true, "aaa")
+
+	for _, name := range []string{"first.png", "second.png"} {
+		_, err := e.store.PutImage(t.Context(), store.Image{TaskID: src.ID, Name: name, Type: "image/png"}, strings.NewReader(name))
+		require.NoError(t, err)
+	}
+
+	var atWork []store.Image
+
+	e.runner.duringWork = func(int) {
+		var err error
+
+		atWork, err = e.store.TaskImages(t.Context(), e.shadows(t)[0].ID)
+		require.NoError(t, err)
+	}
+
+	e.run(t, replay.Config{Name: "x"})
+
+	shadows := e.shadows(t)
+	require.Len(t, shadows, 1)
+
+	images := func(id int64) []engine.Image {
+		v, err := e.loop.View(t.Context(), id, nil)
+		require.NoError(t, err)
+
+		return v.Images
+	}
+
+	want, got := images(src.ID), images(shadows[0].ID)
+	require.Len(t, got, 2)
+
+	for i := range got {
+		assert.NotEqual(t, want[i].ID, got[i].ID, "rows of the shadow's own")
+		got[i].ID = want[i].ID
+	}
+
+	assert.Equal(t, want, got, "the source's images, in their order")
+	assert.Len(t, atWork, 2, "the shadow has them while its agent works")
+}
+
 func TestReplayDoesNotTouchSourceTask(t *testing.T) {
 	t.Parallel()
 

@@ -34,8 +34,12 @@ const (
 	Reply          = "reply"            // CAVU's comment on its pull request after a follow-up run, not a prompt; takes ReplyData
 )
 
-// WorkData fills the work and readiness prompts.
-type WorkData struct{ Title, Body string }
+// WorkData fills the work and readiness prompts. Images, here and in the
+// review and fix prompts, are the paths of the task's images in the container.
+type WorkData struct {
+	Title, Body string
+	Images      []string
+}
 
 // ReviewFinding is a finding as the prompts give it: a rereview's verdicts
 // name it by Number.
@@ -49,6 +53,7 @@ type ReviewFinding struct {
 // command the change passed, unless VerifyWaived says the project has none.
 type ReviewData struct {
 	Title, Body          string
+	Images               []string
 	Answers, Assumptions []string
 	Summary, DiffFile    string
 	VerifyCommand        string
@@ -60,6 +65,7 @@ type ReviewData struct {
 // the fix passed, unless VerifyWaived says the project has none.
 type RereviewData struct {
 	Title, Body           string
+	Images                []string
 	Findings              []ReviewFinding
 	DiffFile, FixDiffFile string
 	VerifyCommand         string
@@ -73,6 +79,7 @@ type FixReviewData struct{ Findings []ReviewFinding }
 // change so far.
 type FixReviewFreshData struct {
 	Title, Body string
+	Images      []string
 	Findings    []ReviewFinding
 	DiffFile    string
 }
