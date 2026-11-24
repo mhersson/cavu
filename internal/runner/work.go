@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -100,12 +101,26 @@ func (r *Runner) failedLogs(ctx context.Context, c engine.RunConfig) (string, er
 // and outside the workspace, whose every file the freeze commits.
 const imagesDir = "/run/cavu/images"
 
+// imageExt is the file extension of each image type.
+var imageExt = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
+
 // imagePaths are the paths of the task's images in a session's container, in
-// the task's order, whose number keeps two of one name apart.
+// the task's order: the number, the given stem in plain ASCII cut to 200 bytes,
+// which the agent types back exactly, and the type's extension, by which its
+// tools open the file as the image it is.
 func imagePaths(c engine.RunConfig) []string {
 	var paths []string
+
 	for i, img := range c.Task.Images {
-		paths = append(paths, fmt.Sprintf("%s/%d-%s", imagesDir, i+1, img.Name))
+		stem := strings.Map(func(r rune) rune {
+			if 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == '.' || r == '_' || r == '-' {
+				return r
+			}
+
+			return '-'
+		}, strings.TrimSuffix(img.Name, path.Ext(img.Name)))
+
+		paths = append(paths, fmt.Sprintf("%s/%d-%s%s", imagesDir, i+1, stem[:min(len(stem), 200)], imageExt[img.Type]))
 	}
 
 	return paths

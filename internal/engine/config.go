@@ -115,7 +115,7 @@ func (l *Loop) taskImages(ctx context.Context, taskID int64) ([]TaskImage, error
 			return nil, fmt.Errorf("read image %d of task %d: %w", img.ID, taskID, err)
 		}
 
-		out = append(out, TaskImage{Name: img.Name, Data: data})
+		out = append(out, TaskImage{Name: img.Name, Type: img.Type, Data: data})
 	}
 
 	return out, nil

@@ -1001,7 +1001,9 @@ func TestSessionsCarryTheInstanceFiles(t *testing.T) {
 // the paths they were copied to.
 func TestImagesStayOutOfTheWorkspace(t *testing.T) {
 	c := workConfig()
-	c.Task.Images = []engine.TaskImage{{Name: "save-button.png", Data: []byte("png-1")}, {Name: "save-button.png", Data: []byte("png-2")}}
+	c.Task.Images = []engine.TaskImage{
+		{Name: "save-button.png", Type: "image/png", Data: []byte("png-1")}, {Name: "save-button.png", Type: "image/png", Data: []byte("png-2")},
+	}
 	want := map[string][]byte{"/run/cavu/images/1-save-button.png": []byte("png-1"), "/run/cavu/images/2-save-button.png": []byte("png-2")}
 
 	work := func(w engine.WorkRequest) func(ctx context.Context, r *Runner) error {
@@ -1060,5 +1062,41 @@ func TestImagesStayOutOfTheWorkspace(t *testing.T) {
 				assert.Equal(t, tc.named, strings.Contains(d.specs[0].Prompt, p), p)
 			}
 		})
+	}
+}
+
+// An image's name in the container is plain ASCII, cut short, and ends in its
+// type's extension, so the agent types the path back as the prompt gives it
+// and opens the file as the image it is.
+func TestImageNamesInTheContainer(t *testing.T) {
+	long := strings.Repeat("a", 251) + ".png"
+	c := workConfig()
+	c.Task.Images = []engine.TaskImage{
+		{Name: "Screenshot 2026-11-24 at 10.15.32 AM.png", Type: "image/png", Data: []byte("png")},
+		{Name: "photo.png", Type: "image/jpeg", Data: []byte("jpeg")},
+		{Name: "lagre-knapp-ø", Type: "image/webp", Data: []byte("webp")},
+		{Name: long, Type: "image/gif", Data: []byte("gif")},
+	}
+	want := map[string][]byte{
+		"/run/cavu/images/1-Screenshot-2026-11-24-at-10.15.32-AM.png": []byte("png"),
+		"/run/cavu/images/2-photo.jpg":                                []byte("jpeg"),
+		"/run/cavu/images/3-lagre-knapp--.webp":                       []byte("webp"),
+		"/run/cavu/images/4-" + long[:200] + ".gif":                   []byte("gif"),
+	}
+
+	f := newFake()
+	d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}
+
+	_, err := f.workRunner(d).Work(t.Context(), c, startWork, noProgress)
+	require.NoError(t, err)
+	assert.Equal(t, want, f.copied)
+	require.Len(t, d.specs, 1)
+
+	for p := range want {
+		assert.Contains(t, d.specs[0].Prompt, p)
+	}
+
+	for _, typ := range engine.ImageTypes {
+		assert.Contains(t, imageExt, typ, "every type an upload takes has its extension")
 	}
 }

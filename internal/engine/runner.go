@@ -89,10 +89,11 @@ type File struct {
 	Executable bool
 }
 
-// TaskImage is an image of the task, by the name it was given.
+// TaskImage is an image of the task, by the name it was given, with its
+// stored type.
 type TaskImage struct {
-	Name string
-	Data []byte
+	Name, Type string
+	Data       []byte
 }
 
 // RunRef names a run's containers and volumes. It holds no secret and no

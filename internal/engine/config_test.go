@@ -614,7 +614,9 @@ func TestRunConfigCarriesImages(t *testing.T) {
 	_, err := h.run(t.Context())
 	require.NoError(t, err)
 
-	want := []engine.TaskImage{{Name: "one.png", Data: []byte("one.png")}, {Name: "two.png", Data: []byte("two.png")}}
+	want := []engine.TaskImage{
+		{Name: "one.png", Type: "image/png", Data: []byte("one.png")}, {Name: "two.png", Type: "image/png", Data: []byte("two.png")},
+	}
 
 	for _, method := range []string{"work", "review"} {
 		calls := h.runner.callsOf(method)
