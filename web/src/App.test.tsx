@@ -251,20 +251,22 @@ test('an instance with no project is sent to setup', async () => {
   expect(screen.queryByRole('link', { name: /needs you/i })).toBeNull()
 })
 
-test('one with a project and a passed check does not open at all', async () => {
+test('the frame checks for setup only when mounted', async () => {
   vi.useRealTimers()
   const user = userEvent.setup()
-  const calls = fakeServer((c) => {
-    if (projects(c)) return json({ projects: [{ runnable: true, baseline: { passed: true } }] })
+  let configured = true
+  fakeServer((c) => {
+    if (projects(c)) return json({ projects: configured ? [{ id: 1, name: 'web', runnable: true, baseline: { passed: true } }] : [] })
     if (needsYou(c)) return json({ tasks: [] })
   })
   narrow(true)
   await show('/')
   expect(here).toBe('/')
+  configured = false
   await user.click(screen.getByRole('link', { name: /status/i }))
+  expect(here).toBe('/status')
   await user.click(screen.getByRole('link', { name: /needs you/i }))
   expect(here).toBe('/')
-  expect(calls.filter(projects)).toHaveLength(1)
 })
 
 test('a failed read of the projects sends nowhere', async () => {

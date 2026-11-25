@@ -137,11 +137,11 @@ Each step says what to do and what you then see. Type the commands in a terminal
     - **Ready for your review**: **Open pull request** opens it on GitHub, where you read it and merge it.
     - **A change to take by hand**, only for a project with the switch `publish` off, which opens no pull request: **Download the bundle** or **Download the diff**, merge the change yourself, then press **Record the merge**.
 
-    Further tasks start from **New task** on **Needs you** or on the **Board**, which shows every open task in a column by its status.
+    On desktop, start a task with **New task** on **Needs you** or the **Board**. On a phone, use the **New task** tab. The desktop **Board** and phone **Status** tab group open tasks by status. Select a project, search by title or task number, or collapse a group to focus the list. **Done and cancelled** includes the newest 30 tasks of each of those statuses for the selected project or across all projects.
 
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/images/board-dark.png">
-      <img src="docs/images/board-light.png" width="720" alt="The board: ten open tasks in five columns, draft, queued, running, blocked and in review; each card has the task's number, project and title, why it waits, and a needs you mark on those that need a person.">
+      <img src="docs/images/board-light.png" width="720" alt="The Board lists tasks under collapsible status headings, with search and project filters above the list. Each row shows the task number, title, project and any wait or action needed.">
     </picture>
 
 The same app works on a phone, with four tabs at the bottom; [Running the server](docs/running.md) says how a phone reaches CAVU.
