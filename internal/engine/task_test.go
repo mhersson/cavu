@@ -381,6 +381,97 @@ func TestCancel(t *testing.T) {
 	}
 }
 
+func TestRestoreAfterRun(t *testing.T) {
+	h := newHarness(t)
+	ctx, id := t.Context(), h.task.ID
+	h.withBaseline()
+	h.withPublish()
+	img := h.putImage(id, "screen.png")
+
+	status, err := h.run(ctx)
+	require.NoError(t, err)
+	require.Equal(t, engine.StatusInReview, status)
+
+	previous := h.viewOf(id, nil)
+	require.NotNil(t, previous.PullRequest)
+
+	require.NoError(t, h.loop.Cancel(ctx, id))
+	status, err = h.run(ctx)
+	require.NoError(t, err)
+	require.Equal(t, engine.StatusCancelled, status)
+	cancelled, err := h.loop.List(ctx, engine.ListQuery{Statuses: []engine.Status{engine.StatusCancelled}}, nil)
+	require.NoError(t, err)
+	require.Len(t, cancelled, 1)
+
+	history := h.recorded(id)
+
+	require.NoError(t, h.loop.Restore(ctx, id))
+	v := h.viewOf(id, nil)
+	assert.Equal(t, engine.StatusDraft, v.Status)
+	assert.Nil(t, v.PullRequest)
+	assert.Nil(t, v.Change)
+	assert.Nil(t, v.Stop)
+	assert.False(t, v.NeedsYou)
+	assert.Equal(t, previous.Turns, v.Turns)
+	assert.Equal(t, previous.Usage, v.Usage)
+	assert.Equal(t, previous.Images, v.Images)
+
+	events := h.recorded(id)
+	require.Len(t, events, len(history)+1)
+	assert.Equal(t, history, events[:len(history)])
+	assert.Equal(t, engine.HumanRestored, events[len(history)].Type)
+
+	drafts, err := h.loop.List(ctx, engine.ListQuery{Statuses: []engine.Status{engine.StatusDraft}}, nil)
+	require.NoError(t, err)
+	require.Len(t, drafts, 1)
+	assert.Equal(t, id, drafts[0].ID)
+
+	require.NoError(t, engine.RemoveImages(ctx, h.store, id, []int64{img.ID}))
+	require.NoError(t, engine.EditTask(ctx, h.store, store.Task{ID: id, Title: "Fix the logout"}, nil))
+	status, err = h.run(ctx)
+	require.NoError(t, err)
+	require.Equal(t, engine.StatusDraft, status)
+	require.NoError(t, h.loop.Start(ctx, id))
+	status, err = h.run(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusInReview, status)
+	assert.Len(t, h.eventsOf(engine.RunStarted), 2)
+}
+
+func TestRestoreWhileCancellationReleasesRun(t *testing.T) {
+	h := newHarness(t)
+	ctx, id := t.Context(), h.task.ID
+	run := h.seed(ev(engine.RunStarted, `{"reason":"initial"}`))
+	require.NoError(t, h.loop.Cancel(ctx, id))
+	require.NoError(t, h.loop.Restore(ctx, id))
+	assert.Equal(t, "pending", h.viewOf(id, nil).Restore)
+	require.NoError(t, h.loop.Restore(ctx, id))
+	require.Len(t, h.eventsOf(engine.HumanRestored), 1)
+	require.ErrorIs(t, h.loop.RemoveProject(ctx, h.task.ProjectID), engine.ErrRefused)
+
+	status, err := h.run(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, engine.StatusDraft, status)
+	assert.Empty(t, h.viewOf(id, nil).Restore)
+	assert.Equal(t, engine.StopCancelled, h.spy.ended()[run.ID])
+	assert.Len(t, h.eventsOf(engine.HomeRemoved), 1)
+}
+
+func TestRestoreWithRemovedProject(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+	require.NoError(t, h.loop.Cancel(ctx, h.task.ID))
+	h.runner.onCall = func(c call) {
+		if c.method == "remove-project" {
+			require.ErrorIs(t, h.loop.Restore(ctx, h.task.ID), store.ErrConflict)
+		}
+	}
+	require.NoError(t, h.loop.RemoveProject(ctx, h.task.ProjectID))
+	assert.Empty(t, h.viewOf(h.task.ID, nil).Restore)
+	require.ErrorIs(t, h.loop.Restore(ctx, h.task.ID), engine.ErrRefused)
+	assert.Empty(t, h.eventsOf(engine.HumanRestored))
+}
+
 func TestTaskGuards(t *testing.T) {
 	status := func(h *harness) engine.Status { return engine.StatusOf(engine.Reduce(h.recorded(h.task.ID))) }
 

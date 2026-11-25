@@ -101,6 +101,8 @@ export type Task = {
   requester: 'cli' | 'api' | 'mcp'
   created_at: string
   status: Status
+  restore?: 'available' | 'pending'
+  last_event_id?: number
   needs_you: boolean
   needs: Needs
   needs_you_since: string | null

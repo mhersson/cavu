@@ -66,7 +66,7 @@ type Loop struct {
 	DataDir, Image string
 	Paused         func(taskID int64) Pause // what other tasks' open stops mean for the task; nil: nothing
 
-	finished sync.Map // task id to the Row of a task nothing changes any more, which List reads in place of its events
+	finished sync.Map // task id to finishedRow
 }
 
 // Run row outcomes besides the stop reasons that end a run.

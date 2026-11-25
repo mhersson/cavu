@@ -253,6 +253,8 @@ func TestTaskRequestsRefused(t *testing.T) {
 		{"a retry with no stop", act(running), `{"action": "retry"}`, http.StatusBadRequest},
 		{"done on a running task", act(running), `{"action": "done"}`, http.StatusBadRequest},
 		{"a cancel of a done task", act(done), `{"action": "cancel"}`, http.StatusBadRequest},
+		{"a restore of a draft", act(draft), `{"action": "restore"}`, http.StatusBadRequest},
+		{"a restore of a done task", act(done), `{"action": "restore"}`, http.StatusBadRequest},
 		{"an unknown task", "GET /api/tasks/99", "", http.StatusNotFound},
 		{"an unknown task, edited", edit(99), `{"title": "Something else"}`, http.StatusNotFound},
 		{"an unknown task, acted on", act(99), `{"action": "cancel"}`, http.StatusNotFound},
@@ -280,6 +282,7 @@ func TestTaskActions(t *testing.T) {
 		{"start", "queued", engine.TaskStarted, func(*testing.T, int64) {}},
 		{"retry", "running", engine.HumanRetried, func(t *testing.T, id int64) { f.ask(t, id, "Which colour?") }},
 		{"cancel", "cancelled", engine.HumanCancelled, func(*testing.T, int64) {}},
+		{"restore", "draft", engine.HumanRestored, func(t *testing.T, id int64) { f.add(t, id, engine.HumanCancelled, struct{}{}) }},
 		{"done", "done", engine.Merged, func(t *testing.T, id int64) {
 			f.add(t, id, engine.TaskStarted, struct{}{})
 			f.add(t, id, engine.Exported, engine.ExportedPayload{HeadCommit: "4b825dc"})

@@ -62,6 +62,7 @@ const shots = (id: number): Image[] => [
 
 // GET /api/tasks/{id}
 export const VIEWS: Record<number, Task> = {
+  29: base(29, { restore: 'available' }),
   33: base(33, {
     body: 'Group the settings under "Model", "GitHub" and "Limits", in that order.', requester: 'cli',
     change: { head_commit: '51f0c2a9d77e41b0a6c3', files_changed: 3, diff_stat: [' web/src/pages/Settings.tsx      | 64 ++++++++++++-----------', ' web/src/pages/Settings.test.tsx | 21 +++++--', ' web/src/i18n/en.json            |  9 ++-', ' 3 files changed, 55 insertions(+), 39 deletions(-)'], flagged: { workflows: [], instructions: [], large: [] } },
@@ -115,6 +116,7 @@ let evId = 4000
 const ev = (task_id: number, run_id: number | null, at: string, type: string, actor: TaskEvent['actor'], text: string, payload?: unknown): TaskEvent => ({ id: ++evId, task_id, run_id, at: '2026-11-19T' + at + 'Z', type, actor, payload: payload || {}, text });
 const steps = (task: number, run: number, list: [string, string, string][]) => list.map(([at, tool, s]) => tool ? ev(task, run, at, 'agent_tool', 'agent', tool + ' ' + s) : ev(task, run, at, 'agent_text', 'agent', s));
 export const EVENTS: Record<number, TaskEvent[]> = {
+  29: [ev(29, null, '09:13:00', 'human_cancelled', 'user', 'a person cancelled the task')],
   38: [
     ev(38, null, '16:02:10', 'task_started', 'user', 'the task is started'),
     ev(38, 61, '16:02:10', 'run_started', 'engine', "the task's first run"),

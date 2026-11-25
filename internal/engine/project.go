@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -266,12 +269,28 @@ func (e volumesError) Is(target error) bool { return target == ErrVolumesNotRemo
 
 func (e volumesError) Unwrap() error { return e.error }
 
-// RemoveProject removes a project: its cache and mirror volumes, then in one
-// write the project's mark and its secrets. The tasks it has had, their
-// events and artifacts stay. A removed or unknown project returns an error
-// wrapping store.ErrNotFound; a task that is not done or cancelled, a replay's
-// shadow included, is a refusal; a volume that cannot be removed leaves the
-// project untouched and returns an error wrapping ErrVolumesNotRemoved.
+// Restore and project removal can run in separate processes. Keep the lock file so
+// every request locks the same inode across the task check and volume removal.
+func (l *Loop) lockProject(projectID int64, how int) (*os.File, error) {
+	file, err := os.OpenFile(filepath.Join(l.DataDir, fmt.Sprintf("project-%d.lock", projectID)), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := syscall.Flock(int(file.Fd()), how|syscall.LOCK_NB); err != nil { //nolint:gosec // a descriptor fits in an int
+		_ = file.Close()
+
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("project %d is being removed or a task is being restored; try again: %w", projectID, store.ErrConflict)
+		}
+
+		return nil, err
+	}
+
+	return file, nil
+}
+
+// RemoveProject removes the volumes and secrets of a project once its tasks have finished.
 func (l *Loop) RemoveProject(ctx context.Context, projectID int64) error {
 	p, err := l.Store.Project(ctx, projectID)
 	if err != nil {
@@ -281,6 +300,12 @@ func (l *Loop) RemoveProject(ctx context.Context, projectID int64) error {
 	if p.RemovedAt != nil {
 		return fmt.Errorf("project %d: %w", projectID, store.ErrNotFound)
 	}
+
+	lock, err := l.lockProject(projectID, syscall.LOCK_EX)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 
 	if err := l.refuseOpenTasks(ctx, p); err != nil {
 		return err
@@ -299,8 +324,7 @@ func (l *Loop) RemoveProject(ctx context.Context, projectID int64) error {
 	return l.Store.RemoveProject(ctx, p.ID, l.Now(), ProjectSecretName(p.Name, ""))
 }
 
-// refuseOpenTasks refuses while a task of p, a replay's shadow included, is
-// neither done nor cancelled.
+// A replay's shadow and a task waiting to be restored also keep the project live.
 func (l *Loop) refuseOpenTasks(ctx context.Context, p store.Project) error {
 	tasks, err := l.Store.Tasks(ctx, true)
 	if err != nil {
@@ -319,7 +343,10 @@ func (l *Loop) refuseOpenTasks(ctx context.Context, p store.Project) error {
 			return fmt.Errorf("task %d: %w", t.ID, err)
 		}
 
-		if s := StatusOf(Reduce(events)); s != StatusDone && s != StatusCancelled {
+		f := Reduce(events)
+		if f.RestorePending {
+			open = append(open, fmt.Sprintf("%d (restoring)", t.ID))
+		} else if s := StatusOf(f); s != StatusDone && s != StatusCancelled {
 			open = append(open, fmt.Sprintf("%d (%s)", t.ID, s))
 		}
 	}

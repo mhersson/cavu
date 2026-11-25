@@ -11,6 +11,7 @@ import (
 // Facts is what a task's events add up to.
 type Facts struct {
 	Started, Cancelled, Merged bool
+	RestorePending             bool      // the cancelled run still has resources to release
 	OpenStop                   *StopFact // newest stop with no human action, claim or merge seen after it
 	RunOpen                    bool
 	LastRun                    int64    // the task's newest run, open or ended
@@ -107,8 +108,8 @@ func Reduce(events []store.Event) Facts {
 	return f
 }
 
-// TurnsAndDuration is how much work a task was: the turns of all its sessions,
-// and the time from its newest start to its last event, 0 if it never started.
+// TurnsAndDuration counts lifetime turns and the elapsed time of the latest start.
+// Time spent back in draft does not extend the cancelled attempt.
 func TurnsAndDuration(events []store.Event) (turns int, d time.Duration) {
 	var started time.Time
 
@@ -116,18 +117,20 @@ func TurnsAndDuration(events []store.Event) (turns int, d time.Duration) {
 		switch e.Type {
 		case TaskStarted:
 			started = e.At
+		case HumanRestored:
+			started = time.Time{}
 		case SessionEnded:
 			turns += decode[SessionEndedPayload](e.Payload).Turns
 		case ReviewEnded:
 			turns += decode[ReviewEndedPayload](e.Payload).Turns
 		}
+
+		if !started.IsZero() {
+			d = e.At.Sub(started)
+		}
 	}
 
-	if started.IsZero() {
-		return turns, 0
-	}
-
-	return turns, events[len(events)-1].At.Sub(started)
+	return turns, d
 }
 
 // apply ignores run-scoped results while no run is open, since those facts
@@ -162,6 +165,8 @@ func (f *Facts) apply(e store.Event) {
 	case HumanCancelled:
 		f.Cancelled = true
 		f.humanAction(e)
+	case HumanRestored:
+		f.RestorePending, f.LastHumanEventID = true, e.ID
 	case RunStarted:
 		// The new run is what a resume from environment asked for.
 		if f.resumedFrom(StopEnvironment) {
@@ -266,6 +271,11 @@ func (f *Facts) apply(e store.Event) {
 		if p.Reason == StopSandbox || p.Fault {
 			f.Faults++
 		}
+	}
+
+	if f.RestorePending && !f.RunOpen && !f.Home {
+		// Cleanup belongs to the cancelled run. A fresh draft keeps only lifetime accounting.
+		*f = Facts{CostMissing: f.CostMissing, LastHumanEventID: f.LastHumanEventID}
 	}
 }
 

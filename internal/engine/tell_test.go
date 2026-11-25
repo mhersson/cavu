@@ -42,6 +42,7 @@ func TestEventText(t *testing.T) {
 		{engine.HumanAnswered, engine.HumanAnsweredPayload{Text: "Use API version 2."}, []string{"Use API version 2."}},
 		{engine.HumanRetried, struct{}{}, nil},
 		{engine.HumanCancelled, struct{}{}, nil},
+		{engine.HumanRestored, struct{}{}, nil},
 		{engine.PrepareStarted, engine.PrepareStartedPayload{Why: "The task has no home yet."}, []string{"The task has no home yet."}},
 		{
 			engine.Prepared,
@@ -121,7 +122,7 @@ func TestEventText(t *testing.T) {
 
 func TestEveryEventTypeHasASentence(t *testing.T) {
 	types := []string{
-		engine.TaskStarted, engine.HumanAnswered, engine.HumanRetried, engine.HumanCancelled, engine.RunStarted, engine.PrepareStarted,
+		engine.TaskStarted, engine.HumanAnswered, engine.HumanRetried, engine.HumanCancelled, engine.HumanRestored, engine.RunStarted, engine.PrepareStarted,
 		engine.Prepared, engine.PrepareFailed, engine.SessionStarted, engine.AgentText, engine.AgentTool, engine.RateLimit, engine.EgressDenied,
 		engine.SessionEnded, engine.SessionCut, engine.VerifyStarted, engine.VerifyEnded, engine.ReviewStarted, engine.ReviewEnded,
 		engine.ExportStarted, engine.Exported, engine.PublishStarted, engine.Published, engine.PRObserved, engine.ReadyStarted, engine.PRReady,

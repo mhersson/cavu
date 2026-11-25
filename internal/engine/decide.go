@@ -197,7 +197,7 @@ func decide(s Snapshot) Action {
 	// The home holds the session a fix run on the pull request resumes. With no
 	// pull request after the export, as for a replay's shadow, no such run comes.
 	if f.Home && (f.Merged || f.Cancelled || f.Exported && f.PR == nil) {
-		return Action{Kind: KindClean, Why: "The task can run no more, and its home is still kept."}
+		return Action{Kind: KindClean, Why: "The task no longer needs the previous run's home."}
 	}
 
 	if f.Merged {

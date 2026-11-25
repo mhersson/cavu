@@ -22,7 +22,7 @@ Pre-release. The verbs today:
 - `cavu image build` builds the sandbox image on Docker or Podman.
 - `cavu doctor` checks the runtime, the image, the settings, the endpoint and the access to GitHub.
 - `cavu project` adds, changes, lists and shows projects, and checks a project's environment, storing its baseline.
-- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until its first run starts and while it is not cancelled, lists them, each with whether it needs you (`--needs-you` keeps those that do), shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
+- `cavu task` adds tasks, each with the tasks it depends on, edits a task's title, body and dependencies until a new or restored task runs or is cancelled, lists them, each with whether it needs you (`--needs-you` keeps those that do), shows them, runs one in the sandbox until its pull request opens (with the switch `publish` off, until its change is ready for review) or the task stops, prints a task's diff, and records a person's start, answer, retry, cancel, merge and mark.
 - `cavu replay` re-runs the marked tasks under a configuration and compares them with the last replay.
 - `cavu serve` drives every started task, watches the pull requests CAVU opened, and serves the web app and the HTTP API until interrupted.
 - `cavu service` runs `cavu serve` as a service of your login, a systemd user unit on Linux or a launchd agent on macOS, and removes it.
@@ -137,7 +137,7 @@ Each step says what to do and what you then see. Type the commands in a terminal
     - **Ready for your review**: **Open pull request** opens it on GitHub, where you read it and merge it.
     - **A change to take by hand**, only for a project with the switch `publish` off, which opens no pull request: **Download the bundle** or **Download the diff**, merge the change yourself, then press **Record the merge**.
 
-    On desktop, start a task with **New task** on **Needs you** or the **Board**. On a phone, use the **New task** tab. The desktop **Board** and phone **Status** tab group open tasks by status. Select a project, search by title or task number, or collapse a group to focus the list. **Done and cancelled** includes the newest 30 tasks of each of those statuses for the selected project or across all projects.
+    On desktop, start a task with **New task** on **Needs you** or the **Board**. On a phone, use the **New task** tab. The desktop **Board** and phone **Status** tab group open tasks by status. Select a project, search by title or task number, or collapse a group to focus the list. **Done and cancelled** includes the newest 30 tasks of each of those statuses for the selected project or across all projects. Open a cancelled task and press **Restore to draft** to edit it or start a fresh run.
 
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/images/board-dark.png">

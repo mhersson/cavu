@@ -531,6 +531,16 @@ func TestTurnsAndDuration(t *testing.T) {
 		{name: "nothing", events: nil},
 		{name: "never started", events: []store.Event{at(ev(engine.HumanCancelled, ""), 5)}},
 		{
+			name: "restoring a cancelled task keeps its previous duration",
+			events: []store.Event{
+				at(ev(engine.TaskStarted, ""), 0),
+				at(ev(engine.SessionEnded, `{"turns":3}`), 4),
+				at(ev(engine.HumanCancelled, ""), 5),
+				at(ev(engine.HumanRestored, ""), 100),
+			},
+			turns: 3, duration: 5 * time.Minute,
+		},
+		{
 			name: "every session's turns, reviews' too, timed from the newest start to the last event",
 			events: []store.Event{
 				at(ev(engine.TaskStarted, ""), 0),

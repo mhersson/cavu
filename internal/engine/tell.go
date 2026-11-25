@@ -21,6 +21,8 @@ func EventText(e store.Event) string {
 		return "a person asked for another try"
 	case HumanCancelled:
 		return "a person cancelled the task"
+	case HumanRestored:
+		return "a person requested a return to draft"
 	case PrepareStarted:
 		return decode[PrepareStartedPayload](e.Payload).Why
 	case Prepared:
@@ -115,7 +117,7 @@ func EventText(e store.Event) string {
 	case Replied:
 		return "the reviewers have CAVU's answer in a comment on the pull request"
 	case HomeRemoved:
-		return "the task's home is removed, since the task can run no more"
+		return "the task's home was removed after the run ended"
 	}
 
 	return string(e.Payload)

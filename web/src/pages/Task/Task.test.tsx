@@ -84,11 +84,13 @@ const draft: Task = {
   ],
 }
 
+const cancelled: Task = { ...draft, status: 'cancelled', restore: 'available' }
+
 const isTask = (c: Call) => c.method === 'GET' && c.path === '/api/tasks/7'
 const reads = (calls: Call[]) => calls.filter(isTask)
 const patches = (calls: Call[]) => calls.filter((c) => c.method === 'PATCH')
 
-function serve(t: Task, more: (c: Call) => Response | undefined = () => undefined) {
+function serve(t: Task, more: (c: Call) => Response | Promise<Response> | undefined = () => undefined) {
   return fakeServer((c) => {
     const answer = more(c)
     if (answer) return answer
@@ -304,8 +306,28 @@ test('on a phone a draft offers Start, Edit and Cancel task at the foot, and an 
   expect(fields().every((f) => f !== null)).toBe(true)
 })
 
+test.each([false, true])('restore returns the draft controls in the same action area (phone: %s)', async (phone) => {
+  narrow(phone)
+  const calls = serve(cancelled, (c) => c.method === 'POST' ? json(draft) : undefined)
+  await show()
+
+  const area = within(document.querySelector<HTMLElement>(phone ? '.foot-acts' : '.page-head')!)
+  const restore = area.getByRole('button', { name: 'Restore to draft' })
+  const restoreStyle = restore.className
+  expect(area.getAllByRole('button')).toEqual([restore])
+  fireEvent.click(restore)
+  await settle()
+
+  expect(calls.filter((c) => c.method === 'POST')).toMatchObject([{ path: '/api/tasks/7/actions', body: { action: 'restore' } }])
+  expect(area.getByRole('button', { name: 'Cancel task' }).className).toBe(restoreStyle)
+  expect(area.getByRole('button', { name: 'Start' })).toBeEnabled()
+  expect(area.getByRole('button', { name: 'Edit' })).toBeEnabled()
+  expect(button('Restore to draft')).toBeNull()
+})
+
 test.each([
   ['start', draft, () => fireEvent.click(button('Start')!)],
+  ['restore', cancelled, () => fireEvent.click(button('Restore to draft')!)],
   ['retry', stoppedForRetry, () => fireEvent.click(screen.getByRole('button', { name: 'Retry' }))],
   ['cancel', base, () => {
     fireEvent.click(cancelButton()!)
@@ -503,10 +525,42 @@ test('a meter past its cap stays full', async () => {
   expect(fill.style.width).toBe('100%')
 })
 
-test.each(['done', 'cancelled'] as const)('a %s task offers no cancel', async (status) => {
-  serve({ ...base, status })
+test.each([false, true])('a done task offers no restore action (phone: %s)', async (phone) => {
+  narrow(phone)
+  serve({ ...base, status: 'done' })
   await show()
-  expect(cancelButton()).toBeNull()
+  expect(headButtons()).toEqual([])
+  expect(button('Restore to draft')).toBeNull()
+})
+
+test('restore waits for the cancelled run to finish releasing its resources', async () => {
+  serve({ ...cancelled, restore: 'pending' })
+  await show()
+  expect(within(document.querySelector<HTMLElement>('.page-head')!).getByRole('button')).toBeDisabled()
+})
+
+test('a delayed restore response cannot replace the draft received after cleanup', async () => {
+  let release!: (r: Response) => void
+  const pending = new Promise<Response>((resolve) => { release = resolve })
+  let current = cancelled
+  serve(cancelled, (c) => c.method === 'POST' ? pending : isTask(c) ? json(current) : undefined)
+  await show()
+  fireEvent.click(button('Restore to draft')!)
+  current = { ...draft, last_event_id: 4 }
+  act(() => FakeEventSource.all[0].send(4, { task_id: 7 }))
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  await settle()
+  expect(button('Edit')).toBeInTheDocument()
+
+  release(json({ ...cancelled, restore: 'pending', last_event_id: 3 }))
+  await settle()
+  expect(button('Start')).toBeEnabled()
+})
+
+test('a removed project’s cancelled task offers no restore action', async () => {
+  serve({ ...cancelled, restore: undefined })
+  await show()
+  expect(button('Restore to draft')).toBeNull()
 })
 
 test('a task that is running offers cancel', async () => {

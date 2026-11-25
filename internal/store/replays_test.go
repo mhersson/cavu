@@ -39,6 +39,7 @@ func TestReplayRoundTrip(t *testing.T) {
 	}
 	require.NoError(t, s.PutReplayItem(ctx, item))
 
+	item.Inputs = ReplayInputs{Title: shadow.Title, Images: "[]"}
 	got, err := s.ReplayItems(ctx, r.ID)
 	require.NoError(t, err)
 	require.Equal(t, []ReplayItem{item}, got)
