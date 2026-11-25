@@ -33,10 +33,12 @@ const listReads = (calls: Call[]) => calls.filter((c) => c.method === 'GET' && c
 // A task is listed under the statuses a request names.
 function serve(tasks: Row[]) {
   return fakeServer((c) => {
+    if (c.path === '/api/projects') return json({ projects: [{ id: 1, name: 'web' }, { id: 2, name: 'api' }] })
     if (c.path === '/api/tasks?needs_you=true') return json({ tasks: [] }) // the frame's count
     if (!c.path.startsWith('/api/tasks?status=')) return undefined
-    const statuses = new URL(c.path, 'http://x').searchParams.get('status')!.split(',')
-    return json({ tasks: tasks.filter((r) => statuses.includes(r.status)) })
+    const q = new URL(c.path, 'http://x').searchParams
+    const statuses = q.get('status')!.split(',')
+    return json({ tasks: tasks.filter((r) => statuses.includes(r.status) && (!q.get('project') || q.get('project') === r.project)) })
   })
 }
 
@@ -51,6 +53,7 @@ async function show(path = '/status') {
   await act(() => vi.advanceTimersByTimeAsync(0))
 }
 
+const finishedToggle = () => screen.getByRole('button', { name: 'Done and cancelled' })
 const groupNames = () => screen.queryAllByRole('region').map((g) => g.getAttribute('aria-label'))
 const group = (name: string) => screen.getByRole('region', { name })
 
@@ -84,10 +87,10 @@ test('Status asks for finished tasks only when ticked', async () => {
   const calls = serve([row(1, 'running'), row(2, 'draft'), row(3, 'done'), row(4, 'cancelled')])
   await show()
   expect(listReads(calls)).toEqual([open])
-  expect(screen.getByRole('checkbox')).not.toBeChecked()
+  expect(finishedToggle()).toHaveAttribute('aria-pressed', 'false')
   expect(groupNames()).toEqual(['running', 'draft'])
 
-  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.click(finishedToggle())
   await act(() => vi.advanceTimersByTimeAsync(0))
   expect(listReads(calls).slice(1)).toEqual([
     open,
@@ -98,7 +101,7 @@ test('Status asks for finished tasks only when ticked', async () => {
   expect(within(group('done')).getByRole('link')).toHaveAttribute('href', '/tasks/3')
   expect(within(group('cancelled')).getByRole('link')).toHaveAttribute('href', '/tasks/4')
 
-  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.click(finishedToggle())
   await act(() => vi.advanceTimersByTimeAsync(0))
   expect(listReads(calls).slice(4)).toEqual([open])
   expect(groupNames()).toEqual(['running', 'draft'])
@@ -108,7 +111,7 @@ test('a ticked status address asks for finished tasks from the start', async () 
   const calls = serve([])
   await show('/status?finished=1')
   expect(listReads(calls)).toHaveLength(3)
-  expect(screen.getByRole('checkbox')).toBeChecked()
+  expect(finishedToggle()).toHaveAttribute('aria-pressed', 'true')
 })
 
 test('a full finished group says it shows the newest', async () => {
@@ -118,4 +121,25 @@ test('a full finished group says it shows the newest', async () => {
   expect(within(group('done')).getByRole('heading')).toHaveTextContent('newest 30')
   expect(within(group('cancelled')).getByRole('heading')).not.toHaveTextContent('newest')
   expect(within(group('cancelled')).getByRole('heading')).toHaveTextContent('2')
+})
+
+test('phone search and finished tasks stay in the selected project', async () => {
+  const calls = serve([row(8, 'running'), row(9, 'done'), row(10, 'done', { project: 'api' })])
+  await show('/status?q=Task')
+  expect(screen.getByRole('link', { name: 'New task' })).toHaveAttribute('href', '/new')
+  expect(within(group('running')).getByText('web')).toBeVisible()
+  fireEvent.change(screen.getByRole('combobox', { name: 'Project' }), { target: { value: 'web' } })
+  await act(() => vi.advanceTimersByTimeAsync(0))
+  expect(within(group('running')).queryByText('web')).toBeNull()
+  fireEvent.click(finishedToggle())
+  await act(() => vi.advanceTimersByTimeAsync(0))
+  expect(listReads(calls).slice(-3)).toEqual([
+    open + '&project=web',
+    '/api/tasks?status=done&order=newest&limit=30&project=web',
+    '/api/tasks?status=cancelled&order=newest&limit=30&project=web',
+  ])
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: '#9' } })
+  expect(groupNames()).toEqual(['done'])
+  expect(within(group('done')).getByRole('link')).toHaveAttribute('href', '/tasks/9')
+  expect(finishedToggle()).toHaveAttribute('aria-pressed', 'true')
 })

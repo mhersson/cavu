@@ -16,7 +16,6 @@ import NewTask from './pages/NewTask/NewTask.tsx'
 import Projects from './pages/Projects/Projects.tsx'
 import Settings from './pages/Settings/Settings.tsx'
 import Setup from './pages/Setup/Setup.tsx'
-import Status from './pages/Status/Status.tsx'
 import Task from './pages/Task/Task.tsx'
 import { useFocusReport } from './push.ts'
 import './App.css'
@@ -90,7 +89,7 @@ export default function App() {
           <Route path="/projects/:name" element={<Projects />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/new" element={<NewTask />} />
-          <Route path="/status" element={<Status />} />
+          <Route path="/status" element={<Board title="Status" />} />
           <Route path="/more" element={<More />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
