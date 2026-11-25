@@ -372,10 +372,35 @@ func TestListReadsAFinishedTaskOnce(t *testing.T) {
 
 	assert.Equal(t, []int64{h.task.ID, done.ID, cancelled.ID, told.ID, halting.ID, drafted.ID, asked.ID}, s.reads, "the first list reads every task")
 
-	s.reads = nil
+	s.reads, s.lastReads = nil, nil
 	second := list(nil)
 
 	assert.Equal(t, []int64{h.task.ID, told.ID, halting.ID, drafted.ID, asked.ID}, s.reads,
 		"a finished task is read once; an open one, one with a reason to wait, one the engine has yet to stop, a draft and a stopped one, every time")
 	assert.Equal(t, first[1:3], second[1:3], "a kept row is the row the task had")
+	assert.NotContains(t, s.lastReads, cancelled.ID)
+}
+
+func TestListCachesTheTitleAtCancellation(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+	task := h.draft()
+	require.NoError(t, h.loop.Cancel(ctx, task.ID))
+
+	q := engine.ListQuery{Statuses: []engine.Status{engine.StatusCancelled}}
+	_, err := h.loop.List(ctx, q, func(id int64) string {
+		if id == h.task.ID {
+			require.NoError(t, h.loop.Restore(ctx, task.ID))
+			task.Title = "Updated assignment"
+			require.NoError(t, engine.EditTask(ctx, h.store, task, nil))
+			require.NoError(t, h.loop.Cancel(ctx, task.ID))
+		}
+
+		return ""
+	})
+	require.NoError(t, err)
+	rows, err := h.loop.List(ctx, q, nil)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, task.Title, rows[0].Title)
 }

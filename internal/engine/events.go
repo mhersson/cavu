@@ -12,6 +12,7 @@ const (
 	HumanAnswered  = "human_answered"  // user
 	HumanRetried   = "human_retried"   // user
 	HumanCancelled = "human_cancelled" // user
+	HumanRestored  = "human_restored"  // user
 	RunStarted     = "run_started"     // engine
 	PrepareStarted = "prepare_started" // engine
 	Prepared       = "prepared"        // runner

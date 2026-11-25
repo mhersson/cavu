@@ -110,7 +110,7 @@ func newServerRunning(t *testing.T, runner engine.Runner, wrap ...func(*store.St
 	f := &fixture{db: db, store: s, vault: vault, auth: svc, clock: c, token: token, focus: &push.Focus{}, pushKey: push.PublicKey(key)}
 	stop := make(chan struct{})
 	f.srv = httptest.NewUnstartedServer(api.New(api.Deps{
-		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: records, Vault: vault, Now: c.Now, Runner: runner},
+		Store: s, Vault: vault, Auth: svc, Loop: &engine.Loop{Store: records, Vault: vault, Now: c.Now, Runner: runner, DataDir: filepath.Dir(db)},
 		Nudge: func() { f.nudges.Add(1) }, Waiting: f.why, CheckStarted: f.started, Version: "1.2.3", Stop: stop, Poll: 10 * time.Millisecond,
 		Focus: f.focus, PushKey: f.pushKey,
 	}))

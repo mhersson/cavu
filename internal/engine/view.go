@@ -6,8 +6,6 @@ import (
 	"math"
 	"slices"
 	"time"
-
-	"github.com/mhersson/cavu/internal/store"
 )
 
 // View is what a person reads about a task, which the API and MCP serve as it
@@ -21,6 +19,8 @@ type View struct {
 	Requester           string       `json:"requester"`
 	CreatedAt           time.Time    `json:"created_at"`
 	Status              Status       `json:"status"`
+	Restore             string       `json:"restore,omitempty"`
+	LastEventID         int64        `json:"last_event_id,omitempty"`
 	NeedsYou            bool         `json:"needs_you"`
 	Needs               string       `json:"needs"`
 	NeedsYouSince       *time.Time   `json:"needs_you_since"`
@@ -159,6 +159,17 @@ func (l *Loop) View(ctx context.Context, taskID int64, waiting func(int64) strin
 	v.NeedsYou = v.Needs != ""
 	v.Waiting, v.WaitingUntil = waitingOf(s, waiting)
 
+	if len(events) > 0 {
+		v.LastEventID = events[len(events)-1].ID
+	}
+
+	if restoreRefusal(t, p, f) == "" {
+		v.Restore = "available"
+		if f.RestorePending {
+			v.Restore = "pending"
+		}
+	}
+
 	if st := f.OpenStop; st != nil {
 		v.Stop = &Stop{Reason: st.Reason, Explanation: st.Explanation, Action: st.Action}
 
@@ -244,6 +255,11 @@ func (l *Loop) List(ctx context.Context, q ListQuery, waiting func(int64) string
 		slices.Reverse(ts)
 	}
 
+	latest, err := l.Store.LastEventIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	rows := []Row{}
 
 	for _, t := range ts {
@@ -255,7 +271,7 @@ func (l *Loop) List(ctx context.Context, q ListQuery, waiting func(int64) string
 			continue
 		}
 
-		r, err := l.row(ctx, t, names[t.ProjectID], waiting)
+		r, err := l.row(ctx, t.ID, names[t.ProjectID], latest[t.ID], waiting)
 		if err != nil {
 			return nil, err
 		}
@@ -270,20 +286,28 @@ func (l *Loop) List(ctx context.Context, q ListQuery, waiting func(int64) string
 	return rows, nil
 }
 
-// row is the task's row. That of a done or cancelled task the engine leaves
-// alone and the scheduler gives no reason to wait is kept: no action of the
-// engine or of a person changes it any more.
-func (l *Loop) row(ctx context.Context, t store.Task, project string, waiting func(int64) string) (Row, error) {
-	if kept, ok := l.finished.Load(t.ID); ok {
-		return kept.(Row), nil
+type finishedRow struct {
+	Row
+	lastEventID int64
+}
+
+// A cancelled row can be restored by another process. Its newest event identifies the cached state.
+func (l *Loop) row(ctx context.Context, taskID int64, project string, latest int64, waiting func(int64) string) (Row, error) {
+	if kept, ok := l.finished.Load(taskID); ok {
+		r := kept.(finishedRow)
+		if r.Status == StatusDone || latest == r.lastEventID {
+			return r.Row, nil
+		}
+
+		l.finished.CompareAndDelete(taskID, r)
 	}
 
-	s, err := l.Snapshot(ctx, t.ID)
+	s, err := l.Snapshot(ctx, taskID)
 	if err != nil {
 		return Row{}, err
 	}
 
-	r := Row{ID: t.ID, Project: project, Title: t.Title, Status: StatusOf(s.Facts), CreatedAt: t.CreatedAt.UTC()}
+	r := Row{ID: taskID, Project: project, Title: s.Task.Title, Status: StatusOf(s.Facts), CreatedAt: s.Task.CreatedAt.UTC()}
 	r.Needs, r.NeedsYouSince = needsOf(s)
 	r.NeedsYou = r.Needs != ""
 	r.Waiting, r.WaitingUntil = waitingOf(s, waiting)
@@ -297,7 +321,7 @@ func (l *Loop) row(ctx context.Context, t store.Task, project string, waiting fu
 	}
 
 	if (r.Status == StatusDone || r.Status == StatusCancelled) && r.Waiting == "" && Decide(s).Kind == KindNone {
-		l.finished.Store(t.ID, r)
+		l.finished.Store(taskID, finishedRow{Row: r, lastEventID: s.LastEventID})
 	}
 
 	return r, nil

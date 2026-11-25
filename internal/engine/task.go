@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"syscall"
 	"unicode"
 	"unicode/utf8"
 
@@ -67,8 +68,7 @@ func noBaseline(p store.Project) error {
 	return refuse("project %q has %w", p.Name, ErrNoBaseline)
 }
 
-// EditTask writes a task's title, body and dependencies until its first run
-// starts, and never once it is cancelled.
+// EditTask writes the title, body and dependencies while the task is editable.
 func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) error {
 	if err := checkTitle(t.Title); err != nil {
 		return err
@@ -95,8 +95,7 @@ func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) err
 	return nil
 }
 
-// editable gives the task while its title, body, dependencies and images may
-// change: until its first run starts, and never once it is cancelled.
+// Restoring a draft opens editing again until its next run starts.
 func editable(ctx context.Context, s Store, id int64) (store.Task, error) {
 	t, err := s.Task(ctx, id)
 	if err != nil {
@@ -108,10 +107,11 @@ func editable(ctx context.Context, s Store, id int64) (store.Task, error) {
 		return store.Task{}, fmt.Errorf("task %d: %w", id, err)
 	}
 
+	f := Reduce(events)
 	switch {
-	case hadRun(events):
+	case f.RunOpen || f.LastRun != 0:
 		return store.Task{}, refuse("task %d has started a run", id)
-	case Reduce(events).Cancelled:
+	case f.Cancelled:
 		return store.Task{}, refuse("task %d is cancelled", id)
 	}
 
@@ -230,6 +230,41 @@ func (l *Loop) Cancel(ctx context.Context, taskID int64) error {
 
 		return true, nil
 	})
+}
+
+// Restore returns a cancelled task to draft after its run and home have been released.
+func (l *Loop) Restore(ctx context.Context, taskID int64) error {
+	t, err := l.Store.Task(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	lock, err := l.lockProject(t.ProjectID, syscall.LOCK_SH)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
+	return l.human(ctx, taskID, HumanRestored, struct{}{}, func(f Facts, p store.Project) (bool, error) {
+		if why := restoreRefusal(t, p, f); why != "" {
+			return false, refuse("%s", why)
+		}
+
+		return !f.RestorePending, nil
+	})
+}
+
+func restoreRefusal(t store.Task, p store.Project, f Facts) string {
+	switch {
+	case StatusOf(f) != StatusCancelled:
+		return "only a cancelled task can be restored"
+	case p.RemovedAt != nil:
+		return fmt.Sprintf("project %q has been removed", p.Name)
+	case t.ReplayID != 0:
+		return "a replay's copy of a task is kept for comparison"
+	default:
+		return ""
+	}
 }
 
 // Done records that the change of a task in review, which has no pull

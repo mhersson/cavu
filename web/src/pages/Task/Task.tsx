@@ -159,7 +159,10 @@ function Page({ id }: { id: number }) {
   useEffect(() => {
     if (handed) navigate('.', { replace: true })
   }, [handed, navigate])
-  const [task, setTask] = useState<TaskView | null>(null)
+  const [task, updateTask] = useState<TaskView | null>(null)
+  // A cleanup event can deliver the draft before the restore request returns its pending state.
+  const setTask = (next: TaskView) =>
+    updateTask((current) => (current?.last_event_id ?? 0) > (next.last_event_id ?? 0) ? current : next)
   const [missing, setMissing] = useState('')
   const [asking, setAsking] = useState(false)
   const [refused, setRefused] = useState(handed?.refused ?? '')
@@ -222,14 +225,17 @@ function Page({ id }: { id: number }) {
 
   if (!task) return <div className="page task-page">{missing && <p>{missing}</p>}</div>
 
-  async function act(action: 'start' | 'cancel') {
+  async function act(action: 'start' | 'cancel' | 'restore') {
     setAsking(false)
+    setSending(true)
     try {
       setTask(await api<TaskView>('POST', `/tasks/${id}/actions`, { action }))
       setRefused('')
     } catch (e) {
       setRefused(e instanceof Error ? e.message : String(e))
       await read()
+    } finally {
+      setSending(false)
     }
   }
 
@@ -256,11 +262,13 @@ function Page({ id }: { id: number }) {
     setSending(false)
   }
 
-  const open = task.status !== 'done' && task.status !== 'cancelled'
   const draft = task.status === 'draft'
-  const cancelButton = (
-    <button className="btn danger" onClick={() => setAsking(true)}>
-      Cancel task
+  const cancelled = task.status === 'cancelled'
+  const restoring = task.restore === 'pending'
+  const restoreLabel = restoring ? 'Restoring to draft…' : 'Restore to draft'
+  const taskAction = task.status !== 'done' && (!cancelled || task.restore) && (
+    <button className="btn danger" disabled={sending || restoring} onClick={() => cancelled ? void act('restore') : setAsking(true)}>
+      {cancelled ? restoreLabel : 'Cancel task'}
     </button>
   )
   const editButton = (
@@ -276,7 +284,7 @@ function Page({ id }: { id: number }) {
   )
   // An image still uploading would be refused once the run starts, so Start waits for it.
   const startButton = (
-    <button className="btn primary" disabled={up.going.length > 0} onClick={() => void act('start')}>
+    <button className="btn primary" disabled={sending || up.going.length > 0} onClick={() => void act('start')}>
       Start
     </button>
   )
@@ -320,11 +328,11 @@ function Page({ id }: { id: number }) {
         </div>
       ) : (
         <PageHead title={task.title}>
-          {!narrow && open && (
+          {!narrow && taskAction && (
             <>
               {draft && editButton}
               {draft && startButton}
-              {cancelButton}
+              {taskAction}
             </>
           )}
         </PageHead>
@@ -377,7 +385,7 @@ function Page({ id }: { id: number }) {
           {fold('Cost and use', true, <Cost task={task} />)}
           <h2 className="sec">What happened</h2>
           {timeline}
-          {(edit || open) && (
+          {(edit || taskAction) && (
             <div className="foot-acts">
               {edit ? (
                 <>
@@ -388,7 +396,7 @@ function Page({ id }: { id: number }) {
                 <>
                   {draft && startButton}
                   {draft && editButton}
-                  {cancelButton}
+                  {taskAction}
                 </>
               )}
             </div>

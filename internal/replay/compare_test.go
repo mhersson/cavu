@@ -13,9 +13,10 @@ func TestCompare(t *testing.T) {
 
 	now := []store.ReplayItem{{SourceTaskID: 3, Turns: 1}, {SourceTaskID: 1, Turns: 2}}
 	before := []store.ReplayItem{{SourceTaskID: 2, Turns: 5}, {SourceTaskID: 1, Turns: 4}}
-	titles := map[int64]string{1: "one", 2: "two", 3: "three"}
+	now[0].Inputs.Title, now[1].Inputs.Title = "three", "one"
+	before[0].Inputs.Title, before[1].Inputs.Title = "two", "one"
 
-	rows := replay.Compare(now, before, titles)
+	rows := replay.Compare(now, before)
 
 	assert.Equal(t, []replay.Row{
 		{SourceTaskID: 1, Title: "one", Now: &now[1], Before: &before[1]},

@@ -33,6 +33,13 @@ type ReplayItem struct {
 	CostEstimateUSD                float64
 	Duration                       time.Duration
 	DiffPath                       string
+	Inputs                         ReplayInputs // read from the shadow task
+}
+
+// ReplayInputs are the parts of the assignment copied to a shadow that affect its run.
+type ReplayInputs struct {
+	Title, Body, BaseCommit string
+	Images                  string // ordered JSON arrays of name, media type and content hash
 }
 
 // CreateReplay inserts r and returns it with its id; a zero StartedAt becomes now.
@@ -85,9 +92,10 @@ func (s *Store) PutReplayItem(ctx context.Context, i ReplayItem) error {
 
 // ReplayItems returns the replay's items ordered by source task id.
 func (s *Store) ReplayItems(ctx context.Context, replayID int64) ([]ReplayItem, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT replay_id, source_task_id, task_id, verify, stop, asked,
-		turns, tokens, cost_estimate_usd, duration_ms, diff_path
-		FROM replay_items WHERE replay_id = ? ORDER BY source_task_id`, replayID)
+	rows, err := s.db.QueryContext(ctx, `SELECT i.replay_id, i.source_task_id, i.task_id, i.verify, i.stop, i.asked,
+		i.turns, i.tokens, i.cost_estimate_usd, i.duration_ms, i.diff_path, t.title, t.body, t.base_commit,
+		(SELECT json_group_array(json_array(name, type, sha256) ORDER BY id) FROM task_images WHERE task_id = t.id)
+		FROM replay_items i JOIN tasks t ON t.id = i.task_id WHERE i.replay_id = ? ORDER BY i.source_task_id`, replayID)
 	if err != nil {
 		return nil, fmt.Errorf("list replay items: %w", err)
 	}
@@ -102,7 +110,8 @@ func (s *Store) ReplayItems(ctx context.Context, replayID int64) ([]ReplayItem, 
 		)
 
 		if err := rows.Scan(&i.ReplayID, &i.SourceTaskID, &i.TaskID, &i.Verify, &i.Stop, &i.Asked,
-			&i.Turns, &i.Tokens, &i.CostEstimateUSD, &ms, &i.DiffPath); err != nil {
+			&i.Turns, &i.Tokens, &i.CostEstimateUSD, &ms, &i.DiffPath,
+			&i.Inputs.Title, &i.Inputs.Body, &i.Inputs.BaseCommit, &i.Inputs.Images); err != nil {
 			return nil, fmt.Errorf("list replay items: %w", err)
 		}
 

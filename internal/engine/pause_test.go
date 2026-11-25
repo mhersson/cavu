@@ -16,7 +16,14 @@ import (
 type readsStore struct {
 	engine.Store
 
-	reads []int64
+	reads     []int64
+	lastReads []int64
+}
+
+func (s *readsStore) LastEventID(ctx context.Context, taskID int64) (int64, error) {
+	s.lastReads = append(s.lastReads, taskID)
+
+	return s.Store.LastEventID(ctx, taskID)
 }
 
 func (s *readsStore) EventsOmitting(ctx context.Context, taskID int64, omit ...string) ([]store.Event, error) {

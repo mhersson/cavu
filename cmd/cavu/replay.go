@@ -142,20 +142,10 @@ func printReplay(ctx context.Context, s *store.Store, r store.Replay, w io.Write
 		}
 	}
 
-	tasks, err := s.Tasks(ctx, false)
-	if err != nil {
-		return err
-	}
-
-	titles := map[int64]string{}
-	for _, t := range tasks {
-		titles[t.ID] = t.Title
-	}
-
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "TASK\tTITLE\tVERIFY\tPREV\tASKED\tPREV\tTURNS\tPREV\tTOKENS\tPREV\tCOST (ESTIMATE)\tPREV\tDURATION\tPREV\tDIFF")
 
-	for _, row := range replay.Compare(now, before, titles) {
+	for _, row := range replay.Compare(now, before) {
 		n, p := cells(row.Now), cells(row.Before)
 
 		fmt.Fprintf(tw, "%d\t%s", row.SourceTaskID, row.Title)

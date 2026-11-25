@@ -14,24 +14,22 @@ type Row struct {
 	Now, Before  *store.ReplayItem
 }
 
-// Compare pairs the items of two replays by source task, ordered by source task id.
-func Compare(now, before []store.ReplayItem, titles map[int64]string) []Row {
+// Compare pairs outcomes only when the source task and the inputs its shadows ran with match.
+func Compare(now, before []store.ReplayItem) []Row {
 	rows := map[int64]*Row{}
 
-	row := func(id int64) *Row {
-		if rows[id] == nil {
-			rows[id] = &Row{SourceTaskID: id, Title: titles[id]}
-		}
-
-		return rows[id]
-	}
-
 	for i := range now {
-		row(now[i].SourceTaskID).Now = &now[i]
+		n := &now[i]
+		rows[n.SourceTaskID] = &Row{SourceTaskID: n.SourceTaskID, Title: n.Inputs.Title, Now: n}
 	}
 
 	for i := range before {
-		row(before[i].SourceTaskID).Before = &before[i]
+		b := &before[i]
+		if r := rows[b.SourceTaskID]; r == nil {
+			rows[b.SourceTaskID] = &Row{SourceTaskID: b.SourceTaskID, Title: b.Inputs.Title, Before: b}
+		} else if r.Now.Inputs == b.Inputs {
+			r.Before = b
+		}
 	}
 
 	out := make([]Row, 0, len(rows))

@@ -296,10 +296,12 @@ func (s *server) perform(ctx context.Context, id int64, action, text string) (en
 		err = s.Loop.Retry(ctx, id)
 	case "cancel":
 		err = s.Loop.Cancel(ctx, id)
+	case "restore":
+		err = s.Loop.Restore(ctx, id)
 	case "done":
 		err = s.Loop.Done(ctx, id)
 	default:
-		return engine.View{}, &apiError{http.StatusBadRequest, fmt.Sprintf("action %q: want start, answer, retry, cancel or done", action)}
+		return engine.View{}, &apiError{http.StatusBadRequest, fmt.Sprintf("action %q: want start, answer, retry, cancel, restore or done", action)}
 	}
 
 	if err != nil {

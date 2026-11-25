@@ -519,6 +519,38 @@ func TestReplayExcludedFromTaskList(t *testing.T) {
 	assert.Len(t, e.shadows(t), 1)
 }
 
+func TestComparisonAfterRestoringReference(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	ctx := t.Context()
+	src := e.task(t, "one", true, "aaa")
+	first, _, _ := e.run(t, replay.Config{Name: "first"})
+	require.NoError(t, e.loop.Cancel(ctx, src.ID))
+	require.NoError(t, e.loop.Restore(ctx, src.ID))
+	src.Body = "A different assignment."
+	require.NoError(t, engine.EditTask(ctx, e.store, src, nil))
+
+	second, revised, _ := e.run(t, replay.Config{Name: "second"})
+	original, err := e.store.ReplayItems(ctx, first.ID)
+	require.NoError(t, err)
+	assert.Nil(t, replay.Compare(revised, original)[0].Before)
+
+	_, err = engine.AddImage(ctx, e.store, store.Image{TaskID: src.ID, Name: "screen.png", Type: "image/png"}, strings.NewReader("screen"))
+	require.NoError(t, err)
+	_, withImage, _ := e.run(t, replay.Config{Name: "third"})
+	beforeImage, err := e.store.ReplayItems(ctx, second.ID)
+	require.NoError(t, err)
+	assert.Nil(t, replay.Compare(withImage, beforeImage)[0].Before)
+
+	_, same, _ := e.run(t, replay.Config{Name: "fourth"})
+	assert.NotNil(t, replay.Compare(same, withImage)[0].Before)
+
+	shadow := withImage[0].TaskID
+	require.NoError(t, e.loop.Cancel(ctx, shadow))
+	require.ErrorIs(t, e.loop.Restore(ctx, shadow), engine.ErrRefused)
+}
+
 func TestReplayCarriesImages(t *testing.T) {
 	t.Parallel()
 

@@ -21,13 +21,13 @@ A task can wait for others: `--depends-on ID[,ID]` makes it wait until every tas
 cavu task add web --title "Test the login redirect" --depends-on ID --start
 ```
 
-`cavu task edit ID` changes only the title, body or dependencies it is given, until the task's first run starts and while it is not cancelled; `--depends-on ""` removes every dependency.
+`cavu task edit ID` changes only the title, body or dependencies it is given, until a new or restored task runs or is cancelled; `--depends-on ""` removes every dependency.
 
 ```
 cavu task edit ID --depends-on 3,4
 ```
 
-Images, such as screenshots of a bug, are attached to a task in the web app: paste, drop or choose them under **Images** in the **New task** form, or on a draft's page under its body; on a phone, **Take a photo** or **Choose an image**. CAVU keeps PNG, JPEG, GIF and WebP images of at most 10 MiB each, and refuses another type or a larger file. A task's images can be added and removed only until its first run starts, and while it is not cancelled. With images, **Create** creates the task as a draft, uploads them, and then starts it when **Start it now** is ticked; when an image fails to upload, the task stays a draft and its page names the image, which you can attach again there before you press **Start**. Each agent session that reads the task gets its images as files outside the repository's checkout, named in its prompt, so none enters the change.
+Images, such as screenshots of a bug, are attached to a task in the web app: paste, drop or choose them under **Images** in the **New task** form, or on a draft's page under its body; on a phone, **Take a photo** or **Choose an image**. CAVU keeps PNG, JPEG, GIF and WebP images of at most 10 MiB each, and refuses another type or a larger file. A task's images can be added and removed until a new or restored task runs or is cancelled. With images, **Create** creates the task as a draft, uploads them, and then starts it when **Start it now** is ticked; when an image fails to upload, the task stays a draft and its page names the image, which you can attach again there before you press **Start**. Each agent session that reads the task gets its images as files outside the repository's checkout, named in its prompt, so none enters the change.
 
 `task run` drives only the task it names, so run a dependency first: on a task that waits for one, `task run` prints why and waits until that task is done or you interrupt it.
 
@@ -46,6 +46,8 @@ cavu task cancel ID                 # give up on it
 ```
 
 Then `cavu task run ID` again for an answer or a retry. A retry of one of the pull request's stops but `push_rejected` is taken up by `cavu serve` at its next look, and `task run` returns at once there ([below](#the-pull-request)). A verb that drives containers holds the data directory's lock while it runs, so a second one is refused with a message naming the lock.
+
+Open a cancelled task in the web app and press **Restore to draft**. The task keeps its number, details, dependencies, images and history. If the cancelled run is still releasing its resources, restoration finishes automatically after cleanup. Press **Start** when you want a fresh run. If an earlier run recorded a base commit, the fresh run uses that commit.
 
 ## The pull request
 
@@ -81,7 +83,7 @@ A check that fails or never finishes whatever the change, such as a job that nev
 
 ## Budgets
 
-A task stops when its sessions and reviews have used `task_max_turns` turns (default 1000) or run for `task_timeout_minutes` minutes (default 300) since a person last started, answered, retried or cancelled it, and each session gets what is left. The stop is `budget` or `timeout`, and `cavu task retry ID` gives the task its whole budget again. The two guard against a runaway, so their defaults are high. A project's cap applies to its own tasks over the setting:
+A task stops when its sessions and reviews have used `task_max_turns` turns (default 1000) or run for `task_timeout_minutes` minutes (default 300) since a person last started, answered, retried, cancelled or restored it, and each session gets what is left. The stop is `budget` or `timeout`, and `cavu task retry ID` gives the task its whole budget again. The two guard against a runaway, so their defaults are high. A project's cap applies to its own tasks over the setting:
 
 ```
 cavu settings set task_max_turns 400
