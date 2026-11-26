@@ -72,21 +72,18 @@ func (h *harness) putImage(taskID int64, name string) store.Image {
 func (h *harness) editRefusal(taskID int64) string {
 	h.t.Helper()
 
-	err := engine.EditTask(h.t.Context(), h.store, store.Task{ID: taskID, Title: "Renamed"}, nil, nil)
+	err := engine.EditTask(h.t.Context(), h.store, taskID, store.TaskEdit{Title: new("Renamed")})
 	require.ErrorIs(h.t, err, engine.ErrRefused)
 
 	return err.Error()
 }
 
-// removeImages removes the task's images ids through s, in an edit that keeps
-// its title, body and dependencies.
+// removeImages removes the task's images ids through s, in an edit that sets
+// nothing else.
 func (h *harness) removeImages(s engine.Store, taskID int64, ids ...int64) error {
 	h.t.Helper()
 
-	task, err := h.store.Task(h.t.Context(), taskID)
-	require.NoError(h.t, err)
-
-	return engine.EditTask(h.t.Context(), s, task, h.deps(taskID), ids)
+	return engine.EditTask(h.t.Context(), s, taskID, store.TaskEdit{RemoveImages: ids})
 }
 
 func (h *harness) startRun() {
@@ -208,13 +205,13 @@ func (s *aroundWrite) KeepImage(ctx context.Context, u *store.Upload, expectLast
 	return s.Store.KeepImage(ctx, u, expectLast)
 }
 
-func (s *aroundWrite) EditTask(ctx context.Context, t store.Task, dependsOn, removeImages []int64, expectLast int64) error {
+func (s *aroundWrite) EditTask(ctx context.Context, taskID int64, e store.TaskEdit, expectLast int64) error {
 	s.writes++
 
 	callOnce(&s.before)
 	defer callOnce(&s.after)
 
-	return s.Store.EditTask(ctx, t, dependsOn, removeImages, expectLast)
+	return s.Store.EditTask(ctx, taskID, e, expectLast)
 }
 
 func callOnce(f *func()) {
@@ -344,7 +341,7 @@ func TestEditAsTheDraftIsStarted(t *testing.T) {
 	}
 
 	edit := func(s engine.Store, was store.Task, gone store.Image) error {
-		return engine.EditTask(t.Context(), s, store.Task{ID: was.ID, Title: "Renamed", Body: "A new body."}, nil, []int64{gone.ID})
+		return engine.EditTask(t.Context(), s, was.ID, store.TaskEdit{Title: new("Renamed"), Body: new("A new body."), RemoveImages: []int64{gone.ID}})
 	}
 
 	t.Run("an edit the start comes before is refused and leaves the run the task", func(t *testing.T) {
@@ -424,7 +421,7 @@ func TestImageWritesRetryOnceTheTaskStaysADraft(t *testing.T) {
 		h, id, s := eventAround(t)
 		img := h.putImage(id, "shot.png")
 
-		require.NoError(t, engine.EditTask(t.Context(), s, store.Task{ID: id, Title: "Renamed", Body: "A new body."}, nil, []int64{img.ID}))
+		require.NoError(t, engine.EditTask(t.Context(), s, id, store.TaskEdit{Title: new("Renamed"), Body: new("A new body."), RemoveImages: []int64{img.ID}}))
 		assert.Equal(t, 2, s.writes, "the first write lost to the event")
 		assert.Equal(t, engine.StatusDraft, h.viewOf(id, nil).Status)
 

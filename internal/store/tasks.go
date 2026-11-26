@@ -131,12 +131,21 @@ func (s *Store) Tasks(ctx context.Context, includeReplays bool) ([]Task, error) 
 	return out, rows.Err()
 }
 
-// EditTask writes t's title and body, replaces its dependencies with
-// dependsOn and removes its images removeImages in one transaction, then the
-// contents no image names any longer. A task, or an image of it, that is not
-// there is ErrNotFound. expectLast is as KeepImage takes it: a mismatch is
-// ErrConflict. On any error nothing is written.
-func (s *Store) EditTask(ctx context.Context, t Task, dependsOn, removeImages []int64, expectLast int64) error {
+// TaskEdit is a change to a task: the title, body and dependencies to write,
+// and the ids of its images to remove. A nil field keeps what is stored when
+// the edit commits; a set one is written even when it is empty.
+type TaskEdit struct {
+	Title, Body  *string
+	DependsOn    *[]int64
+	RemoveImages []int64
+}
+
+// EditTask writes what e sets of the task's title, body and dependencies and
+// removes its images e.RemoveImages in one transaction, then the contents no
+// image names any longer. A task, or an image of it, that is not there is
+// ErrNotFound. expectLast is as KeepImage takes it: a mismatch is ErrConflict.
+// On any error nothing is written.
+func (s *Store) EditTask(ctx context.Context, taskID int64, e TaskEdit, expectLast int64) error {
 	s.imagesMu.Lock()
 	defer s.imagesMu.Unlock()
 
@@ -146,24 +155,30 @@ func (s *Store) EditTask(ctx context.Context, t Task, dependsOn, removeImages []
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := newestEvent(ctx, tx, t.ID, expectLast); err != nil {
+	if _, err := newestEvent(ctx, tx, taskID, expectLast); err != nil {
 		return fmt.Errorf("edit task: %w", err)
 	}
 
-	res, err := tx.ExecContext(ctx, `UPDATE tasks SET title = ?, body = ? WHERE id = ?`, t.Title, t.Body, t.ID)
+	// An edit records no event, so expectLast does not see another edit: a field
+	// left out is kept by the write itself, as it stands when this one commits.
+	// A nil pointer is bound as NULL.
+	res, err := tx.ExecContext(ctx, `UPDATE tasks SET title = COALESCE(?, title), body = COALESCE(?, body) WHERE id = ?`,
+		e.Title, e.Body, taskID)
 	if err != nil {
 		return fmt.Errorf("edit task: %w", err)
 	}
 
 	if err := rowsAffectedOrNotFound(res); err != nil {
-		return fmt.Errorf("edit task %d: %w", t.ID, err)
+		return fmt.Errorf("edit task %d: %w", taskID, err)
 	}
 
-	if err := replaceDeps(ctx, tx, t.ID, dependsOn); err != nil {
-		return fmt.Errorf("edit task: %w", err)
+	if e.DependsOn != nil {
+		if err := replaceDeps(ctx, tx, taskID, *e.DependsOn); err != nil {
+			return fmt.Errorf("edit task: %w", err)
+		}
 	}
 
-	sums, err := deleteImages(ctx, tx, t.ID, removeImages)
+	sums, err := deleteImages(ctx, tx, taskID, e.RemoveImages)
 	if err != nil {
 		return fmt.Errorf("edit task: %w", err)
 	}

@@ -68,25 +68,30 @@ func noBaseline(p store.Project) error {
 	return refuse("project %q has %w", p.Name, ErrNoBaseline)
 }
 
-// EditTask writes t's title and body, replaces the task's dependencies with
-// dependsOn and removes its images removeImages while the task is a draft, in
-// a write that loses to the start. The changes are committed together, and on
-// an error none of them is.
-func EditTask(ctx context.Context, s Store, t store.Task, dependsOn, removeImages []int64) error {
-	if err := checkTitle(t.Title); err != nil {
+// EditTask writes what e sets of the task's title, body and dependencies and
+// removes its images e.RemoveImages while the task is a draft, in a write that
+// loses to the start. A field e leaves out keeps its value as it stands when
+// the edit commits. The changes are committed together, and on an error none
+// of them is.
+func EditTask(ctx context.Context, s Store, taskID int64, e store.TaskEdit) error {
+	if e.Title != nil {
+		if err := checkTitle(*e.Title); err != nil {
+			return err
+		}
+	}
+
+	if err := editable(ctx, s, taskID); err != nil {
 		return err
 	}
 
-	if err := editable(ctx, s, t.ID); err != nil {
-		return err
+	if e.DependsOn != nil {
+		if err := checkDeps(ctx, s, taskID, *e.DependsOn); err != nil {
+			return err
+		}
 	}
 
-	if err := checkDeps(ctx, s, t.ID, dependsOn); err != nil {
-		return err
-	}
-
-	return whileEditable(ctx, s, t.ID, func(last int64) error {
-		return s.EditTask(ctx, t, dependsOn, removeImages, last)
+	return whileEditable(ctx, s, taskID, func(last int64) error {
+		return s.EditTask(ctx, taskID, e, last)
 	})
 }
 

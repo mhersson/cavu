@@ -164,9 +164,8 @@ func TestEditTask(t *testing.T) {
 	kept := putImage(t, s, task.ID, "kept.png", []byte("kept"))
 	newest := appendN(t, s, task.ID, 1)
 
-	edit := task
-	edit.Title, edit.Body, edit.Requester = "Renamed", "A new body.", "someone else"
-	require.NoError(t, s.EditTask(t.Context(), edit, []int64{dep.ID}, []int64{gone.ID}, newest))
+	edit := TaskEdit{Title: new("Renamed"), Body: new("A new body."), DependsOn: &[]int64{dep.ID}, RemoveImages: []int64{gone.ID}}
+	require.NoError(t, s.EditTask(t.Context(), task.ID, edit, newest))
 
 	got := stateOf(t, s, task.ID)
 	require.Equal(t, "Renamed", got.Task.Title)
@@ -177,16 +176,59 @@ func TestEditTask(t *testing.T) {
 	require.Equal(t, []string{kept.SHA256}, imageFiles(t, dir), "the removed image's contents are gone")
 }
 
+func TestEditTaskKeepsWhatItLeavesOut(t *testing.T) {
+	t.Parallel()
+
+	s := openTest(t)
+	task := seedTask(t, s)
+	dep, other := otherTask(t, s, task), otherTask(t, s, task)
+	require.NoError(t, s.SetTaskDeps(t.Context(), task.ID, []int64{dep.ID}))
+
+	edit := func(e TaskEdit) taskState {
+		t.Helper()
+		require.NoError(t, s.EditTask(t.Context(), task.ID, e, -1))
+
+		return stateOf(t, s, task.ID)
+	}
+
+	got := edit(TaskEdit{Body: new("A new body.")})
+	require.Equal(t, task.Title, got.Task.Title)
+	require.Equal(t, "A new body.", got.Task.Body)
+	require.Equal(t, []int64{dep.ID}, got.Deps)
+
+	got = edit(TaskEdit{Title: new("Renamed")})
+	require.Equal(t, "Renamed", got.Task.Title)
+	require.Equal(t, "A new body.", got.Task.Body)
+	require.Equal(t, []int64{dep.ID}, got.Deps)
+
+	got = edit(TaskEdit{DependsOn: &[]int64{other.ID}})
+	require.Equal(t, "Renamed", got.Task.Title)
+	require.Equal(t, "A new body.", got.Task.Body)
+	require.Equal(t, []int64{other.ID}, got.Deps)
+
+	require.Equal(t, got, edit(TaskEdit{}), "an edit that sets nothing changes nothing")
+
+	got = edit(TaskEdit{Body: new(""), DependsOn: &[]int64{}})
+	require.Equal(t, "Renamed", got.Task.Title)
+	require.Empty(t, got.Task.Body, "an empty body is written")
+	require.Empty(t, got.Deps, "an empty list removes every dependency")
+}
+
 func TestEditTaskWritesNothingOnAFailure(t *testing.T) {
 	t.Parallel()
 
-	// edit holds what a case's edit may name: the task with a new title and
-	// body, a task it may depend on, its image, another task's image, and the
-	// id of an event older than its newest.
+	// edit holds what a case's edit may name: the task, a task it may depend
+	// on, its image, another task's image, and the id of an event older than
+	// its newest.
 	type edit struct {
 		task, other    Task
 		img, elsewhere Image
 		seen           int64
+	}
+
+	// all is an edit that sets every field.
+	all := func(deps, remove []int64) TaskEdit {
+		return TaskEdit{Title: new("Renamed"), Body: new("A new body."), DependsOn: &deps, RemoveImages: remove}
 	}
 
 	tests := map[string]struct {
@@ -194,16 +236,16 @@ func TestEditTaskWritesNothingOnAFailure(t *testing.T) {
 		want error // nil: any error
 	}{
 		"an image the task lacks": {func(ctx context.Context, s *Store, e edit) error {
-			return s.EditTask(ctx, e.task, []int64{e.other.ID}, []int64{e.img.ID, e.elsewhere.ID + 1}, -1)
+			return s.EditTask(ctx, e.task.ID, all([]int64{e.other.ID}, []int64{e.img.ID, e.elsewhere.ID + 1}), -1)
 		}, ErrNotFound},
 		"another task's image": {func(ctx context.Context, s *Store, e edit) error {
-			return s.EditTask(ctx, e.task, []int64{e.other.ID}, []int64{e.img.ID, e.elsewhere.ID}, -1)
+			return s.EditTask(ctx, e.task.ID, all([]int64{e.other.ID}, []int64{e.img.ID, e.elsewhere.ID}), -1)
 		}, ErrNotFound},
 		"a dependency that does not exist": {func(ctx context.Context, s *Store, e edit) error {
-			return s.EditTask(ctx, e.task, []int64{e.other.ID, 9999}, []int64{e.img.ID}, -1)
+			return s.EditTask(ctx, e.task.ID, all([]int64{e.other.ID, 9999}, []int64{e.img.ID}), -1)
 		}, nil},
 		"an event newer than the one seen": {func(ctx context.Context, s *Store, e edit) error {
-			return s.EditTask(ctx, e.task, []int64{e.other.ID}, []int64{e.img.ID}, e.seen)
+			return s.EditTask(ctx, e.task.ID, all([]int64{e.other.ID}, []int64{e.img.ID}), e.seen)
 		}, ErrConflict},
 	}
 
@@ -221,10 +263,7 @@ func TestEditTaskWritesNothingOnAFailure(t *testing.T) {
 			appendN(t, s, task.ID, 1)
 			was := stateOf(t, s, task.ID)
 
-			e := edit{task: task, other: other, img: img, elsewhere: elsewhere, seen: seen}
-			e.task.Title, e.task.Body = "Renamed", "A new body."
-
-			err := tc.call(t.Context(), s, e)
+			err := tc.call(t.Context(), s, edit{task: task, other: other, img: img, elsewhere: elsewhere, seen: seen})
 			if tc.want != nil {
 				require.ErrorIs(t, err, tc.want)
 			} else {

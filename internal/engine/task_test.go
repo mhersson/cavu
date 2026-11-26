@@ -87,7 +87,9 @@ func TestEditTask(t *testing.T) {
 		a, b := h.draft(), h.draft()
 		gone, kept := h.putImage(b.ID, "gone.png"), h.putImage(b.ID, "kept.png")
 
-		require.NoError(t, engine.EditTask(t.Context(), h.store, store.Task{ID: b.ID, Title: "Fix the logout", Body: "It hangs."}, []int64{a.ID}, []int64{gone.ID}))
+		require.NoError(t, engine.EditTask(t.Context(), h.store, b.ID, store.TaskEdit{
+			Title: new("Fix the logout"), Body: new("It hangs."), DependsOn: &[]int64{a.ID}, RemoveImages: []int64{gone.ID},
+		}))
 
 		got, err := h.store.Task(t.Context(), b.ID)
 		require.NoError(t, err)
@@ -98,20 +100,47 @@ func TestEditTask(t *testing.T) {
 		assert.Equal(t, []store.Image{kept}, h.images(b.ID))
 		assert.Equal(t, []string{kept.SHA256}, h.files(), "the removed image's contents are gone")
 
-		require.NoError(t, engine.EditTask(t.Context(), h.store, store.Task{ID: b.ID, Title: "Fix the logout"}, nil, nil))
+		require.NoError(t, engine.EditTask(t.Context(), h.store, b.ID, store.TaskEdit{Title: new("Log out")}))
+
+		got, err = h.store.Task(t.Context(), b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "Log out", got.Title)
+		assert.Equal(t, "It hangs.", got.Body, "a field left out keeps its value")
+		assert.Equal(t, []int64{a.ID}, h.deps(b.ID))
+
+		require.NoError(t, engine.EditTask(t.Context(), h.store, b.ID, store.TaskEdit{Body: new(""), DependsOn: &[]int64{}}))
+
+		got, err = h.store.Task(t.Context(), b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "Log out", got.Title)
+		assert.Empty(t, got.Body)
 		assert.Empty(t, h.deps(b.ID))
+	})
+
+	t.Run("an empty title is refused", func(t *testing.T) {
+		h := newHarness(t)
+		d := h.draft()
+
+		err := engine.EditTask(t.Context(), h.store, d.ID, store.TaskEdit{Title: new(""), Body: new("It hangs.")})
+		require.ErrorIs(t, err, engine.ErrRefused)
+
+		got, err := h.store.Task(t.Context(), d.ID)
+		require.NoError(t, err)
+		assert.Equal(t, [2]string{d.Title, d.Body}, [2]string{got.Title, got.Body}, "nothing is written")
 	})
 
 	t.Run("an image the task lacks fails the whole edit", func(t *testing.T) {
 		h := newHarness(t)
 		a, b, c := h.draft(), h.draft(), h.draft()
-		require.NoError(t, engine.EditTask(t.Context(), h.store, store.Task{ID: c.ID, Title: "Fix the logout", Body: "It hangs."}, []int64{a.ID}, nil))
+		require.NoError(t, engine.EditTask(t.Context(), h.store, c.ID, store.TaskEdit{Title: new("Fix the logout"), Body: new("It hangs."), DependsOn: &[]int64{a.ID}}))
 		img := h.putImage(c.ID, "shot.png")
 
 		was, err := h.store.Task(t.Context(), c.ID)
 		require.NoError(t, err)
 
-		err = engine.EditTask(t.Context(), h.store, store.Task{ID: c.ID, Title: "Renamed", Body: "Another body."}, []int64{b.ID}, []int64{img.ID, img.ID + 1})
+		err = engine.EditTask(t.Context(), h.store, c.ID, store.TaskEdit{
+			Title: new("Renamed"), Body: new("Another body."), DependsOn: &[]int64{b.ID}, RemoveImages: []int64{img.ID, img.ID + 1},
+		})
 		require.ErrorIs(t, err, store.ErrNotFound)
 
 		got, err := h.store.Task(t.Context(), c.ID)
@@ -127,7 +156,7 @@ func TestEditTask(t *testing.T) {
 		d := h.draft()
 		img := h.putImage(h.task.ID, "shot.png")
 
-		err := engine.EditTask(t.Context(), h.store, store.Task{ID: h.task.ID, Title: "Something else"}, []int64{d.ID}, []int64{img.ID})
+		err := engine.EditTask(t.Context(), h.store, h.task.ID, store.TaskEdit{Title: new("Something else"), DependsOn: &[]int64{d.ID}, RemoveImages: []int64{img.ID}})
 		require.ErrorIs(t, err, engine.ErrRefused)
 
 		got, err := h.store.Task(t.Context(), h.task.ID)
@@ -141,7 +170,7 @@ func TestEditTask(t *testing.T) {
 		h := newHarness(t)
 		h.add(0, engine.RunStarted, "engine", `{"reason":"initial"}`)
 
-		err := engine.EditTask(t.Context(), h.store, store.Task{ID: h.task.ID, Title: "Something else"}, nil, nil)
+		err := engine.EditTask(t.Context(), h.store, h.task.ID, store.TaskEdit{Title: new("Something else")})
 		require.ErrorIs(t, err, engine.ErrRefused)
 
 		got, err := h.store.Task(t.Context(), h.task.ID)
@@ -154,7 +183,7 @@ func TestEditTask(t *testing.T) {
 		d := h.draft()
 		require.NoError(t, h.loop.Cancel(t.Context(), d.ID))
 
-		err := engine.EditTask(t.Context(), h.store, store.Task{ID: d.ID, Title: "Something else"}, nil, nil)
+		err := engine.EditTask(t.Context(), h.store, d.ID, store.TaskEdit{Title: new("Something else")})
 		require.ErrorIs(t, err, engine.ErrRefused)
 
 		got, err := h.store.Task(t.Context(), d.ID)
@@ -166,14 +195,14 @@ func TestEditTask(t *testing.T) {
 		"a dependency on itself":         func(_ *harness, _, b store.Task) []int64 { return []int64{b.ID} },
 		"a dependency on a missing task": func(*harness, store.Task, store.Task) []int64 { return []int64{999} },
 		"a dependency that closes a cycle": func(h *harness, a, b store.Task) []int64 {
-			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, a, []int64{b.ID}, nil))
+			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, a.ID, store.TaskEdit{DependsOn: &[]int64{b.ID}}))
 
 			return []int64{a.ID}
 		},
 		"a dependency that closes a longer cycle": func(h *harness, a, b store.Task) []int64 {
 			c := h.draft()
-			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, a, []int64{c.ID}, nil))
-			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, c, []int64{b.ID}, nil))
+			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, a.ID, store.TaskEdit{DependsOn: &[]int64{c.ID}}))
+			require.NoError(h.t, engine.EditTask(h.t.Context(), h.store, c.ID, store.TaskEdit{DependsOn: &[]int64{b.ID}}))
 
 			return []int64{h.task.ID, a.ID}
 		},
@@ -185,7 +214,7 @@ func TestEditTask(t *testing.T) {
 			a, b := h.draft(), h.draft()
 			dependsOn := deps(h, a, b)
 
-			err := engine.EditTask(t.Context(), h.store, store.Task{ID: b.ID, Title: "Renamed"}, dependsOn, nil)
+			err := engine.EditTask(t.Context(), h.store, b.ID, store.TaskEdit{Title: new("Renamed"), DependsOn: &dependsOn})
 			require.ErrorIs(t, err, engine.ErrRefused)
 
 			got, err := h.store.Task(t.Context(), b.ID)
@@ -464,12 +493,12 @@ func TestRestoreAfterRun(t *testing.T) {
 	require.Len(t, drafts, 1)
 	assert.Equal(t, id, drafts[0].ID)
 
-	require.NoError(t, engine.EditTask(ctx, h.store, store.Task{ID: id, Title: "Fix the logout"}, nil, []int64{img.ID}))
+	require.NoError(t, engine.EditTask(ctx, h.store, id, store.TaskEdit{Title: new("Fix the logout"), RemoveImages: []int64{img.ID}}))
 	status, err = h.run(ctx)
 	require.NoError(t, err)
 	require.Equal(t, engine.StatusDraft, status)
 	require.NoError(t, h.loop.Start(ctx, id))
-	require.ErrorIs(t, engine.EditTask(ctx, h.store, store.Task{ID: id, Title: "Too late"}, nil, nil), engine.ErrRefused,
+	require.ErrorIs(t, engine.EditTask(ctx, h.store, id, store.TaskEdit{Title: new("Too late")}), engine.ErrRefused,
 		"a restored draft is editable until it is started again")
 	status, err = h.run(ctx)
 	require.NoError(t, err)
