@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -36,13 +37,9 @@ func (s *Store) Append(ctx context.Context, taskID, expectLast int64, events []E
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var last int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM events WHERE task_id = ?`, taskID).Scan(&last); err != nil {
-		return 0, fmt.Errorf("append: newest event: %w", err)
-	}
-
-	if expectLast >= 0 && expectLast != last {
-		return 0, fmt.Errorf("task %d newest event is %d, caller saw %d: %w", taskID, last, expectLast, ErrConflict)
+	last, err := newestEvent(ctx, tx, taskID, expectLast)
+	if err != nil {
+		return 0, fmt.Errorf("append: %w", err)
 	}
 
 	for _, e := range events {
@@ -84,6 +81,21 @@ func (s *Store) Append(ctx context.Context, taskID, expectLast int64, events []E
 
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("append: commit: %w", err)
+	}
+
+	return last, nil
+}
+
+// newestEvent is the id of the task's newest event, 0 when it has none, or
+// ErrConflict when expectLast is not -1 and not that id.
+func newestEvent(ctx context.Context, tx *sql.Tx, taskID, expectLast int64) (int64, error) {
+	var last int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM events WHERE task_id = ?`, taskID).Scan(&last); err != nil {
+		return 0, fmt.Errorf("newest event: %w", err)
+	}
+
+	if expectLast >= 0 && expectLast != last {
+		return 0, fmt.Errorf("task %d newest event is %d, caller saw %d: %w", taskID, last, expectLast, ErrConflict)
 	}
 
 	return last, nil

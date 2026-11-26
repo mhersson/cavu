@@ -2,10 +2,14 @@ package engine_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"math"
+	"os"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -43,14 +47,26 @@ func (h *harness) images(taskID int64) []store.Image {
 	return imgs
 }
 
+// keep stores what r holds as an image of the task past the edit rule, within most.
+func (h *harness) keep(taskID int64, name string, r io.Reader, most int64) store.Image {
+	h.t.Helper()
+
+	u, err := h.store.ReceiveImage(h.t.Context(), store.Image{TaskID: taskID, Name: name, Type: "image/png"}, r, most)
+	require.NoError(h.t, err)
+
+	defer u.Discard()
+
+	img, err := h.store.KeepImage(h.t.Context(), u, -1)
+	require.NoError(h.t, err)
+
+	return img
+}
+
 // putImage stores an image on the task past the edit rule.
 func (h *harness) putImage(taskID int64, name string) store.Image {
 	h.t.Helper()
 
-	img, err := h.store.PutImage(h.t.Context(), store.Image{TaskID: taskID, Name: name, Type: "image/png"}, strings.NewReader(name), engine.TaskImagesMaxBytes)
-	require.NoError(h.t, err)
-
-	return img
+	return h.keep(taskID, name, strings.NewReader(name), engine.TaskImagesMaxBytes)
 }
 
 // editRefusal is the refusal EditTask gives the task.
@@ -100,6 +116,7 @@ func TestAddImageRefusedOnceARunStarted(t *testing.T) {
 			require.ErrorIs(t, err, engine.ErrRefused)
 			assert.Equal(t, h.editRefusal(id), err.Error())
 			assert.Empty(t, h.images(id), "nothing is kept")
+			assert.Empty(t, h.files(), "nothing of the upload is left")
 		})
 	}
 }
@@ -137,6 +154,242 @@ func TestRemoveImagesRefusedOnceARunStarted(t *testing.T) {
 	})
 }
 
+// files lists what the store's images directory holds.
+func (h *harness) files() []string {
+	h.t.Helper()
+
+	entries, err := os.ReadDir(h.imagesDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	require.NoError(h.t, err)
+
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+
+	return names
+}
+
+// runHeld starts the task's run in the background and returns once the run
+// has started and is held at its prepare. goOn lets it run to review and gives
+// the images its one session read.
+func (h *harness) runHeld() (goOn func() []engine.TaskImage) {
+	h.t.Helper()
+
+	held, release := make(chan struct{}), make(chan struct{})
+	h.runner.gate = func(ctx context.Context, c call) error {
+		if c.method != "prepare" {
+			return nil
+		}
+
+		close(held)
+
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	ended := make(chan error, 1)
+
+	go func() {
+		status, err := h.run(h.t.Context())
+		if err == nil && status != engine.StatusInReview {
+			err = fmt.Errorf("the run ended %s", status)
+		}
+
+		ended <- err
+	}()
+
+	select {
+	case <-held:
+	case err := <-ended:
+		require.FailNow(h.t, "the run ended before its prepare", "%v", err)
+	}
+
+	return func() []engine.TaskImage {
+		close(release)
+		require.NoError(h.t, <-ended)
+
+		works := h.runner.callsOf("work")
+		require.Len(h.t, works, 1)
+
+		return works[0].cfg.Task.Images
+	}
+}
+
+// aroundWrite is a store that calls before just before it first keeps or
+// removes an image's row, and after just after, and counts the writes it was asked for.
+type aroundWrite struct {
+	engine.Store
+
+	before, after func()
+	writes        int
+}
+
+func (s *aroundWrite) KeepImage(ctx context.Context, u *store.Upload, expectLast int64) (store.Image, error) {
+	s.writes++
+
+	callOnce(&s.before)
+	defer callOnce(&s.after)
+
+	return s.Store.KeepImage(ctx, u, expectLast)
+}
+
+func (s *aroundWrite) RemoveImages(ctx context.Context, taskID int64, ids []int64, expectLast int64) error {
+	s.writes++
+
+	callOnce(&s.before)
+	defer callOnce(&s.after)
+
+	return s.Store.RemoveImages(ctx, taskID, ids, expectLast)
+}
+
+func callOnce(f *func()) {
+	if g := *f; g != nil {
+		*f = nil
+
+		g()
+	}
+}
+
+// overlapping is the store with the task's first run started, and held at its
+// prepare, just before it writes an image's row when before is set, else just
+// after. session lets the run go on and gives the images its session read.
+func (h *harness) overlapping(before bool) (s engine.Store, session func() []engine.TaskImage) {
+	var goOn func() []engine.TaskImage
+
+	around := &aroundWrite{Store: h.store}
+	start := func() { goOn = h.runHeld() }
+
+	if before {
+		around.before = start
+	} else {
+		around.after = start
+	}
+
+	return around, func() []engine.TaskImage {
+		h.t.Helper()
+		require.NotNil(h.t, goOn, "the run started")
+
+		return goOn()
+	}
+}
+
+// An upload or a removal as the first run starts comes before the run, which
+// has what it leaves, or is refused and leaves the run what was there before.
+func TestImageWritesAsTheFirstRunStarts(t *testing.T) {
+	shot := engine.TaskImage{Name: "shot.png", Type: "image/png", Data: []byte("shot.png")}
+	upload := func(s engine.Store, taskID int64) (store.Image, error) {
+		return engine.AddImage(t.Context(), s, store.Image{TaskID: taskID, Name: "shot.png", Type: "image/png"}, strings.NewReader("shot.png"))
+	}
+
+	t.Run("an upload the run starts before is refused and never reaches it", func(t *testing.T) {
+		h := newHarness(t)
+		h.withBaseline()
+		s, session := h.overlapping(true)
+
+		_, err := upload(s, h.task.ID)
+		require.ErrorIs(t, err, engine.ErrRefused)
+		assert.Equal(t, h.editRefusal(h.task.ID), err.Error())
+		assert.Empty(t, h.images(h.task.ID), "nothing is kept")
+		assert.Empty(t, h.files(), "nothing of the upload is left")
+		assert.Empty(t, session())
+	})
+
+	t.Run("an upload kept as the run starts reaches it", func(t *testing.T) {
+		h := newHarness(t)
+		h.withBaseline()
+		s, session := h.overlapping(false)
+
+		img, err := upload(s, h.task.ID)
+		require.NoError(t, err)
+		assert.Equal(t, []store.Image{img}, h.images(h.task.ID))
+		assert.Equal(t, []engine.TaskImage{shot}, session())
+	})
+
+	t.Run("a removal the run starts before is refused and leaves the run its image", func(t *testing.T) {
+		h := newHarness(t)
+		h.withBaseline()
+		img := h.putImage(h.task.ID, "shot.png")
+		s, session := h.overlapping(true)
+
+		err := engine.RemoveImages(t.Context(), s, h.task.ID, []int64{img.ID})
+		require.ErrorIs(t, err, engine.ErrRefused)
+		assert.Equal(t, h.editRefusal(h.task.ID), err.Error())
+		assert.Equal(t, []store.Image{img}, h.images(h.task.ID), "nothing is removed")
+		assert.Equal(t, []engine.TaskImage{shot}, session())
+	})
+
+	t.Run("a removal made as the run starts is not in it", func(t *testing.T) {
+		h := newHarness(t)
+		h.withBaseline()
+		img := h.putImage(h.task.ID, "shot.png")
+		s, session := h.overlapping(false)
+
+		require.NoError(t, engine.RemoveImages(t.Context(), s, h.task.ID, []int64{img.ID}))
+		assert.Empty(t, h.images(h.task.ID))
+		assert.Empty(t, h.files(), "the image's contents are gone")
+		assert.Empty(t, session())
+	})
+}
+
+// contents reads the contents of the task's image id.
+func (h *harness) contents(taskID, id int64) []byte {
+	h.t.Helper()
+
+	_, f, err := h.store.OpenImage(h.t.Context(), taskID, id)
+	require.NoError(h.t, err)
+
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	require.NoError(h.t, err)
+
+	return data
+}
+
+// A write that loses to an event the task stays editable after, as a draft's
+// start is, is made again at that event.
+func TestImageWritesRetryOnceTheTaskStaysEditable(t *testing.T) {
+	// startingDraft is a draft and the store that starts it just before the first image write.
+	startingDraft := func(t *testing.T) (*harness, int64, *aroundWrite) {
+		h := newHarness(t)
+		h.withBaseline()
+		d := h.draft()
+
+		return h, d.ID, &aroundWrite{Store: h.store, before: func() { require.NoError(t, h.loop.Start(t.Context(), d.ID)) }}
+	}
+
+	t.Run("an upload is kept once, with its contents", func(t *testing.T) {
+		h, id, s := startingDraft(t)
+
+		img, err := engine.AddImage(t.Context(), s, store.Image{TaskID: id, Name: "shot.png", Type: "image/png"}, strings.NewReader("shot"))
+		require.NoError(t, err)
+		assert.Equal(t, 2, s.writes, "the first write lost to the start")
+		assert.Equal(t, engine.StatusQueued, h.viewOf(id, nil).Status)
+		assert.Equal(t, []store.Image{img}, h.images(id))
+		assert.Equal(t, []byte("shot"), h.contents(id, img.ID))
+		assert.Equal(t, []string{img.SHA256}, h.files(), "no temporary file")
+	})
+
+	t.Run("a removal is made", func(t *testing.T) {
+		h, id, s := startingDraft(t)
+		img := h.putImage(id, "shot.png")
+
+		require.NoError(t, engine.RemoveImages(t.Context(), s, id, []int64{img.ID}))
+		assert.Equal(t, 2, s.writes, "the first write lost to the start")
+		assert.Equal(t, engine.StatusQueued, h.viewOf(id, nil).Status)
+		assert.Empty(t, h.images(id))
+		assert.Empty(t, h.files(), "the image's contents are gone")
+	})
+}
+
 func TestViewCarriesImages(t *testing.T) {
 	h := newHarness(t)
 	id := h.task.ID
@@ -169,11 +422,7 @@ func TestViewCarriesImages(t *testing.T) {
 func (h *harness) putBytes(taskID, n int64) store.Image {
 	h.t.Helper()
 
-	img, err := h.store.PutImage(h.t.Context(), store.Image{TaskID: taskID, Name: "shot.png", Type: "image/png"},
-		bytes.NewReader(make([]byte, n)), math.MaxInt64)
-	require.NoError(h.t, err)
-
-	return img
+	return h.keep(taskID, "shot.png", bytes.NewReader(make([]byte, n)), math.MaxInt64)
 }
 
 func TestAddImageKeepsTheTaskWithinTheCap(t *testing.T) {

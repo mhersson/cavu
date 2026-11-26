@@ -72,10 +72,21 @@ func (r *readerThen) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 
+// keep receives what r holds and keeps it as img, whatever the task's events.
+func keep(ctx context.Context, s *Store, img Image, r io.Reader, most int64) (Image, error) {
+	u, err := s.ReceiveImage(ctx, img, r, most)
+	if err != nil {
+		return Image{}, err
+	}
+	defer u.Discard()
+
+	return s.KeepImage(ctx, u, -1)
+}
+
 func putImage(t *testing.T, s *Store, taskID int64, name string, data []byte) Image {
 	t.Helper()
 
-	img, err := s.PutImage(t.Context(), Image{TaskID: taskID, Name: name, Type: "image/png"}, bytes.NewReader(data), math.MaxInt64)
+	img, err := keep(t.Context(), s, Image{TaskID: taskID, Name: name, Type: "image/png"}, bytes.NewReader(data), math.MaxInt64)
 	require.NoError(t, err)
 
 	return img
@@ -114,7 +125,7 @@ func otherTask(t *testing.T, s *Store, of Task) Task {
 	return task
 }
 
-func TestPutImage(t *testing.T) {
+func TestKeepImage(t *testing.T) {
 	t.Parallel()
 
 	s, dir := openWithImages(t)
@@ -160,18 +171,18 @@ func TestImagesShareContents(t *testing.T) {
 	assert.Equal(t, ia.SHA256, ib.SHA256)
 	assert.Equal(t, []string{ia.SHA256}, imageFiles(t, dir), "one file for both")
 
-	require.NoError(t, s.RemoveImages(t.Context(), a.ID, []int64{ia.ID}))
+	require.NoError(t, s.RemoveImages(t.Context(), a.ID, []int64{ia.ID}, -1))
 	assert.Empty(t, taskImages(t, s, a.ID))
 	assert.Equal(t, []Image{ib}, taskImages(t, s, b.ID))
 	assert.Equal(t, data, readImage(t, s, b.ID, ib.ID), "the other task still has its contents")
 	assert.Equal(t, []string{ia.SHA256}, imageFiles(t, dir))
 
-	require.NoError(t, s.RemoveImages(t.Context(), b.ID, []int64{ib.ID}))
+	require.NoError(t, s.RemoveImages(t.Context(), b.ID, []int64{ib.ID}, -1))
 	assert.Empty(t, taskImages(t, s, b.ID))
 	assert.Empty(t, imageFiles(t, dir), "the last row's removal removes the contents")
 }
 
-func TestPutImageLeavesNothingOnFailure(t *testing.T) {
+func TestKeepImageLeavesNothingOnFailure(t *testing.T) {
 	t.Parallel()
 
 	t.Run("a reader that fails half way", func(t *testing.T) {
@@ -181,7 +192,7 @@ func TestPutImageLeavesNothingOnFailure(t *testing.T) {
 		task := seedTask(t, s)
 		lost := errors.New("connection lost")
 
-		_, err := s.PutImage(t.Context(), Image{TaskID: task.ID, Name: "a.png", Type: "image/png"},
+		_, err := keep(t.Context(), s, Image{TaskID: task.ID, Name: "a.png", Type: "image/png"},
 			io.MultiReader(strings.NewReader("half an image"), iotest.ErrReader(lost)), math.MaxInt64)
 		require.ErrorIs(t, err, lost)
 		assert.Empty(t, taskImages(t, s, task.ID))
@@ -196,7 +207,7 @@ func TestPutImageLeavesNothingOnFailure(t *testing.T) {
 		kept := putImage(t, s, task.ID, "kept.png", []byte("kept"))
 
 		for _, data := range []string{"new", "kept"} {
-			_, err := s.PutImage(t.Context(), Image{TaskID: 999, Name: "a.png", Type: "image/png"}, strings.NewReader(data), math.MaxInt64)
+			_, err := keep(t.Context(), s, Image{TaskID: 999, Name: "a.png", Type: "image/png"}, strings.NewReader(data), math.MaxInt64)
 			require.Error(t, err, data)
 		}
 
@@ -205,13 +216,71 @@ func TestPutImageLeavesNothingOnFailure(t *testing.T) {
 	})
 }
 
-func TestPutImageKeepsTheTaskWithinMost(t *testing.T) {
+// receiveImage receives data as an upload of an image of the task.
+func receiveImage(t *testing.T, s *Store, taskID int64, data string) *Upload {
+	t.Helper()
+
+	u, err := s.ReceiveImage(t.Context(), Image{TaskID: taskID, Name: "a.png", Type: "image/png"}, strings.NewReader(data), math.MaxInt64)
+	require.NoError(t, err)
+
+	return u
+}
+
+// An upload kept at an event older than the task's newest keeps nothing.
+func TestKeepImageLosesToANewerEvent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("and is kept at the newest", func(t *testing.T) {
+		t.Parallel()
+
+		s, dir := openWithImages(t)
+		task := seedTask(t, s)
+		seen := appendN(t, s, task.ID, 1)
+		u := receiveImage(t, s, task.ID, "shot")
+		newest := appendN(t, s, task.ID, 1)
+
+		_, err := s.KeepImage(t.Context(), u, seen)
+		require.ErrorIs(t, err, ErrConflict)
+		assert.Empty(t, taskImages(t, s, task.ID))
+
+		img, err := s.KeepImage(t.Context(), u, newest)
+		require.NoError(t, err)
+		u.Discard()
+		assert.Equal(t, []Image{img}, taskImages(t, s, task.ID))
+		assert.Equal(t, []byte("shot"), readImage(t, s, task.ID, img.ID))
+		assert.Equal(t, []string{img.SHA256}, imageFiles(t, dir), "no temporary file")
+	})
+
+	for name, data := range map[string]string{"new contents": "new", "contents another image names": "shared"} {
+		t.Run("and is discarded, with "+name, func(t *testing.T) {
+			t.Parallel()
+
+			s, dir := openWithImages(t)
+			task := seedTask(t, s)
+			other := otherTask(t, s, task)
+			shared := putImage(t, s, other.ID, "shared.png", []byte("shared"))
+			seen := appendN(t, s, task.ID, 1)
+			u := receiveImage(t, s, task.ID, data)
+			appendN(t, s, task.ID, 1)
+
+			_, err := s.KeepImage(t.Context(), u, seen)
+			require.ErrorIs(t, err, ErrConflict)
+			u.Discard()
+
+			assert.Empty(t, taskImages(t, s, task.ID))
+			assert.Equal(t, []string{shared.SHA256}, imageFiles(t, dir), "only the contents a row names")
+			assert.Equal(t, []byte("shared"), readImage(t, s, other.ID, shared.ID))
+		})
+	}
+}
+
+func TestKeepImageKeepsTheTaskWithinMost(t *testing.T) {
 	t.Parallel()
 
 	const most = 10
 
 	put := func(s *Store, taskID int64, r io.Reader, m int64) error {
-		_, err := s.PutImage(t.Context(), Image{TaskID: taskID, Name: "a.png", Type: "image/png"}, r, m)
+		_, err := keep(t.Context(), s, Image{TaskID: taskID, Name: "a.png", Type: "image/png"}, r, m)
 
 		return err
 	}
@@ -258,7 +327,7 @@ func TestPutImageKeepsTheTaskWithinMost(t *testing.T) {
 
 // Uploads that each fit alone but not together all pass the first check of the
 // room before any is kept; only those that fit are kept.
-func TestConcurrentPutImagesKeepTheTaskWithinMost(t *testing.T) {
+func TestConcurrentUploadsKeepTheTaskWithinMost(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -281,7 +350,7 @@ func TestConcurrentPutImagesKeepTheTaskWithinMost(t *testing.T) {
 	for i := range uploads {
 		wg.Go(func() {
 			r := &readerThen{before: func() { all.Done(); all.Wait() }, r: strings.NewReader(strings.Repeat(string(rune('a'+i)), size))}
-			_, errs[i] = s.PutImage(t.Context(), Image{TaskID: task.ID, Name: "a.png", Type: "image/png"}, r, most)
+			_, errs[i] = keep(t.Context(), s, Image{TaskID: task.ID, Name: "a.png", Type: "image/png"}, r, most)
 		})
 	}
 
@@ -340,11 +409,29 @@ func TestRemoveImagesRemovesNothingWhenOneIsAbsent(t *testing.T) {
 	b := otherTask(t, s, a)
 	img := putImage(t, s, a.ID, "shot.png", []byte("shot"))
 
-	require.ErrorIs(t, s.RemoveImages(t.Context(), a.ID, []int64{img.ID, img.ID + 1}), ErrNotFound)
-	require.ErrorIs(t, s.RemoveImages(t.Context(), b.ID, []int64{img.ID}), ErrNotFound, "another task's image")
+	require.ErrorIs(t, s.RemoveImages(t.Context(), a.ID, []int64{img.ID, img.ID + 1}, -1), ErrNotFound)
+	require.ErrorIs(t, s.RemoveImages(t.Context(), b.ID, []int64{img.ID}, -1), ErrNotFound, "another task's image")
 
 	assert.Equal(t, []Image{img}, taskImages(t, s, a.ID))
 	assert.Equal(t, []string{img.SHA256}, imageFiles(t, dir))
+}
+
+func TestRemoveImagesLosesToANewerEvent(t *testing.T) {
+	t.Parallel()
+
+	s, dir := openWithImages(t)
+	task := seedTask(t, s)
+	img := putImage(t, s, task.ID, "shot.png", []byte("shot"))
+	seen := appendN(t, s, task.ID, 1)
+	newest := appendN(t, s, task.ID, 1)
+
+	require.ErrorIs(t, s.RemoveImages(t.Context(), task.ID, []int64{img.ID}, seen), ErrConflict)
+	assert.Equal(t, []Image{img}, taskImages(t, s, task.ID), "nothing is removed")
+	assert.Equal(t, []string{img.SHA256}, imageFiles(t, dir))
+
+	require.NoError(t, s.RemoveImages(t.Context(), task.ID, []int64{img.ID}, newest))
+	assert.Empty(t, taskImages(t, s, task.ID))
+	assert.Empty(t, imageFiles(t, dir))
 }
 
 func TestCopyImages(t *testing.T) {
@@ -372,7 +459,7 @@ func TestCopyImages(t *testing.T) {
 
 	assert.Len(t, imageFiles(t, dir), 2, "the contents are shared")
 
-	require.NoError(t, s.RemoveImages(t.Context(), src.ID, []int64{one.ID, two.ID}))
+	require.NoError(t, s.RemoveImages(t.Context(), src.ID, []int64{one.ID, two.ID}, -1))
 	assert.Empty(t, taskImages(t, s, src.ID))
 	assert.Equal(t, []byte("one"), readImage(t, s, shadow.ID, got[0].ID), "the copy keeps the contents")
 	assert.Equal(t, []byte("two"), readImage(t, s, shadow.ID, got[1].ID))

@@ -21,34 +21,69 @@ const TaskImagesMaxBytes int64 = 32 << 20
 var ImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 // AddImage keeps what r holds as an image of img.TaskID, refused as EditTask
-// is. The rule is checked before r is read and again once the image is kept,
-// so a run that started meanwhile never lacks an image this returns. An image
-// that would take the task's images past TaskImagesMaxBytes together is
-// store.ErrImagesFull.
+// is. The rule is checked before r is read, and again once it is, in a write
+// that loses to any event recorded since: a run that starts has every image
+// this returns and none it refuses. An image that would take the task's
+// images past TaskImagesMaxBytes together is store.ErrImagesFull.
 func AddImage(ctx context.Context, s Store, img store.Image, r io.Reader) (store.Image, error) {
 	if _, err := editable(ctx, s, img.TaskID); err != nil {
 		return store.Image{}, err
 	}
 
-	kept, err := s.PutImage(ctx, img, r, TaskImagesMaxBytes)
+	u, err := s.ReceiveImage(ctx, img, r, TaskImagesMaxBytes)
 	if err != nil {
 		return store.Image{}, fmt.Errorf("task %d: %w", img.TaskID, err)
 	}
+	defer u.Discard()
 
-	if _, err := editable(ctx, s, img.TaskID); err != nil {
-		return store.Image{}, errors.Join(err, s.RemoveImages(context.WithoutCancel(ctx), img.TaskID, []int64{kept.ID}))
+	var kept store.Image
+
+	err = whileEditable(ctx, s, img.TaskID, func(last int64) (err error) {
+		kept, err = s.KeepImage(ctx, u, last)
+
+		return err
+	})
+	if err != nil {
+		return store.Image{}, err
 	}
 
 	return kept, nil
 }
 
-// RemoveImages removes the task's images ids, refused as EditTask is.
+// RemoveImages removes the task's images ids, refused as EditTask is, in a
+// write that loses to any event recorded since the rule was checked: a run
+// that starts keeps every image this does not remove.
 func RemoveImages(ctx context.Context, s Store, taskID int64, ids []int64) error {
-	if _, err := editable(ctx, s, taskID); err != nil {
-		return err
+	return whileEditable(ctx, s, taskID, func(last int64) error {
+		return s.RemoveImages(ctx, taskID, ids, last)
+	})
+}
+
+// whileEditable calls write with the id of the task's newest event when
+// editable allows an edit at that event, and again after each write that lost
+// to a newer one with store.ErrConflict, up to maxConflicts times. write is
+// to change the task only while last is still its newest event.
+func whileEditable(ctx context.Context, s Store, taskID int64, write func(last int64) error) error {
+	var err error
+
+	for range maxConflicts {
+		var last int64
+
+		// Read before editable reads the events, so the rule saw every event up to last.
+		if last, err = s.LastEventID(ctx, taskID); err != nil {
+			return fmt.Errorf("task %d: %w", taskID, err)
+		}
+
+		if _, err = editable(ctx, s, taskID); err != nil {
+			return err
+		}
+
+		if err = write(last); !errors.Is(err, store.ErrConflict) {
+			break
+		}
 	}
 
-	if err := s.RemoveImages(ctx, taskID, ids); err != nil {
+	if err != nil {
 		return fmt.Errorf("task %d: %w", taskID, err)
 	}
 

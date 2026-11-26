@@ -29,7 +29,7 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone; or the task has no image with the id. |
-| 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Or a task restoration overlaps removal of its project, or the container runtime would not remove the project's volumes. Nothing was written; send it again. Or an image was sent to a task that is cancelled or has started a run since creation or restoration, and is not kept. |
+| 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Or a task restoration overlaps removal of its project, or the container runtime would not remove the project's volumes. Nothing was written; send it again. A `PATCH /api/tasks/{id}` with `remove_images` is an exception: it writes its other fields before it removes the images, so the conflict leaves those fields written and the images in place. Read the task again and send only `remove_images`, with the ids it still holds. Or an image was sent to a task that is cancelled or has started a run since creation or restoration, and is not kept. |
 | 413 | The body is larger than 1 MiB, or an image's is larger than 10 MiB or would take the task's images past 32 MiB together. |
 | 415 | An image's first bytes are not those of a PNG, JPEG, GIF or WebP. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
@@ -198,7 +198,7 @@ Changes the `title`, `body` or `depends_on` the body names and keeps the others:
 {"title": "Fix the save button", "remove_images": [4]}
 ```
 
-A new or restored task can be edited until a run starts or the task is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. The images are removed once the other fields are written: an id the task has no image with is 404, and then no image is removed. Answers 200 with the task.
+A new or restored task can be edited until a run starts or the task is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. The images are removed once the other fields are written: an id the task has no image with is 404, and then no image is removed. A removal that conflicts is 409 and also removes no image; the other fields stay written, so retry only the removal. Answers 200 with the task.
 
 ### `POST /api/tasks/{id}/actions`
 
