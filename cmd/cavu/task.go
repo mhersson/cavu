@@ -177,7 +177,7 @@ func taskEdit(ctx context.Context, args []string, stderr io.Writer) error {
 			}
 		}
 
-		return engine.EditTask(ctx, a.store, t, deps)
+		return engine.EditTask(ctx, a.store, t, deps, nil)
 	})
 }
 

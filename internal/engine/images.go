@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -26,7 +25,7 @@ var ImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 // this returns and none it refuses. An image that would take the task's
 // images past TaskImagesMaxBytes together is store.ErrImagesFull.
 func AddImage(ctx context.Context, s Store, img store.Image, r io.Reader) (store.Image, error) {
-	if _, err := editable(ctx, s, img.TaskID); err != nil {
+	if err := editable(ctx, s, img.TaskID); err != nil {
 		return store.Image{}, err
 	}
 
@@ -48,46 +47,6 @@ func AddImage(ctx context.Context, s Store, img store.Image, r io.Reader) (store
 	}
 
 	return kept, nil
-}
-
-// RemoveImages removes the task's images ids, refused as EditTask is, in a
-// write that loses to any event recorded since the rule was checked: a run
-// that starts keeps every image this does not remove.
-func RemoveImages(ctx context.Context, s Store, taskID int64, ids []int64) error {
-	return whileEditable(ctx, s, taskID, func(last int64) error {
-		return s.RemoveImages(ctx, taskID, ids, last)
-	})
-}
-
-// whileEditable calls write with the id of the task's newest event when
-// editable allows an edit at that event, and again after each write that lost
-// to a newer one with store.ErrConflict, up to maxConflicts times. write is
-// to change the task only while last is still its newest event.
-func whileEditable(ctx context.Context, s Store, taskID int64, write func(last int64) error) error {
-	var err error
-
-	for range maxConflicts {
-		var last int64
-
-		// Read before editable reads the events, so the rule saw every event up to last.
-		if last, err = s.LastEventID(ctx, taskID); err != nil {
-			return fmt.Errorf("task %d: %w", taskID, err)
-		}
-
-		if _, err = editable(ctx, s, taskID); err != nil {
-			return err
-		}
-
-		if err = write(last); !errors.Is(err, store.ErrConflict) {
-			break
-		}
-	}
-
-	if err != nil {
-		return fmt.Errorf("task %d: %w", taskID, err)
-	}
-
-	return nil
 }
 
 // imagesOver is what the task's images hold together, as text in MiB, when

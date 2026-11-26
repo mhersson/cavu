@@ -3,6 +3,7 @@ package api_test
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -454,7 +456,10 @@ func TestServedImageIsNeverStored(t *testing.T) {
 func TestEditRemovesImages(t *testing.T) {
 	f := newServer(t)
 	f.addProject(t, site)
+	first := f.task(t, `{"project": "site", "title": "Write the copy"}`)
+	second := f.task(t, `{"project": "site", "title": "Pick the colours"}`)
 	id := f.task(t, `{"project": "site", "title": "Fix the save button"}`)
+	patch := fmt.Sprintf("PATCH /api/tasks/%d", id)
 
 	var ids []int64
 
@@ -474,13 +479,22 @@ func TestEditRemovesImages(t *testing.T) {
 		return out
 	}
 
-	status, body := f.call(t, fmt.Sprintf("PATCH /api/tasks/%d", id), fmt.Sprintf(`{"title": "Renamed", "remove_images": [%d]}`, ids[0]))
+	status, body := f.call(t, patch, fmt.Sprintf(`{"title": "Renamed", "body": "It does nothing.", "depends_on": [%d], "remove_images": [%d]}`, first, ids[0]))
 	require.Equal(t, http.StatusOK, status, body)
-	assert.Equal(t, "Renamed", object(t, body)["title"])
-	assert.Equal(t, []int64{ids[1], ids[2]}, imageIDs(object(t, body)))
 
-	got := tool(t, f.client(t), "edit_task", map[string]any{"id": id, "title": "Renamed again", "remove_images": []int64{ids[1], ids[2]}})
+	got := object(t, body)
+	assert.Equal(t, "Renamed", got["title"])
+	assert.Equal(t, "It does nothing.", got["body"])
+	assert.Equal(t, []int64{first}, depIDs(got))
+	assert.Equal(t, []int64{ids[1], ids[2]}, imageIDs(got))
+	assert.Equal(t, f.view(t, id), got, "the task as it is stored")
+
+	got = tool(t, f.client(t), "edit_task", map[string]any{
+		"id": id, "title": "Renamed again", "body": "It saves nothing.", "depends_on": []int64{second}, "remove_images": []int64{ids[1], ids[2]},
+	})
 	assert.Equal(t, "Renamed again", got["title"])
+	assert.Equal(t, "It saves nothing.", got["body"])
+	assert.Equal(t, []int64{second}, depIDs(got))
 	assert.Empty(t, imageIDs(got))
 	assert.Equal(t, f.view(t, id), got, "the task as REST shows it")
 	assert.Empty(t, f.imageFiles(t), "contents no image names are gone")
@@ -492,21 +506,55 @@ func TestEditRemovesImages(t *testing.T) {
 		kept := int64(object(t, body)["id"].(float64))
 		other := f.task(t, `{"project": "site", "title": "Another"}`)
 
+		// unchanged wants every task as it was when unchanged was made, and
+		// the image kept with its contents.
+		unchanged := func() func(msg string) {
+			record, view, files := f.record(t), f.view(t, id), f.imageFiles(t)
+
+			return func(msg string) {
+				t.Helper()
+
+				assert.Equal(t, record, f.record(t), msg)
+				assert.Equal(t, view, f.view(t, id), msg)
+				assert.Equal(t, files, f.imageFiles(t), msg)
+
+				status, contents := f.call(t, fmt.Sprintf("GET /api/tasks/%d/images/%d", id, kept), "")
+				require.Equal(t, http.StatusOK, status, msg)
+				assert.Equal(t, shot(400), contents, msg)
+			}
+		}()
+
 		status, body = f.call(t, fmt.Sprintf("PATCH /api/tasks/%d", other), fmt.Sprintf(`{"remove_images": [%d]}`, kept))
 		require.Equal(t, http.StatusNotFound, status, "another task's image: %s", body)
+		unchanged("another task's image")
 
-		status, body = f.call(t, fmt.Sprintf("PATCH /api/tasks/%d", id), fmt.Sprintf(`{"remove_images": [%d, %d]}`, kept, kept+1))
+		status, body = f.call(t, patch, fmt.Sprintf(`{"remove_images": [%d, %d]}`, kept, kept+1))
 		require.Equal(t, http.StatusNotFound, status, "one the task lacks: %s", body)
-		assert.Equal(t, []int64{kept}, imageIDs(f.view(t, id)), "removes none")
+		unchanged("removes none")
 
-		status, body = f.call(t, fmt.Sprintf("PATCH /api/tasks/%d", id), fmt.Sprintf(`{"title": "", "remove_images": [%d]}`, kept))
+		mixed := map[string]any{"title": "Changed", "body": "Changed too.", "depends_on": []int64{other}, "remove_images": []int64{kept, kept + 1}}
+		raw, err := json.Marshal(mixed)
+		require.NoError(t, err)
+
+		status, body = f.call(t, patch, string(raw))
+		require.Equal(t, http.StatusNotFound, status, "a mixed edit naming an image the task lacks: %s", body)
+		assertError(t, body)
+		unchanged("a mixed edit naming an image the task lacks writes none of it")
+
+		mixed["id"] = id
+		res, err := f.client(t).CallTool(t.Context(), &mcp.CallToolParams{Name: "edit_task", Arguments: mixed})
+		require.NoError(t, err)
+		refused(t, res)
+		unchanged("the same edit over MCP writes none of it")
+
+		status, body = f.call(t, patch, fmt.Sprintf(`{"title": "", "remove_images": [%d]}`, kept))
 		require.Equal(t, http.StatusBadRequest, status, "a title the edit refuses: %s", body)
-		assert.Equal(t, []int64{kept}, imageIDs(f.view(t, id)), "the fields are written before any image is removed")
+		unchanged("a refused title removes no image")
 
 		f.add(t, id, engine.TaskStarted, struct{}{})
 		f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
 
-		status, body = f.call(t, fmt.Sprintf("PATCH /api/tasks/%d", id), fmt.Sprintf(`{"remove_images": [%d]}`, kept))
+		status, body = f.call(t, patch, fmt.Sprintf(`{"remove_images": [%d]}`, kept))
 		require.Equal(t, http.StatusBadRequest, status, "once a run started, as every edit: %s", body)
 		assertError(t, body)
 		assert.Equal(t, []int64{kept}, imageIDs(f.view(t, id)))

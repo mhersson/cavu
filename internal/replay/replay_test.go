@@ -529,7 +529,7 @@ func TestComparisonAfterRestoringReference(t *testing.T) {
 	require.NoError(t, e.loop.Cancel(ctx, src.ID))
 	require.NoError(t, e.loop.Restore(ctx, src.ID))
 	src.Body = "A different assignment."
-	require.NoError(t, engine.EditTask(ctx, e.store, src, nil))
+	require.NoError(t, engine.EditTask(ctx, e.store, src, nil, nil))
 
 	second, revised, _ := e.run(t, replay.Config{Name: "second"})
 	original, err := e.store.ReplayItems(ctx, first.ID)

@@ -171,13 +171,13 @@ func TestImagesShareContents(t *testing.T) {
 	assert.Equal(t, ia.SHA256, ib.SHA256)
 	assert.Equal(t, []string{ia.SHA256}, imageFiles(t, dir), "one file for both")
 
-	require.NoError(t, s.RemoveImages(t.Context(), a.ID, []int64{ia.ID}, -1))
+	require.NoError(t, s.EditTask(t.Context(), a, nil, []int64{ia.ID}, -1))
 	assert.Empty(t, taskImages(t, s, a.ID))
 	assert.Equal(t, []Image{ib}, taskImages(t, s, b.ID))
 	assert.Equal(t, data, readImage(t, s, b.ID, ib.ID), "the other task still has its contents")
 	assert.Equal(t, []string{ia.SHA256}, imageFiles(t, dir))
 
-	require.NoError(t, s.RemoveImages(t.Context(), b.ID, []int64{ib.ID}, -1))
+	require.NoError(t, s.EditTask(t.Context(), b, nil, []int64{ib.ID}, -1))
 	assert.Empty(t, taskImages(t, s, b.ID))
 	assert.Empty(t, imageFiles(t, dir), "the last row's removal removes the contents")
 }
@@ -401,39 +401,6 @@ func TestOpenImage(t *testing.T) {
 	}
 }
 
-func TestRemoveImagesRemovesNothingWhenOneIsAbsent(t *testing.T) {
-	t.Parallel()
-
-	s, dir := openWithImages(t)
-	a := seedTask(t, s)
-	b := otherTask(t, s, a)
-	img := putImage(t, s, a.ID, "shot.png", []byte("shot"))
-
-	require.ErrorIs(t, s.RemoveImages(t.Context(), a.ID, []int64{img.ID, img.ID + 1}, -1), ErrNotFound)
-	require.ErrorIs(t, s.RemoveImages(t.Context(), b.ID, []int64{img.ID}, -1), ErrNotFound, "another task's image")
-
-	assert.Equal(t, []Image{img}, taskImages(t, s, a.ID))
-	assert.Equal(t, []string{img.SHA256}, imageFiles(t, dir))
-}
-
-func TestRemoveImagesLosesToANewerEvent(t *testing.T) {
-	t.Parallel()
-
-	s, dir := openWithImages(t)
-	task := seedTask(t, s)
-	img := putImage(t, s, task.ID, "shot.png", []byte("shot"))
-	seen := appendN(t, s, task.ID, 1)
-	newest := appendN(t, s, task.ID, 1)
-
-	require.ErrorIs(t, s.RemoveImages(t.Context(), task.ID, []int64{img.ID}, seen), ErrConflict)
-	assert.Equal(t, []Image{img}, taskImages(t, s, task.ID), "nothing is removed")
-	assert.Equal(t, []string{img.SHA256}, imageFiles(t, dir))
-
-	require.NoError(t, s.RemoveImages(t.Context(), task.ID, []int64{img.ID}, newest))
-	assert.Empty(t, taskImages(t, s, task.ID))
-	assert.Empty(t, imageFiles(t, dir))
-}
-
 func TestCopyImages(t *testing.T) {
 	t.Parallel()
 
@@ -459,7 +426,7 @@ func TestCopyImages(t *testing.T) {
 
 	assert.Len(t, imageFiles(t, dir), 2, "the contents are shared")
 
-	require.NoError(t, s.RemoveImages(t.Context(), src.ID, []int64{one.ID, two.ID}, -1))
+	require.NoError(t, s.EditTask(t.Context(), src, nil, []int64{one.ID, two.ID}, -1))
 	assert.Empty(t, taskImages(t, s, src.ID))
 	assert.Equal(t, []byte("one"), readImage(t, s, shadow.ID, got[0].ID), "the copy keeps the contents")
 	assert.Equal(t, []byte("two"), readImage(t, s, shadow.ID, got[1].ID))

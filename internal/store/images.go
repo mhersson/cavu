@@ -243,43 +243,23 @@ func (s *Store) OpenImage(ctx context.Context, taskID, id int64) (Image, *os.Fil
 	return img, f, nil
 }
 
-// RemoveImages removes the task's images ids, or none and ErrNotFound when the
-// task lacks one, then the contents no image names any longer. expectLast is
-// as KeepImage takes it: a mismatch returns ErrConflict and removes nothing.
-func (s *Store) RemoveImages(ctx context.Context, taskID int64, ids []int64, expectLast int64) error {
-	s.imagesMu.Lock()
-	defer s.imagesMu.Unlock()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("remove images: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := newestEvent(ctx, tx, taskID, expectLast); err != nil {
-		return fmt.Errorf("remove images: %w", err)
-	}
-
+// deleteImages deletes the rows of the task's images ids and gives the
+// SHA-256 each named, or ErrNotFound when the task lacks one.
+func deleteImages(ctx context.Context, tx *sql.Tx, taskID int64, ids []int64) ([]string, error) {
 	sums := make([]string, len(ids))
 
 	for i, id := range ids {
 		err := tx.QueryRowContext(ctx, `DELETE FROM task_images WHERE task_id = ? AND id = ? RETURNING sha256`, taskID, id).Scan(&sums[i])
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("image %d of task %d: %w", id, taskID, ErrNotFound)
+			return nil, fmt.Errorf("image %d of task %d: %w", id, taskID, ErrNotFound)
 		}
 
 		if err != nil {
-			return fmt.Errorf("remove images: %w", err)
+			return nil, fmt.Errorf("remove images: %w", err)
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("remove images: %w", err)
-	}
-
-	s.unlink(ctx, sums...)
-
-	return nil
+	return sums, nil
 }
 
 // unlink removes the contents of each sum no image names, with imagesMu held.

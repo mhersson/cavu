@@ -2159,7 +2159,7 @@ func TestDependencies(t *testing.T) {
 		assert.Equal(t, engine.ClearRetry, stop.Action)
 		assert.Contains(t, stop.Explanation, strconv.FormatInt(h.task.ID, 10))
 
-		require.NoError(t, engine.EditTask(t.Context(), h.store, b, nil))
+		require.NoError(t, engine.EditTask(t.Context(), h.store, b, nil, nil))
 		require.NoError(t, h.loop.Retry(t.Context(), b.ID))
 
 		status, err = h.loop.RunTask(t.Context(), b.ID)

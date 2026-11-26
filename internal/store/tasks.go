@@ -131,6 +131,52 @@ func (s *Store) Tasks(ctx context.Context, includeReplays bool) ([]Task, error) 
 	return out, rows.Err()
 }
 
+// EditTask writes t's title and body, replaces its dependencies with
+// dependsOn and removes its images removeImages in one transaction, then the
+// contents no image names any longer. A task, or an image of it, that is not
+// there is ErrNotFound. expectLast is as KeepImage takes it: a mismatch is
+// ErrConflict. On any error nothing is written.
+func (s *Store) EditTask(ctx context.Context, t Task, dependsOn, removeImages []int64, expectLast int64) error {
+	s.imagesMu.Lock()
+	defer s.imagesMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("edit task: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := newestEvent(ctx, tx, t.ID, expectLast); err != nil {
+		return fmt.Errorf("edit task: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, `UPDATE tasks SET title = ?, body = ? WHERE id = ?`, t.Title, t.Body, t.ID)
+	if err != nil {
+		return fmt.Errorf("edit task: %w", err)
+	}
+
+	if err := rowsAffectedOrNotFound(res); err != nil {
+		return fmt.Errorf("edit task %d: %w", t.ID, err)
+	}
+
+	if err := replaceDeps(ctx, tx, t.ID, dependsOn); err != nil {
+		return fmt.Errorf("edit task: %w", err)
+	}
+
+	sums, err := deleteImages(ctx, tx, t.ID, removeImages)
+	if err != nil {
+		return fmt.Errorf("edit task: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("edit task: %w", err)
+	}
+
+	s.unlink(ctx, sums...)
+
+	return nil
+}
+
 // SetTaskDeps replaces the task's dependencies in one transaction.
 func (s *Store) SetTaskDeps(ctx context.Context, taskID int64, dependsOn []int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -139,18 +185,26 @@ func (s *Store) SetTaskDeps(ctx context.Context, taskID int64, dependsOn []int64
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM task_deps WHERE task_id = ?`, taskID); err != nil {
+	if err := replaceDeps(ctx, tx, taskID, dependsOn); err != nil {
 		return fmt.Errorf("set task deps: %w", err)
-	}
-
-	for _, d := range dependsOn {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_deps (task_id, depends_on_id) VALUES (?, ?)`, taskID, d); err != nil {
-			return fmt.Errorf("set task deps: %w", err)
-		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("set task deps: %w", err)
+	}
+
+	return nil
+}
+
+func replaceDeps(ctx context.Context, tx *sql.Tx, taskID int64, dependsOn []int64) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM task_deps WHERE task_id = ?`, taskID); err != nil {
+		return err
+	}
+
+	for _, d := range dependsOn {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_deps (task_id, depends_on_id) VALUES (?, ?)`, taskID, d); err != nil {
+			return err
+		}
 	}
 
 	return nil
