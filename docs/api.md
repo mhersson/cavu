@@ -297,7 +297,7 @@ The same file sent twice is two images, which share what is kept on disk. No MCP
 
 ### `GET /api/tasks/{id}/images/{image}`
 
-Answers 200 with the image's file, as its stored `type`, with `X-Content-Type-Options: nosniff` and `Content-Disposition: inline` with its name; with the query `download=1`, `Content-Disposition: attachment` with its name, so a browser saves it. The route honours `Range` and `HEAD`, and a GET needs no CSRF header, so an `<img>` on a page with the session's cookie shows it. A task that does not exist, or has no image with the id, is 404.
+Answers 200 with the image's file, as its stored `type`, with `X-Content-Type-Options: nosniff` and `Content-Disposition: inline` with its name; with the query `download=1`, `Content-Disposition: attachment` with its name, so a browser saves it. The route honours `Range` and `HEAD`, and a GET needs no CSRF header, so an `<img>` on a page with the session's cookie shows it. Every answer that serves the file, whole, in part or to a `HEAD`, carries `Cache-Control: no-store`, so no cache hands it to a request the server has not checked. A task that does not exist, or has no image with the id, is 404.
 
 ### `GET /api/events`
 

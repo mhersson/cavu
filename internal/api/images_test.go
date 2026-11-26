@@ -293,6 +293,59 @@ func TestServeImage(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
+func TestServedImageIsNeverStored(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+	id := f.task(t, `{"project": "site", "title": "Fix the save button"}`)
+
+	contents := shot(400)
+	status, body := f.upload(t, id, "save-button.png", contents)
+	require.Equal(t, http.StatusCreated, status, body)
+
+	path := fmt.Sprintf("/api/tasks/%d/images/%d", id, int64(object(t, body)["id"].(float64)))
+	session := f.login(t).Value
+
+	for _, c := range []struct {
+		name, route, byteRange string
+		status                 int
+		body, disposition      string
+		contentRange           string
+	}{
+		{name: "shown", route: "GET " + path, status: http.StatusOK, body: contents, disposition: "inline"},
+		{name: "downloaded", route: "GET " + path + "?download=1", status: http.StatusOK, body: contents, disposition: "attachment"},
+		{name: "HEAD", route: "HEAD " + path, status: http.StatusOK, disposition: "inline"},
+		{name: "HEAD of a download", route: "HEAD " + path + "?download=1", status: http.StatusOK, disposition: "attachment"},
+		{
+			name: "part", route: "GET " + path, byteRange: "bytes=8-15", status: http.StatusPartialContent,
+			body: contents[8:16], disposition: "inline", contentRange: "bytes 8-15/400",
+		},
+		{
+			name: "part of a download", route: "GET " + path + "?download=1", byteRange: "bytes=0-7", status: http.StatusPartialContent,
+			body: contents[:8], disposition: "attachment", contentRange: "bytes 0-7/400",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := withCookie(f.request(t, c.route, ""), session, false)
+			if c.byteRange != "" {
+				r.Header.Set("Range", c.byteRange)
+			}
+
+			resp, got := send(t, r)
+			require.Equal(t, c.status, resp.StatusCode, got)
+			assert.Equal(t, c.body, got)
+			assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+			assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
+			assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
+			assert.Equal(t, c.contentRange, resp.Header.Get("Content-Range"))
+
+			kind, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition"))
+			require.NoError(t, err)
+			assert.Equal(t, c.disposition, kind)
+			assert.Equal(t, "save-button.png", params["filename"])
+		})
+	}
+}
+
 func TestEditRemovesImages(t *testing.T) {
 	f := newServer(t)
 	f.addProject(t, site)

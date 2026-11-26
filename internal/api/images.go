@@ -101,6 +101,8 @@ func (s *server) image(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	h := w.Header()
+	// A shared cache could hand a response the session authorised to a request CAVU never checked.
+	h.Set("Cache-Control", "no-store")
 	h.Set("Content-Type", img.Type)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": img.Name}))
