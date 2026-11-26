@@ -39,8 +39,16 @@ export const removeImage = (task: number, image: number) => api<Task>('PATCH', `
 
 export type Upload = { key: number; name: string; size: number }
 
-// refused is the line of the last upload or removal refused, which refuse sets.
-export type Uploads = { cap: number; going: Upload[]; refused: string; refuse: (line: string) => void; send: (files: File[]) => void }
+// refused is the line of the last upload or removal refused; removing holds the ids of the images whose removal is
+// under way, and remove hands the task the server answers with to then.
+export type Uploads = {
+  cap: number
+  going: Upload[]
+  removing: number[]
+  refused: string
+  send: (files: File[]) => void
+  remove: (image: number, then: (t: Task) => void) => void
+}
 
 // The server's cap on an image, 0 until read, and what ends every request sent with its signal once the page is left.
 export function useCap() {
@@ -56,11 +64,13 @@ export function useCap() {
   return { cap, ends }
 }
 
-// Attaches images to the task with the id, each under way until done after it ends. A file the server would refuse is
-// refused before it is sent, and an upload still under way ends when the page is left. first is a line to show at once.
+// Attaches images to the task with the id, each under way until done after it ends, and removes them, each under way
+// until the server answers. A file the server would refuse is refused before it is sent, and an upload still under way
+// ends when the page is left. first is a line to show at once.
 export function useUploads(id: number, done: () => Promise<unknown>, first = ''): Uploads {
   const { cap, ends } = useCap()
   const [going, setGoing] = useState<Upload[]>([])
+  const [removals, setRemovals] = useState<{ image: number }[]>([])
   const [refused, setRefused] = useState(first)
   const count = useRef(0)
 
@@ -74,7 +84,21 @@ export function useUploads(id: number, done: () => Promise<unknown>, first = '')
         .finally(() => setGoing((g) => g.filter((x) => x !== u)))
     }
   }
-  return { cap, going, refused, refuse: setRefused, send }
+  // Each removal is its own entry, so one answered never ends another of the same image.
+  const remove = (image: number, then: (t: Task) => void) => {
+    const r = { image }
+    setRemovals((rs) => [...rs, r])
+    removeImage(id, image)
+      .then(
+        (t) => {
+          setRefused('')
+          then(t)
+        },
+        (e: unknown) => setRefused(e instanceof Error ? e.message : String(e)),
+      )
+      .finally(() => setRemovals((rs) => rs.filter((x) => x !== r)))
+  }
+  return { cap, going, removing: removals.map((r) => r.image), refused, send, remove }
 }
 
 // On a desktop, while on: an image pasted anywhere but into a field's text is sent, and so are files dropped on what

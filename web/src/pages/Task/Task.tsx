@@ -282,9 +282,10 @@ function Page({ id }: { id: number }) {
       Edit
     </button>
   )
-  // An image still uploading would be refused once the task is started, so Start waits for it.
+  // An image still uploading would be refused once the task is started, and one still being removed could reach the
+  // agent, so Start waits for both.
   const startButton = (
-    <button className="btn primary" disabled={sending || up.going.length > 0} onClick={() => void act('start')}>
+    <button className="btn primary" disabled={sending || up.going.length + up.removing.length > 0} onClick={() => void act('start')}>
       Start
     </button>
   )

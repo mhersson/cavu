@@ -157,6 +157,11 @@ details.sect[open] {
   background: var(--bg0);
 }
 
+/* An image being removed fades until the server answers. */
+.tile.out {
+  opacity: 0.45;
+}
+
 .tile .bar {
   display: block;
   height: 3px;
