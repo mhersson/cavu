@@ -28,7 +28,7 @@ type Image struct {
 
 const imageColumns = `id, task_id, name, type, size, sha256, created_at`
 
-// ErrImagesFull is wrapped by PutImage's refusal of an image that would take
+// ErrImagesFull is wrapped by the refusal of an image that would take
 // its task's images past the most they may hold together.
 var ErrImagesFull = errors.New("the task's images would hold more than they may together")
 
@@ -47,16 +47,23 @@ func scanImage(sc scanner) (Image, error) {
 	return img, nil
 }
 
-// PutImage keeps what r holds as an image of img.TaskID with img's name and
-// type, and returns it with its id, size, SHA-256 and time. Contents another
-// image holds already are kept once. An image that would take the task's
-// images past most bytes together is ErrImagesFull: r is read only until it
-// passes the room left, and the room is checked again as the row is written,
-// so of uploads that each fit alone but not together, only those that fit are kept.
-func (s *Store) PutImage(ctx context.Context, img Image, r io.Reader, most int64) (Image, error) {
+// Upload is an image's contents received for a task and not yet kept, in a
+// file of its own in the images directory. KeepImage makes it the task's
+// image; Discard removes what KeepImage did not take.
+type Upload struct {
+	img  Image
+	most int64
+	tmp  string
+}
+
+// ReceiveImage reads what r holds as an upload of an image of img.TaskID
+// with img's name and type. An image that would take the task's images past
+// most bytes together is ErrImagesFull: r is read only until it passes the
+// room left, and KeepImage checks the room again.
+func (s *Store) ReceiveImage(ctx context.Context, img Image, r io.Reader, most int64) (*Upload, error) {
 	held, err := s.imagesHeld(ctx, img.TaskID)
 	if err != nil {
-		return Image{}, fmt.Errorf("put image: %w", err)
+		return nil, fmt.Errorf("receive image: %w", err)
 	}
 
 	room := most - held
@@ -64,36 +71,72 @@ func (s *Store) PutImage(ctx context.Context, img Image, r io.Reader, most int64
 	// One byte past the room is enough to know the image does not fit.
 	tmp, sum, size, err := s.receive(io.LimitReader(r, max(min(room, math.MaxInt64-1)+1, 0)))
 	if err != nil {
-		return Image{}, err
+		return nil, err
 	}
-	defer func() { _ = os.Remove(tmp) }() // gone already once placed
 
 	if size > room {
-		return Image{}, fmt.Errorf("put image: %w", ErrImagesFull)
+		_ = os.Remove(tmp)
+
+		return nil, fmt.Errorf("receive image: %w", ErrImagesFull)
 	}
 
-	img.Size, img.SHA256, img.CreatedAt = size, sum, time.UnixMilli(time.Now().UnixMilli())
+	img.Size, img.SHA256 = size, sum
+
+	return &Upload{img: img, most: most, tmp: tmp}, nil
+}
+
+// Discard removes the upload's contents, unless KeepImage took them.
+func (u *Upload) Discard() {
+	_ = os.Remove(u.tmp) // gone already once placed
+}
+
+// KeepImage keeps the upload as an image of its task and returns it with its
+// id, size, SHA-256 and time. Contents another image holds already are kept
+// once. expectLast is the id of the task's newest event the caller saw; -1
+// skips the check. A mismatch returns ErrConflict, keeps nothing, and leaves
+// the upload to be kept again. An image that would take the task's images
+// past the most ReceiveImage was given is ErrImagesFull, so of uploads that
+// each fit alone but not together, only those that fit are kept.
+func (s *Store) KeepImage(ctx context.Context, u *Upload, expectLast int64) (Image, error) {
+	img := u.img
+	img.CreatedAt = time.UnixMilli(time.Now().UnixMilli())
 
 	s.imagesMu.Lock()
 	defer s.imagesMu.Unlock()
 
-	if err := s.place(tmp, sum); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Image{}, fmt.Errorf("keep image: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Before the contents are placed, so the upload is still there to keep again.
+	if _, err := newestEvent(ctx, tx, img.TaskID, expectLast); err != nil {
+		return Image{}, fmt.Errorf("keep image: %w", err)
+	}
+
+	if err := s.place(u.tmp, img.SHA256); err != nil {
 		return Image{}, err
 	}
 
-	// One statement, so no other upload's row lands between the sum and the insert.
-	err = s.db.QueryRowContext(ctx, `INSERT INTO task_images (task_id, name, type, size, sha256, created_at)
+	err = tx.QueryRowContext(ctx, `INSERT INTO task_images (task_id, name, type, size, sha256, created_at)
 		SELECT ?, ?, ?, ?, ?, ? WHERE (SELECT COALESCE(SUM(size), 0) FROM task_images WHERE task_id = ?) <= ?
 		RETURNING id`,
-		img.TaskID, img.Name, img.Type, img.Size, img.SHA256, img.CreatedAt.UnixMilli(), img.TaskID, most-size).Scan(&img.ID)
+		img.TaskID, img.Name, img.Type, img.Size, img.SHA256, img.CreatedAt.UnixMilli(), img.TaskID, u.most-img.Size).Scan(&img.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrImagesFull
 	}
 
-	if err != nil {
-		s.unlink(ctx, sum)
+	if err == nil {
+		err = tx.Commit()
+	}
 
-		return Image{}, fmt.Errorf("put image: %w", err)
+	if err != nil {
+		_ = tx.Rollback()
+
+		s.unlink(ctx, img.SHA256)
+
+		return Image{}, fmt.Errorf("keep image: %w", err)
 	}
 
 	return img, nil
@@ -112,12 +155,12 @@ func (s *Store) imagesHeld(ctx context.Context, taskID int64) (int64, error) {
 // it goes, and gives the file's path, its SHA-256 in hex and its size.
 func (s *Store) receive(r io.Reader) (string, string, int64, error) {
 	if err := os.MkdirAll(s.images, 0o700); err != nil {
-		return "", "", 0, fmt.Errorf("put image: %w", err)
+		return "", "", 0, fmt.Errorf("receive image: %w", err)
 	}
 
 	f, err := os.CreateTemp(s.images, "upload-*")
 	if err != nil {
-		return "", "", 0, fmt.Errorf("put image: %w", err)
+		return "", "", 0, fmt.Errorf("receive image: %w", err)
 	}
 
 	h := sha256.New()
@@ -134,7 +177,7 @@ func (s *Store) receive(r io.Reader) (string, string, int64, error) {
 	if err != nil {
 		_ = os.Remove(f.Name())
 
-		return "", "", 0, fmt.Errorf("put image: %w", err)
+		return "", "", 0, fmt.Errorf("receive image: %w", err)
 	}
 
 	return f.Name(), hex.EncodeToString(h.Sum(nil)), size, nil
@@ -148,11 +191,11 @@ func (s *Store) place(tmp, sum string) error {
 	case err == nil:
 		return nil
 	case !errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("put image: %w", err)
+		return fmt.Errorf("keep image: %w", err)
 	}
 
 	if err := os.Rename(tmp, to); err != nil {
-		return fmt.Errorf("put image: %w", err)
+		return fmt.Errorf("keep image: %w", err)
 	}
 
 	return nil
@@ -201,8 +244,9 @@ func (s *Store) OpenImage(ctx context.Context, taskID, id int64) (Image, *os.Fil
 }
 
 // RemoveImages removes the task's images ids, or none and ErrNotFound when the
-// task lacks one, then the contents no image names any longer.
-func (s *Store) RemoveImages(ctx context.Context, taskID int64, ids []int64) error {
+// task lacks one, then the contents no image names any longer. expectLast is
+// as KeepImage takes it: a mismatch returns ErrConflict and removes nothing.
+func (s *Store) RemoveImages(ctx context.Context, taskID int64, ids []int64, expectLast int64) error {
 	s.imagesMu.Lock()
 	defer s.imagesMu.Unlock()
 
@@ -211,6 +255,10 @@ func (s *Store) RemoveImages(ctx context.Context, taskID int64, ids []int64) err
 		return fmt.Errorf("remove images: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	if _, err := newestEvent(ctx, tx, taskID, expectLast); err != nil {
+		return fmt.Errorf("remove images: %w", err)
+	}
 
 	sums := make([]string, len(ids))
 

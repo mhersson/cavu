@@ -196,8 +196,8 @@ func TestConcurrentUploadsKeepTheTaskCap(t *testing.T) {
 
 	// Room for three of the uploads and not for a fourth.
 	room := int64(fit*size + size/2)
-	_, err := f.store.PutImage(t.Context(), store.Image{TaskID: id, Name: "big.png", Type: "image/png"},
-		bytes.NewReader(make([]byte, engine.TaskImagesMaxBytes-room)), engine.TaskImagesMaxBytes)
+	_, err := engine.AddImage(t.Context(), f.store, store.Image{TaskID: id, Name: "big.png", Type: "image/png"},
+		bytes.NewReader(make([]byte, engine.TaskImagesMaxBytes-room)))
 	require.NoError(t, err)
 
 	requests := make([]*http.Request, uploads)

@@ -455,15 +455,16 @@ func (s *spyStore) opened() int {
 }
 
 type harness struct {
-	t      *testing.T
-	store  *store.Store
-	spy    *spyStore
-	vault  *auth.Vault
-	runner *fakeRunner
-	clock  *clock
-	loop   *engine.Loop
-	task   store.Task
-	start  int64 // id of the task_started event
+	t         *testing.T
+	store     *store.Store
+	imagesDir string // where the store keeps images' contents
+	spy       *spyStore
+	vault     *auth.Vault
+	runner    *fakeRunner
+	clock     *clock
+	loop      *engine.Loop
+	task      store.Task
+	start     int64 // id of the task_started event
 }
 
 var loopSettings = map[string]string{
@@ -479,7 +480,9 @@ func newHarness(t *testing.T) *harness {
 
 	ctx := t.Context()
 
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "cavu.db"))
+	dir := t.TempDir()
+
+	s, err := store.Open(ctx, filepath.Join(dir, "cavu.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
@@ -500,7 +503,7 @@ func newHarness(t *testing.T) *harness {
 	task, err := s.CreateTask(ctx, store.Task{ProjectID: p.ID, Title: "Fix the login", Body: "It fails."})
 	require.NoError(t, err)
 
-	h := &harness{t: t, store: s, spy: &spyStore{Store: s}, vault: v, runner: &fakeRunner{}, clock: &clock{at: now}, task: task}
+	h := &harness{t: t, store: s, imagesDir: filepath.Join(dir, "images"), spy: &spyStore{Store: s}, vault: v, runner: &fakeRunner{}, clock: &clock{at: now}, task: task}
 	h.loop = &engine.Loop{Store: h.spy, Vault: v, Runner: h.runner, Now: h.clock.Now, DataDir: t.TempDir(), Image: "cavu-sandbox:test"}
 	h.start = h.add(0, engine.TaskStarted, "user", "")
 

@@ -558,7 +558,7 @@ func TestReplayCarriesImages(t *testing.T) {
 	src := e.task(t, "one", true, "aaa")
 
 	for _, name := range []string{"first.png", "second.png"} {
-		_, err := e.store.PutImage(t.Context(), store.Image{TaskID: src.ID, Name: name, Type: "image/png"}, strings.NewReader(name), engine.TaskImagesMaxBytes)
+		_, err := engine.AddImage(t.Context(), e.store, store.Image{TaskID: src.ID, Name: name, Type: "image/png"}, strings.NewReader(name))
 		require.NoError(t, err)
 	}
 
