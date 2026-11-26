@@ -201,7 +201,7 @@ func isClientError(err error) bool {
 // call is one client invocation run to its end.
 type call struct {
 	args   []string
-	stdin  []byte
+	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer // also receives stderr as it arrives
 }

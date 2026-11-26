@@ -388,7 +388,7 @@ func (c claudeCode) sandboxed(ctx context.Context, t proc.Target, s driver.Spec,
 // stdin is written and closed. A staging command never carries Files. A
 // non-zero exit is a *proc.ExitError.
 func (c claudeCode) runCommand(ctx context.Context, t proc.Target, s driver.Spec, argv []string, stdin []byte, out io.Writer) error {
-	if err := proc.Run(ctx, t, proc.Command{Argv: argv, Env: stageEnv(s), Dir: s.Dir, Stdout: out}, stdin); err != nil {
+	if err := proc.Run(ctx, t, proc.Command{Argv: argv, Env: stageEnv(s), Dir: s.Dir, Stdout: out}, bytes.NewReader(stdin)); err != nil {
 		return fmt.Errorf("%s: %w", argv[0], err)
 	}
 

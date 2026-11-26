@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -24,21 +23,61 @@ func checkPath(p string) error {
 	return nil
 }
 
+// errCopyEnded ends the writing of a CopyIn stream once its client has ended.
+var errCopyEnded = errors.New("the copy's client ended")
+
 // CopyIn writes files (0600, owned by the exec user) through an exec that
 // unpacks a tar stream from stdin. The tar holds file entries only, so
-// existing parent directories keep their owner and mode. It needs a running
-// container and works on volumes and on a tmpfs.
+// existing parent directories keep their owner and mode. The stream is
+// written as the exec reads it, so the copy holds no second copy of the
+// files. It needs a running container and works on volumes and on a tmpfs.
 func (c Container) CopyIn(ctx context.Context, files map[string][]byte) error {
-	var buf bytes.Buffer
-
-	tw := tar.NewWriter(&buf)
-	now := time.Now()
-
-	for _, p := range slices.Sorted(maps.Keys(files)) {
+	paths := slices.Sorted(maps.Keys(files))
+	for _, p := range paths {
 		if err := checkPath(p); err != nil {
 			return err
 		}
+	}
 
+	if len(files) == 0 {
+		return nil
+	}
+
+	pr, pw := io.Pipe()
+	written := make(chan error, 1)
+
+	go func() {
+		err := writeTar(pw, paths, files)
+		_ = pw.CloseWithError(err)
+
+		written <- err
+	}()
+
+	args := []string{"exec", "--interactive", c.name, "tar", "-x", "-f", "-", "-C", "/"}
+	err := c.r.run(ctx, call{args: args, stdin: pr})
+
+	// A client that ended before it read the whole stream would leave the writer blocked.
+	_ = pr.CloseWithError(errCopyEnded)
+
+	// A client that ended well read the archive to its end, whatever padding it
+	// left unread; but a tar the writer cut short may unpack without an error.
+	if werr := <-written; err == nil && !errors.Is(werr, errCopyEnded) {
+		err = werr
+	}
+
+	if err != nil {
+		return fmt.Errorf("copy into %s: %w", c.name, err)
+	}
+
+	return nil
+}
+
+// writeTar writes the files at paths, in that order, as a tar of file entries.
+func writeTar(w io.Writer, paths []string, files map[string][]byte) error {
+	tw := tar.NewWriter(w)
+	now := time.Now()
+
+	for _, p := range paths {
 		h := &tar.Header{Typeflag: tar.TypeReg, Name: p[1:], Mode: 0o600, Size: int64(len(files[p])), ModTime: now}
 		if err := tw.WriteHeader(h); err != nil {
 			return fmt.Errorf("copy %s: %w", p, err)
@@ -49,20 +88,7 @@ func (c Container) CopyIn(ctx context.Context, files map[string][]byte) error {
 		}
 	}
 
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("copy into %s: %w", c.name, err)
-	}
-
-	if len(files) == 0 {
-		return nil
-	}
-
-	args := []string{"exec", "--interactive", c.name, "tar", "-x", "-f", "-", "-C", "/"}
-	if err := c.r.run(ctx, call{args: args, stdin: buf.Bytes()}); err != nil {
-		return fmt.Errorf("copy into %s: %w", c.name, err)
-	}
-
-	return nil
+	return tw.Close()
 }
 
 // CopyOut runs `tar -c` on the one path and reads the stream on the host:

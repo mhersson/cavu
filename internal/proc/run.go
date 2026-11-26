@@ -5,6 +5,7 @@ package proc
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -20,9 +21,11 @@ type ExitError struct {
 
 func (e *ExitError) Error() string { return fmt.Sprintf("exit %d: %s", e.Code, e.Stderr) }
 
-// Run starts c on t, writes stdin to it and closes it, and waits for its end
-// as Wait does. A non-zero exit is an *ExitError.
-func Run(ctx context.Context, t Target, c Command, stdin []byte) error {
+// Run starts c on t, copies stdin (unless nil) to it and closes it, and waits
+// for its end as Wait does. The copy outlives Run until a read or write of it
+// fails, so a caller that streams stdin closes the stream once Run returns. A
+// non-zero exit is an *ExitError.
+func Run(ctx context.Context, t Target, c Command, stdin io.Reader) error {
 	p, err := t.Start(ctx, c)
 	if err != nil {
 		return err
@@ -30,7 +33,10 @@ func Run(ctx context.Context, t Target, c Command, stdin []byte) error {
 
 	// A command that never reads its stdin must not block the wait.
 	go func() {
-		_, _ = p.Stdin().Write(stdin)
+		if stdin != nil {
+			_, _ = io.Copy(p.Stdin(), stdin)
+		}
+
 		_ = p.Stdin().Close()
 	}()
 
