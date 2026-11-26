@@ -15,7 +15,7 @@ A run that is no [fix run](#the-pull-request) opens with a readiness turn: the a
 
 A change that passes verify in a run that is no fix run is reviewed: a fresh agent session reads the task and the diff, changes nothing, and judges whether the change does what the task asked and whether it is well built. A critical or important finding sends the change back for a fix, the verify command and a review of the fix, at most five times; the last two fixes are a fresh session. Findings never stop a task: after the fifth fix, after a fix that changes nothing, or when a review gives no verdict, the change is exported as it is, and `task show` prints the findings left open, the minor ones, and why the newest review gave no verdict. The reviewer runs on `model_review` and `effort_review`, the fresh fix sessions on `model_strong` and `effort_strong`, and each of the four is the work value when unset. `cavu project set web --switch review=off` turns the review off.
 
-A task can wait for others: `--depends-on ID[,ID]` makes it wait until every task it names is done, and stops it when one of them is cancelled: restore that task with **Restore to draft** in the web app and retry, or cancel this one, restore it, change its dependencies and start it again. `--start` starts it as it is added.
+A task can wait for others: `--depends-on ID[,ID]` makes it wait until every task it names is done, and stops it when one of them is cancelled: restore that task with **Restore to draft** in the web app, start it and retry this one, or cancel this one, restore it, remove that dependency and start it again. `--start` starts it as it is added.
 
 ```
 cavu task add web --title "Test the login redirect" --depends-on ID --start

@@ -233,8 +233,8 @@ func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
 }
 
 // edit changes only the fields that `in` sets and removes the images it names,
-// all in one write or none. A field it leaves out stays nil, which the store
-// keeps as it stands when the edit commits, not as this request read it.
+// all in one write or none. A field it leaves out stays nil, so the store keeps
+// the value stored when the edit commits.
 func (s *server) edit(ctx context.Context, id int64, in taskEdit) error {
 	e := store.TaskEdit{Title: in.Title, Body: in.Body, DependsOn: in.DependsOn}
 	set(&e.RemoveImages, in.RemoveImages)
