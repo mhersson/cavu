@@ -68,7 +68,7 @@ func (s *server) tools() http.Handler {
 		func(ctx context.Context, in taskRef) (engine.View, error) { return s.Loop.View(ctx, in.ID, s.Waiting) })
 	addTool(srv, "list_tasks", "List the tasks, oldest first; a project, a status and needs_you, when given, narrow the list.",
 		func(ctx context.Context, in taskQuery) (taskList, error) { return s.listTasks(ctx, in, 0, false) })
-	addTool(srv, "edit_task", "Edit a new or restored task's title, body or dependencies, or remove its images, before it runs. A field left out keeps its value.",
+	addTool(srv, "edit_task", "Edit a draft task's title, body or dependencies, or remove its images, before it is started. A field left out keeps its value.",
 		func(ctx context.Context, in taskChange) (engine.View, error) {
 			if err := s.edit(ctx, in.ID, in.taskEdit); err != nil {
 				return engine.View{}, err

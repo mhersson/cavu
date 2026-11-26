@@ -419,6 +419,130 @@ func TestSchedulerDependencyChain(t *testing.T) {
 	assert.Empty(t, s.errs())
 }
 
+// hadRun reports whether the task has recorded a run; it may run outside the test's goroutine.
+func (h *harness) hadRun(ctx context.Context, id int64) bool {
+	es, err := h.store.Events(ctx, id, 0, 0)
+
+	return err == nil && slices.ContainsFunc(es, func(e store.Event) bool { return e.Type == engine.RunStarted })
+}
+
+// The scheduler reads a started task's dependencies before it records the
+// task's run. An edit made while it is held after each such read is refused
+// and changes nothing, so the run starts with what was read.
+func TestSchedulerRefusesAnEditOfAStartedTaskBeforeItsRun(t *testing.T) {
+	h := newHarness(t)
+	id := h.task.ID // started, with no run
+	unfinished := h.draft()
+	img := h.putImage(id, "shot.png")
+
+	was, err := h.store.Task(t.Context(), id)
+	require.NoError(t, err)
+
+	read, resume := make(chan struct{}), make(chan struct{})
+	h.spy.afterDeps = func(ctx context.Context, taskID int64) {
+		if taskID != id || h.hadRun(ctx, taskID) {
+			return
+		}
+
+		select {
+		case read <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+
+		select {
+		case <-resume:
+		case <-ctx.Done():
+		}
+	}
+
+	prepared := make(chan struct{})
+	h.runner.onCall = func(c call) {
+		if c.method == "prepare" {
+			close(prepared)
+		}
+	}
+
+	s := h.schedule(nil)
+
+	held := 0
+
+	for running := false; !running; {
+		select {
+		case <-read:
+			held++
+
+			err := engine.EditTask(t.Context(), h.store, store.Task{ID: id, Title: "Renamed", Body: "A new body."}, []int64{unfinished.ID}, []int64{img.ID})
+			require.ErrorIs(t, err, engine.ErrRefused)
+
+			_, err = engine.AddImage(t.Context(), h.store, store.Image{TaskID: id, Name: "more.png", Type: "image/png"}, notRead)
+			require.ErrorIs(t, err, engine.ErrRefused)
+
+			resume <- struct{}{}
+		case <-prepared:
+			running = true
+		case <-time.After(wait):
+			require.FailNow(t, "the scheduler neither read the task's dependencies nor prepared its run")
+		}
+	}
+
+	assert.Positive(t, held, "the scheduler was held after reading the dependencies")
+
+	h.eventually(func() bool { return h.inReview(id) })
+
+	got, err := h.store.Task(t.Context(), id)
+	require.NoError(t, err)
+	assert.Equal(t, [2]string{was.Title, was.Body}, [2]string{got.Title, got.Body}, "nothing is written")
+	assert.Empty(t, h.deps(id), "no dependency is added")
+	assert.Equal(t, []store.Image{img}, h.images(id), "nothing is removed or added")
+
+	works := h.runner.callsOf("work")
+	require.Len(t, works, 1)
+	assert.Equal(t, was.Title, works[0].cfg.Task.Title)
+	assert.Equal(t, []engine.TaskImage{{Name: "shot.png", Type: "image/png", Data: []byte("shot.png")}}, works[0].cfg.Task.Images)
+	assert.Empty(t, s.errs())
+}
+
+// An edit committed before a draft's start, even once the start has read the
+// task and allowed it, is in the task the start begins: it waits for the
+// unfinished dependency the edit added.
+func TestSchedulerHonoursAnEditMadeBeforeTheStart(t *testing.T) {
+	h := newHarness(t)
+	h.withBaseline()
+	d, unfinished := h.draft(), h.draft()
+
+	edited := false
+	h.spy.failAppend = func(events []store.Event) error {
+		if !edited && events[0].Type == engine.TaskStarted {
+			edited = true
+
+			require.NoError(t, engine.EditTask(t.Context(), h.store, store.Task{ID: d.ID, Title: "Renamed"}, []int64{unfinished.ID}, nil))
+		}
+
+		return nil
+	}
+
+	require.NoError(t, h.loop.Start(t.Context(), d.ID))
+	require.True(t, edited, "the edit was made as the start was written")
+	assert.Equal(t, engine.StatusQueued, h.statusOf(d.ID))
+	assert.Equal(t, []int64{unfinished.ID}, h.deps(d.ID))
+
+	s := h.schedule(func(s *engine.Scheduler) { s.Only = func(t store.Task) bool { return t.ID == d.ID } })
+
+	h.eventually(func() bool { return s.Waiting(d.ID) != "" })
+	s.passes(t, 2)
+
+	snap, err := h.loop.Snapshot(t.Context(), d.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Renamed", snap.Task.Title)
+	assert.Equal(t, []engine.Dep{{TaskID: unfinished.ID, Status: engine.StatusDraft}}, snap.Deps)
+	assert.Equal(t, engine.KindWait, engine.Decide(snap).Kind)
+	assert.NotEmpty(t, s.Waiting(d.ID))
+	assert.Empty(t, h.runner.callsFor(d.ID), "no run starts while the dependency is unfinished")
+	assert.False(t, h.hadRun(t.Context(), d.ID))
+	assert.Empty(t, s.errs())
+}
+
 func TestSchedulerCancelInterruptsASession(t *testing.T) {
 	h := newHarness(t)
 	g := h.gate("work")

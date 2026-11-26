@@ -322,7 +322,7 @@ func (r *fakeRunner) callsOf(method string) []call {
 }
 
 // spyStore wraps the store to put a rival event in front of chosen claims, to
-// fail chosen appends and to see run rows written.
+// fail chosen appends, to see run rows written and to hold a task's dependency reads.
 type spyStore struct {
 	*store.Store
 
@@ -335,6 +335,7 @@ type spyStore struct {
 	runWrites  []store.Run
 	usageTies  []string // per append with usage rows, the type of its last event, which the rows are tied to
 	imageOpens int
+	afterDeps  func(ctx context.Context, taskID int64) // runs after each read of a task's dependencies that succeeded
 }
 
 func (s *spyStore) Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error) {
@@ -368,6 +369,20 @@ func (s *spyStore) Append(ctx context.Context, taskID, expectLast int64, events 
 	}
 
 	return s.Store.Append(ctx, taskID, expectLast, events, usage)
+}
+
+func (s *spyStore) TaskDeps(ctx context.Context, taskID int64) ([]int64, error) {
+	ids, err := s.Store.TaskDeps(ctx, taskID)
+
+	s.mu.Lock()
+	after := s.afterDeps
+	s.mu.Unlock()
+
+	if after != nil && err == nil {
+		after(ctx, taskID)
+	}
+
+	return ids, err
 }
 
 func (s *spyStore) CreateRun(ctx context.Context, r store.Run) (store.Run, error) {
@@ -2144,7 +2159,7 @@ func TestDependencies(t *testing.T) {
 		assert.Equal(t, append(slices.Clone(happyTrace), happyTrace...), h.runner.trace())
 	})
 
-	t.Run("a cancelled dependency stops the task until a person retries", func(t *testing.T) {
+	t.Run("a cancelled dependency stops the task, and again after a retry", func(t *testing.T) {
 		h := newHarness(t)
 		b := dependent(h)
 		require.NoError(t, h.loop.Cancel(t.Context(), h.task.ID))
@@ -2159,8 +2174,31 @@ func TestDependencies(t *testing.T) {
 		assert.Equal(t, engine.ClearRetry, stop.Action)
 		assert.Contains(t, stop.Explanation, strconv.FormatInt(h.task.ID, 10))
 
-		require.NoError(t, engine.EditTask(t.Context(), h.store, b, nil, nil))
 		require.NoError(t, h.loop.Retry(t.Context(), b.ID))
+
+		status, err = h.loop.RunTask(t.Context(), b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusBlocked, status, "the retry meets the cancelled dependency again")
+		assert.Equal(t, engine.StopDependency, h.lastStopOf(b.ID).Reason)
+		assert.Empty(t, h.runner.calls)
+	})
+
+	t.Run("a cancelled dependency is dropped from the task restored to a draft", func(t *testing.T) {
+		h := newHarness(t)
+		b := dependent(h)
+		require.NoError(t, h.loop.Cancel(t.Context(), h.task.ID))
+
+		status, err := h.loop.RunTask(t.Context(), b.ID)
+		require.NoError(t, err)
+		require.Equal(t, engine.StatusBlocked, status)
+
+		require.ErrorIs(t, engine.EditTask(t.Context(), h.store, b, nil, nil), engine.ErrRefused)
+		assert.Equal(t, []int64{h.task.ID}, h.deps(b.ID), "a started task keeps its dependencies")
+
+		require.NoError(t, h.loop.Cancel(t.Context(), b.ID))
+		require.NoError(t, h.loop.Restore(t.Context(), b.ID))
+		require.NoError(t, engine.EditTask(t.Context(), h.store, b, nil, nil))
+		require.NoError(t, h.loop.Start(t.Context(), b.ID))
 
 		status, err = h.loop.RunTask(t.Context(), b.ID)
 		require.NoError(t, err)

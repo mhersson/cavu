@@ -69,8 +69,9 @@ func noBaseline(p store.Project) error {
 }
 
 // EditTask writes t's title and body, replaces the task's dependencies with
-// dependsOn and removes its images removeImages while the task is editable.
-// The changes are committed together, and on an error none of them is.
+// dependsOn and removes its images removeImages while the task is a draft, in
+// a write that loses to the start. The changes are committed together, and on
+// an error none of them is.
 func EditTask(ctx context.Context, s Store, t store.Task, dependsOn, removeImages []int64) error {
 	if err := checkTitle(t.Title); err != nil {
 		return err
@@ -89,7 +90,10 @@ func EditTask(ctx context.Context, s Store, t store.Task, dependsOn, removeImage
 	})
 }
 
-// Restoring a draft opens editing again until its next run starts.
+// editable refuses a task that is not a draft. The start, not the run, is the
+// cutoff: the scheduler reads a started task's dependencies before it records
+// its run, so an edit in between would not reach that run. A restored draft is
+// editable again until it is started.
 func editable(ctx context.Context, s Store, id int64) error {
 	if _, err := s.Task(ctx, id); err != nil {
 		return fmt.Errorf("task %d: %w", id, err)
@@ -100,15 +104,14 @@ func editable(ctx context.Context, s Store, id int64) error {
 		return fmt.Errorf("task %d: %w", id, err)
 	}
 
-	f := Reduce(events)
-	switch {
-	case f.RunOpen || f.LastRun != 0:
-		return refuse("task %d has started a run", id)
-	case f.Cancelled:
+	switch StatusOf(Reduce(events)) {
+	case StatusDraft:
+		return nil
+	case StatusCancelled:
 		return refuse("task %d is cancelled", id)
+	default:
+		return refuse("task %d has been started", id)
 	}
-
-	return nil
 }
 
 // whileEditable calls write with the id of the task's newest event when

@@ -56,7 +56,7 @@ export function NewTaskForm({ onCancel }: { onCancel?: () => void }) {
   }
   const drop = useDrop(!narrow && !sending, hold)
 
-  // A task with images is created a draft, so no run starts before they are stored. Closing the form stops it all.
+  // A task with images is created a draft, and started when asked only once they are stored: a started task takes none. Closing the form stops it all.
   async function submit(e: FormEvent) {
     e.preventDefault()
     const depends_on = (depends.match(/\d+/g) ?? []).map(Number)

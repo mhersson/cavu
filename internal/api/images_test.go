@@ -273,9 +273,12 @@ func TestUploadRefusesAnotherType(t *testing.T) {
 	assert.Empty(t, f.imageFiles(t))
 }
 
-func TestUploadRefusedOnceARunStarted(t *testing.T) {
+func TestUploadRefusedOnceStarted(t *testing.T) {
 	f := newServer(t)
 	f.addProject(t, site)
+
+	queued := f.task(t, `{"project": "site", "title": "Queued"}`)
+	f.add(t, queued, engine.TaskStarted, struct{}{})
 
 	running := f.task(t, `{"project": "site", "title": "Running"}`)
 	f.add(t, running, engine.TaskStarted, struct{}{})
@@ -285,7 +288,7 @@ func TestUploadRefusedOnceARunStarted(t *testing.T) {
 	status, body := f.call(t, fmt.Sprintf("POST /api/tasks/%d/actions", cancelled), `{"action": "cancel"}`)
 	require.Equal(t, http.StatusOK, status, body)
 
-	for _, id := range []int64{running, cancelled} {
+	for _, id := range []int64{queued, running, cancelled} {
 		status, body := f.upload(t, id, "shot.png", shot(100))
 		require.Equal(t, http.StatusConflict, status, body)
 		assertError(t, body)

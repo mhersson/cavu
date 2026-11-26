@@ -151,16 +151,21 @@ func TestMCPEditTaskRefused(t *testing.T) {
 	f := newServer(t)
 	f.addProject(t, site)
 
-	id := f.task(t, `{"project": "site", "title": "Running"}`)
-	f.add(t, id, engine.TaskStarted, struct{}{})
-	f.add(t, id, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
+	queued := f.task(t, `{"project": "site", "title": "Queued"}`)
+	f.add(t, queued, engine.TaskStarted, struct{}{})
 
-	before := f.record(t)
+	running := f.task(t, `{"project": "site", "title": "Running"}`)
+	f.add(t, running, engine.TaskStarted, struct{}{})
+	f.add(t, running, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
 
-	res, err := f.client(t).CallTool(t.Context(), &mcp.CallToolParams{Name: "edit_task", Arguments: map[string]any{"id": id, "title": "Changed"}})
-	require.NoError(t, err)
-	refused(t, res)
-	assert.Equal(t, before, f.record(t))
+	for _, id := range []int64{queued, running} {
+		before := f.record(t)
+
+		res, err := f.client(t).CallTool(t.Context(), &mcp.CallToolParams{Name: "edit_task", Arguments: map[string]any{"id": id, "title": "Changed"}})
+		require.NoError(t, err)
+		refused(t, res)
+		assert.Equal(t, before, f.record(t))
+	}
 }
 
 func TestMCPCreateAndStart(t *testing.T) {

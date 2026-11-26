@@ -29,7 +29,7 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 | 401 | The request has neither a known API token nor a live session cookie, or, at `/mcp`, no known API token; or a login named the wrong name or password. |
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone; or the task has no image with the id. |
-| 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's or an edit's read and its write every time the server tried. Or a task restoration overlaps removal of its project, or the container runtime would not remove the project's volumes. Nothing was written; send it again. Or an image was sent to a task that is cancelled or has started a run since creation or restoration, and is not kept. |
+| 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's or an edit's read and its write every time the server tried. Or a task restoration overlaps removal of its project, or the container runtime would not remove the project's volumes. Nothing was written; send it again. Or an image was sent to a task that is cancelled or has been started since creation or restoration, and is not kept. |
 | 413 | The body is larger than 1 MiB, or an image's is larger than 10 MiB or would take the task's images past 32 MiB together. |
 | 415 | An image's first bytes are not those of a PNG, JPEG, GIF or WebP. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
@@ -198,7 +198,7 @@ Changes the `title`, `body` or `depends_on` the body names and keeps the others:
 {"title": "Fix the save button", "remove_images": [4]}
 ```
 
-A new or restored task can be edited until a run starts or the task is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. An id in `remove_images` that names no image of the task is 404. Changes to the title, body, dependencies and requested image removals are committed together. If the edit answers 400, 404 or 409, none of its changes is applied. Answers 200 with the task.
+Only a draft can be edited: a new or restored task, until it is started or cancelled. The start is the cutoff, not the first run, so a started task that waits in the queue, for a dependency or a free slot, can no longer be edited. An edit written before the start is recorded is in the task the start begins, whose run waits for every dependency the edit named; an edit that comes after the start is refused and changes nothing. An edit of a started or cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. An id in `remove_images` that names no image of the task is 404. Changes to the title, body, dependencies and requested image removals are committed together. If the edit answers 400, 404 or 409, none of its changes is applied. Answers 200 with the task.
 
 ### `POST /api/tasks/{id}/actions`
 
@@ -210,7 +210,7 @@ Records a person's action on the task:
 
 | Action | What it does | Refused when |
 |--------|--------------|--------------|
-| `start` | Starts a draft task; a task already started is left as it is. | The task is cancelled, its project is not runnable, or its images hold more than 32 MiB together, as only images kept before that limit can; remove images to start it. |
+| `start` | Starts a draft task, which can no longer be edited until it is cancelled and restored; a task already started is left as it is. | The task is cancelled, its project is not runnable, or its images hold more than 32 MiB together, as only images kept before that limit can; remove images to start it. |
 | `answer` | Answers the question that stopped the task with `text`. | The task has no open question, or `text` is blank. |
 | `retry` | Clears the open stop, so the task carries on. | The task is cancelled, or has no open stop. |
 | `cancel` | Cancels the task. | The task is cancelled or done. |
@@ -287,7 +287,7 @@ Answers 200 with the task's exported change as a file, the one `change` shows (f
 
 ### `POST /api/tasks/{id}/images`
 
-Adds an image to the task. The body is the file itself, and the query `name` its file name: `POST /api/tasks/7/images?name=save-button.png`. The type is read from the file's first bytes, whatever its name or the request's `Content-Type` says, and must be `image/png`, `image/jpeg`, `image/gif` or `image/webp`; any other is 415. The file is kept as it is sent, never decoded or changed, and is at most `image_max_bytes` (10 MiB): a larger one is 413. A task's images hold at most `task_images_max_bytes` (32 MiB) together: an image that would take them past it is 413 and is not kept, also when it is one of several sent at once. The name is the part after the last `/` or `\`, without control characters, and must then be 1 to 255 bytes and not `.` or `..`, else 400. A new or restored task accepts images until it begins a run or is cancelled; after that, or for a cancelled task, the upload is 409. Answers 201 with the image as the task's `images` shows it:
+Adds an image to the task. The body is the file itself, and the query `name` its file name: `POST /api/tasks/7/images?name=save-button.png`. The type is read from the file's first bytes, whatever its name or the request's `Content-Type` says, and must be `image/png`, `image/jpeg`, `image/gif` or `image/webp`; any other is 415. The file is kept as it is sent, never decoded or changed, and is at most `image_max_bytes` (10 MiB): a larger one is 413. A task's images hold at most `task_images_max_bytes` (32 MiB) together: an image that would take them past it is 413 and is not kept, also when it is one of several sent at once. The name is the part after the last `/` or `\`, without control characters, and must then be 1 to 255 bytes and not `.` or `..`, else 400. A draft accepts images until it is started or cancelled, the same cutoff `PATCH` has; after that the upload is 409 and the image is not kept. Answers 201 with the image as the task's `images` shows it:
 
 ```json
 {"id": 4, "name": "save-button.png", "type": "image/png", "size": 48213}
