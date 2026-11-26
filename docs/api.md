@@ -198,7 +198,7 @@ Changes the `title`, `body` or `depends_on` the body names and keeps the others:
 {"title": "Fix the save button", "remove_images": [4]}
 ```
 
-A new or restored task can be edited until a run starts or the task is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. An id in `remove_images` that names no image of the task is 404. The fields, the dependencies and the removals are written together or not at all: a 400, a 404 or a 409 leaves the task, its dependencies and its images as they were, and a run that starts as the edit is made gets the task as it was before the edit or after the whole of it. Answers 200 with the task.
+A new or restored task can be edited until a run starts or the task is cancelled. An edit after that or of a cancelled task is 400, and so is a title or dependency that `POST` refuses, or a dependency that is the task itself or leads back to it. An id in `remove_images` that names no image of the task is 404. Changes to the title, body, dependencies and requested image removals are committed together. If the edit answers 400, 404 or 409, none of its changes is applied. Answers 200 with the task.
 
 ### `POST /api/tasks/{id}/actions`
 

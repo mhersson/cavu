@@ -69,9 +69,8 @@ func noBaseline(p store.Project) error {
 }
 
 // EditTask writes t's title and body, replaces the task's dependencies with
-// dependsOn and removes its images removeImages while the task is editable,
-// all or none, in a write that loses to any event recorded since the rule was
-// checked: a run that starts has the task as it was before the edit or after it.
+// dependsOn and removes its images removeImages while the task is editable.
+// The changes are committed together, and on an error none of them is.
 func EditTask(ctx context.Context, s Store, t store.Task, dependsOn, removeImages []int64) error {
 	if err := checkTitle(t.Title); err != nil {
 		return err
