@@ -8,7 +8,6 @@ function subscribe(onChange: () => void) {
   return () => mql.removeEventListener('change', onChange)
 }
 
-// True on a phone: the frame then has four tabs and no navigation along the top.
 export function useNarrow(): boolean {
   return useSyncExternalStore(subscribe, () => window.matchMedia(query).matches)
 }

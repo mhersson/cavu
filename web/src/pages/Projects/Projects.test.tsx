@@ -264,7 +264,7 @@ test('on a phone the list is flat and a project folds its sections', async () =>
   fireEvent.click(links[1])
   await settle()
   expect(here).toBe('/projects/docs')
-  expect(screen.getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects')
+  expect(within(screen.getByRole('main')).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects')
   expect(screen.getByRole('heading', { level: 1, name: 'docs' })).toBeInTheDocument()
   expect(screen.queryByRole('navigation', { name: 'Projects' })).toBeNull()
   expect(check()).toHaveClass('k-stop')

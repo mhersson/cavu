@@ -1,24 +1,30 @@
-import { NavLink, useLocation } from 'react-router'
+import { Link, useLocation } from 'react-router'
+import { AddIcon, InboxIcon, MoreIcon, ProjectsIcon, StatusIcon } from './icons.tsx'
 import './PhoneTabs.css'
 
-const tabs: [string, string][] = [
-  ['/', 'Needs you'],
-  ['/new', 'New task'],
-  ['/status', 'Status'],
-  ['/more', 'More'],
+const tabs = [
+  { to: '/', label: 'Needs you', icon: <InboxIcon /> },
+  { to: '/status', label: 'Status', icon: <StatusIcon /> },
+  { to: '/new', label: 'New task', icon: <AddIcon /> },
+  { to: '/projects', label: 'Projects', icon: <ProjectsIcon /> },
+  { to: '/more', label: 'More', icon: <MoreIcon /> },
 ]
 
-// Pages reached through More keep its tab current.
-const underMore = /^\/(settings|projects)(\/|$)/
-
 export default function PhoneTabs() {
-  const more = underMore.test(useLocation().pathname)
+  const section = useLocation().pathname.split('/')[1].toLowerCase()
+  const current = section === 'settings' ? '/more' : '/' + section
   return (
-    <nav className="tabbar">
-      {tabs.map(([to, label]) => (
-        <NavLink key={to} to={to} end className={({ isActive }) => (isActive || (more && to === '/more') ? 'on' : '')}>
-          {label}
-        </NavLink>
+    <nav className="tabbar" aria-label="Main">
+      {tabs.map(({ to, label, icon }) => (
+        <Link
+          key={to}
+          to={to}
+          aria-current={to === current ? 'page' : undefined}
+          className={to === '/new' ? 'new-task-tab' : undefined}
+        >
+          {icon}
+          <span>{label}</span>
+        </Link>
       ))}
     </nav>
   )

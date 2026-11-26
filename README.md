@@ -144,11 +144,11 @@ Each step says what to do and what you then see. Type the commands in a terminal
       <img src="docs/images/board-light.png" width="720" alt="The Board lists tasks under collapsible status headings, with search and project filters above the list. Each row shows the task number, title, project and any wait or action needed.">
     </picture>
 
-The same app works on a phone, with four tabs at the bottom; [Running the server](docs/running.md) says how a phone reaches CAVU.
+On a phone, use the bottom bar to open **Needs you**, **Status**, **New task**, **Projects** or **More**. See [Running the server](docs/running.md) to connect your phone to CAVU.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/phone-needs-you-and-task-page-dark.png">
-  <img src="docs/images/phone-needs-you-and-task-page-light.png" width="402" alt="CAVU on a phone, two screens side by side: Needs you, with a task's two questions from the agent and a pull request ready for review, and a running task's page with its timeline; each has the tabs Needs you, New task, Status and More at the bottom.">
+  <img src="docs/images/phone-needs-you-and-task-page-light.png" width="402" alt="Two CAVU phone screens show tasks that need your attention and a running task's timeline. Both have a green New task button in the middle of the bottom bar.">
 </picture>
 
 ### With the command line

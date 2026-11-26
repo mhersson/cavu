@@ -33,3 +33,36 @@ export const XIcon = () => (
     <path d="m4.5 4.5 7 7M11.5 4.5l-7 7" />
   </Icon>
 )
+
+export const InboxIcon = () => (
+  <Icon>
+    <path d="M2 9.5 4 3h8l2 6.5V13H2z" />
+    <path d="M2 9.5h3.5l1 1.5h3l1-1.5H14" />
+  </Icon>
+)
+
+export const StatusIcon = () => (
+  <Icon>
+    <path d="M1.5 8h3l2-5 3 10 2-5h3" />
+  </Icon>
+)
+
+export const AddIcon = () => (
+  <Icon>
+    <path d="M8 3v10M3 8h10" />
+  </Icon>
+)
+
+export const ProjectsIcon = () => (
+  <Icon>
+    <path d="M2 4h4l1.3 1.6H14V12.5H2z" />
+  </Icon>
+)
+
+export const MoreIcon = () => (
+  <Icon>
+    <circle cx="3.5" cy="8" r=".6" />
+    <circle cx="8" cy="8" r=".6" />
+    <circle cx="12.5" cy="8" r=".6" />
+  </Icon>
+)

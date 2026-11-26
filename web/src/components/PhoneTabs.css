@@ -1,14 +1,20 @@
 .tabbar {
+  flex: none;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
   background: var(--bg0);
   border-top: 1px solid var(--bg2);
-  padding: 6px 8px 14px;
+  padding: 6px 8px max(14px, env(safe-area-inset-bottom));
 }
 
 .tabbar a {
-  text-align: center;
-  padding: 8px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 0;
   border-radius: 8px;
   color: var(--grey2);
   font-size: 12.5px;
@@ -19,7 +25,13 @@
   text-decoration: none;
 }
 
-.tabbar a.on {
+.tabbar a[aria-current] {
   color: var(--fg);
   background: var(--bg2);
+}
+
+.tabbar a.new-task-tab {
+  background: var(--green);
+  color: var(--bg0);
+  font-weight: 600;
 }
