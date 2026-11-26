@@ -162,19 +162,27 @@ func TestUploadRefusesPastTheTaskCap(t *testing.T) {
 
 	files := f.imageFiles(t)
 
-	status, body := f.upload(t, id, "one-more.png", shot(8))
-	require.Equal(t, http.StatusRequestEntityTooLarge, status, body)
-	assertError(t, body)
+	r := f.request(t, fmt.Sprintf("POST /api/tasks/%d/images?name=one-more.png", id), shot(1<<20))
+	r.Header.Set("Authorization", "Bearer "+f.token)
+	resp, err := f.srv.Client().Do(r)
+	require.NoError(t, err)
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	assertError(t, string(body))
+	assert.False(t, resp.Close, "closing mid-upload can hide the response from the browser")
 	assert.Equal(t, engine.TaskImagesMaxBytes, held(f.images(t, id)), "the cap itself is taken, and not a byte more")
 	assert.Equal(t, files, f.imageFiles(t), "nothing is left behind")
 
 	other := f.task(t, `{"project": "site", "title": "Fix the cancel button"}`)
-	status, body = f.upload(t, other, "shot.png", shot(8))
-	require.Equal(t, http.StatusCreated, status, body)
+	status, got := f.upload(t, other, "shot.png", shot(8))
+	require.Equal(t, http.StatusCreated, status, got)
 }
 
 // Uploads sent at once keep the task within its cap, however they interleave.
-// Each is small, so a refused one's unread rest never costs the client its answer.
 func TestConcurrentUploadsKeepTheTaskCap(t *testing.T) {
 	f := newServer(t)
 	f.addProject(t, site)
