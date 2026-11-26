@@ -371,9 +371,9 @@ func TestActionRacesTheLoop(t *testing.T) {
 	assert.Equal(t, int32(1), f.nudges.Load())
 }
 
-// overlapper is the store the handler's Loop records through. Before the
-// first edit it is asked to write after between is set, it calls between, as
-// another edit committed after that edit's reads and before its write would.
+// overlapper is the store the handler's Loop records through. Once between is
+// set, the next edit's write first runs between, which makes a second edit to
+// the end, so that edit commits after the first edit's reads and before its write.
 type overlapper struct {
 	*store.Store
 
