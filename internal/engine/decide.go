@@ -298,7 +298,8 @@ func decide(s Snapshot) Action {
 		for _, d := range s.Deps {
 			if d.Status == StatusCancelled {
 				return halt(StopDependency, ClearRetry, "A dependency was cancelled.",
-					fmt.Sprintf("Task %d, which this task depends on, was cancelled.", d.TaskID))
+					fmt.Sprintf("Task %d, which this task depends on, was cancelled. Restore it and retry, or cancel this task, "+
+						"restore it to a draft and remove the dependency.", d.TaskID))
 			}
 		}
 
