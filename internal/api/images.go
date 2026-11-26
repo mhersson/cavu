@@ -20,7 +20,17 @@ import (
 const sniffLen = 512
 
 // uploadImage keeps the body as an image of the task, of the type its first bytes show.
-func (s *server) uploadImage(w http.ResponseWriter, r *http.Request) error {
+func (s *server) uploadImage(w http.ResponseWriter, r *http.Request) (err error) {
+	body := bufio.NewReader(http.MaxBytesReader(w, r.Body, engine.ImageMaxBytes))
+
+	// A browser can lose an answer sent while it still uploads, so a refused
+	// upload is read to its end. The per-image limit bounds it.
+	defer func() {
+		if err != nil {
+			_, _ = io.Copy(io.Discard, body)
+		}
+	}()
+
 	id, err := pathID(r)
 	if err != nil {
 		return err
@@ -31,7 +41,6 @@ func (s *server) uploadImage(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	body := bufio.NewReader(http.MaxBytesReader(w, r.Body, engine.ImageMaxBytes))
 	head, _ := body.Peek(sniffLen) // a read that failed fails again in AddImage
 
 	typ := http.DetectContentType(head)
@@ -45,9 +54,6 @@ func (s *server) uploadImage(w http.ResponseWriter, r *http.Request) error {
 	case tooLarge:
 		return &apiError{http.StatusRequestEntityTooLarge, fmt.Sprintf("an image is at most %d MiB", engine.ImageMaxBytes>>20)}
 	case errors.Is(err, store.ErrImagesFull):
-		// Browsers can lose the 413 if the connection closes mid-upload. The per-image limit bounds the drain.
-		_, _ = io.Copy(io.Discard, body)
-
 		return &apiError{http.StatusRequestEntityTooLarge, fmt.Sprintf("a task's images are at most %d MiB together", engine.TaskImagesMaxBytes>>20)}
 	case errors.Is(err, engine.ErrRefused):
 		return &apiError{http.StatusConflict, err.Error()}

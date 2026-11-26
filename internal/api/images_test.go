@@ -40,6 +40,25 @@ func (f *fixture) upload(t *testing.T, taskID int64, name, contents string) (int
 	return f.call(t, fmt.Sprintf("POST /api/tasks/%d/images?name=%s", taskID, url.QueryEscape(name)), contents)
 }
 
+// uploadKeptAlive is upload over a connection kept for more requests, and
+// also reports whether the server closed it, which mid-upload can hide the
+// answer from a browser.
+func (f *fixture) uploadKeptAlive(t *testing.T, taskID int64, name, contents string) (int, string, bool) {
+	t.Helper()
+
+	r := f.request(t, fmt.Sprintf("POST /api/tasks/%d/images?name=%s", taskID, url.QueryEscape(name)), contents)
+	r.Header.Set("Authorization", "Bearer "+f.token)
+	resp, err := f.srv.Client().Do(r)
+	require.NoError(t, err)
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	return resp.StatusCode, string(body), resp.Close
+}
+
 // images lists the task's stored images.
 func (f *fixture) images(t *testing.T, taskID int64) []store.Image {
 	t.Helper()
@@ -164,24 +183,49 @@ func TestUploadRefusesPastTheTaskCap(t *testing.T) {
 
 	files := f.imageFiles(t)
 
-	r := f.request(t, fmt.Sprintf("POST /api/tasks/%d/images?name=one-more.png", id), shot(1<<20))
-	r.Header.Set("Authorization", "Bearer "+f.token)
-	resp, err := f.srv.Client().Do(r)
-	require.NoError(t, err)
-
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
-	assertError(t, string(body))
-	assert.False(t, resp.Close, "closing mid-upload can hide the response from the browser")
+	status, body, closed := f.uploadKeptAlive(t, id, "one-more.png", shot(1<<20))
+	require.Equal(t, http.StatusRequestEntityTooLarge, status, body)
+	assertError(t, body)
+	assert.False(t, closed, "closing mid-upload can hide the response from the browser")
 	assert.Equal(t, engine.TaskImagesMaxBytes, held(f.images(t, id)), "the cap itself is taken, and not a byte more")
 	assert.Equal(t, files, f.imageFiles(t), "nothing is left behind")
 
 	other := f.task(t, `{"project": "site", "title": "Fix the cancel button"}`)
-	status, got := f.upload(t, other, "shot.png", shot(8))
-	require.Equal(t, http.StatusCreated, status, got)
+	status, body = f.upload(t, other, "shot.png", shot(8))
+	require.Equal(t, http.StatusCreated, status, body)
+}
+
+// Every refused upload is read to its end, so the server keeps the connection
+// and the answer reaches a browser still sending the image.
+func TestRefusedUploadsKeepTheConnection(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+	draft := f.task(t, `{"project": "site", "title": "Fix the save button"}`)
+	started := f.task(t, `{"project": "site", "title": "Queued"}`)
+	f.add(t, started, engine.TaskStarted, struct{}{})
+
+	for _, tc := range []struct {
+		what           string
+		task           int64
+		name, contents string
+		want           int
+	}{
+		{"a started task", started, "shot.png", shot(1 << 20), http.StatusConflict},
+		{"another type", draft, "notes.png", strings.Repeat("x", 1<<20), http.StatusUnsupportedMediaType},
+		{"a name that is no file's", draft, "..", shot(1 << 20), http.StatusBadRequest},
+		{"no such task", 99, "shot.png", shot(1 << 20), http.StatusNotFound},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			status, body, closed := f.uploadKeptAlive(t, tc.task, tc.name, tc.contents)
+			require.Equal(t, tc.want, status, body)
+			assertError(t, body)
+			assert.False(t, closed, "closing mid-upload can hide the response from the browser")
+		})
+	}
+
+	assert.Empty(t, f.images(t, draft))
+	assert.Empty(t, f.images(t, started))
+	assert.Empty(t, f.imageFiles(t))
 }
 
 // Uploads sent at once keep the task within its cap, however they interleave.
