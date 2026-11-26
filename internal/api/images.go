@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"slices"
@@ -44,6 +45,9 @@ func (s *server) uploadImage(w http.ResponseWriter, r *http.Request) error {
 	case tooLarge:
 		return &apiError{http.StatusRequestEntityTooLarge, fmt.Sprintf("an image is at most %d MiB", engine.ImageMaxBytes>>20)}
 	case errors.Is(err, store.ErrImagesFull):
+		// Browsers can lose the 413 if the connection closes mid-upload. The per-image limit bounds the drain.
+		_, _ = io.Copy(io.Discard, body)
+
 		return &apiError{http.StatusRequestEntityTooLarge, fmt.Sprintf("a task's images are at most %d MiB together", engine.TaskImagesMaxBytes>>20)}
 	case errors.Is(err, engine.ErrRefused):
 		return &apiError{http.StatusConflict, err.Error()}
