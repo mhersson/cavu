@@ -89,13 +89,13 @@ test('the navigation says when the stream is down', async () => {
   expect(mark).toHaveAttribute('data-live', 'false')
 })
 
-test('a narrow window shows the four tabs, a wide one the navigation', async () => {
-  const links = () => screen.getAllByRole('link').map((a) => a.getAttribute('href'))
+test('a narrow window shows the five tabs, a wide one the navigation', async () => {
+  const links = () => within(screen.getByRole('navigation')).getAllByRole('link').map((a) => a.getAttribute('href'))
   fakeServer((c) => (needsYou(c) ? json({ tasks: [] }) : undefined))
 
   narrow(true)
   const view = await show()
-  expect(links()).toEqual(['/', '/new', '/status', '/more'])
+  expect(links()).toEqual(['/', '/status', '/new', '/projects', '/more'])
   view.unmount()
 
   narrow(false)
@@ -103,16 +103,18 @@ test('a narrow window shows the four tabs, a wide one the navigation', async () 
   expect(links()).toEqual(['/', '/board', '/projects', '/settings'])
 })
 
-test('a page reached through More keeps the More tab current', async () => {
+test.each([
+  ['/projects', '/projects'],
+  ['/projects/cavu', '/projects'],
+  ['/settings', '/more'],
+  ['/status', '/status'],
+  ['/new', '/new'],
+])('the phone page %s marks %s as its current tab', async (path, tab) => {
   fakeServer((c) => (needsYou(c) ? json({ tasks: [] }) : undefined))
   narrow(true)
-  const current = () =>
-    screen.getAllByRole('link').filter((a) => a.classList.contains('on')).map((a) => a.getAttribute('href'))
-  const view = await show('/projects/cavu')
-  expect(current()).toEqual(['/more'])
-  view.unmount()
-  await show('/status')
-  expect(current()).toEqual(['/status'])
+  await show(path)
+  const nav = within(screen.getByRole('navigation', { name: 'Main' }))
+  expect(nav.getByRole('link', { current: 'page' })).toHaveAttribute('href', tab)
 })
 
 test('a path that is no screen goes to the first one', async () => {

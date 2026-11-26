@@ -5,12 +5,8 @@ import More from './More.tsx'
 
 afterEach(() => vi.unstubAllGlobals())
 
-test.each([
-  [1, '1 project'],
-  [3, '3 projects'],
-])('More shows %i projects as %s', async (n, shown) => {
+test('More links to settings and leaves projects to the tab bar', async () => {
   fakeServer((c) => {
-    if (c.path === '/api/projects') return json({ projects: Array.from({ length: n }, (_, i) => ({ id: i + 1 })) })
     if (c.path === '/api/health') return json({ status: 'ok', version: '1.2.3' })
   })
   render(
@@ -19,5 +15,5 @@ test.each([
     </MemoryRouter>,
   )
   await act(async () => {})
-  expect(await screen.findByText(shown)).toBeInTheDocument()
+  expect(screen.getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(['/settings'])
 })
