@@ -51,7 +51,7 @@ type Store interface {
 	Credentials(ctx context.Context) ([]store.Credential, error)
 	PutCredential(ctx context.Context, c store.Credential) error
 	RemoveCredential(ctx context.Context, name, secretPrefix string) error
-	PutImage(ctx context.Context, img store.Image, r io.Reader) (store.Image, error)
+	PutImage(ctx context.Context, img store.Image, r io.Reader, most int64) (store.Image, error)
 	TaskImages(ctx context.Context, taskID int64) ([]store.Image, error)
 	OpenImage(ctx context.Context, taskID, id int64) (store.Image, *os.File, error)
 	RemoveImages(ctx context.Context, taskID int64, ids []int64) error
@@ -468,6 +468,10 @@ func (p *pass) act(ctx context.Context, v view, a Action) error {
 		b.Capped, b.MicroUSD, b.Prices = true, moneyLeft(v.Snapshot), v.prices
 	}
 
+	if err := p.images(ctx, a.Kind, &o.cfg); err != nil {
+		return p.unconfigured(ctx, v, a, &row, err)
+	}
+
 	if a.Kind == KindPrepare {
 		return p.prepare(ctx, v, a, o)
 	}
@@ -498,12 +502,45 @@ func (p *pass) open(ctx context.Context, t store.Task, row store.Run) (openRun, 
 	return openRun{task: t, row: row, cfg: cfg}, err
 }
 
+// images gives a work or review action, whose sessions alone read the task's
+// images, their bytes, and keeps a prepare, a work or a review from a task
+// whose images hold more than TaskImagesMaxBytes, as no session of it could start.
+func (p *pass) images(ctx context.Context, kind ActionKind, c *RunConfig) error {
+	switch kind {
+	case KindPrepare:
+		held, err := imagesOver(ctx, p.Store, p.taskID)
+		if err == nil && held != "" {
+			err = imagesFull(held)
+		}
+
+		return err
+	case KindWork, KindReview:
+		images, err := p.taskImages(ctx, p.taskID)
+		c.Task.Images = images
+
+		return err
+	}
+
+	return nil
+}
+
 // unconfigured stops a task whose run config cannot be built, as a runner
-// fault does, so a person fixes the cause and retries. The stop is claimed
-// like an action. An open run keeps its volumes. A new run's row is abandoned
-// and the stop carries no run, as does the stop of an action that runs with no
-// run open, whose run is nil.
+// fault does, so a person fixes the cause and retries; one whose images hold
+// more than TaskImagesMaxBytes stops as images, which no retry clears while
+// they do. The stop is claimed like an action. An open run keeps its volumes.
+// A new run's row is abandoned and the stop carries no run, as does the stop
+// of an action that runs with no run open, whose run is nil.
 func (p *pass) unconfigured(ctx context.Context, v view, a Action, run *store.Run, cause error) error {
+	sp := StoppedPayload{
+		Reason: StopSandbox, Explanation: line(p.mask("The run cannot be configured: " + cause.Error())), Action: ClearRetry,
+		Detail: cause.Error(),
+	}
+
+	if full, ok := errors.AsType[imagesFull](cause); ok {
+		sp = StoppedPayload{Reason: StopImages, Action: ClearRetry, Explanation: "The task's images " + full.hold() +
+			". Cancel the task, restore it to a draft, remove images and start it again."}
+	}
+
 	if a.NewRun {
 		if err := p.endRun(ctx, *run, RunAbandoned); err != nil {
 			return fmt.Errorf("%w (abandoning after: %v)", err, cause)
@@ -512,10 +549,7 @@ func (p *pass) unconfigured(ctx context.Context, v view, a Action, run *store.Ru
 		run = nil
 	}
 
-	return p.halt(ctx, v.LastEventID, v.Task, run, StoppedPayload{
-		Reason: StopSandbox, Explanation: line(p.mask("The run cannot be configured: " + cause.Error())), Action: ClearRetry,
-		Detail: cause.Error(),
-	}, nil)
+	return p.halt(ctx, v.LastEventID, v.Task, run, sp, nil)
 }
 
 // abandon ends a new run row whose claim was never written, then returns cause.

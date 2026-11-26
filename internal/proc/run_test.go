@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -72,7 +73,7 @@ func TestRunWritesAndClosesStdin(t *testing.T) {
 	c := helperCommand(t, "cat")
 	c.Stdout = &out
 
-	require.NoError(t, Run(ctx, Local{}, c, []byte("in\n")))
+	require.NoError(t, Run(ctx, Local{}, c, strings.NewReader("in\n")))
 	assert.Equal(t, "in\n", out.String())
 }
 

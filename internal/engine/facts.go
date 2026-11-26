@@ -152,10 +152,11 @@ func (f *Facts) apply(e store.Event) {
 			f.PR.TakeBack = true
 		}
 
-		// A sandbox stop is a fault that cut an action short, a review's halt cut
-		// a review, and a pull request's stop came after the export: none is the
-		// work session's result, so the retry is no resume and keeps the session,
-		// and Decide redoes what came after it.
+		// A sandbox stop is a fault that cut an action short, an images stop kept
+		// one from starting, a review's halt cut a review, and a pull request's
+		// stop came after the export: none is the work session's result, so the
+		// retry is no resume and keeps the session, and Decide redoes what came
+		// after it.
 		if f.OpenStop != nil && keepsSession[f.OpenStop.Reason] || f.Review.Halt != nil {
 			f.clearStop(e)
 		} else {
@@ -360,7 +361,7 @@ func (f *Facts) sessionStarted(p SessionStartedPayload) {
 // keepsSession are the stops whose retry is no resume.
 var keepsSession = map[string]bool{
 	StopSandbox: true, StopPushRejected: true, StopCIFailed: true, StopCITimeout: true, StopNoChecks: true, StopConflict: true,
-	StopTakenOver: true, StopChangesRequested: true,
+	StopTakenOver: true, StopChangesRequested: true, StopImages: true,
 }
 
 // published records the head a publish put on the task's branch, the export

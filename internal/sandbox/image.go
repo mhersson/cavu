@@ -91,7 +91,7 @@ func (r Runtime) BuildImage(ctx context.Context, o BuildOptions, out io.Writer) 
 		args = slices.Insert(args, 1, "--progress=plain")
 	}
 
-	if err := r.run(ctx, call{args: args, stdin: ctxTar, stdout: w, stderr: w}); err != nil {
+	if err := r.run(ctx, call{args: args, stdin: bytes.NewReader(ctxTar), stdout: w, stderr: w}); err != nil {
 		return fmt.Errorf("build %s: %w", ImageName(o.CavuVersion), err)
 	}
 

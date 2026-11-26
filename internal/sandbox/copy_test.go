@@ -4,13 +4,19 @@ import (
 	"archive/tar"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mhersson/cavu/internal/proc"
 )
 
 func TestCopyInSendsFileEntries(t *testing.T) {
@@ -45,6 +51,41 @@ func TestCopyInSendsFileEntries(t *testing.T) {
 	}
 
 	assert.Equal(t, files, got)
+}
+
+// The stream is written as the client reads it, so a copy allocates far less
+// than the files hold.
+func TestCopyInStreamsTheFiles(t *testing.T) {
+	r, f := fakeRuntime(t, "docker")
+
+	const each = 8 << 20
+
+	files := map[string][]byte{}
+	for i := range 4 {
+		files[fmt.Sprintf("/run/cavu/images/%d.png", i)] = bytes.Repeat([]byte{byte(i)}, each)
+	}
+
+	var before, after runtime.MemStats
+
+	runtime.ReadMemStats(&before)
+	require.NoError(t, r.Container("cavu-agent-r1").CopyIn(t.Context(), files))
+	runtime.ReadMemStats(&after)
+
+	assert.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(each), "the copy allocated a file's worth or more")
+	assert.Len(t, f.only(t).stdin, 4*each+4*512+1024, "four headers, four files and the end of the archive")
+}
+
+func TestCopyInEndsWithAClientThatReadsNothing(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "docker")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nexit 3\n"), 0o700))
+
+	files := map[string][]byte{"/run/cavu/a": bytes.Repeat([]byte{1}, 8<<20)}
+
+	err := Runtime{Bin: bin, Kind: "docker"}.Container("cavu-agent-r1").CopyIn(t.Context(), files)
+
+	var exit *proc.ExitError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, 3, exit.Code)
 }
 
 func TestCopyInRefusesBadPaths(t *testing.T) {

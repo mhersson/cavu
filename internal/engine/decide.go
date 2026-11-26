@@ -90,6 +90,7 @@ const (
 	StopSandbox      = "sandbox"
 	StopCancelled    = "cancelled"
 	StopDependency   = "dependency"
+	StopImages       = "images"
 
 	StopPushRejected     = "push_rejected"     // the forge refused the push of the task's branch
 	StopCIFailed         = "ci_failed"         // the pull request's checks still fail after the fix runs

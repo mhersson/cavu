@@ -22,6 +22,7 @@ export type StopReason =
   | 'sandbox'
   | 'cancelled'
   | 'dependency'
+  | 'images'
   | 'push_rejected'
   | 'ci_failed'
   | 'ci_timeout'

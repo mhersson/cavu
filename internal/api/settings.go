@@ -73,7 +73,7 @@ func (s *server) settings(w http.ResponseWriter, r *http.Request) error {
 	reply(w, http.StatusOK, map[string]any{
 		"settings": settings, "secrets": secrets, "forge_credentials": named, "push_key": s.PushKey,
 		"defaults": engine.SettingDefaults(), "switches": engine.ProjectSwitches(store.Project{}),
-		"image_max_bytes": engine.ImageMaxBytes,
+		"image_max_bytes": engine.ImageMaxBytes, "task_images_max_bytes": engine.TaskImagesMaxBytes,
 	})
 
 	return nil

@@ -30,7 +30,7 @@ An error under `/api/`, and a 401 at `/mcp`, is a JSON object with one field, a 
 | 403 | The request has the session cookie, is not `GET` or `HEAD`, and lacks `X-CAVU-CSRF`. |
 | 404 | No route matches the method and the path, the id in the path names nothing, or the task the query names does not exist; or the task shows no change, or the change's file is gone; or the task has no image with the id. |
 | 409 | The write conflicts with what is stored: another project has the name, or events kept being recorded on the task between an action's read and its write every time the server tried. Or a task restoration overlaps removal of its project, or the container runtime would not remove the project's volumes. Nothing was written; send it again. Or an image was sent to a task that is cancelled or has started a run since creation or restoration, and is not kept. |
-| 413 | The body is larger than 1 MiB, or an image's is larger than 10 MiB. |
+| 413 | The body is larger than 1 MiB, or an image's is larger than 10 MiB or would take the task's images past 32 MiB together. |
 | 415 | An image's first bytes are not those of a PNG, JPEG, GIF or WebP. |
 | 429 | Too many failed logins; `Retry-After` gives the seconds to wait. |
 | 500 | The server failed. It logs the cause; the answer holds no detail. |
@@ -139,7 +139,7 @@ The others are the server's:
 
 ### `GET /api/settings`
 
-Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every named GitHub credential, the key a browser subscribes to notifications with, every settable key's default, every switch's default, and the most an image of a task may hold:
+Answers 200 with every key `cavu settings set` takes whose value is not empty, whether each instance secret is set, every named GitHub credential, the key a browser subscribes to notifications with, every settable key's default, every switch's default, the most an image of a task may hold, and the most a task's images may hold together:
 
 ```json
 {"settings": {"endpoint_mode": "subscription", "model_work": "sonnet"},
@@ -148,10 +148,10 @@ Answers 200 with every key `cavu settings set` takes whose value is not empty, w
  "push_key": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
  "defaults": {"concurrency": "3", "verify_timeout_minutes": "10", "model_review": "", "...": "..."},
  "switches": {"continuations": true, "verify_fix": true, "web_tools": false, "readiness": true, "review": true, "publish": true},
- "image_max_bytes": 10485760}
+ "image_max_bytes": 10485760, "task_images_max_bytes": 33554432}
 ```
 
-A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `forge_credentials` lists the named credentials by name, each with its `kind` (`token` or `app`) and, for an App, its `app_id` as a number; it is `[]` when there are none, and a credential's secret is never given or shown as set. `push_key` is the public half of the instance's VAPID key (RFC 8292), the uncompressed P-256 point in base64url, for a page to subscribe with as its `applicationServerKey`. CAVU makes the key once, when it opens a data directory that has none, and keeps it, sealed, as the secret `push.vapid_key`. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default. `image_max_bytes` is the size in bytes over which `POST /api/tasks/{id}/images` refuses an image.
+A value stored as a JSON object is given as that object, and any other as a string. A secret's value is never given. `forge_credentials` lists the named credentials by name, each with its `kind` (`token` or `app`) and, for an App, its `app_id` as a number; it is `[]` when there are none, and a credential's secret is never given or shown as set. `push_key` is the public half of the instance's VAPID key (RFC 8292), the uncompressed P-256 point in base64url, for a page to subscribe with as its `applicationServerKey`. CAVU makes the key once, when it opens a data directory that has none, and keeps it, sealed, as the secret `push.vapid_key`. `defaults` has every key `cavu settings set` takes, its default as text; a key with none is `""`, as is one that falls back on another key (`model_review` on `model_work`) or that is off when unset. `switches` has every switch a project has, at its default. `image_max_bytes` is the size in bytes over which `POST /api/tasks/{id}/images` refuses an image, and `task_images_max_bytes` the size in bytes over which it refuses one that would take the task's images past it together.
 
 ### `PATCH /api/settings`
 
@@ -210,7 +210,7 @@ Records a person's action on the task:
 
 | Action | What it does | Refused when |
 |--------|--------------|--------------|
-| `start` | Starts a draft task; a task already started is left as it is. | The task is cancelled, or its project is not runnable. |
+| `start` | Starts a draft task; a task already started is left as it is. | The task is cancelled, its project is not runnable, or its images hold more than 32 MiB together, as only images kept before that limit can; remove images to start it. |
 | `answer` | Answers the question that stopped the task with `text`. | The task has no open question, or `text` is blank. |
 | `retry` | Clears the open stop, so the task carries on. | The task is cancelled, or has no open stop. |
 | `cancel` | Cancels the task. | The task is cancelled or done. |
@@ -259,7 +259,7 @@ A list is `[]` when empty, never null.
 | `waiting` | Why a task that would act does not, such as a dependency that is not done, a usage limit that has not reset, another task's stop on the model endpoint, or every slot taken; for a task whose pull request CAVU watches, what the watch waits for, or the error of the last look at the pull request and when the next look comes; else `""`. |
 | `waiting_until` | When the wait in `waiting` ends on a clock: the reset of the usage limit of the task, or of another task that holds it, the next try after a fault, local midnight under a spent daily cap, or the end of the time the pull request's checks are given to start or to finish; else null. |
 | `dependencies` | The tasks that must be done before this one runs, each with its `id` and its `status`. `POST` and `PATCH` take their ids as `depends_on`. |
-| `stop` | The open stop, or null: its `reason` (`question`, `environment`, `verify_failed`, `budget`, `timeout`, `no_change`, `agent_error`, `usage_limit`, `endpoint`, `sandbox`, `cancelled`, `dependency`, `push_rejected`, `ci_failed`, `ci_timeout`, `no_checks`, `conflict`, `taken_over` or `changes_requested`), a one-line `explanation`, the one `action` that clears it (`answer`, `retry`, or `none` for a stop that a clock ends or that stays), and `resets_at`, the time a usage limit resets, else null. |
+| `stop` | The open stop, or null: its `reason` (`question`, `environment`, `verify_failed`, `budget`, `timeout`, `no_change`, `agent_error`, `usage_limit`, `endpoint`, `sandbox`, `cancelled`, `dependency`, `images`, `push_rejected`, `ci_failed`, `ci_timeout`, `no_checks`, `conflict`, `taken_over` or `changes_requested`), a one-line `explanation`, the one `action` that clears it (`answer`, `retry`, or `none` for a stop that a clock ends or that stays), and `resets_at`, the time a usage limit resets, else null. |
 | `questions` | While the open stop is `question`, every question the agent asked, of which the explanation holds the first, each with the `suggested_answer` the agent would assume, `""` where it gave none; else `[]`. |
 | `review` | The newest run's review, or null until a review gives a verdict or fails to give one: `rounds`, the fix rounds after its findings since a person last acted; `failed`, why the newest review gave no verdict, else `""`; `open`, the critical and important findings left open; and `minor`, the minor ones, which never start a fix round. A finding has a `severity` (`critical`, `important` or `minor`), `where`, `what` and `why`. A review that a usage limit, a timeout or the like cut short shows as the stop instead. |
 | `pull_request` | The task's pull request on GitHub, or null until a run publishes after creation or restoration: its `number`, `url`, `branch` and `head`, the commit CAVU has on the branch; `state`, `open`, `merged` or `closed` as CAVU's newest look at the pull request shows it, `open` before any look; `checks`, `none`, `pending`, `passed` or `failed`, the checks of `head`, where `""` means they were not read yet, as between a publish and the first look at it or when the newest look shows another commit; `failed_checks`, the names of the failed ones, `[]` for none; and `ready`, true only when the newest look shows `head`, the pull request is open and no draft, no request of a reviewer is waiting for a follow-up run, its checks are `passed` (or `none`, on a project with `no_ci`), and the task waits for a person: no run or stop is open, and it is neither done nor cancelled. |
@@ -287,7 +287,7 @@ Answers 200 with the task's exported change as a file, the one `change` shows (f
 
 ### `POST /api/tasks/{id}/images`
 
-Adds an image to the task. The body is the file itself, and the query `name` its file name: `POST /api/tasks/7/images?name=save-button.png`. The type is read from the file's first bytes, whatever its name or the request's `Content-Type` says, and must be `image/png`, `image/jpeg`, `image/gif` or `image/webp`; any other is 415. The file is kept as it is sent, never decoded or changed, and is at most `image_max_bytes` (10 MiB): a larger one is 413. The name is the part after the last `/` or `\`, without control characters, and must then be 1 to 255 bytes and not `.` or `..`, else 400. A new or restored task accepts images until it begins a run or is cancelled; after that, or for a cancelled task, the upload is 409. Answers 201 with the image as the task's `images` shows it:
+Adds an image to the task. The body is the file itself, and the query `name` its file name: `POST /api/tasks/7/images?name=save-button.png`. The type is read from the file's first bytes, whatever its name or the request's `Content-Type` says, and must be `image/png`, `image/jpeg`, `image/gif` or `image/webp`; any other is 415. The file is kept as it is sent, never decoded or changed, and is at most `image_max_bytes` (10 MiB): a larger one is 413. A task's images hold at most `task_images_max_bytes` (32 MiB) together: an image that would take them past it is 413 and is not kept, also when it is one of several sent at once. The name is the part after the last `/` or `\`, without control characters, and must then be 1 to 255 bytes and not `.` or `..`, else 400. A new or restored task accepts images until it begins a run or is cancelled; after that, or for a cancelled task, the upload is 409. Answers 201 with the image as the task's `images` shows it:
 
 ```json
 {"id": 4, "name": "save-button.png", "type": "image/png", "size": 48213}

@@ -174,9 +174,15 @@ func checkDeps(ctx context.Context, s Store, taskID int64, dependsOn []int64) er
 }
 
 // Start records that a person started a draft task. A started task is left
-// as it is. A cancelled task, and one whose project has neither a passed
-// baseline nor a waived verify, is refused.
+// as it is. A cancelled task, one whose project has neither a passed baseline
+// nor a waived verify, and one whose images hold more than
+// TaskImagesMaxBytes together, is refused.
 func (l *Loop) Start(ctx context.Context, taskID int64) error {
+	held, err := imagesOver(ctx, l.Store, taskID)
+	if err != nil {
+		return err
+	}
+
 	return l.human(ctx, taskID, TaskStarted, struct{}{}, func(f Facts, p store.Project) (bool, error) {
 		switch {
 		case f.Cancelled:
@@ -185,6 +191,8 @@ func (l *Loop) Start(ctx context.Context, taskID int64) error {
 			return false, nil
 		case !Runnable(p):
 			return false, noBaseline(p)
+		case held != "":
+			return false, refuse("%v; remove images to start it", imagesFull(held))
 		}
 
 		return true, nil

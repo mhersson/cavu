@@ -43,6 +43,8 @@ func (s *server) uploadImage(w http.ResponseWriter, r *http.Request) error {
 	switch _, tooLarge := errors.AsType[*http.MaxBytesError](err); {
 	case tooLarge:
 		return &apiError{http.StatusRequestEntityTooLarge, fmt.Sprintf("an image is at most %d MiB", engine.ImageMaxBytes>>20)}
+	case errors.Is(err, store.ErrImagesFull):
+		return &apiError{http.StatusRequestEntityTooLarge, fmt.Sprintf("a task's images are at most %d MiB together", engine.TaskImagesMaxBytes>>20)}
 	case errors.Is(err, engine.ErrRefused):
 		return &apiError{http.StatusConflict, err.Error()}
 	case err != nil && r.Context().Err() != nil:
