@@ -21,8 +21,8 @@ var ImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 // AddImage keeps what r holds as an image of img.TaskID, refused as EditTask
 // is. The rule is checked before r is read, and again once it is, in a write
-// that loses to any event recorded since: a run that starts has every image
-// this returns and none it refuses. An image that would take the task's
+// that loses to any event recorded since: a task that is started has every
+// image this returns and none it refuses. An image that would take the task's
 // images past TaskImagesMaxBytes together is store.ErrImagesFull.
 func AddImage(ctx context.Context, s Store, img store.Image, r io.Reader) (store.Image, error) {
 	if err := editable(ctx, s, img.TaskID); err != nil {

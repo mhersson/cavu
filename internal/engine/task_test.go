@@ -122,6 +122,21 @@ func TestEditTask(t *testing.T) {
 		assert.Equal(t, []byte("shot.png"), h.contents(c.ID, img.ID))
 	})
 
+	t.Run("a started task with no run is refused", func(t *testing.T) {
+		h := newHarness(t)
+		d := h.draft()
+		img := h.putImage(h.task.ID, "shot.png")
+
+		err := engine.EditTask(t.Context(), h.store, store.Task{ID: h.task.ID, Title: "Something else"}, []int64{d.ID}, []int64{img.ID})
+		require.ErrorIs(t, err, engine.ErrRefused)
+
+		got, err := h.store.Task(t.Context(), h.task.ID)
+		require.NoError(t, err)
+		assert.Equal(t, h.task.Title, got.Title)
+		assert.Empty(t, h.deps(h.task.ID))
+		assert.Equal(t, []store.Image{img}, h.images(h.task.ID))
+	})
+
 	t.Run("a task whose run started is refused", func(t *testing.T) {
 		h := newHarness(t)
 		h.add(0, engine.RunStarted, "engine", `{"reason":"initial"}`)
@@ -454,6 +469,8 @@ func TestRestoreAfterRun(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, engine.StatusDraft, status)
 	require.NoError(t, h.loop.Start(ctx, id))
+	require.ErrorIs(t, engine.EditTask(ctx, h.store, store.Task{ID: id, Title: "Too late"}, nil, nil), engine.ErrRefused,
+		"a restored draft is editable until it is started again")
 	status, err = h.run(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, engine.StatusInReview, status)

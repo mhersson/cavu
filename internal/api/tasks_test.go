@@ -221,6 +221,9 @@ func TestTaskRequestsRefused(t *testing.T) {
 	draft := f.task(t, `{"project": "site", "title": "Draft"}`)
 	dependent := f.task(t, fmt.Sprintf(`{"project": "site", "title": "Dependent", "depends_on": [%d]}`, draft))
 
+	queued := f.task(t, `{"project": "site", "title": "Queued"}`)
+	f.add(t, queued, engine.TaskStarted, struct{}{})
+
 	running := f.task(t, `{"project": "site", "title": "Running"}`)
 	f.add(t, running, engine.TaskStarted, struct{}{})
 	f.add(t, running, engine.RunStarted, engine.RunStartedPayload{Reason: "initial"})
@@ -246,6 +249,7 @@ func TestTaskRequestsRefused(t *testing.T) {
 		{"a dependency on a missing task", "POST /api/tasks", `{"project": "site", "title": "Add a footer", "depends_on": [99]}`, http.StatusBadRequest},
 		{"a dependency on itself", edit(draft), fmt.Sprintf(`{"depends_on": [%d]}`, draft), http.StatusBadRequest},
 		{"a dependency that closes a cycle", edit(draft), fmt.Sprintf(`{"depends_on": [%d]}`, dependent), http.StatusBadRequest},
+		{"an edit of a started task with no run", edit(queued), fmt.Sprintf(`{"title": "Something else", "depends_on": [%d]}`, draft), http.StatusBadRequest},
 		{"an edit after the run started", edit(running), `{"title": "Something else"}`, http.StatusBadRequest},
 		{"an unknown action", act(draft), `{"action": "merge"}`, http.StatusBadRequest},
 		{"an answer with no open question", act(running), `{"action": "answer", "text": "Blue."}`, http.StatusBadRequest},

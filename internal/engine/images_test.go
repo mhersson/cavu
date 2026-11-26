@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"math"
@@ -103,8 +102,11 @@ func (h *harness) cancelledDraft() int64 {
 	return d.ID
 }
 
-func TestAddImageRefusedOnceARunStarted(t *testing.T) {
+func TestAddImageRefusedOnceStarted(t *testing.T) {
 	tests := map[string]func(h *harness) (int64, io.Reader){
+		"a started task with no run, before the image is read": func(h *harness) (int64, io.Reader) {
+			return h.task.ID, notRead
+		},
 		"a task whose run started, before the image is read": func(h *harness) (int64, io.Reader) {
 			h.startRun()
 
@@ -113,8 +115,10 @@ func TestAddImageRefusedOnceARunStarted(t *testing.T) {
 		"a cancelled draft, before the image is read": func(h *harness) (int64, io.Reader) {
 			return h.cancelledDraft(), notRead
 		},
-		"a task whose run starts during the upload": func(h *harness) (int64, io.Reader) {
-			return h.task.ID, &readerThen{before: h.startRun, r: strings.NewReader("shot")}
+		"a draft started during the upload": func(h *harness) (int64, io.Reader) {
+			d := h.draft()
+
+			return d.ID, &readerThen{before: func() { h.startTask(d.ID) }, r: strings.NewReader("shot")}
 		},
 	}
 
@@ -132,8 +136,9 @@ func TestAddImageRefusedOnceARunStarted(t *testing.T) {
 	}
 }
 
-func TestRemoveImagesRefusedOnceARunStarted(t *testing.T) {
+func TestRemoveImagesRefusedOnceStarted(t *testing.T) {
 	tests := map[string]func(h *harness) int64{
+		"a started task with no run": func(h *harness) int64 { return h.task.ID },
 		"a task whose run started": func(h *harness) int64 {
 			h.startRun()
 
@@ -184,56 +189,6 @@ func (h *harness) files() []string {
 	return names
 }
 
-// runHeld starts the task's run in the background and returns once the run
-// has started and is held at its prepare. goOn lets it run to review and gives
-// the config of its one session.
-func (h *harness) runHeld() (goOn func() engine.RunConfig) {
-	h.t.Helper()
-
-	held, release := make(chan struct{}), make(chan struct{})
-	h.runner.gate = func(ctx context.Context, c call) error {
-		if c.method != "prepare" {
-			return nil
-		}
-
-		close(held)
-
-		select {
-		case <-release:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	ended := make(chan error, 1)
-
-	go func() {
-		status, err := h.run(h.t.Context())
-		if err == nil && status != engine.StatusInReview {
-			err = fmt.Errorf("the run ended %s", status)
-		}
-
-		ended <- err
-	}()
-
-	select {
-	case <-held:
-	case err := <-ended:
-		require.FailNow(h.t, "the run ended before its prepare", "%v", err)
-	}
-
-	return func() engine.RunConfig {
-		close(release)
-		require.NoError(h.t, <-ended)
-
-		works := h.runner.callsOf("work")
-		require.Len(h.t, works, 1)
-
-		return works[0].cfg
-	}
-}
-
 // aroundWrite is a store that calls before just before it first keeps an
 // image's row or writes an edit, and after just after, and counts the writes
 // it was asked for.
@@ -270,15 +225,26 @@ func callOnce(f *func()) {
 	}
 }
 
-// overlapping is the store with the task's first run started, and held at its
-// prepare, just before it writes an image's row or an edit when before is set,
-// else just after. session lets the run go on and gives its session's config.
-func (h *harness) overlapping(before bool) (s engine.Store, session func() engine.RunConfig) {
-	var goOn func() engine.RunConfig
+// startable is a draft whose project has a baseline, so a person can start it.
+func (h *harness) startable() int64 {
+	h.t.Helper()
+	h.withBaseline()
+
+	return h.draft().ID
+}
+
+// startingAround is the store that has a person start the draft just before
+// it writes an image's row or an edit when before is set, else just after.
+// session runs the draft to review and gives the config of its one session.
+func (h *harness) startingAround(id int64, before bool) (s *aroundWrite, session func() engine.RunConfig) {
+	started := false
+	start := func() {
+		require.NoError(h.t, h.loop.Start(h.t.Context(), id))
+
+		started = true
+	}
 
 	around := &aroundWrite{Store: h.store}
-	start := func() { goOn = h.runHeld() }
-
 	if before {
 		around.before = start
 	} else {
@@ -287,104 +253,113 @@ func (h *harness) overlapping(before bool) (s engine.Store, session func() engin
 
 	return around, func() engine.RunConfig {
 		h.t.Helper()
-		require.NotNil(h.t, goOn, "the run started")
+		require.True(h.t, started, "the draft was started")
 
-		return goOn()
+		status, err := h.loop.RunTask(h.t.Context(), id)
+		require.NoError(h.t, err)
+		require.Equal(h.t, engine.StatusInReview, status)
+
+		works := h.runner.callsOf("work")
+		require.Len(h.t, works, 1)
+
+		return works[0].cfg
 	}
 }
 
-// An upload or a removal as the first run starts comes before the run, which
-// has what it leaves, or is refused and leaves the run what was there before.
-func TestImageWritesAsTheFirstRunStarts(t *testing.T) {
+// An upload or a removal as a draft is started comes before the start, and
+// its run has what it leaves, or is refused and leaves the run what was there.
+func TestImageWritesAsTheDraftIsStarted(t *testing.T) {
 	shot := engine.TaskImage{Name: "shot.png", Type: "image/png", Data: []byte("shot.png")}
 	upload := func(s engine.Store, taskID int64) (store.Image, error) {
 		return engine.AddImage(t.Context(), s, store.Image{TaskID: taskID, Name: "shot.png", Type: "image/png"}, strings.NewReader("shot.png"))
 	}
 
-	t.Run("an upload the run starts before is refused and never reaches it", func(t *testing.T) {
+	t.Run("an upload the start comes before is refused and never reaches the run", func(t *testing.T) {
 		h := newHarness(t)
-		h.withBaseline()
-		s, session := h.overlapping(true)
+		id := h.startable()
+		s, session := h.startingAround(id, true)
 
-		_, err := upload(s, h.task.ID)
+		_, err := upload(s, id)
 		require.ErrorIs(t, err, engine.ErrRefused)
-		assert.Equal(t, h.editRefusal(h.task.ID), err.Error())
-		assert.Empty(t, h.images(h.task.ID), "nothing is kept")
+		assert.Equal(t, h.editRefusal(id), err.Error())
+		assert.Equal(t, 1, s.writes, "the write that lost to the start is not made again")
+		assert.Empty(t, h.images(id), "nothing is kept")
 		assert.Empty(t, h.files(), "nothing of the upload is left")
 		assert.Empty(t, session().Task.Images)
 	})
 
-	t.Run("an upload kept as the run starts reaches it", func(t *testing.T) {
+	t.Run("an upload kept before the start reaches the run", func(t *testing.T) {
 		h := newHarness(t)
-		h.withBaseline()
-		s, session := h.overlapping(false)
+		id := h.startable()
+		s, session := h.startingAround(id, false)
 
-		img, err := upload(s, h.task.ID)
+		img, err := upload(s, id)
 		require.NoError(t, err)
-		assert.Equal(t, []store.Image{img}, h.images(h.task.ID))
+		assert.Equal(t, []store.Image{img}, h.images(id))
 		assert.Equal(t, []engine.TaskImage{shot}, session().Task.Images)
 	})
 
-	t.Run("a removal the run starts before is refused and leaves the run its image", func(t *testing.T) {
+	t.Run("a removal the start comes before is refused and leaves the run its image", func(t *testing.T) {
 		h := newHarness(t)
-		h.withBaseline()
-		img := h.putImage(h.task.ID, "shot.png")
-		s, session := h.overlapping(true)
+		id := h.startable()
+		img := h.putImage(id, "shot.png")
+		s, session := h.startingAround(id, true)
 
-		err := h.removeImages(s, h.task.ID, img.ID)
+		err := h.removeImages(s, id, img.ID)
 		require.ErrorIs(t, err, engine.ErrRefused)
-		assert.Equal(t, h.editRefusal(h.task.ID), err.Error())
-		assert.Equal(t, []store.Image{img}, h.images(h.task.ID), "nothing is removed")
+		assert.Equal(t, h.editRefusal(id), err.Error())
+		assert.Equal(t, []store.Image{img}, h.images(id), "nothing is removed")
 		assert.Equal(t, []engine.TaskImage{shot}, session().Task.Images)
 	})
 
-	t.Run("a removal made as the run starts is not in it", func(t *testing.T) {
+	t.Run("a removal made before the start is not in the run", func(t *testing.T) {
 		h := newHarness(t)
-		h.withBaseline()
-		img := h.putImage(h.task.ID, "shot.png")
-		s, session := h.overlapping(false)
+		id := h.startable()
+		img := h.putImage(id, "shot.png")
+		s, session := h.startingAround(id, false)
 
-		require.NoError(t, h.removeImages(s, h.task.ID, img.ID))
-		assert.Empty(t, h.images(h.task.ID))
+		require.NoError(t, h.removeImages(s, id, img.ID))
+		assert.Empty(t, h.images(id))
 		assert.Empty(t, h.files(), "the image's contents are gone")
 		assert.Empty(t, session().Task.Images)
 	})
 }
 
-// An edit as the first run starts reaches the run whole, or is refused and
+// An edit as a draft is started reaches its run whole, or is refused and
 // leaves the run the task as it was.
-func TestEditAsTheFirstRunStarts(t *testing.T) {
+func TestEditAsTheDraftIsStarted(t *testing.T) {
 	kept := engine.TaskImage{Name: "kept.png", Type: "image/png", Data: []byte("kept.png")}
 	gone := engine.TaskImage{Name: "gone.png", Type: "image/png", Data: []byte("gone.png")}
 
-	// withImages is the harness's task, ready to run, as stored, with its images kept.png and gone.png.
+	// withImages is a draft, ready to start, as stored, with its images kept.png and gone.png.
 	withImages := func(t *testing.T) (*harness, store.Task, []store.Image) {
 		h := newHarness(t)
-		h.withBaseline()
-		imgs := []store.Image{h.putImage(h.task.ID, kept.Name), h.putImage(h.task.ID, gone.Name)}
+		id := h.startable()
+		imgs := []store.Image{h.putImage(id, kept.Name), h.putImage(id, gone.Name)}
 
-		was, err := h.store.Task(t.Context(), h.task.ID)
+		was, err := h.store.Task(t.Context(), id)
 		require.NoError(t, err)
 
 		return h, was, imgs
 	}
 
-	edit := func(h *harness, s engine.Store, gone store.Image) error {
-		return engine.EditTask(h.t.Context(), s, store.Task{ID: h.task.ID, Title: "Renamed", Body: "A new body."}, nil, []int64{gone.ID})
+	edit := func(s engine.Store, was store.Task, gone store.Image) error {
+		return engine.EditTask(t.Context(), s, store.Task{ID: was.ID, Title: "Renamed", Body: "A new body."}, nil, []int64{gone.ID})
 	}
 
-	t.Run("an edit the run starts before is refused and leaves the run the task", func(t *testing.T) {
+	t.Run("an edit the start comes before is refused and leaves the run the task", func(t *testing.T) {
 		h, was, imgs := withImages(t)
-		s, session := h.overlapping(true)
+		s, session := h.startingAround(was.ID, true)
 
-		err := edit(h, s, imgs[1])
+		err := edit(s, was, imgs[1])
 		require.ErrorIs(t, err, engine.ErrRefused)
-		assert.Equal(t, h.editRefusal(h.task.ID), err.Error())
+		assert.Equal(t, h.editRefusal(was.ID), err.Error())
+		assert.Equal(t, 1, s.writes, "the write that lost to the start is not made again")
 
-		got, err := h.store.Task(t.Context(), h.task.ID)
+		got, err := h.store.Task(t.Context(), was.ID)
 		require.NoError(t, err)
 		assert.Equal(t, was, got, "nothing is written")
-		assert.Equal(t, imgs, h.images(h.task.ID), "nothing is removed")
+		assert.Equal(t, imgs, h.images(was.ID), "nothing is removed")
 
 		cfg := session()
 		assert.Equal(t, was.Title, cfg.Task.Title)
@@ -392,12 +367,12 @@ func TestEditAsTheFirstRunStarts(t *testing.T) {
 		assert.Equal(t, []engine.TaskImage{kept, gone}, cfg.Task.Images)
 	})
 
-	t.Run("an edit made as the run starts reaches it whole", func(t *testing.T) {
-		h, _, imgs := withImages(t)
-		s, session := h.overlapping(false)
+	t.Run("an edit made before the start reaches the run whole", func(t *testing.T) {
+		h, was, imgs := withImages(t)
+		s, session := h.startingAround(was.ID, false)
 
-		require.NoError(t, edit(h, s, imgs[1]))
-		assert.Equal(t, imgs[:1], h.images(h.task.ID))
+		require.NoError(t, edit(s, was, imgs[1]))
+		assert.Equal(t, imgs[:1], h.images(was.ID))
 		assert.Equal(t, []string{imgs[0].SHA256}, h.files(), "the removed image's contents are gone")
 
 		cfg := session()
@@ -422,37 +397,36 @@ func (h *harness) contents(taskID, id int64) []byte {
 	return data
 }
 
-// A write that loses to an event the task stays editable after, as a draft's
-// start is, is made again at that event.
-func TestImageWritesRetryOnceTheTaskStaysEditable(t *testing.T) {
-	// startingDraft is a draft and the store that starts it just before the first image write.
-	startingDraft := func(t *testing.T) (*harness, int64, *aroundWrite) {
+// A write that loses to an event the task stays a draft after is made again
+// at that event. A progress event is one: Reduce reads none.
+func TestImageWritesRetryOnceTheTaskStaysADraft(t *testing.T) {
+	// eventAround is a draft and the store that records such an event on it just before the first write.
+	eventAround := func(t *testing.T) (*harness, int64, *aroundWrite) {
 		h := newHarness(t)
-		h.withBaseline()
 		d := h.draft()
 
-		return h, d.ID, &aroundWrite{Store: h.store, before: func() { require.NoError(t, h.loop.Start(t.Context(), d.ID)) }}
+		return h, d.ID, &aroundWrite{Store: h.store, before: func() { h.addTo(d.ID, now, engine.AgentText, struct{}{}) }}
 	}
 
 	t.Run("an upload is kept once, with its contents", func(t *testing.T) {
-		h, id, s := startingDraft(t)
+		h, id, s := eventAround(t)
 
 		img, err := engine.AddImage(t.Context(), s, store.Image{TaskID: id, Name: "shot.png", Type: "image/png"}, strings.NewReader("shot"))
 		require.NoError(t, err)
-		assert.Equal(t, 2, s.writes, "the first write lost to the start")
-		assert.Equal(t, engine.StatusQueued, h.viewOf(id, nil).Status)
+		assert.Equal(t, 2, s.writes, "the first write lost to the event")
+		assert.Equal(t, engine.StatusDraft, h.viewOf(id, nil).Status)
 		assert.Equal(t, []store.Image{img}, h.images(id))
 		assert.Equal(t, []byte("shot"), h.contents(id, img.ID))
 		assert.Equal(t, []string{img.SHA256}, h.files(), "no temporary file")
 	})
 
 	t.Run("an edit with a removal is made whole", func(t *testing.T) {
-		h, id, s := startingDraft(t)
+		h, id, s := eventAround(t)
 		img := h.putImage(id, "shot.png")
 
 		require.NoError(t, engine.EditTask(t.Context(), s, store.Task{ID: id, Title: "Renamed", Body: "A new body."}, nil, []int64{img.ID}))
-		assert.Equal(t, 2, s.writes, "the first write lost to the start")
-		assert.Equal(t, engine.StatusQueued, h.viewOf(id, nil).Status)
+		assert.Equal(t, 2, s.writes, "the first write lost to the event")
+		assert.Equal(t, engine.StatusDraft, h.viewOf(id, nil).Status)
 
 		got, err := h.store.Task(t.Context(), id)
 		require.NoError(t, err)
@@ -465,7 +439,7 @@ func TestImageWritesRetryOnceTheTaskStaysEditable(t *testing.T) {
 
 func TestViewCarriesImages(t *testing.T) {
 	h := newHarness(t)
-	id := h.task.ID
+	id := h.draft().ID
 
 	b, err := json.Marshal(h.viewOf(id, nil))
 	require.NoError(t, err)
