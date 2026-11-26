@@ -2,8 +2,10 @@ package api_test
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
 	"net"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -144,6 +147,100 @@ func TestUploadRefusesOverTheCap(t *testing.T) {
 	status, body = f.upload(t, id, "at.png", shot(int(engine.ImageMaxBytes)))
 	require.Equal(t, http.StatusCreated, status, body)
 	assert.EqualValues(t, engine.ImageMaxBytes, object(t, body)["size"], "the cap itself is taken")
+}
+
+func TestUploadRefusesPastTheTaskCap(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+	id := f.task(t, `{"project": "site", "title": "Fix the save button"}`)
+	full := int(engine.ImageMaxBytes)
+
+	for left := int(engine.TaskImagesMaxBytes); left > 0; left -= min(left, full) {
+		status, body := f.upload(t, id, "part.png", shot(min(left, full)))
+		require.Equal(t, http.StatusCreated, status, body)
+	}
+
+	files := f.imageFiles(t)
+
+	status, body := f.upload(t, id, "one-more.png", shot(8))
+	require.Equal(t, http.StatusRequestEntityTooLarge, status, body)
+	assertError(t, body)
+	assert.Equal(t, engine.TaskImagesMaxBytes, held(f.images(t, id)), "the cap itself is taken, and not a byte more")
+	assert.Equal(t, files, f.imageFiles(t), "nothing is left behind")
+
+	other := f.task(t, `{"project": "site", "title": "Fix the cancel button"}`)
+	status, body = f.upload(t, other, "shot.png", shot(8))
+	require.Equal(t, http.StatusCreated, status, body)
+}
+
+// Uploads sent at once keep the task within its cap, however they interleave.
+// Each is small, so a refused one's unread rest never costs the client its answer.
+func TestConcurrentUploadsKeepTheTaskCap(t *testing.T) {
+	f := newServer(t)
+	f.addProject(t, site)
+	id := f.task(t, `{"project": "site", "title": "Fix the save button"}`)
+
+	const (
+		uploads = 5
+		size    = 30 << 10
+		fit     = 3
+	)
+
+	// Room for three of the uploads and not for a fourth.
+	room := int64(fit*size + size/2)
+	_, err := f.store.PutImage(t.Context(), store.Image{TaskID: id, Name: "big.png", Type: "image/png"},
+		bytes.NewReader(make([]byte, engine.TaskImagesMaxBytes-room)), engine.TaskImagesMaxBytes)
+	require.NoError(t, err)
+
+	requests := make([]*http.Request, uploads)
+	for i := range requests {
+		requests[i] = f.request(t, fmt.Sprintf("POST /api/tasks/%d/images?name=shot.png", id), shot(size-i))
+		requests[i].Header.Set("Authorization", "Bearer "+f.token)
+	}
+
+	statuses := make([]int, uploads)
+	errs := make([]error, uploads)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	var wg sync.WaitGroup
+
+	for i, r := range requests {
+		wg.Go(func() {
+			resp, err := client.Do(r)
+			if err != nil {
+				errs[i] = err
+
+				return
+			}
+
+			_, errs[i] = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			statuses[i] = resp.StatusCode
+		})
+	}
+
+	wg.Wait()
+	require.NoError(t, errors.Join(errs...))
+
+	counts := map[int]int{}
+	for _, s := range statuses {
+		counts[s]++
+	}
+
+	assert.Equal(t, map[int]int{http.StatusCreated: fit, http.StatusRequestEntityTooLarge: uploads - fit}, counts)
+	assert.Len(t, f.images(t, id), 1+fit)
+	assert.LessOrEqual(t, held(f.images(t, id)), engine.TaskImagesMaxBytes)
+	assert.Len(t, f.imageFiles(t), 1+fit, "a refused upload's contents are not kept")
+}
+
+// held is what imgs hold together.
+func held(imgs []store.Image) int64 {
+	var n int64
+	for _, img := range imgs {
+		n += img.Size
+	}
+
+	return n
 }
 
 func TestUploadRefusesAnotherType(t *testing.T) {

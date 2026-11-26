@@ -12,18 +12,24 @@ import (
 // ImageMaxBytes is the most one image of a task may hold.
 const ImageMaxBytes int64 = 10 << 20
 
+// TaskImagesMaxBytes is the most a task's images may hold together. It bounds
+// what a session's config carries, which holds every image's bytes.
+const TaskImagesMaxBytes int64 = 32 << 20
+
 // ImageTypes are the media types an image of a task may have.
 var ImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 // AddImage keeps what r holds as an image of img.TaskID, refused as EditTask
 // is. The rule is checked before r is read and again once the image is kept,
-// so a run that started meanwhile never lacks an image this returns.
+// so a run that started meanwhile never lacks an image this returns. An image
+// that would take the task's images past TaskImagesMaxBytes together is
+// store.ErrImagesFull.
 func AddImage(ctx context.Context, s Store, img store.Image, r io.Reader) (store.Image, error) {
 	if _, err := editable(ctx, s, img.TaskID); err != nil {
 		return store.Image{}, err
 	}
 
-	kept, err := s.PutImage(ctx, img, r)
+	kept, err := s.PutImage(ctx, img, r, TaskImagesMaxBytes)
 	if err != nil {
 		return store.Image{}, fmt.Errorf("task %d: %w", img.TaskID, err)
 	}

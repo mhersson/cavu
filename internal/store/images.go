@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -26,6 +27,10 @@ type Image struct {
 }
 
 const imageColumns = `id, task_id, name, type, size, sha256, created_at`
+
+// ErrImagesFull is wrapped by PutImage's refusal of an image that would take
+// its task's images past the most they may hold together.
+var ErrImagesFull = errors.New("the task's images would hold more than they may together")
 
 func scanImage(sc scanner) (Image, error) {
 	var (
@@ -44,13 +49,28 @@ func scanImage(sc scanner) (Image, error) {
 
 // PutImage keeps what r holds as an image of img.TaskID with img's name and
 // type, and returns it with its id, size, SHA-256 and time. Contents another
-// image holds already are kept once.
-func (s *Store) PutImage(ctx context.Context, img Image, r io.Reader) (Image, error) {
-	tmp, sum, size, err := s.receive(r)
+// image holds already are kept once. An image that would take the task's
+// images past most bytes together is ErrImagesFull: r is read only until it
+// passes the room left, and the room is checked again as the row is written,
+// so of uploads that each fit alone but not together, only those that fit are kept.
+func (s *Store) PutImage(ctx context.Context, img Image, r io.Reader, most int64) (Image, error) {
+	held, err := s.imagesHeld(ctx, img.TaskID)
+	if err != nil {
+		return Image{}, fmt.Errorf("put image: %w", err)
+	}
+
+	room := most - held
+
+	// One byte past the room is enough to know the image does not fit.
+	tmp, sum, size, err := s.receive(io.LimitReader(r, max(min(room, math.MaxInt64-1)+1, 0)))
 	if err != nil {
 		return Image{}, err
 	}
 	defer func() { _ = os.Remove(tmp) }() // gone already once placed
+
+	if size > room {
+		return Image{}, fmt.Errorf("put image: %w", ErrImagesFull)
+	}
 
 	img.Size, img.SHA256, img.CreatedAt = size, sum, time.UnixMilli(time.Now().UnixMilli())
 
@@ -61,9 +81,15 @@ func (s *Store) PutImage(ctx context.Context, img Image, r io.Reader) (Image, er
 		return Image{}, err
 	}
 
+	// One statement, so no other upload's row lands between the sum and the insert.
 	err = s.db.QueryRowContext(ctx, `INSERT INTO task_images (task_id, name, type, size, sha256, created_at)
-		VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
-		img.TaskID, img.Name, img.Type, img.Size, img.SHA256, img.CreatedAt.UnixMilli()).Scan(&img.ID)
+		SELECT ?, ?, ?, ?, ?, ? WHERE (SELECT COALESCE(SUM(size), 0) FROM task_images WHERE task_id = ?) <= ?
+		RETURNING id`,
+		img.TaskID, img.Name, img.Type, img.Size, img.SHA256, img.CreatedAt.UnixMilli(), img.TaskID, most-size).Scan(&img.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrImagesFull
+	}
+
 	if err != nil {
 		s.unlink(ctx, sum)
 
@@ -71,6 +97,15 @@ func (s *Store) PutImage(ctx context.Context, img Image, r io.Reader) (Image, er
 	}
 
 	return img, nil
+}
+
+// imagesHeld is what the task's images hold together, in bytes.
+func (s *Store) imagesHeld(ctx context.Context, taskID int64) (int64, error) {
+	var held int64
+
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size), 0) FROM task_images WHERE task_id = ?`, taskID).Scan(&held)
+
+	return held, err
 }
 
 // receive writes r to a temporary file in the images directory, hashing it as

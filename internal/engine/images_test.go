@@ -1,9 +1,11 @@
 package engine_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -45,7 +47,7 @@ func (h *harness) images(taskID int64) []store.Image {
 func (h *harness) putImage(taskID int64, name string) store.Image {
 	h.t.Helper()
 
-	img, err := h.store.PutImage(h.t.Context(), store.Image{TaskID: taskID, Name: name, Type: "image/png"}, strings.NewReader(name))
+	img, err := h.store.PutImage(h.t.Context(), store.Image{TaskID: taskID, Name: name, Type: "image/png"}, strings.NewReader(name), engine.TaskImagesMaxBytes)
 	require.NoError(h.t, err)
 
 	return img
@@ -160,4 +162,32 @@ func TestViewCarriesImages(t *testing.T) {
 		{ID: one.ID, Name: "save-button.png", Type: "image/png", Size: 5},
 		{ID: two.ID, Name: "dialog.webp", Type: "image/webp", Size: 6},
 	}, h.viewOf(id, nil).Images, "in the order added")
+}
+
+// putBytes stores n bytes as an image of the task past the edit rule and the
+// cap, as an image kept before the cap was.
+func (h *harness) putBytes(taskID, n int64) store.Image {
+	h.t.Helper()
+
+	img, err := h.store.PutImage(h.t.Context(), store.Image{TaskID: taskID, Name: "shot.png", Type: "image/png"},
+		bytes.NewReader(make([]byte, n)), math.MaxInt64)
+	require.NoError(h.t, err)
+
+	return img
+}
+
+func TestAddImageKeepsTheTaskWithinTheCap(t *testing.T) {
+	h := newHarness(t)
+	d := h.draft()
+	h.putBytes(d.ID, engine.TaskImagesMaxBytes-1)
+
+	add := func(data string) error {
+		_, err := engine.AddImage(t.Context(), h.store, store.Image{TaskID: d.ID, Name: "shot.png", Type: "image/png"}, strings.NewReader(data))
+
+		return err
+	}
+
+	require.ErrorIs(t, add("xy"), store.ErrImagesFull)
+	require.NoError(t, add("x"), "the cap itself is taken")
+	require.ErrorIs(t, add("x"), store.ErrImagesFull)
 }

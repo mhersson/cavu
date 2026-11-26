@@ -51,7 +51,7 @@ type Store interface {
 	Credentials(ctx context.Context) ([]store.Credential, error)
 	PutCredential(ctx context.Context, c store.Credential) error
 	RemoveCredential(ctx context.Context, name, secretPrefix string) error
-	PutImage(ctx context.Context, img store.Image, r io.Reader) (store.Image, error)
+	PutImage(ctx context.Context, img store.Image, r io.Reader, most int64) (store.Image, error)
 	TaskImages(ctx context.Context, taskID int64) ([]store.Image, error)
 	OpenImage(ctx context.Context, taskID, id int64) (store.Image, *os.File, error)
 	RemoveImages(ctx context.Context, taskID int64, ids []int64) error

@@ -8,9 +8,11 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 
@@ -52,10 +54,28 @@ func imageFiles(t *testing.T, dir string) []string {
 	return names
 }
 
+// notRead fails the upload of whoever reads it.
+var notRead = iotest.ErrReader(errors.New("the image was read"))
+
+// readerThen calls before on its first read, then reads r.
+type readerThen struct {
+	before func()
+	r      io.Reader
+}
+
+func (r *readerThen) Read(p []byte) (int, error) {
+	if r.before != nil {
+		r.before()
+		r.before = nil
+	}
+
+	return r.r.Read(p)
+}
+
 func putImage(t *testing.T, s *Store, taskID int64, name string, data []byte) Image {
 	t.Helper()
 
-	img, err := s.PutImage(t.Context(), Image{TaskID: taskID, Name: name, Type: "image/png"}, bytes.NewReader(data))
+	img, err := s.PutImage(t.Context(), Image{TaskID: taskID, Name: name, Type: "image/png"}, bytes.NewReader(data), math.MaxInt64)
 	require.NoError(t, err)
 
 	return img
@@ -162,7 +182,7 @@ func TestPutImageLeavesNothingOnFailure(t *testing.T) {
 		lost := errors.New("connection lost")
 
 		_, err := s.PutImage(t.Context(), Image{TaskID: task.ID, Name: "a.png", Type: "image/png"},
-			io.MultiReader(strings.NewReader("half an image"), iotest.ErrReader(lost)))
+			io.MultiReader(strings.NewReader("half an image"), iotest.ErrReader(lost)), math.MaxInt64)
 		require.ErrorIs(t, err, lost)
 		assert.Empty(t, taskImages(t, s, task.ID))
 		assert.Empty(t, imageFiles(t, dir))
@@ -176,13 +196,118 @@ func TestPutImageLeavesNothingOnFailure(t *testing.T) {
 		kept := putImage(t, s, task.ID, "kept.png", []byte("kept"))
 
 		for _, data := range []string{"new", "kept"} {
-			_, err := s.PutImage(t.Context(), Image{TaskID: 999, Name: "a.png", Type: "image/png"}, strings.NewReader(data))
+			_, err := s.PutImage(t.Context(), Image{TaskID: 999, Name: "a.png", Type: "image/png"}, strings.NewReader(data), math.MaxInt64)
 			require.Error(t, err, data)
 		}
 
 		assert.Equal(t, []string{kept.SHA256}, imageFiles(t, dir))
 		assert.Equal(t, []byte("kept"), readImage(t, s, task.ID, kept.ID))
 	})
+}
+
+func TestPutImageKeepsTheTaskWithinMost(t *testing.T) {
+	t.Parallel()
+
+	const most = 10
+
+	put := func(s *Store, taskID int64, r io.Reader, m int64) error {
+		_, err := s.PutImage(t.Context(), Image{TaskID: taskID, Name: "a.png", Type: "image/png"}, r, m)
+
+		return err
+	}
+
+	t.Run("up to most together, and not a byte more", func(t *testing.T) {
+		t.Parallel()
+
+		s, dir := openWithImages(t)
+		task := seedTask(t, s)
+		other := otherTask(t, s, task)
+
+		require.NoError(t, put(s, task.ID, strings.NewReader("123456"), most))
+		require.NoError(t, put(s, task.ID, strings.NewReader("7890"), most), "most itself is taken")
+
+		files := imageFiles(t, dir)
+		require.ErrorIs(t, put(s, task.ID, strings.NewReader("x"), most), ErrImagesFull)
+		assert.Len(t, taskImages(t, s, task.ID), 2)
+		assert.Equal(t, files, imageFiles(t, dir), "the refused image left nothing behind")
+
+		require.NoError(t, put(s, other.ID, strings.NewReader("1234567890"), most), "each task has its own room")
+	})
+
+	t.Run("an image past the room is read only one byte past it", func(t *testing.T) {
+		t.Parallel()
+
+		s, _ := openWithImages(t)
+		task := seedTask(t, s)
+		require.NoError(t, put(s, task.ID, strings.NewReader("123456"), most))
+
+		r := io.MultiReader(strings.NewReader("abcde"), notRead)
+		require.ErrorIs(t, put(s, task.ID, r, most), ErrImagesFull)
+	})
+
+	t.Run("a task that holds more than most already is refused before a byte is read", func(t *testing.T) {
+		t.Parallel()
+
+		s, _ := openWithImages(t)
+		task := seedTask(t, s)
+		require.NoError(t, put(s, task.ID, strings.NewReader("1234567890ab"), math.MaxInt64))
+
+		require.ErrorIs(t, put(s, task.ID, notRead, most), ErrImagesFull)
+	})
+}
+
+// Uploads that each fit alone but not together all pass the first check of the
+// room before any is kept; only those that fit are kept.
+func TestConcurrentPutImagesKeepTheTaskWithinMost(t *testing.T) {
+	t.Parallel()
+
+	const (
+		uploads = 5
+		size    = 3
+		most    = 10
+	)
+
+	s, dir := openWithImages(t)
+	task := seedTask(t, s)
+
+	var all sync.WaitGroup
+
+	all.Add(uploads)
+
+	errs := make([]error, uploads)
+
+	var wg sync.WaitGroup
+
+	for i := range uploads {
+		wg.Go(func() {
+			r := &readerThen{before: func() { all.Done(); all.Wait() }, r: strings.NewReader(strings.Repeat(string(rune('a'+i)), size))}
+			_, errs[i] = s.PutImage(t.Context(), Image{TaskID: task.ID, Name: "a.png", Type: "image/png"}, r, most)
+		})
+	}
+
+	wg.Wait()
+
+	var kept int
+
+	for _, err := range errs {
+		if err == nil {
+			kept++
+
+			continue
+		}
+
+		require.ErrorIs(t, err, ErrImagesFull)
+	}
+
+	assert.Equal(t, most/size, kept)
+
+	var held int64
+	for _, img := range taskImages(t, s, task.ID) {
+		held += img.Size
+	}
+
+	assert.LessOrEqual(t, held, int64(most))
+	assert.Len(t, imageFiles(t, dir), kept, "a refused upload's contents are not kept")
 }
 
 func TestOpenImage(t *testing.T) {
