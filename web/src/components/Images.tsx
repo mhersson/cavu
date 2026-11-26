@@ -1,5 +1,5 @@
 import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { ext, imageTypes, imageURL, removeImage, size, type Upload, type Uploads } from '../api/images.ts'
+import { ext, imageTypes, imageURL, size, type Upload, type Uploads } from '../api/images.ts'
 import type { Image, Task } from '../api/types.ts'
 import Dialog from './Dialog.tsx'
 import ImageViewer from './ImageViewer.tsx'
@@ -24,10 +24,11 @@ export function DropBox({ what, cap }: { what: string; cap: number }) {
   )
 }
 
-type TileProps = { name: string; onOpen?: () => void; onRemove?: () => void; children: ReactNode }
+type TileProps = { name: string; leaving?: boolean; onOpen?: () => void; onRemove?: () => void; children: ReactNode }
 
-// One image: its picture and name, which open it when onOpen is given, and an × when onRemove is.
-export function Tile({ name, onOpen, onRemove, children }: TileProps) {
+// One image: its picture and name, which open it when onOpen is given, and an × when onRemove is. A leaving one is
+// being removed.
+export function Tile({ name, leaving, onOpen, onRemove, children }: TileProps) {
   const face = (
     <>
       {children}
@@ -35,7 +36,7 @@ export function Tile({ name, onOpen, onRemove, children }: TileProps) {
     </>
   )
   return (
-    <div className="tile">
+    <div className={leaving ? 'tile out' : 'tile'} aria-busy={leaving || undefined}>
       {onOpen ? (
         <button type="button" className="tile-open" onClick={onOpen}>
           {face}
@@ -153,30 +154,31 @@ export function ImagesSection({ where, tiles, going, refused, cap, onAdd, childr
 
 type Props = { task: Task; up: Uploads; onTask: (t: Task) => void }
 
-// A task's images, each opening to fill the window. A draft's take more and lose one asked first; any other task's are
-// read only, and show only when there are some or an upload has news.
+// A task's images, each opening to fill the window. A draft's take more and lose one asked first, which stays, faded,
+// until the server answers; any other task's are read only, and show only when there are some or an upload has news.
 export default function Images({ task, up, onTask }: Props) {
   const [opened, setOpened] = useState<Image>()
-  const [removing, setRemoving] = useState<Image>()
+  const [asking, setAsking] = useState<Image>()
   const draft = task.status === 'draft'
-  const remove = (img: Image) =>
-    removeImage(task.id, img.id).then(
-      (t) => {
-        up.refuse('')
-        onTask(t)
-      },
-      (e: unknown) => up.refuse(e instanceof Error ? e.message : String(e)),
-    )
 
   if (!draft && task.images.length + up.going.length === 0 && !up.refused) return null
   return (
     <ImagesSection
       where="task"
-      tiles={task.images.map((img) => (
-        <Tile key={img.id} name={img.name} onOpen={() => setOpened(img)} onRemove={draft ? () => setRemoving(img) : undefined}>
-          <img src={imageURL(task.id, img.id)} alt="" loading="lazy" />
-        </Tile>
-      ))}
+      tiles={task.images.map((img) => {
+        const leaving = up.removing.includes(img.id)
+        return (
+          <Tile
+            key={img.id}
+            name={img.name}
+            leaving={leaving}
+            onOpen={() => setOpened(img)}
+            onRemove={draft && !leaving ? () => setAsking(img) : undefined}
+          >
+            <img src={imageURL(task.id, img.id)} alt="" loading="lazy" />
+          </Tile>
+        )
+      })}
       going={up.going}
       refused={up.refused}
       cap={up.cap}
@@ -191,18 +193,18 @@ export default function Images({ task, up, onTask }: Props) {
           onClose={() => setOpened(undefined)}
         />
       )}
-      {removing && (
-        <Dialog title={`Remove ${removing.name}?`} onClose={() => setRemoving(undefined)}>
+      {asking && (
+        <Dialog title={`Remove ${asking.name}?`} onClose={() => setAsking(undefined)}>
           <p className="note">The image is removed from the task for good. This cannot be undone.</p>
           <div className="acts">
-            <button className="btn" onClick={() => setRemoving(undefined)}>
+            <button className="btn" onClick={() => setAsking(undefined)}>
               Keep it
             </button>
             <button
               className="btn danger"
               onClick={() => {
-                setRemoving(undefined)
-                void remove(removing)
+                setAsking(undefined)
+                up.remove(asking.id, onTask)
               }}
             >
               Remove

@@ -54,6 +54,13 @@ function attach(t: Task, c: Call) {
   return json(image, 201)
 }
 
+// The server's answer to a removal: the task without the images it names.
+function detach(t: Task, c: Call) {
+  const gone = (c.body as { remove_images: number[] }).remove_images
+  t.images = t.images.filter((i) => !gone.includes(i.id))
+  return json(t)
+}
+
 // A server that keeps the task, attaches and removes its images as the server does, and answers with answer first when it gives one.
 function serve(t: Task, answer: (c: Call) => Response | Promise<Response> | undefined = () => undefined) {
   return fakeServer((c) => {
@@ -62,11 +69,7 @@ function serve(t: Task, answer: (c: Call) => Response | Promise<Response> | unde
     if (c.method === 'GET' && c.path === '/api/settings') return json({ image_max_bytes: CAP })
     if (c.method === 'GET' && c.path === '/api/tasks/7') return json(t)
     if (isUpload(c)) return attach(t, c)
-    if (c.method === 'PATCH' && c.path === '/api/tasks/7') {
-      const gone = (c.body as { remove_images: number[] }).remove_images
-      t.images = t.images.filter((i) => !gone.includes(i.id))
-      return json(t)
-    }
+    if (c.method === 'PATCH' && c.path === '/api/tasks/7') return detach(t, c)
     if (c.path === '/api/tasks?needs_you=true') return json({ tasks: [] })
   })
 }
@@ -87,6 +90,14 @@ const picker = () => section()!.querySelector<HTMLInputElement>('input[type=file
 const alert = () => within(section()!).queryByRole('alert')
 const page = () => document.querySelector<HTMLElement>('.task-page')!
 const png = (name: string, bytes: number) => new File([new Uint8Array(bytes)], name, { type: 'image/png' })
+const start = () => screen.getByRole('button', { name: 'Start' })
+const starts = (calls: Call[]) => calls.filter((c) => c.method === 'POST' && c.path === '/api/tasks/7/actions')
+const patches = (calls: Call[]) => calls.filter((c) => c.method === 'PATCH')
+const removeButton = (name: string) => within(section()!).queryByRole('button', { name: `Remove ${name}` })
+const askToRemove = async (name: string) => {
+  await userEvent.click(removeButton(name)!)
+  await userEvent.click(within(screen.getByRole('dialog')).getAllByRole('button')[1])
+}
 const files = (list: File[]) => ({ dataTransfer: { types: ['Files'], files: list } })
 const dropOn = (el: HTMLElement, list: File[]) => {
   fireEvent.dragOver(el, files(list))
@@ -208,6 +219,66 @@ test("the × asks first: keeping it sends nothing, and Remove sends the edit wit
   await userEvent.click(within(screen.getByRole('dialog')).getAllByRole('button')[1])
   expect(calls.filter((c) => c.method === 'PATCH').map((c) => [c.path, c.body])).toEqual([['/api/tasks/7', { remove_images: [4] }]])
   await waitFor(() => expect(sources()).toEqual(['/api/tasks/7/images/3']))
+})
+
+test('a removal holds Start on a desktop and on a phone, and its image stays without an × until the server removes it', async () => {
+  for (const phone of [false, true]) {
+    narrow(phone)
+    const t = task({ images: [shot, wide] })
+    let answer = () => {}
+    const calls = serve(t, (c) => (c.method === 'PATCH' ? new Promise<Response>((r) => (answer = () => r(detach(t, c)))) : undefined))
+    open()
+    await waitFor(() => expect(tiles()).toHaveLength(2))
+    expect(start()).toBeEnabled()
+
+    await askToRemove(shot.name)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(patches(calls)).toHaveLength(1)
+    expect(sources()).toEqual(['/api/tasks/7/images/3', '/api/tasks/7/images/4'])
+    expect(busy()).toHaveLength(1)
+    expect(removeButton(shot.name)).toBeNull()
+    expect(start()).toBeDisabled()
+    await userEvent.click(start())
+    expect(starts(calls)).toEqual([])
+
+    await act(async () => answer())
+    await waitFor(() => expect(sources()).toEqual(['/api/tasks/7/images/4']))
+    expect(busy()).toHaveLength(0)
+    expect(start()).toBeEnabled()
+    cleanup()
+  }
+})
+
+test("a refused removal keeps its image and shows the server's line, and Start comes back once no upload or removal is under way", async () => {
+  for (const phone of [false, true]) {
+    narrow(phone)
+    const t = task({ images: [shot] })
+    let refuse = () => {}
+    let attached = () => {}
+    serve(t, (c) => {
+      if (c.method === 'PATCH') return new Promise<Response>((r) => (refuse = () => r(json({ error: 'the task has started' }, 409))))
+      if (isUpload(c)) return new Promise<Response>((r) => (attached = () => r(attach(t, c))))
+    })
+    open()
+    await waitFor(() => expect(tiles()).toHaveLength(1))
+    await askToRemove(shot.name)
+    expect(start()).toBeDisabled()
+    await userEvent.upload(picker(), png('more.png', 4))
+    expect(busy()).toHaveLength(2)
+
+    await act(async () => refuse())
+    await waitFor(() => expect(alert()).not.toBeNull())
+    expect(sources()).toEqual(['/api/tasks/7/images/3'])
+    expect(removeButton(shot.name)).not.toBeNull()
+    expect(busy()).toHaveLength(1)
+    expect(start()).toBeDisabled()
+
+    await act(async () => attached())
+    await waitFor(() => expect(sources()).toEqual(['/api/tasks/7/images/3', '/api/tasks/7/images/101']))
+    expect(busy()).toHaveLength(0)
+    expect(start()).toBeEnabled()
+    cleanup()
+  }
 })
 
 test('on a desktop a file dropped on the page and an image pasted are attached, and a paste in a field that holds text is the field’s', async () => {
