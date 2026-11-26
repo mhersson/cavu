@@ -334,6 +334,7 @@ type spyStore struct {
 	createRuns int
 	runWrites  []store.Run
 	usageTies  []string // per append with usage rows, the type of its last event, which the rows are tied to
+	imageOpens int
 }
 
 func (s *spyStore) Append(ctx context.Context, taskID, expectLast int64, events []store.Event, usage []store.Usage) (int64, error) {
@@ -435,6 +436,22 @@ func (s *spyStore) created() int {
 	defer s.mu.Unlock()
 
 	return s.createRuns
+}
+
+func (s *spyStore) OpenImage(ctx context.Context, taskID, id int64) (store.Image, *os.File, error) {
+	s.mu.Lock()
+	s.imageOpens++
+	s.mu.Unlock()
+
+	return s.Store.OpenImage(ctx, taskID, id)
+}
+
+// opened is how many times an image's contents were opened.
+func (s *spyStore) opened() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.imageOpens
 }
 
 type harness struct {

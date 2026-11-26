@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"math"
 	"net"
@@ -35,9 +34,10 @@ const (
 	skillsBound         = 16 << 20
 )
 
-// BuildRunConfig reads the project, settings and secrets, the task's images
-// and the instance's files for every action of a run. overrides (may be nil)
-// replace model_work, effort_work and switches for a replay.
+// BuildRunConfig reads the project, settings and secrets and the instance's
+// files for every action of a run, but not the task's images, which only a
+// work or review action reads. overrides (may be nil) replace model_work,
+// effort_work and switches for a replay.
 func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, overrides map[string]string) (RunConfig, error) {
 	p, err := l.Store.Project(ctx, t.ProjectID)
 	if err != nil {
@@ -49,12 +49,8 @@ func (l *Loop) BuildRunConfig(ctx context.Context, t store.Task, r store.Run, ov
 		return RunConfig{}, err
 	}
 
-	// runConfig leaves the files and images out: an environment check and the
-	// watch of a pull request run no session.
-	if c.Task.Images, err = l.taskImages(ctx, t.ID); err != nil {
-		return RunConfig{}, err
-	}
-
+	// runConfig leaves the files out: an environment check and the watch of a
+	// pull request run no session.
 	values, err := l.Store.Settings(ctx)
 	if err != nil {
 		return RunConfig{}, err
@@ -91,34 +87,6 @@ func (l *Loop) forgeConfig(ctx context.Context, t store.Task, runID int64, pr *P
 	c.Repo.Branch = pr.Branch
 
 	return c, err
-}
-
-// taskImages reads the task's images in the order added.
-func (l *Loop) taskImages(ctx context.Context, taskID int64) ([]TaskImage, error) {
-	imgs, err := l.Store.TaskImages(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-
-	var out []TaskImage
-
-	for _, img := range imgs {
-		_, f, err := l.Store.OpenImage(ctx, taskID, img.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		data, err := io.ReadAll(f)
-		_ = f.Close()
-
-		if err != nil {
-			return nil, fmt.Errorf("read image %d of task %d: %w", img.ID, taskID, err)
-		}
-
-		out = append(out, TaskImage{Name: img.Name, Type: img.Type, Data: data})
-	}
-
-	return out, nil
 }
 
 // readSkills reads every file below root but those in a .git directory,

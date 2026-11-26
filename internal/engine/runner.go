@@ -49,7 +49,7 @@ type RunConfig struct {
 	Identity struct{ Name, Email string }
 	Task     struct {
 		Title, Body string
-		Images      []TaskImage // in the order added
+		Images      []TaskImage // in the order added, in a work or review action's config alone
 	}
 	// Budget is what the run's model calls may still spend, set in key mode
 	// while a money cap is in force; the proxy counts it against Prices.

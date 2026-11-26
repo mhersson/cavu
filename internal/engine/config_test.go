@@ -726,3 +726,39 @@ func TestBuildRunConfigInstanceFiles(t *testing.T) {
 		assert.Zero(t, checks[0].cfg.Agent.Instance)
 	})
 }
+
+// Only a work or review action reads the task's images; every other action's
+// config carries none, and no image's contents are opened for it.
+func TestOnlySessionsReadTheImages(t *testing.T) {
+	h := newHarness(t)
+	h.withReview()
+	h.withPublish()
+	h.putImage(h.task.ID, "one.png")
+	h.putImage(h.task.ID, "two.png")
+
+	opened := map[string]int{} // per method, the contents opened before its calls
+	seen := 0
+
+	h.runner.onCall = func(c call) {
+		n := h.spy.opened()
+		opened[c.method] += n - seen
+		seen = n
+
+		if c.method != "work" && c.method != "review" {
+			assert.Empty(t, c.cfg.Task.Images, c.method)
+		}
+	}
+
+	status, err := h.run(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, engine.StatusInReview, status)
+
+	for _, method := range []string{"prepare", "verify", "export", "publish"} {
+		require.NotEmpty(t, h.runner.callsOf(method), method)
+		assert.Zero(t, opened[method], method)
+	}
+
+	for _, method := range []string{"work", "review"} {
+		assert.Equal(t, 2*len(h.runner.callsOf(method)), opened[method], method)
+	}
+}

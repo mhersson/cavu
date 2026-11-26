@@ -191,3 +191,102 @@ func TestAddImageKeepsTheTaskWithinTheCap(t *testing.T) {
 	require.NoError(t, add("x"), "the cap itself is taken")
 	require.ErrorIs(t, add("x"), store.ErrImagesFull)
 }
+
+func TestStartRefusesADraftPastTheImageCap(t *testing.T) {
+	h := newHarness(t)
+	h.withBaseline()
+	d := h.draft()
+	h.putBytes(d.ID, engine.TaskImagesMaxBytes/2)
+	h.putBytes(d.ID, engine.TaskImagesMaxBytes/2)
+	extra := h.putBytes(d.ID, 1)
+
+	require.ErrorIs(t, h.loop.Start(t.Context(), d.ID), engine.ErrRefused)
+	assert.Equal(t, engine.StatusDraft, h.viewOf(d.ID, nil).Status)
+
+	require.NoError(t, engine.RemoveImages(t.Context(), h.store, d.ID, []int64{extra.ID}))
+	require.NoError(t, h.loop.Start(t.Context(), d.ID), "images that hold the cap itself start")
+	assert.Equal(t, engine.StatusQueued, h.viewOf(d.ID, nil).Status)
+}
+
+// stoppedForImages runs the task and wants it stopped as images, for a person
+// to clear, with no image's contents read.
+func (h *harness) stoppedForImages() {
+	h.t.Helper()
+
+	status, err := h.run(h.t.Context())
+	require.NoError(h.t, err)
+	require.Equal(h.t, engine.StatusBlocked, status)
+
+	v := h.viewOf(h.task.ID, nil)
+	require.NotNil(h.t, v.Stop)
+	assert.Equal(h.t, engine.StopImages, v.Stop.Reason)
+	assert.Equal(h.t, engine.ClearRetry, v.Stop.Action)
+	assert.True(h.t, v.NeedsYou)
+	assert.Zero(h.t, h.spy.opened(), "no image's contents are read")
+}
+
+// A task whose images hold more than the cap, as only one that started before
+// the cap can, runs no prepare and no session.
+func TestImagesPastTheCapStopTheTask(t *testing.T) {
+	t.Run("before a new run's prepare, and again after a retry", func(t *testing.T) {
+		h := newHarness(t)
+		h.putBytes(h.task.ID, engine.TaskImagesMaxBytes/2)
+		h.putBytes(h.task.ID, engine.TaskImagesMaxBytes/2+1)
+
+		h.stoppedForImages()
+		require.NoError(t, h.loop.Retry(t.Context(), h.task.ID))
+		h.stoppedForImages()
+
+		assert.Empty(t, h.runner.callsOf("prepare"))
+
+		require.Len(t, h.spy.ended(), 2, "each new run is abandoned")
+
+		for id, outcome := range h.spy.ended() {
+			assert.Equal(t, engine.RunAbandoned, outcome, "run %d", id)
+		}
+	})
+
+	t.Run("before a session of an open run, until a person restores the task and removes images", func(t *testing.T) {
+		h := newHarness(t)
+		h.withBaseline()
+		ctx, id := t.Context(), h.task.ID
+		kept := h.putImage(id, "kept.png")
+
+		var over []store.Image
+
+		h.runner.onCall = func(c call) {
+			if c.method == "prepare" && over == nil {
+				over = []store.Image{h.putBytes(id, engine.TaskImagesMaxBytes/2), h.putBytes(id, engine.TaskImagesMaxBytes/2)}
+			}
+		}
+
+		h.stoppedForImages()
+		assert.Empty(t, h.runner.callsOf("work"))
+		assert.Equal(t, []string{"prepare", "release/keep"}, h.runner.callsFor(id), "the run keeps its volumes")
+
+		require.NoError(t, h.loop.Cancel(ctx, id))
+		status, err := h.run(ctx)
+		require.NoError(t, err)
+		require.Equal(t, engine.StatusCancelled, status)
+		require.NoError(t, h.loop.Restore(ctx, id))
+		require.NoError(t, engine.RemoveImages(ctx, h.store, id, []int64{over[0].ID}))
+		require.NoError(t, h.loop.Start(ctx, id))
+
+		status, err = h.run(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, engine.StatusInReview, status)
+
+		works := h.runner.callsOf("work")
+		require.Len(t, works, 1)
+		assert.Equal(t, []int64{kept.Size, over[1].Size}, imageSizes(works[0].cfg.Task.Images))
+	})
+}
+
+func imageSizes(imgs []engine.TaskImage) []int64 {
+	sizes := make([]int64, len(imgs))
+	for i, img := range imgs {
+		sizes[i] = int64(len(img.Data))
+	}
+
+	return sizes
+}
