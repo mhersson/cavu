@@ -192,7 +192,7 @@ Answers 200 with the task.
 
 ### `PATCH /api/tasks/{id}`
 
-Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. `remove_images` names the ids of the task's images to remove:
+Changes the `title`, `body` or `depends_on` the body names and keeps the others: a field left out or sent as null keeps its value, unlike a setting, which null unsets. The value kept is the one stored when the edit is committed, so two edits of different fields made at the same time both stand. `""` empties the body; `depends_on` replaces the whole list, and `[]` removes every dependency. `remove_images` names the ids of the task's images to remove:
 
 ```json
 {"title": "Fix the save button", "remove_images": [4]}

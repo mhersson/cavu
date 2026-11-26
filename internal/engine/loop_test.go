@@ -2192,12 +2192,13 @@ func TestDependencies(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, engine.StatusBlocked, status)
 
-		require.ErrorIs(t, engine.EditTask(t.Context(), h.store, b, nil, nil), engine.ErrRefused)
+		drop := store.TaskEdit{DependsOn: &[]int64{}}
+		require.ErrorIs(t, engine.EditTask(t.Context(), h.store, b.ID, drop), engine.ErrRefused)
 		assert.Equal(t, []int64{h.task.ID}, h.deps(b.ID), "a started task keeps its dependencies")
 
 		require.NoError(t, h.loop.Cancel(t.Context(), b.ID))
 		require.NoError(t, h.loop.Restore(t.Context(), b.ID))
-		require.NoError(t, engine.EditTask(t.Context(), h.store, b, nil, nil))
+		require.NoError(t, engine.EditTask(t.Context(), h.store, b.ID, drop))
 		require.NoError(t, h.loop.Start(t.Context(), b.ID))
 
 		status, err = h.loop.RunTask(t.Context(), b.ID)

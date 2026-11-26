@@ -472,7 +472,9 @@ func TestSchedulerRefusesAnEditOfAStartedTaskBeforeItsRun(t *testing.T) {
 		case <-read:
 			held++
 
-			err := engine.EditTask(t.Context(), h.store, store.Task{ID: id, Title: "Renamed", Body: "A new body."}, []int64{unfinished.ID}, []int64{img.ID})
+			err := engine.EditTask(t.Context(), h.store, id, store.TaskEdit{
+				Title: new("Renamed"), Body: new("A new body."), DependsOn: &[]int64{unfinished.ID}, RemoveImages: []int64{img.ID},
+			})
 			require.ErrorIs(t, err, engine.ErrRefused)
 
 			_, err = engine.AddImage(t.Context(), h.store, store.Image{TaskID: id, Name: "more.png", Type: "image/png"}, notRead)
@@ -516,7 +518,7 @@ func TestSchedulerHonoursAnEditMadeBeforeTheStart(t *testing.T) {
 		if !edited && events[0].Type == engine.TaskStarted {
 			edited = true
 
-			require.NoError(t, engine.EditTask(t.Context(), h.store, store.Task{ID: d.ID, Title: "Renamed"}, []int64{unfinished.ID}, nil))
+			require.NoError(t, engine.EditTask(t.Context(), h.store, d.ID, store.TaskEdit{Title: new("Renamed"), DependsOn: &[]int64{unfinished.ID}}))
 		}
 
 		return nil

@@ -76,7 +76,7 @@ func TestNotFound(t *testing.T) {
 		}},
 		{"UpdateProject", func() error { return s.UpdateProject(ctx, Project{ID: 1, Name: "x"}) }},
 		{"UpdateTask", func() error { return s.UpdateTask(ctx, Task{ID: 1}) }},
-		{"EditTask", func() error { return s.EditTask(ctx, Task{ID: 1, Title: "x"}, nil, nil, -1) }},
+		{"EditTask", func() error { return s.EditTask(ctx, 1, TaskEdit{Title: new("x")}, -1) }},
 		{"UpdateRun", func() error { return s.UpdateRun(ctx, Run{ID: 1}) }},
 	}
 

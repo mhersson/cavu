@@ -232,27 +232,14 @@ func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
 	return s.replyTask(w, r, id, http.StatusOK)
 }
 
-// edit changes only the fields that `in` sets, over the stored task and its
-// dependencies, and removes the images it names, all in one write or none.
+// edit changes only the fields that `in` sets and removes the images it names,
+// all in one write or none. A field it leaves out stays nil, which the store
+// keeps as it stands when the edit commits, not as this request read it.
 func (s *server) edit(ctx context.Context, id int64, in taskEdit) error {
-	t, err := s.Store.Task(ctx, id)
-	if err != nil {
-		return fmt.Errorf("task %d: %w", id, err)
-	}
+	e := store.TaskEdit{Title: in.Title, Body: in.Body, DependsOn: in.DependsOn}
+	set(&e.RemoveImages, in.RemoveImages)
 
-	deps, err := s.Store.TaskDeps(ctx, id)
-	if err != nil {
-		return fmt.Errorf("task %d: %w", id, err)
-	}
-
-	set(&t.Title, in.Title)
-	set(&t.Body, in.Body)
-	set(&deps, in.DependsOn)
-
-	var remove []int64
-	set(&remove, in.RemoveImages)
-
-	return engine.EditTask(ctx, s.Store, t, deps, remove)
+	return engine.EditTask(ctx, s.Loop.Store, id, e)
 }
 
 func (s *server) act(w http.ResponseWriter, r *http.Request) error {

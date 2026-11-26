@@ -1,9 +1,12 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/store"
@@ -364,6 +369,197 @@ func TestActionRacesTheLoop(t *testing.T) {
 	assert.Nil(t, object(t, body)["stop"])
 	assert.Equal(t, 1, f.count(t, id, engine.HumanAnswered))
 	assert.Equal(t, int32(1), f.nudges.Load())
+}
+
+// overlapper is the store the handler's Loop records through. Before the
+// first edit it is asked to write after between is set, it calls between, as
+// another edit committed after that edit's reads and before its write would.
+type overlapper struct {
+	*store.Store
+
+	between atomic.Pointer[func()]
+}
+
+func (o *overlapper) EditTask(ctx context.Context, taskID int64, e store.TaskEdit, expectLast int64) error {
+	if between := o.between.Swap(nil); between != nil {
+		(*between)()
+	}
+
+	return o.Store.EditTask(ctx, taskID, e, expectLast)
+}
+
+// editVia edits a task over REST or MCP, and returns an error for any answer
+// but 200. It never stops the test, so it may be called off its goroutine.
+type editVia func(ctx context.Context, id int64, fields map[string]any) error
+
+// patchTask edits the task with PATCH /api/tasks/{id}.
+func (f *fixture) patchTask(ctx context.Context, id int64, fields map[string]any) error {
+	b, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+
+	r, err := http.NewRequestWithContext(ctx, http.MethodPatch, fmt.Sprintf("%s/api/tasks/%d", f.url, id), bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+
+	r.Header.Set("Authorization", "Bearer "+f.token)
+
+	resp, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Do(r)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("PATCH answered %d: %s", resp.StatusCode, body)
+	}
+
+	return nil
+}
+
+// editTool edits the task with the MCP tool edit_task over cs.
+func editTool(cs *mcp.ClientSession) editVia {
+	return func(ctx context.Context, id int64, fields map[string]any) error {
+		args := maps.Clone(fields)
+		args["id"] = id
+
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "edit_task", Arguments: args})
+		if err != nil {
+			return err
+		}
+
+		if res.IsError {
+			b, _ := json.Marshal(res.Content)
+
+			return fmt.Errorf("edit_task refused: %s", b)
+		}
+
+		return nil
+	}
+}
+
+// edited is what an edit may change of a task, as a view of it shows it.
+type edited struct {
+	Title, Body  string
+	Deps, Images []int64
+}
+
+func editedOf(view map[string]any) edited {
+	e := edited{Deps: depIDs(view), Images: []int64{}}
+	e.Title, _ = view["title"].(string)
+	e.Body, _ = view["body"].(string)
+
+	imgs, _ := view["images"].([]any)
+	for _, img := range imgs {
+		e.Images = append(e.Images, int64(img.(map[string]any)["id"].(float64)))
+	}
+
+	return e
+}
+
+// Of two edits of one draft that change different fields, the second commits
+// after the first has read the task and before the first writes. Both stand,
+// over REST, MCP or one of each: the first keeps the fields it leaves out as
+// the second wrote them, and an empty value it sets is still written.
+func TestOverlappingEditsKeepEachOthersChanges(t *testing.T) {
+	o := &overlapper{}
+	f := newServer(t, func(s *store.Store) engine.Store {
+		o.Store = s
+
+		return o
+	})
+	f.addProject(t, site)
+
+	// The edits come over clients of their own, so the second's is free while the first's waits.
+	firsts := map[string]editVia{"REST": f.patchTask, "MCP": editTool(f.client(t))}
+	seconds := map[string]editVia{"REST": f.patchTask, "MCP": editTool(f.client(t))}
+
+	// draft is a task titled "Draft" with the body "Original" that waits for
+	// dep and has the image img; other is a task it may come to wait for.
+	type draft struct{ id, dep, other, img int64 }
+
+	fields := func(m map[string]any) func(draft) map[string]any {
+		return func(draft) map[string]any { return m }
+	}
+
+	tests := map[string]struct {
+		first, second func(d draft) map[string]any
+		want          func(d draft) edited
+	}{
+		"a title and a body": {
+			first:  fields(map[string]any{"title": "Renamed"}),
+			second: fields(map[string]any{"body": "A new body."}),
+			want:   func(d draft) edited { return edited{"Renamed", "A new body.", []int64{d.dep}, []int64{d.img}} },
+		},
+		"a body and a title": {
+			first:  fields(map[string]any{"body": "A new body."}),
+			second: fields(map[string]any{"title": "Renamed"}),
+			want:   func(d draft) edited { return edited{"Renamed", "A new body.", []int64{d.dep}, []int64{d.img}} },
+		},
+		"a title and dependencies": {
+			first:  fields(map[string]any{"title": "Renamed"}),
+			second: func(d draft) map[string]any { return map[string]any{"depends_on": []int64{d.other}} },
+			want:   func(d draft) edited { return edited{"Renamed", "Original", []int64{d.other}, []int64{d.img}} },
+		},
+		"dependencies and a title": {
+			first:  func(d draft) map[string]any { return map[string]any{"depends_on": []int64{d.dep, d.other}} },
+			second: fields(map[string]any{"title": "Renamed"}),
+			want:   func(d draft) edited { return edited{"Renamed", "Original", []int64{d.dep, d.other}, []int64{d.img}} },
+		},
+		"no dependencies and an empty body": {
+			first:  fields(map[string]any{"depends_on": []int64{}}),
+			second: fields(map[string]any{"body": ""}),
+			want:   func(d draft) edited { return edited{"Draft", "", []int64{}, []int64{d.img}} },
+		},
+		"a title with a removal and the other fields": {
+			first: func(d draft) map[string]any {
+				return map[string]any{"title": "Renamed", "remove_images": []int64{d.img}}
+			},
+			second: func(d draft) map[string]any {
+				return map[string]any{"body": "A new body.", "depends_on": []int64{d.other}}
+			},
+			want: func(d draft) edited { return edited{"Renamed", "A new body.", []int64{d.other}, []int64{}} },
+		},
+	}
+
+	for name, tc := range tests {
+		for firstName, first := range firsts {
+			for secondName, second := range seconds {
+				t.Run(fmt.Sprintf("%s, %s then %s", name, firstName, secondName), func(t *testing.T) {
+					t.Cleanup(func() { o.between.Store(nil) })
+
+					d := draft{dep: f.task(t, `{"project": "site", "title": "First"}`), other: f.task(t, `{"project": "site", "title": "Second"}`)}
+					d.id = f.task(t, fmt.Sprintf(`{"project": "site", "title": "Draft", "body": "Original", "depends_on": [%d]}`, d.dep))
+
+					status, body := f.upload(t, d.id, "shot.png", shot(100))
+					require.Equal(t, http.StatusCreated, status, body)
+					d.img = int64(object(t, body)["id"].(float64))
+
+					done := make(chan error, 1)
+					between := func() { done <- second(t.Context(), d.id, tc.second(d)) }
+					o.between.Store(&between)
+
+					require.NoError(t, first(t.Context(), d.id, tc.first(d)))
+
+					select {
+					case err := <-done:
+						require.NoError(t, err, "the second edit")
+					default:
+						require.FailNow(t, "the second edit was not made between the first's reads and its write")
+					}
+
+					assert.Equal(t, tc.want(d), editedOf(f.view(t, d.id)))
+				})
+			}
+		}
+	}
 }
 
 func TestTaskViews(t *testing.T) {

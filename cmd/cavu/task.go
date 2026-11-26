@@ -151,33 +151,31 @@ func taskEdit(ctx context.Context, args []string, stderr io.Writer) error {
 	return onTask(ctx, f, args, func(a *app, id int64) error {
 		given := f.given()
 
-		t, err := a.store.Task(ctx, id)
-		if err != nil {
-			return fmt.Errorf("task %d: %w", id, err)
-		}
-
-		deps, err := a.store.TaskDeps(ctx, id)
-		if err != nil {
-			return fmt.Errorf("task %d: %w", id, err)
-		}
+		var e store.TaskEdit
 
 		if given["title"] {
-			t.Title = *title
+			e.Title = title
 		}
 
 		if given["body-file"] {
-			if t.Body, err = readBody(*bodyFile, nil); err != nil {
+			body, err := readBody(*bodyFile, nil)
+			if err != nil {
 				return err
 			}
+
+			e.Body = &body
 		}
 
 		if given["depends-on"] {
-			if deps, err = taskIDs(*dependsOn); err != nil {
+			deps, err := taskIDs(*dependsOn)
+			if err != nil {
 				return err
 			}
+
+			e.DependsOn = &deps
 		}
 
-		return engine.EditTask(ctx, a.store, t, deps, nil)
+		return engine.EditTask(ctx, a.store, id, e)
 	})
 }
 

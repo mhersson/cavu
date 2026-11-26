@@ -392,7 +392,7 @@ func TestListCachesTheTitleAtCancellation(t *testing.T) {
 		if id == h.task.ID {
 			require.NoError(t, h.loop.Restore(ctx, task.ID))
 			task.Title = "Updated assignment"
-			require.NoError(t, engine.EditTask(ctx, h.store, task, nil, nil))
+			require.NoError(t, engine.EditTask(ctx, h.store, task.ID, store.TaskEdit{Title: &task.Title}))
 			require.NoError(t, h.loop.Cancel(ctx, task.ID))
 		}
 
