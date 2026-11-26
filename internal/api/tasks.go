@@ -233,7 +233,7 @@ func (s *server) editTask(w http.ResponseWriter, r *http.Request) error {
 }
 
 // edit changes only the fields that `in` sets, over the stored task and its
-// dependencies, then removes the images it names.
+// dependencies, and removes the images it names, all in one write or none.
 func (s *server) edit(ctx context.Context, id int64, in taskEdit) error {
 	t, err := s.Store.Task(ctx, id)
 	if err != nil {
@@ -249,11 +249,10 @@ func (s *server) edit(ctx context.Context, id int64, in taskEdit) error {
 	set(&t.Body, in.Body)
 	set(&deps, in.DependsOn)
 
-	if err := engine.EditTask(ctx, s.Store, t, deps); err != nil || in.RemoveImages == nil {
-		return err
-	}
+	var remove []int64
+	set(&remove, in.RemoveImages)
 
-	return engine.RemoveImages(ctx, s.Store, id, *in.RemoveImages)
+	return engine.EditTask(ctx, s.Store, t, deps, remove)
 }
 
 func (s *server) act(w http.ResponseWriter, r *http.Request) error {

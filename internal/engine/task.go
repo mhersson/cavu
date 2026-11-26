@@ -68,14 +68,16 @@ func noBaseline(p store.Project) error {
 	return refuse("project %q has %w", p.Name, ErrNoBaseline)
 }
 
-// EditTask writes the title, body and dependencies while the task is editable.
-func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) error {
+// EditTask writes t's title and body, replaces the task's dependencies with
+// dependsOn and removes its images removeImages while the task is editable,
+// all or none, in a write that loses to any event recorded since the rule was
+// checked: a run that starts has the task as it was before the edit or after it.
+func EditTask(ctx context.Context, s Store, t store.Task, dependsOn, removeImages []int64) error {
 	if err := checkTitle(t.Title); err != nil {
 		return err
 	}
 
-	stored, err := editable(ctx, s, t.ID)
-	if err != nil {
+	if err := editable(ctx, s, t.ID); err != nil {
 		return err
 	}
 
@@ -83,39 +85,62 @@ func EditTask(ctx context.Context, s Store, t store.Task, dependsOn []int64) err
 		return err
 	}
 
-	stored.Title, stored.Body = t.Title, t.Body
-	if err := s.UpdateTask(ctx, stored); err != nil {
-		return fmt.Errorf("task %d: %w", t.ID, err)
-	}
-
-	if err := s.SetTaskDeps(ctx, t.ID, dependsOn); err != nil {
-		return fmt.Errorf("task %d: %w", t.ID, err)
-	}
-
-	return nil
+	return whileEditable(ctx, s, t.ID, func(last int64) error {
+		return s.EditTask(ctx, t, dependsOn, removeImages, last)
+	})
 }
 
 // Restoring a draft opens editing again until its next run starts.
-func editable(ctx context.Context, s Store, id int64) (store.Task, error) {
-	t, err := s.Task(ctx, id)
-	if err != nil {
-		return store.Task{}, fmt.Errorf("task %d: %w", id, err)
+func editable(ctx context.Context, s Store, id int64) error {
+	if _, err := s.Task(ctx, id); err != nil {
+		return fmt.Errorf("task %d: %w", id, err)
 	}
 
 	events, err := s.EventsOmitting(ctx, id, ProgressTypes...)
 	if err != nil {
-		return store.Task{}, fmt.Errorf("task %d: %w", id, err)
+		return fmt.Errorf("task %d: %w", id, err)
 	}
 
 	f := Reduce(events)
 	switch {
 	case f.RunOpen || f.LastRun != 0:
-		return store.Task{}, refuse("task %d has started a run", id)
+		return refuse("task %d has started a run", id)
 	case f.Cancelled:
-		return store.Task{}, refuse("task %d is cancelled", id)
+		return refuse("task %d is cancelled", id)
 	}
 
-	return t, nil
+	return nil
+}
+
+// whileEditable calls write with the id of the task's newest event when
+// editable allows an edit at that event, and again after each write that lost
+// to a newer one with store.ErrConflict, up to maxConflicts times. write is
+// to change the task only while last is still its newest event.
+func whileEditable(ctx context.Context, s Store, taskID int64, write func(last int64) error) error {
+	var err error
+
+	for range maxConflicts {
+		var last int64
+
+		// Read before editable reads the events, so the rule saw every event up to last.
+		if last, err = s.LastEventID(ctx, taskID); err != nil {
+			return fmt.Errorf("task %d: %w", taskID, err)
+		}
+
+		if err = editable(ctx, s, taskID); err != nil {
+			return err
+		}
+
+		if err = write(last); !errors.Is(err, store.ErrConflict) {
+			break
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("task %d: %w", taskID, err)
+	}
+
+	return nil
 }
 
 func checkTitle(title string) error {

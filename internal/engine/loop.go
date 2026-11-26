@@ -55,7 +55,7 @@ type Store interface {
 	KeepImage(ctx context.Context, u *store.Upload, expectLast int64) (store.Image, error)
 	TaskImages(ctx context.Context, taskID int64) ([]store.Image, error)
 	OpenImage(ctx context.Context, taskID, id int64) (store.Image, *os.File, error)
-	RemoveImages(ctx context.Context, taskID int64, ids []int64, expectLast int64) error
+	EditTask(ctx context.Context, t store.Task, dependsOn, removeImages []int64, expectLast int64) error
 }
 
 // Loop carries out the actions Decide chooses, through a Runner.
