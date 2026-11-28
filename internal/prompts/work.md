@@ -10,3 +10,7 @@ These images are part of the task. Open each one to see what it shows:
 - `{{.}}`
 {{- end}}
 {{- end}}
+{{- with .Batch}}
+
+{{template "batch.md" .}}
+{{- end}}

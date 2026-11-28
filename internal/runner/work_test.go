@@ -242,6 +242,41 @@ func TestFixRunThatChangesNothingIsNotChanged(t *testing.T) {
 	}
 }
 
+// A session at a start commit an earlier task left is a first run's: the
+// freeze refuses a HEAD that dropped the earlier tasks' commits, and a session
+// that added no commit changed nothing. With a head too, the head is where the
+// run started. The session's instructions and environment name the base commit.
+func TestChangedIsMeasuredFromStart(t *testing.T) {
+	for _, tt := range []struct {
+		name, head, from, frozen string
+		changed                  bool
+	}{
+		{name: "no commit", from: startCommit, frozen: startCommit},
+		{name: "a commit on top", from: startCommit, frozen: headCommit, changed: true},
+		{name: "a fix run with no commit", head: fixHead, from: fixHead, frozen: fixHead},
+		{name: "a fix run with a commit", head: fixHead, from: fixHead, frozen: headCommit, changed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+			c := workConfig()
+			c.Repo.Start, c.Repo.Head = startCommit, tt.head
+			freeze := stepName(scriptArgv(freezeScript, tt.from, c.Repo.Branch, c.Task.Title))
+			f.results[freeze] = sandbox.Result{Output: tt.frozen + "\n"}
+			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "done"})}}}
+
+			res, err := f.workRunner(d).Work(t.Context(), c, startWork, noProgress)
+			require.NoError(t, err)
+			assert.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+			assert.Equal(t, tt.frozen, res.HeadCommit)
+			assert.Equal(t, tt.changed, res.Changed)
+
+			require.Len(t, d.specs, 1)
+			assert.Equal(t, baseCommit, d.specs[0].BaseCommit, "the instructions are staged from another commit than the base")
+			assert.Contains(t, d.specs[0].Env, "CAVU_BASE_COMMIT="+baseCommit)
+		})
+	}
+}
+
 func TestWorkSpec(t *testing.T) {
 	// Every session runs at a pull request's head, whose test and lint jobs
 	// failed; the project ignores lint.
@@ -459,6 +494,46 @@ func TestWorkResumeRefusedStartsFresh(t *testing.T) {
 	assert.Equal(t, sessionUUID, d.specs[1].SessionID)
 	assert.Empty(t, d.specs[1].Resume)
 	assert.Equal(t, render(t, prompts.Work, prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}), d.specs[1].Prompt)
+}
+
+// A task of a batch is placed in its batch by the prompt that opens its
+// session, the readiness turn's or the work's, also when a refused resume
+// starts one anew; a plain task's prompts carry no batch.
+func TestSessionsOfABatchTaskKnowTheBatch(t *testing.T) {
+	batch := &engine.BatchContext{Name: "batch-60", Position: 3, Size: 5, Before: []string{"title-61", "title-62"}}
+
+	for _, tt := range []struct {
+		name, prompt string
+		w            engine.WorkRequest
+		results      []driver.Result
+	}{
+		{name: "readiness", prompt: prompts.Readiness, w: readinessWork, results: []driver.Result{readyResult()}},
+		{name: "work", prompt: prompts.Work, w: startWork, results: []driver.Result{{Reason: driver.ReasonDone}}},
+		{
+			name: "a refused resume", prompt: prompts.Work, w: engine.WorkRequest{Mode: engine.ModeContinue, SessionID: sessionUUID, Resume: true},
+			results: []driver.Result{{Reason: driver.ReasonResumeRefused}, {Reason: driver.ReasonDone}},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, b := range []*engine.BatchContext{batch, nil} {
+				f := newFake()
+				c := workConfig()
+				c.Batch = b
+				d := &fakeAgent{results: tt.results}
+
+				_, err := f.workRunner(d).Work(t.Context(), c, tt.w, noProgress)
+				require.NoError(t, err)
+
+				want := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}
+				if b != nil {
+					want.Batch = &prompts.BatchData{Name: "batch-60", Position: 3, Size: 5, Before: []string{"title-61", "title-62"}}
+				}
+
+				require.NotEmpty(t, d.specs)
+				assert.Equal(t, render(t, tt.prompt, want), d.specs[len(d.specs)-1].Prompt, "with a batch: %v", b != nil)
+			}
+		})
+	}
 }
 
 var readinessWork = engine.WorkRequest{Mode: engine.ModeReadiness, SessionID: sessionUUID}

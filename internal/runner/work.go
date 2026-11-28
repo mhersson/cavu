@@ -40,7 +40,8 @@ const gitFunc = "g() { git --no-replace-objects -c core.hooksPath=/dev/null -c c
 // freezeScript commits what the session left uncommitted with message $3,
 // points the task branch $2 at HEAD and prints HEAD. It refuses a workspace
 // without .git, or whose HEAD does not descend from the commit $1 the run
-// started at: a fix run's commits are on the pull request, never force-pushed.
+// started at: a fix run's commits are on the pull request, never force-pushed,
+// and a start commit's are earlier tasks', never dropped.
 var freezeScript = proc.SandboxOnly(gitFunc + `[ -d .git ] || { echo "The session removed the repository's .git directory."; exit 1; }
 g merge-base --is-ancestor "$1" HEAD || { echo "The session left HEAD on a commit that does not descend from the commit the run started at."; exit 1; }
 if [ -n "$(g status --porcelain)" ]; then g add -A && g commit -q -m "$3" || exit 1; fi
@@ -172,7 +173,7 @@ type session struct {
 // checks opens with.
 func (s *session) run(ctx context.Context, d driver.Driver, w engine.WorkRequest, logs string) (engine.WorkResult, []driver.Usage, error) {
 	if w.Mode == engine.ModeFixReview && !w.Resume {
-		problem, err := writeDiffs(ctx, s.st, s.c, s.c.Repo.BaseCommit, "refs/heads/"+s.c.Repo.Branch, reviewPatch)
+		problem, err := writeDiffs(ctx, s.st, s.c, changeBase(s.c), "refs/heads/"+s.c.Repo.Branch, reviewPatch)
 		if err != nil || problem != "" {
 			problem = s.mask(problem)
 
@@ -385,7 +386,7 @@ func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (drive
 // w's detail is the verify output of a fix and the text of an answer, and
 // logs what the failed checks printed for a fix of them.
 func prompt(c engine.RunConfig, w engine.WorkRequest, logs string) (string, error) {
-	task := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body, Images: imagePaths(c)}
+	task := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body, Images: imagePaths(c), Batch: (*prompts.BatchData)(c.Batch)}
 
 	switch w.Mode {
 	case engine.ModeReadiness:
@@ -562,7 +563,7 @@ func (s *session) readiness(structured json.RawMessage, res *engine.WorkResult) 
 // workspace the freeze refuses fails the session with the reason. The work
 // changed when its head is not the commit the run started at.
 func (s *session) freeze(ctx context.Context, res *engine.WorkResult) error {
-	start := cmp.Or(s.c.Repo.Head, s.c.Repo.BaseCommit)
+	start := cmp.Or(s.c.Repo.Head, s.c.Repo.Start, s.c.Repo.BaseCommit)
 	message := cmp.Or(res.Title, s.c.Task.Title)
 	cmd := proc.Command{
 		Argv: scriptArgv(freezeScript, start, s.c.Repo.Branch, message),

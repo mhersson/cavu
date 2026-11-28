@@ -13,11 +13,15 @@ type RunConfig struct {
 	TaskID, RunID, ProjectID int64
 	InstanceID, Image        string
 	// Repo is the project's repository and the task's branch. Head is the
-	// branch's commit a run starts from, "" for a run from the base commit.
+	// pull request's head a run on a task with one starts from, "" for any
+	// other run. Start is the commit the workspace is moved to after the
+	// setup, "" for a run from the base commit. Without a Head, a run at
+	// Start is a first run that skips the baseline; with one, Head decides
+	// where the run starts, and the task's change is measured from Start.
 	Repo struct {
-		URL, BaseBranch, BaseCommit, Branch, Head string
-		Access                                    ForgeAccess
-		IgnoredChecks, ReviewBots                 []string // the project's forge policy
+		URL, BaseBranch, BaseCommit, Branch, Head, Start string
+		Access                                           ForgeAccess
+		IgnoredChecks, ReviewBots                        []string // the project's forge policy
 	}
 	Setup struct {
 		Command       string
@@ -61,6 +65,18 @@ type RunConfig struct {
 	// Ecosystems are what the run's prepare detected, for Work, Verify and
 	// Export; never a setting, and empty for Prepare.
 	Ecosystems []string
+	// Batch is the task's place in its batch, nil for a plain task.
+	Batch *BatchContext
+}
+
+// BatchContext is a task's place in its batch: the batch's name, the task's
+// position counted from 1 of Size, and the titles of the tasks before it, in
+// order. Its fields are prompts.BatchData's, in the same order, so the runner
+// converts it.
+type BatchContext struct {
+	Name           string
+	Position, Size int
+	Before         []string
 }
 
 // ForgeAccess is the credential for the forge a project's repository is on:
@@ -170,7 +186,7 @@ type PrepareResult struct {
 	Tools        []string
 	IgnoredTools []string // repository tool entries detection declined to install, as written
 	Ecosystems   []string // detected at the base commit; later actions of the run get them back
-	Baseline     string   // passed, reused, waived, failed, or skipped by a prepare at a head; a failed baseline sets FailedStep to "baseline"
+	Baseline     string   // passed, reused, waived, failed, or skipped by a prepare at a head or a start commit; a failed baseline sets FailedStep to "baseline"
 	FailedStep   string   // "", clone, toolchain, setup, baseline
 	Output       string
 }

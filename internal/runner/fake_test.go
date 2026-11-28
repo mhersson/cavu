@@ -21,6 +21,9 @@ import (
 
 const baseCommit = "0123456789abcdef0123456789abcdef01234567"
 
+// startCommit is a commit an earlier task left, which a run's workspace moves to after its setup.
+const startCommit = "abcdef0123456789abcdef0123456789abcdef01"
+
 // The secrets testConfig carries.
 const (
 	plantedSetup    = "npm-secret-value"

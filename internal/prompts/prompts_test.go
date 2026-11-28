@@ -185,8 +185,41 @@ func TestPromptsListImages(t *testing.T) {
 	}
 }
 
+// The work and readiness prompts of a task of a batch place it in the batch:
+// its name, the task's position and the batch's size, and the titles of the
+// tasks before it, in lines of their own after the task's.
+func TestPromptsPlaceATaskInItsBatch(t *testing.T) {
+	for _, name := range []string{prompts.Work, prompts.Readiness} {
+		t.Run(name, func(t *testing.T) {
+			plain := prompts.WorkData{Title: "title", Body: "body", Images: []string{"/images/1-one-59.png"}}
+
+			without, err := prompts.Render(name, plain)
+			require.NoError(t, err)
+
+			for _, tt := range []struct {
+				batch  prompts.BatchData
+				values []string
+			}{
+				{prompts.BatchData{Name: "batch-60", Position: 37, Size: 41, Before: []string{"title-61", "title-62"}}, []string{"batch-60", "37", "41", "title-61", "title-62"}},
+				{prompts.BatchData{Name: "batch-63", Position: 1, Size: 43}, []string{"batch-63", "43"}},
+			} {
+				in := plain
+				in.Batch = &tt.batch
+
+				with, err := prompts.Render(name, in)
+				require.NoError(t, err)
+
+				added := strings.Join(inserted(t, with, without), "")
+				for _, v := range tt.values {
+					assert.Contains(t, added, v)
+				}
+			}
+		})
+	}
+}
+
 // inserted is what with holds and without lacks, which must be one run of
-// whole lines: the images change no other line.
+// whole lines: what is inserted changes no other line.
 func inserted(t *testing.T, with, without string) []string {
 	t.Helper()
 
@@ -202,7 +235,7 @@ func inserted(t *testing.T, with, without string) []string {
 		tail++
 	}
 
-	require.Equal(t, len(o), head+tail, "lines besides the images' own differ")
+	require.Equal(t, len(o), head+tail, "lines besides the inserted ones differ")
 
 	return w[head : len(w)-tail]
 }

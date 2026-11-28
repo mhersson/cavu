@@ -10,6 +10,10 @@ These images are part of the task. Open each one to see what it shows:
 - `{{.}}`
 {{- end}}
 {{- end}}
+{{- with .Batch}}
+
+{{template "batch.md" .}}
+{{- end}}
 
 If a fact you need is in neither the task nor the repository, end with status `blocked`, and ask a question for each missing fact, each with the answer you would assume if nobody answered. A design choice is not a missing fact: you make it yourself, so do not ask about it. A contact, a promise or any commitment made in the owner's name is a missing fact, not a design choice.
 
