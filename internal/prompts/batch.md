@@ -5,4 +5,6 @@ This is task {{.Position}} of {{.Size}} in the batch "{{.Name}}".
 {{range .Before}}
 - {{.}}
 {{- end}}
+
+The workspace was set up at the base commit, so a dependency an earlier task added is not installed yet.
 {{- end -}}
