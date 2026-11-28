@@ -65,6 +65,18 @@ type RunConfig struct {
 	// Ecosystems are what the run's prepare detected, for Work, Verify and
 	// Export; never a setting, and empty for Prepare.
 	Ecosystems []string
+	// Batch is the task's place in its batch, nil for a plain task.
+	Batch *BatchContext
+}
+
+// BatchContext is a task's place in its batch: the batch's name, the task's
+// position counted from 1 of Size, and the titles of the tasks before it, in
+// order. Its fields are prompts.BatchData's, in the same order, so the runner
+// converts it.
+type BatchContext struct {
+	Name           string
+	Position, Size int
+	Before         []string
 }
 
 // ForgeAccess is the credential for the forge a project's repository is on:

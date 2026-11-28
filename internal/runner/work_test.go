@@ -496,6 +496,46 @@ func TestWorkResumeRefusedStartsFresh(t *testing.T) {
 	assert.Equal(t, render(t, prompts.Work, prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}), d.specs[1].Prompt)
 }
 
+// A task of a batch is placed in its batch by the prompt that opens its
+// session, the readiness turn's or the work's, also when a refused resume
+// starts one anew; a plain task's prompts carry no batch.
+func TestSessionsOfABatchTaskKnowTheBatch(t *testing.T) {
+	batch := &engine.BatchContext{Name: "batch-60", Position: 3, Size: 5, Before: []string{"title-61", "title-62"}}
+
+	for _, tt := range []struct {
+		name, prompt string
+		w            engine.WorkRequest
+		results      []driver.Result
+	}{
+		{name: "readiness", prompt: prompts.Readiness, w: readinessWork, results: []driver.Result{readyResult()}},
+		{name: "work", prompt: prompts.Work, w: startWork, results: []driver.Result{{Reason: driver.ReasonDone}}},
+		{
+			name: "a refused resume", prompt: prompts.Work, w: engine.WorkRequest{Mode: engine.ModeContinue, SessionID: sessionUUID, Resume: true},
+			results: []driver.Result{{Reason: driver.ReasonResumeRefused}, {Reason: driver.ReasonDone}},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, b := range []*engine.BatchContext{batch, nil} {
+				f := newFake()
+				c := workConfig()
+				c.Batch = b
+				d := &fakeAgent{results: tt.results}
+
+				_, err := f.workRunner(d).Work(t.Context(), c, tt.w, noProgress)
+				require.NoError(t, err)
+
+				want := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body}
+				if b != nil {
+					want.Batch = &prompts.BatchData{Name: "batch-60", Position: 3, Size: 5, Before: []string{"title-61", "title-62"}}
+				}
+
+				require.NotEmpty(t, d.specs)
+				assert.Equal(t, render(t, tt.prompt, want), d.specs[len(d.specs)-1].Prompt, "with a batch: %v", b != nil)
+			}
+		})
+	}
+}
+
 var readinessWork = engine.WorkRequest{Mode: engine.ModeReadiness, SessionID: sessionUUID}
 
 func readyResult() driver.Result {

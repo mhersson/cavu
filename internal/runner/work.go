@@ -386,7 +386,7 @@ func sessionSpec(c engine.RunConfig, ecosystems []string, standIn string) (drive
 // w's detail is the verify output of a fix and the text of an answer, and
 // logs what the failed checks printed for a fix of them.
 func prompt(c engine.RunConfig, w engine.WorkRequest, logs string) (string, error) {
-	task := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body, Images: imagePaths(c)}
+	task := prompts.WorkData{Title: c.Task.Title, Body: c.Task.Body, Images: imagePaths(c), Batch: (*prompts.BatchData)(c.Batch)}
 
 	switch w.Mode {
 	case engine.ModeReadiness:

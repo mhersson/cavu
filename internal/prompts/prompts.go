@@ -36,9 +36,20 @@ const (
 
 // WorkData fills the work and readiness prompts. Images, here and in the
 // review and fix prompts, are the paths of the task's images in the container.
+// Batch is nil for a task that is not part of a batch.
 type WorkData struct {
 	Title, Body string
 	Images      []string
+	Batch       *BatchData
+}
+
+// BatchData fills batch.md, the part of the work and readiness prompts that
+// places a task in its batch: the batch's name, the task's position counted
+// from 1 of Size, and the titles of the tasks before it, in order.
+type BatchData struct {
+	Name           string
+	Position, Size int
+	Before         []string
 }
 
 // ReviewFinding is a finding as the prompts give it: a rereview's verdicts
