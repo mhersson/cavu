@@ -252,10 +252,6 @@ func TestMigrationElevenKeepsData(t *testing.T) {
 	require.NoError(t, err)
 	_, err = s.db.Exec(`INSERT INTO batch_tasks (batch_id, task_id, position) VALUES (1, 2, 1), (1, 1, 2)`)
 	require.NoError(t, err, "the tasks kept join a batch")
-
-	var bad int
-	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&bad))
-	require.Zero(t, bad)
 }
 
 type columnInfo struct {

@@ -64,11 +64,15 @@ func TestBatchCreate(t *testing.T) {
 	b, err := s.CreateBatch(ctx, Batch{
 		ProjectID: tasks[0].ProjectID, Name: "ship it", StartedAt: &started,
 		Tasks: taskIDs(tasks[2], tasks[0], tasks[1]),
-	}, []TaskAppend{{TaskID: tasks[0].ID, ExpectLast: 0}})
+	}, []TaskAppend{{TaskID: tasks[0].ID, ExpectLast: 0, Events: note}})
 	require.NoError(t, err)
 	require.NotZero(t, b.ID)
 	require.Equal(t, int64(1), b.Version)
 	require.False(t, b.CreatedAt.IsZero())
+
+	events, err := s.Events(ctx, tasks[0].ID, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "the create's append")
 
 	got, err := s.Batch(ctx, b.ID)
 	require.NoError(t, err)
@@ -83,8 +87,9 @@ func TestBatchCreate(t *testing.T) {
 	appendN(t, s, tasks[3].ID, 1)
 
 	_, err = s.CreateBatch(ctx, Batch{ProjectID: tasks[0].ProjectID, Name: "late", Tasks: taskIDs(tasks[3])},
-		[]TaskAppend{{TaskID: tasks[3].ID, ExpectLast: 0}})
+		[]TaskAppend{{TaskID: tasks[3].ID, ExpectLast: 0, Events: note}})
 	require.ErrorIs(t, err, ErrConflict, "a task whose newest event moved")
+	require.Equal(t, 2, countRows(t, s, "events"), "the create's append and the event it lost to")
 
 	gone, err := s.CreateProject(ctx, Project{Name: "gone", RepoURL: "r", BaseBranch: "main"})
 	require.NoError(t, err)
@@ -141,6 +146,7 @@ func TestTaskBatch(t *testing.T) {
 	ctx := context.Background()
 	tasks := seedTasks(t, s, 3)
 	b := createBatch(t, s, tasks[0], tasks[1])
+	createBatch(t, s, seedTaskIn(t, s, tasks[0].ProjectID)) // whose task no size of b counts
 
 	place, err := s.TaskBatch(ctx, tasks[1].ID)
 	require.NoError(t, err)
@@ -358,8 +364,8 @@ func TestBatchDeleteRemovesRowsOnly(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	tasks := seedTasks(t, s, 3)
-	a := createBatch(t, s, tasks[0], tasks[1])
 	other := createBatch(t, s, tasks[2])
+	a := createBatch(t, s, tasks[0], tasks[1]) // the newest, so a reused id would be its
 	appendN(t, s, tasks[0].ID, 2)
 
 	v, err := s.WriteBatch(ctx, a.ID, BatchWrite{Version: a.Version, Delete: true})
