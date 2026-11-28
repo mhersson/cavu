@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-// Batch is draft tasks of one project lined up to run one after another into
-// one pull request. Its state is not stored: it follows from its tasks' events
-// and from the moments below, each nil until it happens.
+// Batch is tasks of one project lined up to run one after another into one
+// pull request. Its state is not stored: it follows from its tasks' events and
+// from the moments below, each nil until it happens.
 type Batch struct {
 	ID, ProjectID int64
 	Name          string
-	Version       int64   // raised by every write to the batch or its tasks
+	Version       int64   // raised by every WriteBatch
 	BaseCommit    string  // empty until the first task's first prepare resolves it
 	Tasks         []int64 // in order
 	CreatedAt     time.Time
