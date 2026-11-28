@@ -194,6 +194,38 @@ func TestPublishPushTokenPermissions(t *testing.T) {
 	}
 }
 
+// A task at a start commit pushes its change on top of the head published
+// before, and the push token's permissions follow the change from the start
+// commit: a workflow only an earlier task changed asks for no wider token.
+func TestPublishReadsTheChangeFromStart(t *testing.T) {
+	f := newFake()
+	fromBase := stepName(scriptArgv(changeScript, baseCommit, headCommit, changeDiff, changeFiles))
+	f.onRun = func(name string) {
+		listed := twoFilesListed
+		if name == fromBase {
+			listed = workflowListed
+		}
+
+		f.mu.Lock()
+		f.out = map[string][]byte{changeFiles: []byte(listed)}
+		f.mu.Unlock()
+	}
+
+	r, fake, url := f.appRunner(t)
+	c := appPublishConfig(url)
+	c.Repo.Start = startCommit
+
+	_, err := r.Publish(t.Context(), c, laterPublish())
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"volumes", "importer", "import/copy", "import/run/" + publishImportName(c, headCommit, prevCommit),
+		"import/run/" + stepName(scriptArgv(changeScript, startCommit, headCommit, changeDiff, changeFiles)),
+		"import/copyout " + changeFiles, "importer removed", "push",
+	}, f.calls())
+	require.Len(t, f.pushes, 1)
+	assert.Equal(t, []forgefake.Token{{Value: f.pushes[0].Token, Permissions: map[string]string{"contents": "write"}}}, fake.Tokens())
+}
+
 // A bundle the import refuses, a push the forge refuses and a push token the
 // forge will not mint are each a rejection, and what would follow does not run.
 func TestPublishRejections(t *testing.T) {

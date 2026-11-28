@@ -242,6 +242,41 @@ func TestFixRunThatChangesNothingIsNotChanged(t *testing.T) {
 	}
 }
 
+// A session at a start commit an earlier task left is a first run's: the
+// freeze refuses a HEAD that dropped the earlier tasks' commits, and a session
+// that added no commit changed nothing. With a head too, the head is where the
+// run started. The session's instructions and environment name the base commit.
+func TestChangedIsMeasuredFromStart(t *testing.T) {
+	for _, tt := range []struct {
+		name, head, from, frozen string
+		changed                  bool
+	}{
+		{name: "no commit", from: startCommit, frozen: startCommit},
+		{name: "a commit on top", from: startCommit, frozen: headCommit, changed: true},
+		{name: "a fix run with no commit", head: fixHead, from: fixHead, frozen: fixHead},
+		{name: "a fix run with a commit", head: fixHead, from: fixHead, frozen: headCommit, changed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+			c := workConfig()
+			c.Repo.Start, c.Repo.Head = startCommit, tt.head
+			freeze := stepName(scriptArgv(freezeScript, tt.from, c.Repo.Branch, c.Task.Title))
+			f.results[freeze] = sandbox.Result{Output: tt.frozen + "\n"}
+			d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone, Structured: structured(map[string]any{"status": "done"})}}}
+
+			res, err := f.workRunner(d).Work(t.Context(), c, startWork, noProgress)
+			require.NoError(t, err)
+			assert.Equal(t, engine.OutcomeDone, res.Outcome, res.Detail)
+			assert.Equal(t, tt.frozen, res.HeadCommit)
+			assert.Equal(t, tt.changed, res.Changed)
+
+			require.Len(t, d.specs, 1)
+			assert.Equal(t, baseCommit, d.specs[0].BaseCommit, "the instructions are staged from another commit than the base")
+			assert.Contains(t, d.specs[0].Env, "CAVU_BASE_COMMIT="+baseCommit)
+		})
+	}
+}
+
 func TestWorkSpec(t *testing.T) {
 	// Every session runs at a pull request's head, whose test and lint jobs
 	// failed; the project ignores lint.

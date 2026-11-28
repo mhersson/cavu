@@ -12,9 +12,8 @@ import (
 	"github.com/mhersson/cavu/internal/sandbox"
 )
 
-// The diffs a review reads, on the tmpfs of the phase container: the change
-// from the base commit, and a scoped review's fix since the head the previous
-// review saw.
+// The diffs a review reads, on the tmpfs of the phase container: the task's
+// change, and a scoped review's fix since the head the previous review saw.
 const (
 	reviewPatch = "/run/cavu/review.patch"
 	fixPatch    = "/run/cavu/fix.patch"
@@ -75,7 +74,7 @@ func (st *run) reviewDiffs(ctx context.Context, c engine.RunConfig, rq engine.Re
 		return problem, err
 	}
 
-	diffs := []string{c.Repo.BaseCommit, rq.Head, reviewPatch}
+	diffs := []string{changeBase(c), rq.Head, reviewPatch}
 	if scoped(rq) {
 		diffs = append(diffs, rq.FixBase, rq.Head, fixPatch)
 	}

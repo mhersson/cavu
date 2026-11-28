@@ -160,6 +160,89 @@ func TestPrepareAtTheHeadKeepsTheHome(t *testing.T) {
 	}
 }
 
+// assertOnlyTheCheckoutNames wants checkout, run in the agent phase, to be the
+// one command, clone or read of the prepare that names commit: the clone, the
+// toolchain's detection, the setup with the project's secrets and every
+// environment have the base commit alone.
+func assertOnlyTheCheckoutNames(t *testing.T, f *fakeSandbox, checkout, commit string) {
+	t.Helper()
+
+	require.Len(t, f.clones, 1)
+	assert.Equal(t, baseCommit, f.clones[0].Commit)
+	assert.Equal(t, []string{baseCommit}, f.reads, "the files are read at the base commit")
+
+	for _, run := range f.runs {
+		named := slices.ContainsFunc(slices.Concat(run.cmd.Argv, run.cmd.Env), func(s string) bool { return strings.Contains(s, commit) })
+		assert.Equal(t, run.name == checkout, named, run.name)
+
+		if run.name == checkout {
+			assert.Equal(t, sandbox.PhaseAgent, run.phase)
+		}
+
+		for _, e := range run.cmd.Env {
+			if v, ok := strings.CutPrefix(e, "CAVU_BASE_COMMIT="); ok {
+				assert.Equal(t, baseCommit, v, run.name)
+			}
+		}
+	}
+}
+
+// A run at a start commit an earlier task left is a first run in a fresh home,
+// set up on the base commit's tree: the clone, the toolchain's detection and
+// the setup with the project's secrets see the base alone. Only then does the
+// agent phase move the task branch to the start commit.
+func TestPrepareSetsUpAtBaseThenMovesToStart(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Repo.BaseCommit, c.Repo.Start = baseCommit, startCommit
+	checkout := stepName(scriptArgv(headScript, c.Repo.Branch, startCommit))
+
+	res, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, slices.Concat(fullOrder[:len(fullOrder)-2], []string{"run/" + checkout}), f.calls(),
+		"the home goes, the setup runs before the checkout, and the checkout is the last step")
+	assert.Equal(t, engine.PrepareResult{
+		BaseCommit: baseCommit, Tools: []string{"go@1.25.0"}, Ecosystems: []string{"go"}, Baseline: "skipped",
+	}, res)
+	assert.Equal(t, []string{"cavu/fix-login", startCommit}, f.run(t, checkout).cmd.Argv[4:])
+	assertOnlyTheCheckoutNames(t, f, checkout, startCommit)
+}
+
+// The start commit passed verify as the task before it: a prepare there runs
+// no baseline, whatever the project's stored one says, so the project's
+// baseline stays on a commit of its base branch.
+func TestPrepareSkipsTheBaselineAtAStart(t *testing.T) {
+	for name, stored := range map[string]string{"no stored baseline": "", "one on the base commit": baseCommit} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			c := testConfig()
+			c.Repo.Start = startCommit
+			c.Verify.BaselineCommit, c.Verify.BaselinePassed = stored, stored != ""
+
+			res, err := f.runner().Prepare(t.Context(), c)
+			require.NoError(t, err)
+			assert.Empty(t, res.FailedStep)
+			assert.Equal(t, "skipped", res.Baseline)
+			assert.NotContains(t, f.calls(), "run/make test", "the verify command ran")
+		})
+	}
+}
+
+// A fix run of a task that started at a start commit is a fix run: the head
+// decides the checkout and the home stays. The start commit names no command.
+func TestPrepareWithStartAndHead(t *testing.T) {
+	f := newFake()
+	c := testConfig()
+	c.Repo.BaseCommit, c.Repo.Start, c.Repo.Head = baseCommit, startCommit, headCommit
+	checkout := stepName(scriptArgv(headScript, c.Repo.Branch, headCommit))
+
+	res, err := f.runner().Prepare(t.Context(), c)
+	require.NoError(t, err)
+	assert.Equal(t, slices.Concat([]string{"destroy/keep-home"}, fullOrder[1:len(fullOrder)-2], []string{"run/" + checkout}), f.calls())
+	assert.Equal(t, "skipped", res.Baseline)
+	assertOnlyTheCheckoutNames(t, f, "", startCommit)
+}
+
 // A head git cannot check out fails the prepare's clone step with git's
 // output, as a clone that fails does.
 func TestPrepareAtAHeadGitCannotCheckOut(t *testing.T) {

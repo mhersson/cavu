@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -40,8 +41,9 @@ const (
 var reshimScript = proc.SandboxOnly("exec mise reshim")
 
 // Prepare starts the run from empty volumes and leaves the agent phase up. A
-// run with a head keeps the task's home, where its session is; it is set up at
-// the base commit as any run is, then its task branch moves to the head.
+// run with a head keeps the task's home, where its session is. Every run is
+// set up at the base commit, then its task branch moves to the head, else to
+// the start commit when it has one.
 func (r *Runner) Prepare(ctx context.Context, c engine.RunConfig) (engine.PrepareResult, error) {
 	res, _, err := r.prepare(ctx, c, false)
 
@@ -152,10 +154,10 @@ func (p *preparation) run(ctx context.Context) (engine.PrepareResult, error) {
 		}
 	}
 
-	// The head is the agent's code: the workspace takes it only once the setup,
-	// the one step with the project's secrets, is over.
-	if c.Repo.Head != "" {
-		if failed, err := p.checkout(ctx); err != nil || failed != nil {
+	// The head and the start commit are agents' code: the workspace takes one
+	// only once the setup, the one step with the project's secrets, is over.
+	if at := cmp.Or(c.Repo.Head, c.Repo.Start); at != "" {
+		if failed, err := p.checkout(ctx, at); err != nil || failed != nil {
 			return failure(res, failed), err
 		}
 	}
@@ -334,14 +336,15 @@ func (p *preparation) setup(ctx context.Context, det env.Detection) (*stepFailur
 	return runStep(ctx, p.st, sc, stepSetup, reshim, toolchainTimeout)
 }
 
-// baseline verifies the base commit unless the run starts at a head, the
-// project waives it, or a prepare that is not a check finds it passed on this
-// commit before.
+// baseline verifies the base commit unless the workspace left it for a head
+// or a start commit, each verified by the run that made it; the project
+// waives it; or a prepare that is not a check finds it passed on this commit
+// before.
 func (p *preparation) baseline(ctx context.Context, res engine.PrepareResult, base string) (engine.PrepareResult, error) {
 	v := p.c.Verify
 
 	switch {
-	case p.c.Repo.Head != "":
+	case p.c.Repo.Head != "" || p.c.Repo.Start != "":
 		res.Baseline = baselineSkipped
 
 		return res, nil
@@ -421,11 +424,11 @@ rm -rf -- "$n.new" "$n.old" && cp -R -- "$2" "$n.new" || exit 1
 if [ -d "$n" ]; then mv -- "$n" "$n.old" || exit 1; fi
 mv -- "$n.new" "$n" && rm -rf -- "$n.old"`)
 
-// checkout moves the workspace to the run's head. Its failure is the clone
-// step's: both get the commit the run starts at into the workspace.
-func (p *preparation) checkout(ctx context.Context) (*stepFailure, error) {
+// checkout moves the workspace to commit, where the run starts. Its failure
+// is the clone step's: both get the commit the run starts at into the workspace.
+func (p *preparation) checkout(ctx context.Context, commit string) (*stepFailure, error) {
 	cmd := proc.Command{
-		Argv: scriptArgv(headScript, p.c.Repo.Branch, p.c.Repo.Head),
+		Argv: scriptArgv(headScript, p.c.Repo.Branch, commit),
 		Env:  agentEnv(p.st.ecosystems, p.c.Repo.BaseCommit), Dir: workspace,
 	}
 

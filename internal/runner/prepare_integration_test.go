@@ -4,7 +4,10 @@ package runner
 
 import (
 	"context"
+	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/mhersson/cavu/internal/driver/claudecode"
 	"github.com/mhersson/cavu/internal/engine"
 	"github.com/mhersson/cavu/internal/sandbox"
+	"github.com/mhersson/cavu/internal/testkit/gitrepo"
 	"github.com/mhersson/cavu/internal/testkit/sandboxtest"
 )
 
@@ -85,6 +89,43 @@ func TestPrepareGoRepository(t *testing.T) {
 	assert.Equal(t, engine.ResultPassed, vr.Result, vr.Output)
 
 	t.Logf("%s: cold prepare %s, warm prepare %s", r.rt.Kind, cold.Round(time.Millisecond), warm.Round(time.Millisecond))
+}
+
+// A run at a start commit an earlier task pushed is set up at the base
+// commit: its tools come from the base's files and its setup runs on them.
+// Only then is its workspace moved to the start commit, and no baseline runs.
+func TestPrepareAtAStartCommit(t *testing.T) {
+	const saw = "setup-saw.txt" // the setup's output, which the base ignores
+
+	var start string
+
+	r, c, base := fixtureRunOn(t, map[string]string{"notes.txt": "first line\n", ".gitignore": saw + "\n"}, func(bare string) (http.Handler, string) {
+		// The earlier task's commit adds a Go module, which detection at it would install a toolchain for.
+		dir := t.TempDir()
+		gitrepo.Git(t, dir, "clone", "-q", bare, "work")
+		work := filepath.Join(dir, "work")
+		gitrepo.Git(t, work, "checkout", "-q", "-b", "cavu/earlier")
+		start = gitrepo.Commit(t, work, map[string]string{"go.mod": "module example.com/hello\n\ngo " + goVersion + "\n"}, "feat(hello): add a module")
+		gitrepo.Git(t, work, "push", "-q", "origin", "cavu/earlier")
+
+		return http.StripPrefix("/cavu", gitrepo.Handler(t, bare)), "/cavu/" + filepath.Base(bare)
+	})
+	c.Repo.Start = start
+	c.Setup.Command = "if [ -e go.mod ]; then echo CAVU-SETUP-SAW-START; else echo CAVU-SETUP-SAW-BASE; fi > " + saw
+	c.Verify.Command, c.Verify.Timeout = "exit 1", time.Minute // a baseline that ran fails the prepare
+
+	res, err := r.Prepare(t.Context(), c)
+	require.NoError(t, err)
+	require.Empty(t, res.FailedStep, res.Output)
+	assert.Equal(t, base, res.BaseCommit)
+	assert.Empty(t, res.Tools, "the tools were detected at the start commit")
+	assert.Empty(t, res.Ecosystems)
+	assert.Equal(t, baselineSkipped, res.Baseline)
+
+	assert.Equal(t, "CAVU-SETUP-SAW-BASE", strings.TrimSpace(runIn(t, r.state(c.RunID), "cat", saw).Output), "the setup ran on the start commit's files")
+	assert.Equal(t, start, git(t, r, c, "rev-parse", "HEAD"))
+	assert.Equal(t, "refs/heads/"+c.Repo.Branch, git(t, r, c, "symbolic-ref", "HEAD"))
+	assert.Empty(t, git(t, r, c, "status", "--porcelain"), "the working tree is not the start commit's")
 }
 
 // A passed check of a Go project leaves its build cache in the project's

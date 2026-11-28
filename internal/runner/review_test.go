@@ -158,6 +158,47 @@ func TestReviewReadsTheImportedDiffs(t *testing.T) {
 	}
 }
 
+// A task at a start commit is reviewed on its own change: the diff from the
+// start commit to the head. The bundle still holds the branch from the base
+// commit, which the mirror has, and a fresh fix of the findings gets the same
+// diff.
+func TestReviewDiffsFromStart(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		r    engine.ReviewRequest
+		args []string
+	}{
+		{name: "full", r: fullReview(), args: []string{startCommit, headCommit, wantReviewPatch}},
+		{name: "scoped", r: scopedReview(), args: []string{startCommit, headCommit, wantReviewPatch, fixBase, headCommit, wantFixPatch}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := reviewed()
+			c := workConfig()
+			c.Repo.Start = startCommit
+
+			var before []string
+
+			d := &fakeAgent{results: []driver.Result{passing()}, during: func(context.Context, func(driver.Event)) { before = f.calls() }}
+
+			_, err := f.workRunner(d).Review(t.Context(), c, tt.r, noProgress)
+			require.NoError(t, err)
+			assert.Equal(t, reviewCalls(c, tt.args...), before, "the bundle from the base commit, then the diffs from the start commit")
+		})
+	}
+
+	t.Run("a fresh fix of the findings", func(t *testing.T) {
+		f := newFake()
+		c := workConfig()
+		c.Repo.Start = startCommit
+		d := &fakeAgent{results: []driver.Result{{Reason: driver.ReasonDone}}}
+		w := engine.WorkRequest{Mode: engine.ModeFixReview, SessionID: sessionUUID, Role: engine.RoleStrong, Findings: []engine.Finding{trimmed}}
+
+		_, err := f.workRunner(d).Work(t.Context(), c, w, noProgress)
+		require.NoError(t, err)
+		assert.True(t, ran(f, diffName(startCommit, "refs/heads/"+c.Repo.Branch, wantReviewPatch)), "the diff is not the task's own change")
+	})
+}
+
 func TestReviewPromptCarriesTheGate(t *testing.T) {
 	const marker = "verify-marker-7f3a"
 

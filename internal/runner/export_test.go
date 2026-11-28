@@ -89,6 +89,33 @@ func TestExportImportsTheBundle(t *testing.T) {
 	assertImportCommands(t, f)
 }
 
+// A task at a start commit exports its own change: the diff and the files,
+// which the flagged paths come from, cover the start commit to the head, with
+// a head too. The bundle still holds the branch from the base commit, so it
+// imports into a mirror that holds only the base branch, and the export still
+// refuses a commit that does not descend from the base.
+func TestExportDiffsFromStart(t *testing.T) {
+	for name, head := range map[string]string{"a first run": "", "a fix run": fixHead} {
+		t.Run(name, func(t *testing.T) {
+			f := exported()
+			c := workConfig()
+			c.Repo.Start, c.Repo.Head = startCommit, head
+			change := stepName(scriptArgv(changeScript, startCommit, headCommit, changeDiff, changeFiles))
+
+			res, err := f.runner().Export(t.Context(), c, headCommit)
+			require.NoError(t, err)
+			assert.Empty(t, res.Problem)
+			assert.Equal(t, []engine.ChangedFile{{Path: "login.go", Size: 6}, {Path: "logo.png", Added: true, Size: 3}}, res.Files)
+			assert.Equal(t, []string{
+				"volumes", "up/agent", goSeed, "run/" + exportName(c, headCommit), "copyout " + bundleFile,
+				"importer", "import/copy", "import/run/" + importName(c, headCommit), "import/run/" + change,
+				"import/copyout " + changeFiles, "import/copyout " + changeDiff, "importer removed",
+			}, f.calls())
+			assert.Equal(t, []string{baseCommit, headCommit, "cavu/fix-login", bundleFile}, f.run(t, exportName(c, headCommit)).cmd.Argv[4:])
+		})
+	}
+}
+
 // assertImportCommands wants every command of the import container run in
 // the mirror, under no git configuration but the mirror's.
 func assertImportCommands(t *testing.T, f *fakeSandbox) {

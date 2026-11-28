@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -34,7 +35,7 @@ var exportScript = proc.SandboxOnly(gitFunc + `g merge-base --is-ancestor "$1" "
 	{ echo "The frozen commit $2 is missing from the repository or does not descend from the base commit."; exit 1; }
 g update-ref "refs/heads/$3" "$2" && g bundle create -q "$4" "$1..refs/heads/$3"`)
 
-// changeScript writes the diff from the base commit $1 to the head $2 to $3,
+// changeScript writes the diff from the commit $1 to the head $2 to $3,
 // and to $4 a line for each path the change adds, modifies or deletes, a
 // rename as both: the size of the path's new blob, or git's "missing" for a
 // deleted one, then git's raw line for it. It prints git's summary of the diff.
@@ -81,7 +82,7 @@ func (r *Runner) Export(ctx context.Context, c engine.RunConfig, commit string) 
 }
 
 // change imports bundle, whose task branch is at head, and reads from the
-// mirror the change from the base commit to head.
+// mirror the task's change to head.
 func (st *run) change(ctx context.Context, c engine.RunConfig, bundle []byte, head string) (engine.ExportResult, string, error) {
 	res := engine.ExportResult{HeadCommit: head, Bundle: bundle}
 
@@ -106,10 +107,10 @@ func (st *run) change(ctx context.Context, c engine.RunConfig, bundle []byte, he
 	return res, "", nil
 }
 
-// changeList runs changeScript in the import container on the change from the
-// base commit to head, and returns the paths it touches and git's summary of it.
+// changeList runs changeScript in the import container on the task's change
+// to head, and returns the paths it touches and git's summary of it.
 func changeList(ctx context.Context, imp container, c engine.RunConfig, head string) (files []engine.ChangedFile, stat []string, problem string, err error) {
-	out, problem, err := gitStep(ctx, imp, importCommand(changeScript, c.Repo.BaseCommit, head, changeDiff, changeFiles))
+	out, problem, err := gitStep(ctx, imp, importCommand(changeScript, changeBase(c), head, changeDiff, changeFiles))
 	if err != nil || problem != "" {
 		return nil, nil, problem, err
 	}
@@ -123,6 +124,11 @@ func changeList(ctx context.Context, imp container, c engine.RunConfig, head str
 
 	return files, diffStat(out), "", err
 }
+
+// changeBase is the commit a task's change is measured from: its start
+// commit, else the base commit. Bundles hold the task branch from the base
+// commit, so an import never needs the start commit in the mirror.
+func changeBase(c engine.RunConfig) string { return cmp.Or(c.Repo.Start, c.Repo.BaseCommit) }
 
 // changedPaths reads changeScript's list of the paths a change touches.
 func changedPaths(list []byte) ([]engine.ChangedFile, error) {
