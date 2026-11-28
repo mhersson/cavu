@@ -42,6 +42,27 @@ func (s *Store) Append(ctx context.Context, taskID, expectLast int64, events []E
 		return 0, fmt.Errorf("append: %w", err)
 	}
 
+	written, err := insertEvents(ctx, tx, taskID, events, usage)
+	if err != nil {
+		return 0, fmt.Errorf("append: %w", err)
+	}
+
+	if written != 0 {
+		last = written
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("append: commit: %w", err)
+	}
+
+	return last, nil
+}
+
+// insertEvents inserts the task's events, then its usage rows on the last of
+// them, or on no event when there are none, and gives that event's id, 0 for none.
+func insertEvents(ctx context.Context, tx *sql.Tx, taskID int64, events []Event, usage []Usage) (int64, error) {
+	var last int64
+
 	for _, e := range events {
 		payload := e.Payload
 		if len(payload) == 0 {
@@ -57,30 +78,21 @@ func (s *Store) Append(ctx context.Context, taskID, expectLast int64, events []E
 			VALUES (?, ?, ?, ?, ?, ?)`,
 			taskID, nullableID(e.RunID), at.UnixMilli(), e.Type, e.Actor, string(payload))
 		if err != nil {
-			return 0, fmt.Errorf("append: insert event: %w", err)
+			return 0, fmt.Errorf("insert event: %w", err)
 		}
 
 		if last, err = res.LastInsertId(); err != nil {
-			return 0, fmt.Errorf("append: %w", err)
+			return 0, err
 		}
-	}
-
-	var eventID any
-	if len(events) > 0 {
-		eventID = last
 	}
 
 	for _, u := range usage {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO usage (task_id, run_id, event_id, source, model,
 			input, output, cache_read, cache_write, cost_estimate_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			taskID, nullableID(u.RunID), eventID, u.Source, u.Model,
+			taskID, nullableID(u.RunID), nullableID(last), u.Source, u.Model,
 			u.Input, u.Output, u.CacheRead, u.CacheWrite, u.CostEstimateUSD); err != nil {
-			return 0, fmt.Errorf("append: insert usage: %w", err)
+			return 0, fmt.Errorf("insert usage: %w", err)
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("append: commit: %w", err)
 	}
 
 	return last, nil

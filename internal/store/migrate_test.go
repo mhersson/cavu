@@ -211,6 +211,53 @@ func TestMigrationEightKeepsProjectsOnTheDefault(t *testing.T) {
 	require.Empty(t, creds)
 }
 
+func TestMigrationElevenKeepsData(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cavu.db")
+	ctx := context.Background()
+
+	old, err := open(ctx, path, migrations[:10])
+	require.NoError(t, err)
+
+	_, err = old.db.Exec(`INSERT INTO projects (name, repo_url, base_branch, setup_command, verify_command,
+		verify_waived, tool_overrides, egress_hosts, env, secret_vars, switches)
+		VALUES ('p', 'r', 'main', '', '', 0, '{}', '[]', '{}', '[]', '{}')`)
+	require.NoError(t, err)
+
+	for range 2 {
+		_, err = old.db.Exec(`INSERT INTO tasks (project_id, title, body, requester, base_commit, reference,
+			replay_id, overrides, created_at) VALUES (1, 't', '', 'cli', 'abc', 0, 0, '{}', 1)`)
+		require.NoError(t, err)
+	}
+
+	_, err = old.db.Exec(`INSERT INTO events (task_id, at, type, actor, payload) VALUES (1, 1, 'x', 'user', '{}')`)
+	require.NoError(t, err)
+	require.NoError(t, old.Close())
+
+	s, err := Open(ctx, path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = s.Close() })
+
+	task, err := s.Task(ctx, 2)
+	require.NoError(t, err)
+	require.Equal(t, "abc", task.BaseCommit)
+
+	events, err := s.Events(ctx, 1, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	_, err = s.db.Exec(`INSERT INTO batches (project_id, name, version, base_commit, created_at) VALUES (1, 'b', 1, '', 1)`)
+	require.NoError(t, err)
+	_, err = s.db.Exec(`INSERT INTO batch_tasks (batch_id, task_id, position) VALUES (1, 2, 1), (1, 1, 2)`)
+	require.NoError(t, err, "the tasks kept join a batch")
+
+	var bad int
+	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&bad))
+	require.Zero(t, bad)
+}
+
 type columnInfo struct {
 	Name, Type string
 	NotNull    bool

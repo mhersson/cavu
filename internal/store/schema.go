@@ -228,4 +228,25 @@ CREATE TABLE task_images (
 );
 CREATE INDEX task_images_task ON task_images (task_id);
 `},
+	{Version: 11, SQL: `
+CREATE TABLE batches (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	project_id   INTEGER NOT NULL REFERENCES projects(id),
+	name         TEXT NOT NULL,
+	version      INTEGER NOT NULL,
+	base_commit  TEXT NOT NULL,
+	created_at   INTEGER NOT NULL,
+	started_at   INTEGER,
+	finished_at  INTEGER,
+	cancelled_at INTEGER,
+	ended_at     INTEGER
+);
+
+CREATE TABLE batch_tasks (
+	batch_id INTEGER NOT NULL REFERENCES batches(id),
+	task_id  INTEGER NOT NULL UNIQUE REFERENCES tasks(id),
+	position INTEGER NOT NULL,
+	PRIMARY KEY (batch_id, position)
+);
+`},
 }
